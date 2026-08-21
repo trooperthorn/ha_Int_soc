@@ -1,0 +1,69 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Set up HA SOC",
+        "description": "HA SOC centralizes user access, audit logging, dashboard permissions, device/integration vulnerability tracking, and a SOC-style risk dashboard. Only one instance is needed per Home Assistant install."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "HA SOC is already configured. Only a single instance is supported."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "HA SOC settings",
+        "data": {
+          "audit_retention_days": "Audit log retention (days)",
+          "audit_max_bytes": "Audit log size cap (bytes)",
+          "scanner_enabled": "Enable the integration security scanner",
+          "scanner_network_checks_enabled": "Allow network calls for the scanner (PyPI staleness/typosquat checks)",
+          "nvd_api_key": "NVD API key (optional, raises the CVE-lookup rate limit)",
+          "risk_learning_period_days": "Behavioral-detection learning period (days)"
+        }
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "posture_score": { "name": "Security posture score" },
+      "open_detections": { "name": "Open detections" },
+      "users_at_risk": { "name": "Users at risk" },
+      "user_risk": { "name": "Risk" }
+    },
+    "binary_sensor": {
+      "suspicious_activity": { "name": "Suspicious activity" }
+    }
+  },
+  "issues": {
+    "admin_without_mfa": {
+      "title": "Admin account without multi-factor authentication",
+      "description": "The admin account \"{user_name}\" has no MFA module enrolled. An admin credential with no second factor is a full-takeover risk from a single leaked password. Enroll MFA for this user in Settings > People, or acknowledge this risk in the HA SOC Users view."
+    },
+    "trusted_networks_permissive": {
+      "title": "Trusted Networks auth provider is permissively configured",
+      "description": "The trusted_networks auth provider is configured with a network range of {network}. This bypasses password authentication (and MFA, which trusted_networks never applies) for anyone on that range. Review the `trusted_networks` block in configuration.yaml."
+    },
+    "http_insecure": {
+      "title": "Home Assistant is reachable without TLS",
+      "description": "external_url is set to an http:// address, or use_ssl is disabled with no reverse proxy detected. Credentials and session tokens would transit in cleartext. See the HA SOC misconfiguration report for detail."
+    },
+    "ip_ban_disabled": {
+      "title": "Automatic IP banning is disabled",
+      "description": "`ip_ban_enabled` is false (or `login_attempts_threshold` is unset), so repeated failed logins never result in an automatic ban. Consider enabling ip_ban_enabled and setting a finite login_attempts_threshold in the http: section of configuration.yaml."
+    },
+    "scanner_finding": {
+      "title": "Security scanner finding in {domain}",
+      "description": "HA SOC's integration scanner flagged {count} potential issue(s) in the \"{domain}\" integration's source. This is a heuristic finding — review it in the HA SOC Scanner view before taking any action against the integration or its author."
+    },
+    "device_vulnerability": {
+      "title": "Possible known vulnerability on {device_name}",
+      "description": "HA SOC matched \"{device_name}\" against {count} candidate CVE(s). This is a heuristic match — confirm or dismiss it in the HA SOC Vulnerabilities view."
+    },
+    "misconfig_finding": {
+      "title": "{title}",
+      "description": "{summary} Review this finding in the HA SOC misconfiguration report."
+    }
+  }
+}

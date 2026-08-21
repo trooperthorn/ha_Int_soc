@@ -1,0 +1,175 @@
+import { css } from "lit";
+
+/**
+ * Shared styles built entirely on Home Assistant's own CSS custom
+ * properties (--primary-color, --card-background-color, etc.) so the panel
+ * automatically follows the user's light/dark mode and custom theme instead
+ * of shipping its own palette.
+ */
+export const sharedStyles = css`
+  :host {
+    display: block;
+    padding: 16px;
+    max-width: 1400px;
+    margin: 0 auto;
+  }
+  .tabs {
+    display: flex;
+    gap: 4px;
+    border-bottom: 1px solid var(--divider-color);
+    margin-bottom: 16px;
+    overflow-x: auto;
+  }
+  .tab {
+    padding: 12px 16px;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--secondary-text-color);
+    border-bottom: 2px solid transparent;
+    white-space: nowrap;
+  }
+  .tab.active {
+    color: var(--primary-color);
+    border-bottom-color: var(--primary-color);
+  }
+  .card {
+    background: var(--card-background-color, #fff);
+    border-radius: var(--ha-card-border-radius, 12px);
+    box-shadow: var(--ha-card-box-shadow, 0 1px 2px rgba(0, 0, 0, 0.08));
+    padding: 16px;
+    margin-bottom: 16px;
+  }
+  .card h3 {
+    margin: 0 0 12px;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--primary-text-color);
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  th,
+  td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--divider-color);
+    vertical-align: top;
+  }
+  th {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--secondary-text-color);
+  }
+  tr:hover td {
+    background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.03);
+  }
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: 100px;
+    background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.06);
+  }
+  .pill .dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+  }
+  .pill.critical .dot,
+  .pill.high .dot {
+    background: var(--error-color, #db4437);
+  }
+  .pill.medium .dot {
+    background: var(--warning-color, #ffa600);
+  }
+  .pill.low .dot,
+  .pill.info .dot {
+    background: var(--disabled-text-color, #888);
+  }
+  .pill.good .dot {
+    background: var(--success-color, #43a047);
+  }
+  .tag {
+    font-size: 10.5px;
+    padding: 2px 6px;
+    border-radius: 5px;
+    font-family: var(--code-font-family, monospace);
+  }
+  .tag.enforced {
+    background: rgba(67, 160, 71, 0.15);
+    color: var(--success-color, #43a047);
+  }
+  .tag.cosmetic {
+    background: rgba(255, 166, 0, 0.18);
+    color: var(--warning-color, #ffa600);
+  }
+  button.ha-btn {
+    font: inherit;
+    font-weight: 500;
+    font-size: 13px;
+    color: var(--primary-color);
+    background: none;
+    border: 1px solid var(--primary-color);
+    border-radius: 8px;
+    padding: 6px 12px;
+    cursor: pointer;
+  }
+  button.ha-btn:hover {
+    background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.08);
+  }
+  button.ha-btn.danger {
+    color: var(--error-color, #db4437);
+    border-color: var(--error-color, #db4437);
+  }
+  button.ha-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
+  }
+  input,
+  select {
+    font: inherit;
+    font-size: 13px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--divider-color);
+    background: var(--card-background-color, #fff);
+    color: var(--primary-text-color);
+  }
+  .muted {
+    color: var(--secondary-text-color);
+  }
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+    flex-wrap: wrap;
+  }
+  .toolbar .spacer {
+    flex: 1;
+  }
+  .empty {
+    color: var(--secondary-text-color);
+    font-size: 13px;
+    padding: 24px 0;
+    text-align: center;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+  .chip {
+    font-size: 10.5px;
+    background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.06);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+`;

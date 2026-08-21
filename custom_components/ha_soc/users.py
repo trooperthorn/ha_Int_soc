@@ -1,0 +1,296 @@
+"""User security data access — the only HA SOC module that touches hass.auth.
+
+Everything here reads and writes the real Home Assistant auth store
+(hass.auth); it holds no state of its own beyond the in-memory
+LiveSessionRegistry below. Two limitations are load-bearing, not bugs:
+
+- "Last login" is inferred from refresh-token activity
+  (created_at / last_used_at). A token refresh looks identical to a fresh
+  login to this API, so last_login_at is best described as "last time this
+  user's session was active", not a true authentication timestamp.
+- MFA state can be read and audited (async_get_enabled_mfa) but never
+  enforced from here — Home Assistant core has no hook to require MFA for a
+  user, so HA SOC can only report on it.
+
+This module knows nothing about websocket_api, audit.py, or any other HA SOC
+module. It talks to hass.auth and nothing else.
+"""
+from __future__ import annotations
+
+import inspect
+import logging
+import uuid
+from typing import Any
+
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
+import homeassistant.util.dt as dt
+
+try:
+    from homeassistant.auth.const import (
+        TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN,
+        TOKEN_TYPE_SYSTEM,
+    )
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    try:
+        from homeassistant.auth.models import (
+            TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN,
+            TOKEN_TYPE_SYSTEM,
+        )
+    except ImportError:
+        TOKEN_TYPE_SYSTEM = "system"
+        TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN = "long_lived_access_token"
+
+from homeassistant.auth.models import User
+from homeassistant.auth.providers import homeassistant as auth_ha
+
+_LOGGER = logging.getLogger(__name__)
+
+
+def _iso(value) -> str | None:
+    return value.isoformat() if value is not None else None
+
+
+async def _async_get_ha_auth_provider(hass: HomeAssistant):
+    # Core's signature is synchronous despite the async_ prefix, but that
+    # prefix convention has flipped before elsewhere in core — tolerate
+    # either shape rather than guessing.
+    result = auth_ha.async_get_provider(hass)
+    if inspect.isawaitable(result):
+        result = await result
+    return result
+
+
+class UsersManager:
+    """Read/write access to hass.auth, shaped for the HA SOC users panel."""
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    async def _async_build_user_record(self, user: User) -> dict[str, Any]:
+        session_tokens = [
+            token
+            for token in user.refresh_tokens.values()
+            if token.token_type != TOKEN_TYPE_SYSTEM
+        ]
+
+        last_login_at: str | None = None
+        last_login_ip: str | None = None
+        if session_tokens:
+            latest = max(session_tokens, key=lambda t: t.last_used_at or t.created_at)
+            last_login_at = _iso(latest.last_used_at or latest.created_at)
+            last_login_ip = latest.last_used_ip
+
+        llat_tokens = [
+            token
+            for token in user.refresh_tokens.values()
+            if token.token_type == TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
+        ]
+        llat_count = len(llat_tokens)
+        llat_oldest_days: int | None = None
+        if llat_tokens:
+            oldest = min(token.created_at for token in llat_tokens)
+            llat_oldest_days = (dt.utcnow() - oldest).days
+
+        # Best-effort proxy only — Home Assistant does not record a true
+        # "account created" timestamp on User, so this is the age of the
+        # user's oldest surviving refresh token instead.
+        account_age_days: int | None = None
+        if user.refresh_tokens:
+            oldest_token = min(t.created_at for t in user.refresh_tokens.values())
+            account_age_days = (dt.utcnow() - oldest_token).days
+
+        auth_provider_types = sorted(
+            {cred.auth_provider_type for cred in user.credentials}
+        )
+
+        mfa_modules = await self.hass.auth.async_get_enabled_mfa(user)
+
+        return {
+            "id": user.id,
+            "name": user.name,
+            "is_owner": user.is_owner,
+            "is_admin": user.is_admin,
+            "is_active": user.is_active,
+            "local_only": user.local_only,
+            "groups": [group.id for group in user.groups],
+            "mfa_enabled": bool(mfa_modules),
+            "last_login_at": last_login_at,
+            "last_login_ip": last_login_ip,
+            "llat_count": llat_count,
+            "llat_oldest_days": llat_oldest_days,
+            "account_age_days": account_age_days,
+            "auth_provider_types": auth_provider_types,
+        }
+
+    async def async_list_users(self) -> list[dict[str, Any]]:
+        users = await self.hass.auth.async_get_users()
+        return [
+            await self._async_build_user_record(user)
+            for user in users
+            if not user.system_generated
+        ]
+
+    async def async_get_user_detail(self, user_id: str) -> dict[str, Any] | None:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return None
+
+        record = await self._async_build_user_record(user)
+        record["refresh_tokens"] = [
+            {
+                "id": token.id,
+                "client_id": token.client_id,
+                "client_name": token.client_name,
+                "token_type": token.token_type,
+                "created_at": _iso(token.created_at),
+                "last_used_at": _iso(token.last_used_at),
+                "last_used_ip": token.last_used_ip,
+            }
+            for token in user.refresh_tokens.values()
+        ]
+        record["credentials"] = [
+            {
+                "id": cred.id,
+                "auth_provider_type": cred.auth_provider_type,
+                "auth_provider_id": cred.auth_provider_id,
+                "username": cred.data.get("username")
+                if cred.auth_provider_type == "homeassistant"
+                else None,
+            }
+            for cred in user.credentials
+        ]
+        return record
+
+    async def async_revoke_token(self, user_id: str, token_id: str) -> bool:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return False
+
+        token = user.refresh_tokens.get(token_id)
+        if token is None:
+            return False
+
+        self.hass.auth.async_remove_refresh_token(token)
+        return True
+
+    async def async_revoke_all_sessions(self, user_id: str) -> int:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return 0
+
+        revoked = 0
+        for token in list(user.refresh_tokens.values()):
+            if token.token_type == TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN:
+                continue
+            self.hass.auth.async_remove_refresh_token(token)
+            revoked += 1
+        return revoked
+
+    async def async_create_user(
+        self,
+        name: str,
+        group_ids: list[str] | None = None,
+        local_only: bool | None = None,
+    ) -> dict[str, Any]:
+        user = await self.hass.auth.async_create_user(
+            name, group_ids=group_ids, local_only=local_only
+        )
+        return await self._async_build_user_record(user)
+
+    async def async_update_user(self, user_id: str, **changes: Any) -> bool:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return False
+
+        try:
+            await self.hass.auth.async_update_user(user, **changes)
+        except (ValueError, HomeAssistantError):
+            # Raised for system-generated users, among other invalid updates.
+            _LOGGER.warning("Could not update user %s", user_id, exc_info=True)
+            return False
+        return True
+
+    async def async_deactivate_user(self, user_id: str) -> tuple[bool, str | None]:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return (False, "user_not_found")
+
+        try:
+            # Also revokes all of this user's refresh tokens as a side
+            # effect of core's async_deactivate_user — intentional, not
+            # something this method needs to duplicate.
+            await self.hass.auth.async_deactivate_user(user)
+        except ValueError:
+            return (False, "cannot_deactivate_owner")
+        return (True, None)
+
+    async def async_delete_user(self, user_id: str) -> bool:
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return False
+
+        await self.hass.auth.async_remove_user(user)
+        return True
+
+    async def async_set_password(
+        self, user_id: str, new_password: str, *, requesting_user_is_owner: bool
+    ) -> tuple[bool, str | None]:
+        # Mirrors core's admin_change_password websocket command exactly:
+        # owner-only, not merely admin-only. Do not weaken this check.
+        if not requesting_user_is_owner:
+            return (False, "owner_required")
+
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return (False, "user_not_found")
+
+        credential = next(
+            (c for c in user.credentials if c.auth_provider_type == "homeassistant"),
+            None,
+        )
+        if credential is None:
+            return (False, "no_homeassistant_credential")
+
+        provider = await _async_get_ha_auth_provider(self.hass)
+        username = credential.data["username"]
+        await provider.async_change_password(username, new_password)
+        return (True, None)
+
+
+class LiveSessionRegistry:
+    """In-memory tracker of currently-open websocket connections.
+
+    No persistence: this reflects live sessions right now, not history. A
+    different module (websocket_api.py) drives add()/remove()/touch() from
+    the connection lifecycle of an actual websocket command.
+    """
+
+    def __init__(self) -> None:
+        self._sessions: dict[str, dict[str, Any]] = {}
+
+    def add(self, connection) -> str:
+        key = uuid.uuid4().hex
+        now = _iso(dt.utcnow())
+        self._sessions[key] = {
+            "user_id": connection.user.id,
+            "user_name": connection.user.name,
+            "refresh_token_id": connection.refresh_token_id,
+            "connected_at": now,
+            "last_seen": now,
+        }
+        return key
+
+    def remove(self, key: str) -> None:
+        self._sessions.pop(key, None)
+
+    def touch(self, key: str) -> None:
+        session = self._sessions.get(key)
+        if session is None:
+            return
+        session["last_seen"] = _iso(dt.utcnow())
+
+    def list_sessions(self) -> list[dict[str, Any]]:
+        return [
+            {"session_key": key, **session} for key, session in self._sessions.items()
+        ]
