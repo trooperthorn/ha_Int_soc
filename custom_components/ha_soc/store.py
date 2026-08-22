@@ -25,6 +25,7 @@ from .const import (
     DEFAULT_RISK_LEARNING_PERIOD_DAYS,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
+    DEFAULT_SECURITY_SOURCES_ENABLED,
     STORAGE_KEY,
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION_MAJOR,
@@ -44,6 +45,13 @@ class SettingsData(TypedDict):
     access_level: str
     mfa_policy: str
     mfa_grace_period_days: int
+    # domain (integration or entity-platform) -> included in the
+    # Security Integrations Health dashboard section. See const.py's
+    # SECURITY_INTEGRATION_DOMAINS/SECURITY_ENTITY_DOMAINS for the known
+    # set — a domain missing from this dict is treated as enabled (opt-out,
+    # not opt-in), so a future addition to the known set doesn't silently
+    # start dark for an existing install.
+    security_sources_enabled: dict[str, bool]
 
 
 class StoreData(TypedDict):
@@ -97,6 +105,7 @@ def default_store_data() -> StoreData:
             access_level=DEFAULT_ACCESS_LEVEL,
             mfa_policy=DEFAULT_MFA_POLICY,
             mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
+            security_sources_enabled=dict(DEFAULT_SECURITY_SOURCES_ENABLED),
         ),
         permissions_matrix={},
         vuln_findings={},

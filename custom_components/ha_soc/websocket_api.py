@@ -37,6 +37,7 @@ from .const import (
     CONF_RISK_LEARNING_PERIOD_DAYS,
     CONF_SCANNER_ENABLED,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
+    CONF_SECURITY_SOURCES_ENABLED,
     DEFAULT_ACCESS_LEVEL,
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
@@ -947,6 +948,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_RISK_LEARNING_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=90)),
         vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
         vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
+        vol.Optional(CONF_SECURITY_SOURCES_ENABLED): {str: bool},
     }
 )
 @websocket_api.async_response
