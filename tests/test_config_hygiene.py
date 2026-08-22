@@ -303,3 +303,82 @@ async def test_proximity_returns_empty_without_entries(hass: HomeAssistant) -> N
 async def test_notify_group_returns_empty_without_entries(hass: HomeAssistant) -> None:
     found = await ch.async_notify_group_unknown_members(hass)
     assert found == []
+
+
+# -- Notify coverage gaps -----------------------------------------------------
+
+
+class _FakeStore:
+    def __init__(self, security_sources_enabled: dict) -> None:
+        self.settings = {"security_sources_enabled": security_sources_enabled}
+
+
+async def test_notify_automation_triggered_by_untracked_entity_is_flagged(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto1",
+            "alias": "Smoke -> Phone",
+            "trigger": [{"platform": "state", "entity_id": "binary_sensor.smoke_detector", "to": "on"}],
+            "action": [{"service": "notify.mobile_app_test", "data": {"message": "smoke!"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_notify_coverage_gaps(hass, _FakeStore({}))
+    assert any(
+        f["gap"] == "untracked" and f["trigger_entity_id"] == "binary_sensor.smoke_detector" for f in found
+    )
+
+
+async def test_notify_automation_triggered_by_disabled_tracked_source_is_flagged(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto2",
+            "alias": "Lock -> Phone",
+            "trigger": [{"platform": "state", "entity_id": "lock.front_door", "to": "unlocked"}],
+            "action": [{"service": "notify.mobile_app_test", "data": {"message": "unlocked!"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_notify_coverage_gaps(hass, _FakeStore({"lock": False}))
+    assert any(f["gap"] == "disabled" and f["tracked_as"] == "lock" for f in found)
+
+
+async def test_notify_automation_triggered_by_enabled_tracked_source_is_not_flagged(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto3",
+            "alias": "Lock -> Phone",
+            "trigger": [{"platform": "state", "entity_id": "lock.front_door", "to": "unlocked"}],
+            "action": [{"service": "notify.mobile_app_test", "data": {"message": "unlocked!"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_notify_coverage_gaps(hass, _FakeStore({"lock": True}))
+    assert found == []
+
+
+async def test_automation_without_notify_action_is_ignored(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto4",
+            "alias": "Smoke -> Light",
+            "trigger": [{"platform": "state", "entity_id": "binary_sensor.smoke_detector", "to": "on"}],
+            "action": [{"service": "light.turn_on", "data": {}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_notify_coverage_gaps(hass, _FakeStore({}))
+    assert found == []
+
+
+async def test_notify_coverage_gaps_returns_empty_without_automations(hass: HomeAssistant) -> None:
+    found = await ch.async_notify_coverage_gaps(hass, _FakeStore({}))
+    assert found == []

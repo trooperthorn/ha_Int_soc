@@ -66,6 +66,15 @@ _PLACEHOLDER_RE = re.compile(
 _CREDENTIAL_NAME_RE = re.compile(
     r"(password|passwd|api[_-]?key|secret|access[_-]?key|auth[_-]?token)", re.IGNORECASE
 )
+# HA's own universal naming convention (homeassistant.const's CONF_PASSWORD,
+# CONF_API_KEY, etc., and every integration that follows the same pattern):
+# a CONF_* constant holds a voluptuous/config-schema KEY NAME, never a
+# secret value — the actual secret lives in a config entry or this
+# integration's own Store, entered by the user at runtime, not in source.
+# Excluded here rather than by raising the length/entropy bar, since the
+# false positive is about *what kind of thing* the name identifies, not
+# about how convincing the literal value looks.
+_CONF_CONSTANT_NAME_RE = re.compile(r"^CONF_")
 _SENSITIVE_ARG_RE = re.compile(
     r"(token|password|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)", re.IGNORECASE
 )
@@ -233,7 +242,9 @@ def _rule_hardcoded_credential(tree: ast.AST, lines: list[str]) -> list[dict[str
             continue
         for target in node.targets:
             name = _assign_target_name(target)
-            if name and _CREDENTIAL_NAME_RE.search(name):
+            if not name or _CONF_CONSTANT_NAME_RE.match(name):
+                continue
+            if _CREDENTIAL_NAME_RE.search(name):
                 hits.append(_hit(node.lineno, lines, "hardcoded_credential", "CWE-798", "medium"))
                 break
     return hits

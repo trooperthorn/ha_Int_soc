@@ -35,6 +35,8 @@ from typing import Any
 
 from homeassistant.core import HomeAssistant
 
+from .const import SECURITY_ENTITY_DOMAINS, SECURITY_INTEGRATION_DOMAINS
+
 _SERVICE_CALL_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
 
@@ -84,6 +86,111 @@ def _iter_automation_and_script_entities(hass: HomeAssistant):
     script_component = hass.data.get(SCRIPT_DOMAIN)
     for entity in script_component.entities if script_component else ():
         yield "script", entity
+
+
+def _trigger_entity_ids(raw_config: dict[str, Any]) -> set[str]:
+    """entity_id(s) named directly on a trigger — state/numeric_state/etc.
+    Only automations have triggers of their own (a script has no trigger:
+    block; it only runs when called), so this is automation-only in
+    practice. A device trigger's entity_id is exposed by HA as `entity_id`
+    too in newer versions but not reliably across the versions this
+    project targets, so device-only triggers are out of scope here —
+    narrower than "every entity anywhere in the automation" on purpose:
+    that would also catch conditions and notify targets themselves,
+    drowning the one thing this check cares about (what set the
+    automation off) in noise.
+    """
+    triggers = raw_config.get("triggers") or raw_config.get("trigger") or []
+    if isinstance(triggers, dict):
+        triggers = [triggers]
+    found: set[str] = set()
+    for trig in triggers:
+        if not isinstance(trig, dict):
+            continue
+        entity_id = trig.get("entity_id")
+        if isinstance(entity_id, str):
+            found.add(entity_id)
+        elif isinstance(entity_id, list):
+            found.update(e for e in entity_id if isinstance(e, str))
+    return found
+
+
+# -- notify automations depending on an untracked/disabled security source --
+
+
+async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> list[dict[str, Any]]:
+    """Automations that call notify.* when triggered by an entity Security
+    Integrations Health doesn't currently watch — the "my phone tells me
+    when the fire alarm goes off, make sure I'd actually notice if that
+    stopped working" check.
+
+    Two distinct gaps, reported separately because the fix differs:
+      - gap="untracked": the trigger entity's own domain isn't one of
+        SECURITY_ENTITY_DOMAINS and its owning integration isn't one of
+        SECURITY_INTEGRATION_DOMAINS either — Security Health has no way
+        to watch this at all today, tracked or not.
+      - gap="disabled": the domain/integration IS one this project knows
+        how to track, but the instance owner turned its Security Health
+        toggle off in Settings, so a real outage there won't surface on
+        the dashboard.
+
+    Scripts are excluded: a script has no trigger of its own (see
+    _trigger_entity_ids), so if automation A triggers off an untracked
+    entity and calls script S which is what actually calls notify.*, A is
+    what gets flagged here, not S — the trigger entity_id only exists on
+    A's config. A script called directly by notify-unrelated means never
+    has a "triggering entity" to evaluate in the first place.
+    """
+    from homeassistant.helpers import entity_registry as er
+
+    registry = er.async_get(hass)
+    entries_by_id = {entry.entry_id: entry for entry in hass.config_entries.async_entries()}
+    sources_enabled = (store.settings.get("security_sources_enabled") or {}) if store else {}
+
+    found: list[dict[str, Any]] = []
+    for entity in (e for kind, e in _iter_automation_and_script_entities(hass) if kind == "automation"):
+        raw = entity.raw_config
+        if not raw:
+            continue
+        if not any(domain == "notify" for domain, _service in _walk_service_refs(raw)):
+            continue
+
+        for trigger_entity_id in _trigger_entity_ids(raw):
+            entity_domain = trigger_entity_id.split(".", 1)[0]
+            reg_entry = registry.async_get(trigger_entity_id)
+            integration_domain = (
+                entries_by_id[reg_entry.config_entry_id].domain
+                if reg_entry and reg_entry.config_entry_id in entries_by_id
+                else None
+            )
+
+            if entity_domain in SECURITY_ENTITY_DOMAINS:
+                tracked_as = entity_domain
+            elif integration_domain in SECURITY_INTEGRATION_DOMAINS:
+                tracked_as = integration_domain
+            else:
+                found.append(
+                    {
+                        "automation_entity_id": entity.entity_id,
+                        "name": entity.name or entity.entity_id,
+                        "trigger_entity_id": trigger_entity_id,
+                        "gap": "untracked",
+                        "integration_domain": integration_domain,
+                    }
+                )
+                continue
+
+            if not sources_enabled.get(tracked_as, True):
+                found.append(
+                    {
+                        "automation_entity_id": entity.entity_id,
+                        "name": entity.name or entity.entity_id,
+                        "trigger_entity_id": trigger_entity_id,
+                        "gap": "disabled",
+                        "tracked_as": tracked_as,
+                    }
+                )
+    return found
 
 
 # -- Unknown service / device / area / floor / label references -------------

@@ -93,6 +93,34 @@ async def test_no_findings_when_nothing_broken(hass: HomeAssistant, health: Inte
         health._check_lovelace_missing_resources,
         health._check_orphaned_statistics,
         health._check_energy_unknown_references,
+        health._check_notify_coverage_gaps,
     )
     for check in checks:
         assert await check() == []
+
+
+async def test_notify_coverage_gap_high_severity_mirrors_to_repairs(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    from homeassistant.setup import async_setup_component
+
+    config = [
+        {
+            "id": "auto1",
+            "alias": "Smoke -> Phone",
+            "trigger": [{"platform": "state", "entity_id": "binary_sensor.smoke_detector", "to": "on"}],
+            "action": [{"service": "notify.mobile_app_test", "data": {"message": "smoke!"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    findings = await health._check_notify_coverage_gaps()
+
+    assert len(findings) == 1
+    assert findings[0]["check"] == "notify_coverage_gaps"
+    assert findings[0]["severity"] == "high"
+
+    registry = ir.async_get(hass)
+    issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
+    assert findings[0]["id"] in issue_ids

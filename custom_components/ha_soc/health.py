@@ -594,6 +594,7 @@ class IntegrationHealth:
             self._check_unknown_customize_entities,
             self._check_orphaned_statistics,
             self._check_energy_unknown_references,
+            self._check_notify_coverage_gaps,
         )
         results: list[dict] = []
         for check in checks:
@@ -1312,6 +1313,48 @@ class IntegrationHealth:
             "The Energy dashboard references a source that no longer exists",
             f"{len(items)} Energy dashboard reference(s) point at a statistic/entity that no "
             "longer exists — that source will show as missing data on the Energy dashboard.",
+            items,
+        )
+
+    async def _check_notify_coverage_gaps(self) -> list[dict]:
+        """check="notify_coverage_gaps" — HIGH severity.
+
+        Not Spook-inspired: this is a coverage-gap check on HA SOC's own
+        Security Integrations Health feature, prompted by a very specific,
+        very real worry — "my phone tells me when the fire alarm goes off;
+        make sure I'd actually find out if that stopped working, instead
+        of discovering it hours later." An automation that calls notify.*
+        when triggered by a lock/siren/valve entity or one of the named
+        security integrations, where that source isn't tracked (or has
+        been turned off) on the Security Integrations Health dashboard
+        card, is exactly that blind spot: the integration/device can go
+        silently unavailable and nothing here will surface it.
+        """
+        from .config_hygiene import async_notify_coverage_gaps
+
+        items = await async_notify_coverage_gaps(self.hass, self._store)
+        untracked = [i for i in items if i["gap"] == "untracked"]
+        disabled = [i for i in items if i["gap"] == "disabled"]
+        summary_parts = []
+        if disabled:
+            summary_parts.append(
+                f"{len(disabled)} notify automation(s) trigger off a source that IS trackable but "
+                "has its Security Integrations Health toggle turned off in Settings"
+            )
+        if untracked:
+            summary_parts.append(
+                f"{len(untracked)} notify automation(s) trigger off a source Security Integrations "
+                "Health doesn't track at all"
+            )
+        summary = (
+            "; ".join(summary_parts)
+            + " — if that source goes silently unavailable, the dashboard won't reflect it and "
+            "the only sign will be the notification never arriving."
+        )
+        return self._async_hygiene_finding(
+            "notify_coverage_gaps", SEVERITY_HIGH,
+            "Notify automations depend on a source Security Integrations Health isn't watching",
+            summary,
             items,
         )
 
