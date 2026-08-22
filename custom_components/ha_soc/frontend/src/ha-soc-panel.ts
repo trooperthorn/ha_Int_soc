@@ -18,13 +18,13 @@ type TabId = SocTab;
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "entity_remap", label: "Entity ReMap" },
   { id: "users", label: "Users & Access" },
-  { id: "audit", label: "Audit Log" },
   { id: "permissions", label: "Permissions" },
+  { id: "audit", label: "Audit Log" },
+  { id: "peripherals", label: "Local Peripherals" },
   { id: "scanner", label: "Scanner" },
   { id: "logs", label: "Logs" },
-  { id: "peripherals", label: "Local Peripherals" },
-  { id: "entity_remap", label: "Entity ReMap" },
   { id: "settings", label: "Settings" },
 ];
 
