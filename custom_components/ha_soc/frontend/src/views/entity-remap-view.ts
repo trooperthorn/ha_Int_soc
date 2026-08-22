@@ -38,6 +38,7 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _applyResult: EntityRemapApplyResult | null = null;
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
+  @state() private _brokenFilter: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -66,6 +67,7 @@ export class HaSocEntityRemapView extends LitElement {
     this._applyResult = null;
     try {
       this._report = await findEntityRemapReferences(this.hass, this._oldEntityId);
+      this._brokenFilter = this._oldEntityId;
     } finally {
       this._finding = false;
     }
@@ -77,6 +79,15 @@ export class HaSocEntityRemapView extends LitElement {
     this._report = null;
     this._applyResult = null;
     this._onFind();
+  }
+
+  private _onClearBrokenFilter() {
+    this._brokenFilter = null;
+  }
+
+  private _filteredBroken(): BrokenEntityReference[] {
+    if (!this._brokenFilter) return this._broken;
+    return this._broken.filter((b) => b.entity_id === this._brokenFilter);
   }
 
   private async _onApply() {
@@ -147,7 +158,7 @@ export class HaSocEntityRemapView extends LitElement {
           <div>
             <div class="muted" style="font-size:11px;margin-bottom:2px;">Old / broken entity</div>
             <input
-              list="ha-soc-remap-entities"
+              list="ha-soc-remap-old-entities"
               style="width:320px;"
               .value=${this._oldEntityId}
               placeholder="sensor.old_entity_id"
@@ -157,7 +168,7 @@ export class HaSocEntityRemapView extends LitElement {
           <div>
             <div class="muted" style="font-size:11px;margin-bottom:2px;">New / replacement entity</div>
             <input
-              list="ha-soc-remap-entities"
+              list="ha-soc-remap-new-entities"
               style="width:320px;"
               .value=${this._newEntityId}
               placeholder="sensor.new_entity_id"
@@ -167,7 +178,14 @@ export class HaSocEntityRemapView extends LitElement {
           <button class="ha-btn" ?disabled=${!this._oldEntityId || this._finding} @click=${() => this._onFind()}>
             ${this._finding ? "Searching…" : "Find references"}
           </button>
-          <datalist id="ha-soc-remap-entities">
+          <!-- Old/broken entity only offers entities this page already knows are
+               referenced-but-missing — picking from the full entity registry made
+               no sense here, since a genuinely broken entity isn't in it. -->
+          <datalist id="ha-soc-remap-old-entities">
+            ${this._broken.map((b) => html`<option value=${b.entity_id}>${this._labelFor(b.entity_id)}</option>`)}
+          </datalist>
+          <!-- New/replacement entity picks from every real, currently-registered entity. -->
+          <datalist id="ha-soc-remap-new-entities">
             ${this._entities.map((e) => html`<option value=${e.entity_id}>${e.name ?? e.original_name ?? ""}</option>`)}
           </datalist>
         </div>
@@ -216,18 +234,34 @@ export class HaSocEntityRemapView extends LitElement {
       </div>
 
       <div class="card">
-        <h3>Entities referenced but not found (${this._broken.length})</h3>
+        <h3>
+          Entities referenced but not found (${this._filteredBroken().length}${this._brokenFilter
+            ? html` of ${this._broken.length}`
+            : nothing})
+        </h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           A proactive sweep of every automation, script, scene, and structured helper —
           any entity_id they reference that doesn't correspond to a known entity right now.
           Dashboards aren't swept here (there's no equivalent core-provided index to walk
           cheaply); use the search above for a specific entity_id to also cover those.
         </p>
+        ${this._brokenFilter
+          ? html`
+              <div class="toolbar" style="margin-bottom:8px;">
+                <span class="muted" style="font-size:12px;">
+                  Filtered to <code>${this._brokenFilter}</code>
+                </span>
+                <button class="ha-btn" @click=${() => this._onClearBrokenFilter()}>Clear filter</button>
+              </div>
+            `
+          : nothing}
         ${this._brokenLoading
           ? html`<div class="empty">Loading…</div>`
           : !this._broken.length
             ? html`<div class="empty">Nothing found — no dangling entity references detected.</div>`
-            : html`
+            : !this._filteredBroken().length
+              ? html`<div class="empty">No broken reference matches <code>${this._brokenFilter}</code>.</div>`
+              : html`
                 <table>
                   <thead>
                     <tr>
@@ -237,7 +271,7 @@ export class HaSocEntityRemapView extends LitElement {
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._broken.map(
+                    ${this._filteredBroken().map(
                       (b) => html`
                         <tr>
                           <td><code>${b.entity_id}</code></td>

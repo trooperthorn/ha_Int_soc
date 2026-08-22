@@ -229,7 +229,7 @@ export class HaSocSettingsView extends LitElement {
               <span>${label}</span>
               <input
                 type="checkbox"
-                .checked=${s.security_sources_enabled[domain] ?? true}
+                .checked=${s.security_sources_enabled?.[domain] ?? true}
                 @change=${(e: Event) =>
                   this._updateSecuritySource(domain, (e.target as HTMLInputElement).checked)}
               />

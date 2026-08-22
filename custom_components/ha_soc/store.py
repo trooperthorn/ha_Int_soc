@@ -166,6 +166,18 @@ class HaSocData:
             # version (missing a newly-added top-level key) doesn't KeyError.
             defaults = default_store_data()
             defaults.update(stored)  # type: ignore[typeddict-item]
+            # `settings` is itself a nested dict that has grown new keys
+            # over time (most recently security_sources_enabled) — the
+            # top-level update() above only merges one level deep, so it
+            # replaces defaults["settings"] wholesale with whatever settings
+            # blob was actually on disk, silently dropping any key added
+            # after that blob was first written. Re-merge settings
+            # specifically so an existing install upgrading to a newer
+            # minor version never ends up missing a key the rest of the
+            # code (and the frontend) assumes is always present.
+            settings_defaults = default_store_data()["settings"]
+            settings_defaults.update(stored.get("settings") or {})  # type: ignore[typeddict-item]
+            defaults["settings"] = settings_defaults
             self.data = defaults
         return stored is not None
 

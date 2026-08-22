@@ -30,6 +30,7 @@ export class HaSocPermissionsView extends LitElement {
   @state() private _views: ViewRow[] = [];
   @state() private _loading = true;
   @state() private _drift: Record<string, unknown>[] = [];
+  @state() private _viewsError: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -55,13 +56,31 @@ export class HaSocPermissionsView extends LitElement {
   }
 
   private async _loadViews() {
-    const config = await fetchDashboardConfig(this.hass, this._selected ?? null);
-    const views = (config?.views as any[]) ?? [];
-    this._views = views.map((v, i) => ({
-      path: v.path ?? String(i),
-      title: v.title ?? v.path ?? `View ${i + 1}`,
-      visibleUserIds: Array.isArray(v.visible) ? v.visible.map((x: any) => x.user) : null,
-    }));
+    // fetchDashboardConfig rejects (ha_soc/permissions/dashboard_config sends
+    // a `not_found` error, not an empty result) whenever the dashboard has no
+    // saved config yet — most commonly the default dashboard when nobody has
+    // ever opened its editor, so Home Assistant is showing an auto-generated
+    // layout instead. Left uncaught, that rejection used to bubble out of
+    // _load() as an unhandled promise rejection: _views silently stayed
+    // empty with no indication why, which read as "the page is broken until
+    // you reselect the dashboard" even though reselecting the same
+    // unconfigured dashboard can't actually fix anything.
+    this._viewsError = null;
+    try {
+      const config = await fetchDashboardConfig(this.hass, this._selected ?? null);
+      const views = (config?.views as any[]) ?? [];
+      this._views = views.map((v, i) => ({
+        path: v.path ?? String(i),
+        title: v.title ?? v.path ?? `View ${i + 1}`,
+        visibleUserIds: Array.isArray(v.visible) ? v.visible.map((x: any) => x.user) : null,
+      }));
+    } catch (e: any) {
+      this._views = [];
+      this._viewsError =
+        e?.code === "not_found"
+          ? "This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then."
+          : `Could not load this dashboard's views: ${e?.message ?? e}`;
+    }
   }
 
   private async _onSelectDashboard(e: Event) {
@@ -108,7 +127,7 @@ export class HaSocPermissionsView extends LitElement {
           admin/non-admin group, managed in the Users &amp; Access tab.
         </p>
         <div class="toolbar">
-          <select @change=${this._onSelectDashboard}>
+          <select .value=${this._selected ?? "__default__"} @change=${this._onSelectDashboard}>
             ${this._dashboards.map(
               (d) =>
                 html`<option value=${(d.url_path as string | null) ?? "__default__"}>
@@ -153,7 +172,9 @@ export class HaSocPermissionsView extends LitElement {
           : nothing}
 
         ${!this._views.length
-          ? html`<div class="empty">This dashboard has no views, or is YAML-managed (read-only).</div>`
+          ? html`<div class="empty">
+              ${this._viewsError ?? "This dashboard has no views, or is YAML-managed (read-only)."}
+            </div>`
           : html`
               <table>
                 <thead>

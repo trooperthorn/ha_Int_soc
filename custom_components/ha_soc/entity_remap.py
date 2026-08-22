@@ -155,7 +155,7 @@ def _mentions_substring(value: Any, entity_id: str) -> bool:
 # function for this; those views are tied to the HTTP layer).
 
 
-def _find_automation_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]]:
+def _find_automation_refs(hass: HomeAssistant, entity_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
     from homeassistant.components.automation import DATA_COMPONENT, automations_with_entity
 
     component = hass.data.get(DATA_COMPONENT)
@@ -165,13 +165,13 @@ def _find_automation_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str,
     items: list[dict[str, Any]] = []
     for entity in component.entities:
         if entity.entity_id in referencing_ids:
-            items.append(_ref_item(REFERENCE_KIND_AUTOMATION, entity, entity_id, template_only=False))
+            items.append(_ref_item(REFERENCE_KIND_AUTOMATION, entity, entity_id, template_only=False, known_ids=known_ids))
         elif entity.raw_config and _mentions_substring(entity.raw_config, entity_id):
-            items.append(_ref_item(REFERENCE_KIND_AUTOMATION, entity, entity_id, template_only=True))
+            items.append(_ref_item(REFERENCE_KIND_AUTOMATION, entity, entity_id, template_only=True, known_ids=known_ids))
     return items
 
 
-def _find_script_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]]:
+def _find_script_refs(hass: HomeAssistant, entity_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
     from homeassistant.components.script import DOMAIN as SCRIPT_DOMAIN, scripts_with_entity
 
     component = hass.data.get(SCRIPT_DOMAIN)
@@ -181,13 +181,13 @@ def _find_script_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any
     items: list[dict[str, Any]] = []
     for entity in component.entities:
         if entity.entity_id in referencing_ids:
-            items.append(_ref_item(REFERENCE_KIND_SCRIPT, entity, entity_id, template_only=False))
+            items.append(_ref_item(REFERENCE_KIND_SCRIPT, entity, entity_id, template_only=False, known_ids=known_ids))
         elif entity.raw_config and _mentions_substring(entity.raw_config, entity_id):
-            items.append(_ref_item(REFERENCE_KIND_SCRIPT, entity, entity_id, template_only=True))
+            items.append(_ref_item(REFERENCE_KIND_SCRIPT, entity, entity_id, template_only=True, known_ids=known_ids))
     return items
 
 
-def _find_scene_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]]:
+def _find_scene_refs(hass: HomeAssistant, entity_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
     from homeassistant.components.homeassistant.scene import DATA_PLATFORM
 
     platform = hass.data.get(DATA_PLATFORM)
@@ -197,24 +197,41 @@ def _find_scene_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]
     for entity in platform.entities.values():
         states = getattr(entity.scene_config, "states", None) or {}
         if entity_id in states:
+            in_flat_file = entity.unique_id is not None and entity.unique_id in known_ids
+            reason = None
+            if entity.unique_id is None:
+                reason = "Not YAML-defined — no config id."
+            elif not in_flat_file:
+                reason = _NOT_IN_FLAT_FILE_REASON.format(file="scenes.yaml")
             items.append(
                 {
                     "kind": REFERENCE_KIND_SCENE,
                     "id": entity.unique_id,
                     "name": entity.name or entity.entity_id,
-                    "editable": entity.unique_id is not None,
-                    "reason": None if entity.unique_id is not None else "Not YAML-defined — no config id.",
+                    "editable": in_flat_file,
+                    "reason": reason,
                     "template_only": False,
                 }
             )
     return items
 
 
-def _ref_item(kind: str, entity: Any, entity_id: str, *, template_only: bool) -> dict[str, Any]:
-    editable = entity.unique_id is not None and not template_only
+_NOT_IN_FLAT_FILE_REASON = (
+    "Not found in the standard {file} — likely split across multiple files "
+    "(!include_dir_merge_list) or defined via a package. Home Assistant's own UI "
+    "editor has this exact same limitation; edit it manually."
+)
+
+
+def _ref_item(kind: str, entity: Any, entity_id: str, *, template_only: bool, known_ids: set[str]) -> dict[str, Any]:
+    in_flat_file = entity.unique_id is not None and entity.unique_id in known_ids
+    editable = in_flat_file and not template_only
     reason = None
     if entity.unique_id is None:
         reason = "No config id — not editable here."
+    elif not in_flat_file:
+        file_name = "automations.yaml" if kind == REFERENCE_KIND_AUTOMATION else "scripts.yaml"
+        reason = _NOT_IN_FLAT_FILE_REASON.format(file=file_name)
     elif template_only:
         reason = f"Only mentioned inside a template — review and edit {entity.entity_id} manually."
     return {
@@ -254,7 +271,12 @@ async def _apply_yaml_list_fix(
     else:
         entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
     if entry is None:
-        return 0
+        # async_find_references already filters to ids confirmed present
+        # in this exact file, so this should be unreachable in normal
+        # operation — kept as a loud failure (not a silent 0) for the
+        # narrow race where the file changed between find and apply,
+        # rather than reporting a false "nothing to fix".
+        raise LookupError(f"{config_id!r} not found in {path}")
 
     new_entry, count = _exact_replace(entry, old_id, new_id)
     if count == 0:
@@ -295,7 +317,7 @@ async def _apply_scene_fix(hass: HomeAssistant, path: str, config_id: str, old_i
 
     entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
     if entry is None:
-        return 0
+        raise LookupError(f"{config_id!r} not found in {path}")
 
     entities = entry.get("entities")
     if not isinstance(entities, dict) or old_id not in entities:
@@ -436,6 +458,33 @@ async def _apply_helper_fix(hass: HomeAssistant, entry_id: str, old_id: str, new
 # -- Public API ---------------------------------------------------------------
 
 
+async def _load_flat_file_ids(hass: HomeAssistant, path: str, *, key_based: bool) -> set[str]:
+    """Which config ids are actually present in the flat automations.yaml/
+    scripts.yaml/scenes.yaml file the apply step reads and writes.
+
+    An automation/script/scene can have a config `id:` and still not live
+    here at all — split across multiple files via `!include_dir_merge_list`,
+    or defined inside a package. Home Assistant's own UI editor can't edit
+    those either (it only ever reads/writes this exact file); checking this
+    upfront is what keeps the "will fix" label in the preview honest,
+    instead of promising a fix that silently no-ops at apply time.
+    """
+    from homeassistant.const import CONF_ID
+
+    def _read() -> Any:
+        try:
+            return load_yaml(path)
+        except FileNotFoundError:
+            return {} if key_based else []
+
+    data = await hass.async_add_executor_job(_read)
+    if not data:
+        return set()
+    if key_based:
+        return set(data.keys())
+    return {item.get(CONF_ID) for item in data if isinstance(item, dict) and item.get(CONF_ID)}
+
+
 async def async_find_references(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
     """Everything referencing entity_id, grouped by kind, for the Entity
     ReMap page's preview. Every item is labeled editable/not — nothing here
@@ -446,9 +495,13 @@ async def async_find_references(hass: HomeAssistant, entity_id: str) -> dict[str
         SCRIPT_CONFIG_PATH,
     )
 
-    automations = _find_automation_refs(hass, entity_id)
-    scripts = _find_script_refs(hass, entity_id)
-    scenes = _find_scene_refs(hass, entity_id)
+    automation_ids = await _load_flat_file_ids(hass, hass.config.path(AUTOMATION_CONFIG_PATH), key_based=False)
+    script_ids = await _load_flat_file_ids(hass, hass.config.path(SCRIPT_CONFIG_PATH), key_based=True)
+    scene_ids = await _load_flat_file_ids(hass, hass.config.path(SCENE_CONFIG_PATH), key_based=False)
+
+    automations = _find_automation_refs(hass, entity_id, automation_ids)
+    scripts = _find_script_refs(hass, entity_id, script_ids)
+    scenes = _find_scene_refs(hass, entity_id, scene_ids)
     dashboards = await _find_dashboard_refs(hass, entity_id)
     helpers = _find_helper_refs(hass, entity_id)
 

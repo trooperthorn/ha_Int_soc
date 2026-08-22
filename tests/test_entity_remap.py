@@ -98,6 +98,37 @@ async def test_automation_template_only_reference_is_not_editable(hass: HomeAssi
     assert report["automation"][0]["template_only"] is True
 
 
+async def test_automation_not_in_flat_file_is_not_editable(hass: HomeAssistant) -> None:
+    # Real production bug this guards against: an automation with a
+    # config `id:` that's genuinely loaded (e.g. via
+    # !include_dir_merge_list into a separate file, or a package) but
+    # isn't present in the single automations.yaml this module reads and
+    # writes. Previously "editable" only checked for a unique_id, so this
+    # was promised as "will fix" in the preview and then silently did
+    # nothing on apply — deliberately no automations.yaml written here,
+    # matching that exact split-file scenario.
+    config = [
+        {
+            "id": "auto_split",
+            "alias": "Split File Automation",
+            "trigger": [{"platform": "state", "entity_id": "sensor.old_name"}],
+            "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert len(report["automation"]) == 1
+    assert report["automation"][0]["editable"] is False
+    assert "split across multiple files" in report["automation"][0]["reason"]
+    assert report["editable_count"] == 0
+
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    assert result["fixed"]["automation"] == 0
+    assert result["errors"] == []
+
+
 # -- Script detect + apply ----------------------------------------------------
 
 
