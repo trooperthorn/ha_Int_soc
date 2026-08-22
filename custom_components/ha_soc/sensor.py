@@ -141,8 +141,20 @@ class UserRiskSensor(_BaseSocSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
+        # Deliberately just `band`, not the underlying `factors` list.
+        # Every ha_soc/* websocket command is gated by require_soc_access
+        # (admin, plus the access_level owner-only/owner+admin setting) —
+        # but entity states and attributes have no equivalent per-user ACL
+        # in Home Assistant core; any authenticated user (including a
+        # non-admin, local-only account) can read this entity. A factor
+        # list can include another user's MFA status, long-lived-token
+        # count/age, and specific flagged behavior — real account-security
+        # detail that belongs behind the same gate as the rest of the risk
+        # engine's output, not on a globally-readable entity. `band` is
+        # coarse enough to automate on ("notify when this user goes
+        # critical") without disclosing why.
         result = (self._runtime.risk.last_risk_results or {}).get(self.user_id) or {}
-        return {"band": result.get("band"), "top_factors": result.get("factors", [])[:3]}
+        return {"band": result.get("band")}
 
     @property
     def available(self) -> bool:
