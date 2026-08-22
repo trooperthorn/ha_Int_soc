@@ -81,23 +81,33 @@ MAX_FINDINGS_PER_DEVICE = 10
 
 MAX_SUMMARY_CHARS = 500
 
-# Node-overview health buckets for the SOC Dashboard's "All Nodes" table and
-# status tiles. Distinct from the finding-lifecycle STATUS_* vocabulary in
-# const.py — these describe a device's current standing, not a finding's.
-NODE_STATUS_UP = "up"
-NODE_STATUS_WARNING = "warning"
-NODE_STATUS_CRITICAL = "critical"
-NODE_STATUS_DOWN = "down"
-NODE_STATUS_UNMANAGED = "unmanaged"
-NODE_STATUS_OTHER = "other"
-NODE_STATUSES = (
-    NODE_STATUS_UP,
-    NODE_STATUS_WARNING,
-    NODE_STATUS_CRITICAL,
-    NODE_STATUS_DOWN,
-    NODE_STATUS_UNMANAGED,
-    NODE_STATUS_OTHER,
+# Device-overview status buckets for the SOC Dashboard's "All Devices" table
+# and status tiles. Distinct from the finding-lifecycle STATUS_* vocabulary
+# in const.py — these describe a device's actual HA availability, not a
+# finding's lifecycle. Deliberately NOT derived from vulnerability severity
+# (that's a separate axis, shown in its own donut/gauge) — this is purely
+# "is Home Assistant actually hearing from this device right now", straight
+# off the device/entity registries and live entity states:
+#   disabled     - device.disabled_by is set (by a user, its integration, or
+#                   its config entry) — intentionally turned off, not a fault.
+#   no_entities  - no (enabled) entities registered for this device at all,
+#                   so there is nothing to report a live state from.
+#   unavailable  - every one of its entities is currently unavailable/unknown.
+#   partial      - some but not all of its entities are unavailable/unknown.
+#   available    - none of its entities are unavailable/unknown.
+DEVICE_STATUS_AVAILABLE = "available"
+DEVICE_STATUS_PARTIAL = "partial"
+DEVICE_STATUS_UNAVAILABLE = "unavailable"
+DEVICE_STATUS_DISABLED = "disabled"
+DEVICE_STATUS_NO_ENTITIES = "no_entities"
+DEVICE_STATUSES = (
+    DEVICE_STATUS_AVAILABLE,
+    DEVICE_STATUS_PARTIAL,
+    DEVICE_STATUS_UNAVAILABLE,
+    DEVICE_STATUS_DISABLED,
+    DEVICE_STATUS_NO_ENTITIES,
 )
+_UNAVAILABLE_STATES = ("unavailable", "unknown")
 
 # Proxy risk score (0-10, the same scale as CVSS) for a device whose only
 # open finding is the network-free firmware-currency heuristic, which has
@@ -237,8 +247,8 @@ class DeviceVulnerabilityTracker:
 
         return findings
 
-    async def async_node_overview(self) -> dict[str, Any]:
-        """Per-device rows for the SOC Dashboard's node-centric widgets.
+    async def async_device_overview(self) -> dict[str, Any]:
+        """Per-device rows for the SOC Dashboard's device-centric widgets.
 
         Pure read/aggregate over device_registry + the existing
         vuln_findings table — never triggers a scan itself (call
@@ -250,6 +260,11 @@ class DeviceVulnerabilityTracker:
         findings. A device whose only open finding is the firmware-currency
         heuristic (which carries no CVSS) gets a fixed proxy score instead
         of being scored as risk-free — see FIRMWARE_ONLY_RISK_SCORE.
+
+        `status` is intentionally a SEPARATE axis from risk score/severity —
+        see the DEVICE_STATUS_* constants above. It reflects only whether
+        Home Assistant is actually hearing from the device right now, not
+        whether it has a known vulnerability.
         """
         registry = dr.async_get(self.hass)
         entity_registry = er.async_get(self.hass)
@@ -265,8 +280,8 @@ class DeviceVulnerabilityTracker:
                 continue
             findings_by_device[finding["device_id"]].append(finding)
 
-        nodes: list[dict[str, Any]] = []
-        status_counts = dict.fromkeys(NODE_STATUSES, 0)
+        devices_overview: list[dict[str, Any]] = []
+        status_counts = dict.fromkeys(DEVICE_STATUSES, 0)
         by_vendor: dict[str, int] = defaultdict(int)
 
         for device in physical_devices:
@@ -296,13 +311,13 @@ class DeviceVulnerabilityTracker:
             else:
                 risk_score = 0.0
 
-            status = self._node_status(device, device_findings, entity_registry)
+            status = self._device_status(device, entity_registry)
             status_counts[status] += 1
 
             vendor = device.manufacturer or "Unknown"
             by_vendor[vendor] += len(device_findings)
 
-            nodes.append(
+            devices_overview.append(
                 {
                     "device_id": device.id,
                     "name": _device_name(device),
@@ -315,39 +330,41 @@ class DeviceVulnerabilityTracker:
                 }
             )
 
-        nodes.sort(key=lambda n: n["risk_score"], reverse=True)
+        devices_overview.sort(key=lambda d: d["risk_score"], reverse=True)
 
         return {
-            "nodes": nodes,
+            "devices": devices_overview,
             "status_counts": status_counts,
             "by_vendor": dict(by_vendor),
         }
 
-    def _node_status(
+    def _device_status(
         self,
         device: dr.DeviceEntry,
-        device_findings: list[dict[str, Any]],
         entity_registry: er.EntityRegistry,
     ) -> str:
-        if not device.manufacturer:
-            # No vendor info means nothing here could ever be scanned or
-            # correlated meaningfully — "unmanaged", not silently "up".
-            return NODE_STATUS_UNMANAGED
+        if device.disabled_by is not None:
+            # Intentionally turned off (by a user, its integration, or its
+            # config entry) — not a fault, so it must never look like one.
+            return DEVICE_STATUS_DISABLED
 
         entities = er.async_entries_for_device(
             entity_registry, device.id, include_disabled_entities=False
         )
-        if entities:
-            states = [self.hass.states.get(entry.entity_id) for entry in entities]
-            available = [s for s in states if s is not None]
-            if available and all(s.state in ("unavailable", "unknown") for s in available):
-                return NODE_STATUS_DOWN
+        if not entities:
+            return DEVICE_STATUS_NO_ENTITIES
 
-        if any(f.get("severity") in (SEVERITY_CRITICAL, SEVERITY_HIGH) for f in device_findings):
-            return NODE_STATUS_CRITICAL
-        if device_findings:
-            return NODE_STATUS_WARNING
-        return NODE_STATUS_UP
+        states = [self.hass.states.get(entry.entity_id) for entry in entities]
+        known_states = [s for s in states if s is not None]
+        if not known_states:
+            return DEVICE_STATUS_NO_ENTITIES
+
+        unavailable_count = sum(1 for s in known_states if s.state in _UNAVAILABLE_STATES)
+        if unavailable_count == len(known_states):
+            return DEVICE_STATUS_UNAVAILABLE
+        if unavailable_count > 0:
+            return DEVICE_STATUS_PARTIAL
+        return DEVICE_STATUS_AVAILABLE
 
     def _check_firmware_currency(
         self, devices_by_id: dict[str, dr.DeviceEntry]

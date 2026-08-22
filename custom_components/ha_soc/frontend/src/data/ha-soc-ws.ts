@@ -84,9 +84,11 @@ export interface DashboardSummary {
   detection_severity_counts: Record<string, number>;
 }
 
-export type NodeStatus = "up" | "warning" | "critical" | "down" | "unmanaged" | "other";
+// Mirrors vulns.py's DEVICE_STATUS_* — a device's live availability, a
+// separate axis from vulnerability severity. See that module's docstring.
+export type DeviceStatus = "available" | "partial" | "unavailable" | "disabled" | "no_entities";
 
-export interface NodeOverviewRow {
+export interface DeviceOverviewRow {
   device_id: string;
   name: string;
   vendor: string;
@@ -94,14 +96,59 @@ export interface NodeOverviewRow {
   risk_score: number;
   total_findings: number;
   severity_counts: { critical: number; high: number; medium: number; low: number };
-  status: NodeStatus;
+  status: DeviceStatus;
 }
 
-export interface NodeOverview {
-  nodes: NodeOverviewRow[];
-  status_counts: Record<NodeStatus, number>;
+export interface DeviceOverview {
+  devices: DeviceOverviewRow[];
+  status_counts: Record<DeviceStatus, number>;
   by_vendor: Record<string, number>;
   combined_risk_score: number;
+}
+
+// Mirrors health.py's ISSUE_CATEGORY_* — at most one category per
+// integration, priority-ordered (credential > failing > communication >
+// collection). An integration with none of these doesn't appear at all.
+export type IntegrationIssueCategory = "credential" | "failing" | "communication" | "collection";
+
+export interface IntegrationIssueRow {
+  entry_id: string;
+  domain: string;
+  title: string;
+  state: string;
+  reason: string | null;
+  error_count_24h: number;
+  unavailable_ratio: number;
+  retry_transitions_24h: number;
+  issue_category: IntegrationIssueCategory;
+}
+
+export interface IntegrationOverview {
+  integrations: IntegrationIssueRow[];
+  category_counts: Record<IntegrationIssueCategory, number>;
+}
+
+// Mirrors store.py's SettingsData exactly — the same object backs both
+// this Settings tab and the native "Configure" options-flow dialog.
+export type AccessLevel = "owner_only" | "owner_and_admins";
+export type MfaPolicy = "audit_only" | "auto_deactivate";
+
+export interface HaSocSettings {
+  audit_retention_days: number;
+  audit_max_bytes: number;
+  scanner_enabled: boolean;
+  scanner_network_checks_enabled: boolean;
+  nvd_api_key: string | null;
+  risk_learning_period_days: number;
+  access_level: AccessLevel;
+  mfa_policy: MfaPolicy;
+  mfa_grace_period_days: number;
+}
+
+export interface AccessInfo {
+  is_owner: boolean;
+  access_level: AccessLevel;
+  allowed: boolean;
 }
 
 const ws = <T>(hass: HomeAssistant, msg: Record<string, unknown>) => hass.callWS<T>(msg);
@@ -237,8 +284,20 @@ export const setMisconfigStatus = (hass: HomeAssistant, findingId: string, statu
 export const fetchDashboardSummary = (hass: HomeAssistant) =>
   ws<DashboardSummary>(hass, { type: "ha_soc/dashboard/summary" });
 
-export const fetchDashboardNodes = (hass: HomeAssistant) =>
-  ws<NodeOverview>(hass, { type: "ha_soc/dashboard/nodes" });
+export const fetchDashboardDevices = (hass: HomeAssistant) =>
+  ws<DeviceOverview>(hass, { type: "ha_soc/dashboard/devices" });
+
+export const fetchDashboardIntegrations = (hass: HomeAssistant) =>
+  ws<IntegrationOverview>(hass, { type: "ha_soc/dashboard/integrations" });
+
+export const fetchAccessInfo = (hass: HomeAssistant) =>
+  ws<AccessInfo>(hass, { type: "ha_soc/access/info" });
+
+export const fetchSettings = (hass: HomeAssistant) =>
+  ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });
+
+export const updateSettings = (hass: HomeAssistant, changes: Partial<HaSocSettings>) =>
+  ws<HaSocSettings>(hass, { type: "ha_soc/settings/set", ...changes });
 
 export const subscribeTopic = (
   hass: HomeAssistant,

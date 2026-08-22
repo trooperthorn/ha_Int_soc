@@ -202,4 +202,29 @@ export const sharedStyles = css`
     padding: 2px 6px;
     border-radius: 5px;
   }
+  .settings-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 10px 0;
+    border-bottom: 1px solid var(--divider-color);
+    font-size: 13.5px;
+  }
+  .settings-row:last-child {
+    border-bottom: none;
+  }
+  .settings-row > span:first-child {
+    color: var(--primary-text-color);
+    flex: 1;
+  }
+  .settings-row input[type="number"],
+  .settings-row input[type="password"],
+  .settings-row input[type="text"] {
+    width: 160px;
+    text-align: right;
+  }
+  .settings-row select {
+    min-width: 220px;
+  }
 `;

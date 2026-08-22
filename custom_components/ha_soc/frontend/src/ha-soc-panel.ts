@@ -2,12 +2,14 @@ import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
 import type { HaSocNavigateDetail, SocTab } from "./nav";
+import { AccessInfo, fetchAccessInfo } from "./data/ha-soc-ws";
 
 import "./views/users-view";
 import "./views/audit-view";
 import "./views/permissions-view";
 import "./views/scanner-view";
 import "./views/dashboard-view";
+import "./views/settings-view";
 
 type TabId = SocTab;
 
@@ -17,6 +19,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "audit", label: "Audit Log" },
   { id: "permissions", label: "Permissions" },
   { id: "scanner", label: "Scanner" },
+  { id: "settings", label: "Settings" },
 ];
 
 @customElement("ha-soc-panel")
@@ -57,6 +60,25 @@ export class HaSocPanel extends LitElement {
       font-weight: 500;
       color: var(--primary-text-color);
     }
+    .denied {
+      max-width: 480px;
+      margin: 15vh auto 0;
+      padding: 32px;
+      text-align: center;
+      color: var(--primary-text-color);
+    }
+    .denied .icon {
+      font-size: 40px;
+    }
+    .denied h2 {
+      margin: 12px 0 4px;
+      font-size: 18px;
+    }
+    .denied p {
+      color: var(--secondary-text-color);
+      font-size: 13.5px;
+      line-height: 1.5;
+    }
   `;
 
   @property({ attribute: false }) hass!: HomeAssistant;
@@ -64,8 +86,47 @@ export class HaSocPanel extends LitElement {
   @property({ attribute: false }) panel?: PanelInfo;
 
   @state() private _tab: TabId = "dashboard";
+  @state() private _access: AccessInfo | null = null;
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this._loadAccess();
+  }
+
+  private async _loadAccess() {
+    try {
+      this._access = await fetchAccessInfo(this.hass);
+    } catch {
+      // A denied WS call (e.g. this admin is already locked out) surfaces
+      // as a rejected callWS, not a normal result — treat it the same as
+      // an explicit allowed:false rather than leaving the panel loading
+      // forever or, worse, rendering tabs that will just 401 underneath.
+      this._access = { is_owner: false, access_level: "owner_only", allowed: false };
+    }
+  }
 
   render() {
+    if (this._access === null) {
+      return html`<div class="header">🛡️ HA SOC</div>`;
+    }
+    if (!this._access.allowed) {
+      return html`
+        <div class="denied">
+          <div class="icon">🛡️🚫</div>
+          <h2>Access restricted</h2>
+          <p>
+            HA SOC is currently set to <strong>account owner only</strong>. Your account
+            is an administrator, but not the account owner, so this panel and its data
+            aren't reachable from here.
+          </p>
+          <p>
+            The owner can open this up to every administrator from
+            <strong>Settings → Devices &amp; Services → HA SOC → Configure</strong>, or
+            from this panel's own Settings tab once they've signed in.
+          </p>
+        </div>
+      `;
+    }
     return html`
       <div class="header">🛡️ HA SOC</div>
       <div class="tabs">
@@ -95,6 +156,8 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-permissions-view .hass=${this.hass}></ha-soc-permissions-view>`;
       case "scanner":
         return html`<ha-soc-scanner-view .hass=${this.hass}></ha-soc-scanner-view>`;
+      case "settings":
+        return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":
       default:
         return html`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`;

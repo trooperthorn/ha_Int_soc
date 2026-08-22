@@ -48,8 +48,19 @@ imply otherwise.
   risk score (0–100) and an install-wide posture score/grade, both shown
   with their contributing factors, never as an opaque number.
 - **SOC Dashboard** — the NOC/SOC end state: posture score, open detections,
-  users-at-risk, vulnerability/detection breakdowns, and a live suspicious-
-  activity feed.
+  device status, issues-by-integration, risk/detection breakdowns, and a
+  live suspicious-activity feed — every tile and row links straight to the
+  relevant tab or, where Home Assistant's own frontend supports a real
+  preset filter, to its native Devices page.
+- **Settings** — every configurable behavior (access control, MFA policy,
+  audit retention/size, scanner toggles, NVD API key, risk-scoring window)
+  as one panel-native form, backed by the exact same store as the native
+  "Configure" dialog — change it from either place and the other reflects
+  it immediately.
+- **Access control** — the panel and every `ha_soc/*` command default to
+  **account owner only**; a setting (Settings tab or the native Configure
+  dialog) can open it to every administrator. Enforced server-side on each
+  command, not just on sidebar visibility.
 
 ## Icon / branding
 
@@ -109,8 +120,11 @@ read the module docstrings, they're written for exactly that.
 
 ## Honesty, briefly
 
-- MFA can be **audited**, never **enforced** — no such hook exists in Home
-  Assistant core.
+- MFA can be **audited** always, and **enforced** only in the one way Home
+  Assistant core actually allows: deactivating an admin account that stays
+  out of compliance past a configurable grace period (`auto_deactivate`
+  policy, off by default). There is still no hook to require a second
+  factor at login itself.
 - Dashboard/view visibility is **cosmetic** — the real access-control
   boundary is a user's admin/non-admin group, nothing finer exists.
 - Failed-login telemetry is **IP-only** — Home Assistant never logs an

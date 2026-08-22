@@ -2,39 +2,49 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { navigate } from "../nav";
+import { navigate, navigateToHaPath, deviceDetailPath, devicesForIntegrationPath } from "../nav";
 import {
   DashboardSummary,
   Detection,
   RiskResult,
   HaSocUser,
-  NodeOverview,
-  NodeOverviewRow,
+  DeviceOverview,
+  DeviceOverviewRow,
+  DeviceStatus,
+  IntegrationOverview,
+  IntegrationIssueCategory,
   fetchDashboardSummary,
-  fetchDashboardNodes,
+  fetchDashboardDevices,
+  fetchDashboardIntegrations,
   fetchDetections,
   fetchRisk,
   fetchUsers,
   setDetectionStatus,
 } from "../data/ha-soc-ws";
 
-type NodeSortKey = "name" | "vendor" | "risk_score" | "total_findings";
+type DeviceSortKey = "name" | "vendor" | "risk_score" | "total_findings";
 
-const STATUS_TILES: { key: keyof NodeOverview["status_counts"]; label: string }[] = [
-  { key: "up", label: "Up" },
-  { key: "warning", label: "Warning" },
-  { key: "critical", label: "Critical" },
-  { key: "down", label: "Down" },
-  { key: "unmanaged", label: "Unmanaged" },
-  { key: "other", label: "Other" },
+const STATUS_TILES: { key: DeviceStatus; label: string }[] = [
+  { key: "available", label: "Available" },
+  { key: "partial", label: "Partial" },
+  { key: "unavailable", label: "Unavailable" },
+  { key: "disabled", label: "Disabled" },
+  { key: "no_entities", label: "No Entities" },
 ];
 
-const SEVERITY_ORDER: (keyof NodeOverviewRow["severity_counts"])[] = [
+const SEVERITY_ORDER: (keyof DeviceOverviewRow["severity_counts"])[] = [
   "critical",
   "high",
   "medium",
   "low",
 ];
+
+const ISSUE_CATEGORY_LABELS: Record<IntegrationIssueCategory, string> = {
+  failing: "Failing",
+  credential: "Credential issue",
+  communication: "Communication issue",
+  collection: "Collection issue",
+};
 
 @customElement("ha-soc-dashboard-view")
 export class HaSocDashboardView extends LitElement {
@@ -91,7 +101,7 @@ export class HaSocDashboardView extends LitElement {
       /* -- Status tiles -------------------------------------------------- */
       .status-tiles {
         display: grid;
-        grid-template-columns: repeat(6, 1fr);
+        grid-template-columns: repeat(5, 1fr);
         gap: 8px;
       }
       .status-tile {
@@ -100,6 +110,10 @@ export class HaSocDashboardView extends LitElement {
         text-align: center;
         background: var(--card-background-color, #fff);
         border: 1px solid var(--divider-color);
+      }
+      .status-tile.active {
+        outline: 2px solid var(--primary-color);
+        outline-offset: -2px;
       }
       .status-tile .label {
         font-size: 11px;
@@ -112,25 +126,34 @@ export class HaSocDashboardView extends LitElement {
         font-weight: 700;
         line-height: 1.3;
       }
-      .status-tile.warning {
+      .status-tile.partial {
         background: var(--status-warning);
         color: #3a2900;
       }
-      .status-tile.critical {
-        background: var(--status-serious);
-        color: #fff;
-      }
-      .status-tile.down {
+      .status-tile.unavailable {
         background: var(--status-critical);
         color: #fff;
       }
-      .status-tile.unmanaged {
+      .status-tile.disabled {
+        background: var(--cat-other);
+        color: #fff;
+      }
+      .status-tile.no_entities {
         background: var(--primary-color);
         color: #fff;
       }
-      .status-tile.other {
-        background: var(--cat-other);
+
+      .filter-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        background: var(--primary-color);
         color: #fff;
+        padding: 4px 10px;
+        border-radius: 100px;
+        cursor: pointer;
+        margin-bottom: 10px;
       }
 
       /* -- Donut ----------------------------------------------------------- */
@@ -222,13 +245,13 @@ export class HaSocDashboardView extends LitElement {
         color: var(--secondary-text-color);
       }
 
-      /* -- All Nodes table --------------------------------------------------- */
-      .nodes-toolbar {
+      /* -- All Devices table --------------------------------------------------- */
+      .devices-toolbar {
         display: flex;
         gap: 8px;
         margin-bottom: 10px;
       }
-      .nodes-toolbar input {
+      .devices-toolbar input {
         flex: 1;
         font: inherit;
         font-size: 13px;
@@ -270,12 +293,12 @@ export class HaSocDashboardView extends LitElement {
         display: inline-block;
       }
 
-      /* -- Vertical bar chart (vulns by OS/vendor) ---------------------------- */
+      /* -- Vertical bar chart (Issues by Integration) ------------------------- */
       .vbar-chart {
         display: flex;
         align-items: flex-end;
         gap: 10px;
-        height: 200px;
+        height: 180px;
         padding-top: 20px;
       }
       .vbar-col {
@@ -296,7 +319,7 @@ export class HaSocDashboardView extends LitElement {
       .vbar-col .vbar-fill {
         width: 60%;
         border-radius: 4px 4px 0 0;
-        min-height: 2px;
+        min-height: 3px;
       }
       .vbar-col .vbar-label {
         font-size: 10.5px;
@@ -308,19 +331,39 @@ export class HaSocDashboardView extends LitElement {
         white-space: nowrap;
         max-width: 100%;
       }
+      .vbar-legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 14px;
+        font-size: 11px;
+        color: var(--secondary-text-color);
+      }
+      .vbar-legend .row {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+      }
+      .vbar-legend .sw {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+      }
     `,
   ];
 
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _summary: DashboardSummary | null = null;
-  @state() private _nodeOverview: NodeOverview | null = null;
+  @state() private _deviceOverview: DeviceOverview | null = null;
+  @state() private _integrationOverview: IntegrationOverview | null = null;
   @state() private _detections: Detection[] = [];
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
-  @state() private _nodeSearch = "";
-  @state() private _nodeSort: { key: NodeSortKey; dir: "asc" | "desc" } = {
+  @state() private _deviceSearch = "";
+  @state() private _deviceStatusFilter: DeviceStatus | null = null;
+  @state() private _deviceSort: { key: DeviceSortKey; dir: "asc" | "desc" } = {
     key: "risk_score",
     dir: "desc",
   };
@@ -337,15 +380,17 @@ export class HaSocDashboardView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [summary, nodeOverview, detections, risk, users] = await Promise.all([
+      const [summary, deviceOverview, integrationOverview, detections, risk, users] = await Promise.all([
         fetchDashboardSummary(this.hass),
-        fetchDashboardNodes(this.hass),
+        fetchDashboardDevices(this.hass),
+        fetchDashboardIntegrations(this.hass),
         fetchDetections(this.hass),
         fetchRisk(this.hass),
         fetchUsers(this.hass),
       ]);
       this._summary = summary;
-      this._nodeOverview = nodeOverview;
+      this._deviceOverview = deviceOverview;
+      this._integrationOverview = integrationOverview;
       this._detections = detections;
       this._risk = risk;
       this._users = users;
@@ -369,7 +414,7 @@ export class HaSocDashboardView extends LitElement {
     return this._users.find((u) => u.id === userId)?.name ?? userId;
   }
 
-  private _goto(tab: "dashboard" | "users" | "audit" | "permissions" | "scanner") {
+  private _goto(tab: "dashboard" | "users" | "audit" | "permissions" | "scanner" | "settings") {
     navigate(this, tab);
   }
 
@@ -385,26 +430,32 @@ export class HaSocDashboardView extends LitElement {
     return `conic-gradient(${parts.join(", ")})`;
   }
 
-  private _onSort(key: NodeSortKey) {
-    this._nodeSort =
-      this._nodeSort.key === key
-        ? { key, dir: this._nodeSort.dir === "asc" ? "desc" : "asc" }
+  private _onSort(key: DeviceSortKey) {
+    this._deviceSort =
+      this._deviceSort.key === key
+        ? { key, dir: this._deviceSort.dir === "asc" ? "desc" : "asc" }
         : { key, dir: key === "name" || key === "vendor" ? "asc" : "desc" };
   }
 
-  private _sortedFilteredNodes(): NodeOverviewRow[] {
-    const nodes = this._nodeOverview?.nodes ?? [];
-    const q = this._nodeSearch.trim().toLowerCase();
-    const filtered = q
-      ? nodes.filter(
-          (n) =>
-            n.name.toLowerCase().includes(q) ||
-            n.vendor.toLowerCase().includes(q) ||
-            n.os.toLowerCase().includes(q)
-        )
-      : nodes;
+  private _onStatusTileClick(status: DeviceStatus) {
+    this._deviceStatusFilter = this._deviceStatusFilter === status ? null : status;
+    this.renderRoot.querySelector("#devices-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }
 
-    const { key, dir } = this._nodeSort;
+  private _sortedFilteredDevices(): DeviceOverviewRow[] {
+    const devices = this._deviceOverview?.devices ?? [];
+    const q = this._deviceSearch.trim().toLowerCase();
+    const filtered = devices.filter((d) => {
+      if (this._deviceStatusFilter && d.status !== this._deviceStatusFilter) return false;
+      if (!q) return true;
+      return (
+        d.name.toLowerCase().includes(q) ||
+        d.vendor.toLowerCase().includes(q) ||
+        d.os.toLowerCase().includes(q)
+      );
+    });
+
+    const { key, dir } = this._deviceSort;
     const sorted = [...filtered].sort((a, b) => {
       const av = a[key];
       const bv = b[key];
@@ -416,35 +467,48 @@ export class HaSocDashboardView extends LitElement {
 
   private _statusDotColor(status: string): string {
     switch (status) {
-      case "critical":
-        return "var(--status-serious)";
-      case "down":
+      case "unavailable":
         return "var(--status-critical)";
-      case "warning":
+      case "partial":
         return "var(--status-warning)";
-      case "unmanaged":
-        return "var(--primary-color)";
-      case "other":
+      case "disabled":
         return "var(--cat-other)";
+      case "no_entities":
+        return "var(--primary-color)";
       default:
         return "var(--status-good)";
     }
   }
 
+  private _issueCategoryColor(category: IntegrationIssueCategory): string {
+    switch (category) {
+      case "failing":
+        return "var(--status-critical)";
+      case "credential":
+        return "var(--cat-7)";
+      case "communication":
+        return "var(--status-serious)";
+      case "collection":
+      default:
+        return "var(--status-warning)";
+    }
+  }
+
   render() {
-    if (this._loading || !this._summary || !this._nodeOverview) {
+    if (this._loading || !this._summary || !this._deviceOverview || !this._integrationOverview) {
       return html`<div class="empty">Loading dashboard…</div>`;
     }
     const s = this._summary;
-    const n = this._nodeOverview;
-    const openDetections = this._detections.filter((d) => d.status === "open");
+    const d = this._deviceOverview;
+    const integ = this._integrationOverview;
+    const openDetections = this._detections.filter((det) => det.status === "open");
 
-    const vulnSeverityTotals = n.nodes.reduce(
-      (acc, node) => {
-        acc.critical += node.severity_counts.critical;
-        acc.high += node.severity_counts.high;
-        acc.medium += node.severity_counts.medium;
-        acc.low += node.severity_counts.low;
+    const vulnSeverityTotals = d.devices.reduce(
+      (acc, device) => {
+        acc.critical += device.severity_counts.critical;
+        acc.high += device.severity_counts.high;
+        acc.medium += device.severity_counts.medium;
+        acc.low += device.severity_counts.low;
         return acc;
       },
       { critical: 0, high: 0, medium: 0, low: 0 }
@@ -459,14 +523,10 @@ export class HaSocDashboardView extends LitElement {
       { key: "low", label: "Low", color: "var(--status-good)", value: vulnSeverityTotals.low },
     ];
 
-    const riskGaugePercent = Math.max(0, Math.min(100, (n.combined_risk_score / 10) * 100));
+    const riskGaugePercent = Math.max(0, Math.min(100, (d.combined_risk_score / 10) * 100));
 
-    const vendorEntries = Object.entries(n.by_vendor).sort((a, b) => b[1] - a[1]);
-    const catVars = ["--cat-1", "--cat-2", "--cat-3", "--cat-4", "--cat-5", "--cat-6", "--cat-7", "--cat-8"];
-    const topVendors = vendorEntries.slice(0, 8);
-    const overflowCount = vendorEntries.slice(8).reduce((sum, [, c]) => sum + c, 0);
-    const vendorBars = overflowCount > 0 ? [...topVendors, ["Other", overflowCount] as [string, number]] : topVendors;
-    const maxVendorCount = Math.max(1, ...vendorBars.map(([, c]) => c));
+    const maxErrorCount = Math.max(1, ...integ.integrations.map((i) => i.error_count_24h));
+    const integrationBars = integ.integrations.slice(0, 10);
 
     const riskSegments = [
       { key: "low", color: "var(--status-good)", value: s.risk_band_counts.low ?? 0 },
@@ -489,17 +549,17 @@ export class HaSocDashboardView extends LitElement {
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">
         <div class="card">
-          <h3>Node Status</h3>
+          <h3>Device Status</h3>
           <div class="status-tiles">
             ${STATUS_TILES.map(
               (t) => html`
                 <div
-                  class="status-tile clickable ${t.key}"
-                  title="View in Scanner"
-                  @click=${() => this._goto("scanner")}
+                  class="status-tile clickable ${t.key} ${this._deviceStatusFilter === t.key ? "active" : ""}"
+                  title="Filter the devices table below"
+                  @click=${() => this._onStatusTileClick(t.key)}
                 >
                   <div class="label">${t.label}</div>
-                  <div class="value">${n.status_counts[t.key] ?? 0}</div>
+                  <div class="value">${d.status_counts[t.key] ?? 0}</div>
                 </div>
               `
             )}
@@ -527,28 +587,35 @@ export class HaSocDashboardView extends LitElement {
 
         <div class="card gauge-card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
           <h3>Risk Score</h3>
-          <div class="gauge-value">${n.combined_risk_score.toFixed(1)}</div>
+          <div class="gauge-value">${d.combined_risk_score.toFixed(1)}</div>
           <div class="gauge-track">
             <div class="gauge-marker" style="left:${riskGaugePercent}%"></div>
           </div>
           <div class="gauge-caption">
-            Combined risk score of all nodes — weighted so higher-severity CVEs count more.
+            Combined risk score of all devices — weighted so higher-severity CVEs count more.
           </div>
         </div>
       </div>
 
       <div class="row2">
-        <div class="card">
-          <h3>All Nodes</h3>
-          <div class="nodes-toolbar">
+        <div class="card" id="devices-card">
+          <h3>All Devices</h3>
+          ${this._deviceStatusFilter
+            ? html`
+                <div class="filter-chip" @click=${() => (this._deviceStatusFilter = null)}>
+                  ${STATUS_TILES.find((t) => t.key === this._deviceStatusFilter)?.label} ✕
+                </div>
+              `
+            : nothing}
+          <div class="devices-toolbar">
             <input
               type="text"
-              placeholder="Search nodes…"
-              .value=${this._nodeSearch}
-              @input=${(e: Event) => (this._nodeSearch = (e.target as HTMLInputElement).value)}
+              placeholder="Search devices…"
+              .value=${this._deviceSearch}
+              @input=${(e: Event) => (this._deviceSearch = (e.target as HTMLInputElement).value)}
             />
           </div>
-          ${this._sortedFilteredNodes().length === 0
+          ${this._sortedFilteredDevices().length === 0
             ? html`<div class="empty">No devices found.</div>`
             : html`
                 <div style="overflow-x:auto;">
@@ -557,7 +624,7 @@ export class HaSocDashboardView extends LitElement {
                       <tr>
                         <th>Health</th>
                         <th class="sortable" @click=${() => this._onSort("name")}>
-                          Node${this._sortArrow("name")}
+                          Device${this._sortArrow("name")}
                         </th>
                         <th class="sortable" @click=${() => this._onSort("vendor")}>
                           Vendor${this._sortArrow("vendor")}
@@ -572,14 +639,18 @@ export class HaSocDashboardView extends LitElement {
                       </tr>
                     </thead>
                     <tbody>
-                      ${this._sortedFilteredNodes().map(
-                        (node) => html`
-                          <tr class="clickable" @click=${() => this._goto("scanner")}>
-                            <td><span class="health-dot" style="background:${this._statusDotColor(node.status)}"></span></td>
-                            <td>${node.name}</td>
-                            <td class="muted">${node.vendor}</td>
-                            <td class="num">${node.risk_score.toFixed(1)}</td>
-                            <td class="num">${node.total_findings}</td>
+                      ${this._sortedFilteredDevices().map(
+                        (device) => html`
+                          <tr
+                            class="clickable"
+                            title="Open in Home Assistant's Devices page"
+                            @click=${() => navigateToHaPath(deviceDetailPath(device.device_id))}
+                          >
+                            <td><span class="health-dot" style="background:${this._statusDotColor(device.status)}"></span></td>
+                            <td>${device.name}</td>
+                            <td class="muted">${device.vendor}</td>
+                            <td class="num">${device.risk_score.toFixed(1)}</td>
+                            <td class="num">${device.total_findings}</td>
                             <td>
                               <span class="sev-cell">
                                 ${SEVERITY_ORDER.map(
@@ -595,7 +666,7 @@ export class HaSocDashboardView extends LitElement {
                                           ? "var(--status-warning)"
                                           : "var(--status-good)"}"
                                       ></span
-                                      >${node.severity_counts[sev]}
+                                      >${device.severity_counts[sev]}
                                     </span>
                                   `
                                 )}
@@ -610,23 +681,37 @@ export class HaSocDashboardView extends LitElement {
               `}
         </div>
 
-        <div class="card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
-          <h3>Vulnerability Count by OS</h3>
-          ${vendorBars.length === 0
-            ? html`<div class="empty">No findings yet.</div>`
+        <div class="card">
+          <h3>Issues by Integration</h3>
+          ${integrationBars.length === 0
+            ? html`<div class="empty">No integration issues detected.</div>`
             : html`
                 <div class="vbar-chart">
-                  ${vendorBars.map(([vendor, count], i) => {
-                    const heightPct = (count / maxVendorCount) * 100;
-                    const color = vendor === "Other" ? "var(--cat-other)" : `var(${catVars[i % catVars.length]})`;
+                  ${integrationBars.map((row) => {
+                    const heightPct = Math.max(6, (row.error_count_24h / maxErrorCount) * 100);
+                    const color = this._issueCategoryColor(row.issue_category);
                     return html`
-                      <div class="vbar-col">
-                        <div class="vbar-value">${count}</div>
+                      <div
+                        class="vbar-col clickable"
+                        title="${row.title} — ${ISSUE_CATEGORY_LABELS[row.issue_category]}. Open in Home Assistant's Devices page"
+                        @click=${() => navigateToHaPath(devicesForIntegrationPath(row.entry_id))}
+                      >
+                        <div class="vbar-value">${row.error_count_24h}</div>
                         <div class="vbar-fill" style="height:${heightPct}%; background:${color};"></div>
-                        <div class="vbar-label" title=${vendor}>${vendor}</div>
+                        <div class="vbar-label" title=${row.title}>${row.title}</div>
                       </div>
                     `;
                   })}
+                </div>
+                <div class="vbar-legend">
+                  ${(Object.keys(ISSUE_CATEGORY_LABELS) as IntegrationIssueCategory[]).map(
+                    (cat) => html`
+                      <div class="row">
+                        <span class="sw" style="background:${this._issueCategoryColor(cat)}"></span>
+                        ${ISSUE_CATEGORY_LABELS[cat]}
+                      </div>
+                    `
+                  )}
                 </div>
               `}
         </div>
@@ -707,15 +792,15 @@ export class HaSocDashboardView extends LitElement {
                 </thead>
                 <tbody>
                   ${openDetections.map(
-                    (d) => html`
+                    (det) => html`
                       <tr>
-                        <td>${new Date(d.last_seen).toLocaleString()}</td>
-                        <td>${d.title}</td>
-                        <td><span class="pill ${d.severity}"><span class="dot"></span>${d.severity}</span></td>
-                        <td>${this._nameFor(d.user_id)}</td>
+                        <td>${new Date(det.last_seen).toLocaleString()}</td>
+                        <td>${det.title}</td>
+                        <td><span class="pill ${det.severity}"><span class="dot"></span>${det.severity}</span></td>
+                        <td>${this._nameFor(det.user_id)}</td>
                         <td>
-                          <button class="ha-btn" @click=${() => this._onAck(d.id)}>Ack</button>
-                          <button class="ha-btn" @click=${() => this._onResolve(d.id)}>Resolve</button>
+                          <button class="ha-btn" @click=${() => this._onAck(det.id)}>Ack</button>
+                          <button class="ha-btn" @click=${() => this._onResolve(det.id)}>Resolve</button>
                         </td>
                       </tr>
                     `
@@ -727,8 +812,8 @@ export class HaSocDashboardView extends LitElement {
     `;
   }
 
-  private _sortArrow(key: NodeSortKey) {
-    if (this._nodeSort.key !== key) return nothing;
-    return html`<span class="arrow">${this._nodeSort.dir === "asc" ? "▲" : "▼"}</span>`;
+  private _sortArrow(key: DeviceSortKey) {
+    if (this._deviceSort.key !== key) return nothing;
+    return html`<span class="arrow">${this._deviceSort.dir === "asc" ? "▲" : "▼"}</span>`;
   }
 }

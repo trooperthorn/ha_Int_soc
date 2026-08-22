@@ -9,8 +9,10 @@ its own contract.
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -21,12 +23,13 @@ from .audit import AuditLog
 from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
 from .detections import DetectionEngine
 from .health import IntegrationHealth
+from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
 from .permissions import PermissionsMatrix
 from .repairs import async_sync_admin_mfa_issues, async_sync_vuln_issues
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
-from .store import HaSocData
+from .store import HaSocData, SettingsData
 from .users import LiveSessionRegistry, UsersManager
 from .vulns import DeviceVulnerabilityTracker
 from .websocket_api import async_register_websocket_api
@@ -67,9 +70,33 @@ def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
     return entries[0].runtime_data
 
 
+def _seed_settings_from_options_once(
+    store: HaSocData, options: Mapping[str, Any], *, had_stored_data: bool
+) -> None:
+    """Seed store.settings from entry.options, but only on the very first run.
+
+    The options flow can be reached before the integration has ever
+    finished setup, and `entry.options` is written on every save
+    regardless — so on a genuinely fresh install, a save made before first
+    load still needs to take effect. After that first load, store.settings
+    is the sole source of truth: every writer (options flow, in-panel
+    Settings tab) updates it live, and entry.options becomes a snapshot
+    copy for pre-load prefill only, never read again — re-seeding on every
+    restart would let a stale entry.options value clobber a setting the
+    user only ever changed from the panel.
+    """
+    if had_stored_data or not options:
+        return
+    known_keys = SettingsData.__annotations__.keys()
+    seed = {k: v for k, v in options.items() if k in known_keys}
+    if seed:
+        store.async_update_settings(**seed)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     store = HaSocData(hass)
-    await store.async_load()
+    had_stored_data = await store.async_load()
+    _seed_settings_from_options_once(store, entry.options, had_stored_data=had_stored_data)
 
     users = UsersManager(hass)
     live_sessions = LiveSessionRegistry()
@@ -110,7 +137,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
             await detections.async_run_pass()
             await risk.async_recompute_all()
             await risk.async_compute_posture()
-            await async_sync_admin_mfa_issues(hass, await users.async_list_users())
+            user_list = await users.async_list_users()
+            await async_sync_admin_mfa_issues(hass, user_list)
+            await async_enforce_mfa_policy(store, users, audit, user_list)
         except Exception:  # noqa: BLE001 - never let the analysis loop die silently
             _LOGGER.exception("HA SOC periodic analysis pass failed")
         else:

@@ -37,6 +37,7 @@ import logging
 from homeassistant.config import async_hass_config_yaml
 from homeassistant.config_entries import (
     SIGNAL_CONFIG_ENTRY_CHANGED,
+    SOURCE_REAUTH,
     ConfigEntry,
     ConfigEntryChange,
     ConfigEntryState,
@@ -75,6 +76,34 @@ UNAVAILABLE_SAMPLE_WINDOW = timedelta(hours=24)
 # under translations/en.json's "issues" block (that file is out of scope
 # for this module — see the check docstrings for which keys already exist).
 GENERIC_ISSUE_TRANSLATION_KEY = "misconfig_finding"
+
+# Per-integration issue categories for the "Issues by Integration" dashboard
+# widget. Each config entry gets AT MOST one category — priority order below
+# (credential first: a broken credential is usually the root cause behind
+# what would otherwise look like a communication or collection problem).
+ISSUE_CATEGORY_CREDENTIAL = "credential"
+ISSUE_CATEGORY_FAILING = "failing"
+ISSUE_CATEGORY_COMMUNICATION = "communication"
+ISSUE_CATEGORY_COLLECTION = "collection"
+ISSUE_CATEGORY_NONE = "none"
+ISSUE_CATEGORIES = (
+    ISSUE_CATEGORY_CREDENTIAL,
+    ISSUE_CATEGORY_FAILING,
+    ISSUE_CATEGORY_COMMUNICATION,
+    ISSUE_CATEGORY_COLLECTION,
+)
+
+# A loaded, non-retrying integration with more than this fraction of its
+# entities unavailable is flagged "collection" — it can talk to its
+# hub/cloud service (state != setup_retry) but specific devices aren't
+# reporting, which is a different problem than the integration itself
+# being down.
+COLLECTION_UNAVAILABLE_RATIO_THRESHOLD = 0.2
+_FAILING_STATES = (
+    ConfigEntryState.SETUP_ERROR,
+    ConfigEntryState.MIGRATION_ERROR,
+    ConfigEntryState.FAILED_UNLOAD,
+)
 
 
 def _iso_now() -> str:
@@ -245,6 +274,63 @@ class IntegrationHealth:
             ),
             "updated_at": _iso_now(),
         }
+
+    async def async_integration_overview(self) -> dict:
+        """Per-integration issue categorization for the SOC Dashboard.
+
+        Computed fresh on every call rather than cached in the store: the
+        one signal that decides "credential" (a pending reauth flow) is
+        inherently transient config_entries.flow state, not something this
+        module tracks continuously.
+
+        Category is a priority-ordered classification, not a combination —
+        each entry gets at most one, in this order:
+          1. credential    - a reauth flow is currently pending for it.
+          2. failing       - state is setup_error/migration_error/failed_unload.
+          3. communication - state is setup_retry (can't reach its hub/cloud
+                              service at all right now).
+          4. collection    - state is loaded, but more than
+                              COLLECTION_UNAVAILABLE_RATIO_THRESHOLD of its
+                              entities are unavailable/unknown (it's
+                              connected, but specific devices aren't
+                              reporting).
+        Anything else (loaded and healthy, or not yet tracked) has no
+        category and is excluded from the counts/records below.
+        """
+        reauth_entry_ids = {
+            flow["context"]["entry_id"]
+            for flow in self.hass.config_entries.flow.async_progress()
+            if flow.get("context", {}).get("source") == SOURCE_REAUTH
+            and flow["context"].get("entry_id")
+        }
+
+        integrations: list[dict] = []
+        category_counts = dict.fromkeys(ISSUE_CATEGORIES, 0)
+
+        for record in self._store.data["integration_health"].values():
+            category = self._issue_category(record, reauth_entry_ids)
+            if category == ISSUE_CATEGORY_NONE:
+                continue
+            category_counts[category] += 1
+            integrations.append({**record, "issue_category": category})
+
+        integrations.sort(key=lambda r: r["error_count_24h"], reverse=True)
+        return {"integrations": integrations, "category_counts": category_counts}
+
+    @staticmethod
+    def _issue_category(record: dict, reauth_entry_ids: set[str]) -> str:
+        if record["entry_id"] in reauth_entry_ids:
+            return ISSUE_CATEGORY_CREDENTIAL
+        if record["state"] in (s.value for s in _FAILING_STATES):
+            return ISSUE_CATEGORY_FAILING
+        if record["state"] == ConfigEntryState.SETUP_RETRY.value:
+            return ISSUE_CATEGORY_COMMUNICATION
+        if (
+            record["state"] == ConfigEntryState.LOADED.value
+            and record["unavailable_ratio"] > COLLECTION_UNAVAILABLE_RATIO_THRESHOLD
+        ):
+            return ISSUE_CATEGORY_COLLECTION
+        return ISSUE_CATEGORY_NONE
 
     # -- Log-volume attribution ----------------------------------------------
 

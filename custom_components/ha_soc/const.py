@@ -33,6 +33,24 @@ SIGNAL_UPDATE = f"{DOMAIN}_update"
 # Custom bus event fired for user-built automations (ha_soc_alert).
 EVENT_ALERT = f"{DOMAIN}_alert"
 
+# -- Access control ---------------------------------------------------------
+# Who may reach the panel and its ha_soc/* WS commands at all. Defaults to
+# the strictest option: a security-posture tool is itself a high-value
+# target, so it starts locked to the account owner and must be deliberately
+# opened up to every admin, never the other way around.
+ACCESS_LEVEL_OWNER_ONLY = "owner_only"
+ACCESS_LEVEL_OWNER_AND_ADMINS = "owner_and_admins"
+DEFAULT_ACCESS_LEVEL = ACCESS_LEVEL_OWNER_ONLY
+CONF_ACCESS_LEVEL = "access_level"
+
+# -- MFA non-compliance policy ------------------------------------------
+MFA_POLICY_AUDIT_ONLY = "audit_only"
+MFA_POLICY_AUTO_DEACTIVATE = "auto_deactivate"
+DEFAULT_MFA_POLICY = MFA_POLICY_AUDIT_ONLY
+DEFAULT_MFA_GRACE_PERIOD_DAYS = 14
+CONF_MFA_POLICY = "mfa_policy"
+CONF_MFA_GRACE_PERIOD_DAYS = "mfa_grace_period_days"
+
 # -- Defaults for the options flow / Store settings ----------------------
 DEFAULT_AUDIT_RETENTION_DAYS = 90
 DEFAULT_AUDIT_MAX_BYTES = 200 * 1024 * 1024  # 200 MB

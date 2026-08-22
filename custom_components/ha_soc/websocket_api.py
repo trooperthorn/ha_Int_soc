@@ -1,8 +1,12 @@
 """Custom WebSocket API — the single surface the frontend panel talks to.
 
-Every command is admin-gated (`@websocket_api.require_admin`), regardless of
-whether the panel itself is registered `require_admin=True` — panel
-visibility is cosmetic (see `permissions.py`); the real gate has to be here.
+Every command is gated by `@require_soc_access` (admin, plus HA SOC's own
+owner-only/owner+admin access_level setting), regardless of whether the
+panel itself is registered `require_admin=True` — panel visibility is
+cosmetic (see `permissions.py`); the real gate has to be here. The one
+exception is `ha_soc/access/info`, which stays on plain
+`@websocket_api.require_admin` so an admin currently blocked by
+access_level can still ask why.
 
 Command namespace is `ha_soc/*`. Mutating/PII-bearing commands never return
 raw refresh-token secrets or JWT material to the frontend — only metadata
@@ -11,15 +15,34 @@ raw refresh-token secrets or JWT material to the frontend — only metadata
 from __future__ import annotations
 
 import logging
+from functools import wraps
 from typing import Any
 
 import voluptuous as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from .const import SIGNAL_UPDATE
+from .const import (
+    ACCESS_LEVEL_OWNER_AND_ADMINS,
+    ACCESS_LEVEL_OWNER_ONLY,
+    CONF_ACCESS_LEVEL,
+    CONF_AUDIT_MAX_BYTES,
+    CONF_AUDIT_RETENTION_DAYS,
+    CONF_MFA_GRACE_PERIOD_DAYS,
+    CONF_MFA_POLICY,
+    CONF_NVD_API_KEY,
+    CONF_RISK_LEARNING_PERIOD_DAYS,
+    CONF_SCANNER_ENABLED,
+    CONF_SCANNER_NETWORK_CHECKS_ENABLED,
+    DEFAULT_ACCESS_LEVEL,
+    DOMAIN,
+    MFA_POLICY_AUDIT_ONLY,
+    MFA_POLICY_AUTO_DEACTIVATE,
+    SIGNAL_UPDATE,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,9 +54,42 @@ def _runtime(hass: HomeAssistant):
     return get_runtime_data(hass)
 
 
+def require_soc_access(func):
+    """Admin-gate every ha_soc/* command, then apply HA SOC's own access_level.
+
+    Modeled directly on websocket_api.require_admin (same signature, same
+    "raise Unauthorized, don't call func" shape) so it composes with
+    @websocket_command/@async_response exactly the way require_admin does.
+    On top of the baseline admin check, a non-owner admin is only let
+    through when the setting is explicitly opened up to
+    ACCESS_LEVEL_OWNER_AND_ADMINS — a security-posture tool is itself a
+    high-value target, so it defaults to owner-only and fails closed if the
+    runtime (and therefore the setting) isn't reachable yet.
+    """
+
+    @wraps(func)
+    def with_soc_access(hass: HomeAssistant, connection, msg: dict) -> None:
+        user = connection.user
+        if user is None or not user.is_admin:
+            raise Unauthorized
+        if not user.is_owner:
+            try:
+                access_level = _runtime(hass).store.settings.get(
+                    "access_level", DEFAULT_ACCESS_LEVEL
+                )
+            except RuntimeError:
+                access_level = DEFAULT_ACCESS_LEVEL
+            if access_level != ACCESS_LEVEL_OWNER_AND_ADMINS:
+                raise Unauthorized
+        func(hass, connection, msg)
+
+    return with_soc_access
+
+
 def async_register_websocket_api(hass: HomeAssistant) -> None:
     """Register every ha_soc/* command. Safe to call once per HA process."""
     for handler in (
+        ws_access_info,
         ws_users_list,
         ws_users_detail,
         ws_users_create,
@@ -66,10 +122,43 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_health_list,
         ws_misconfig_set_status,
         ws_dashboard_summary,
-        ws_dashboard_nodes,
+        ws_dashboard_devices,
+        ws_dashboard_integrations,
+        ws_settings_get,
+        ws_settings_set,
         ws_subscribe,
     ):
         websocket_api.async_register_command(hass, handler)
+
+
+# ----------------------------------------------------------------------------
+# Access control
+# ----------------------------------------------------------------------------
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/access/info"})
+@websocket_api.async_response
+async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Tell the frontend (and a blocked admin) exactly where it stands.
+
+    Deliberately stays on plain @websocket_api.require_admin rather than
+    @require_soc_access — an admin who's been locked out by access_level
+    still needs a way to find out why, instead of every command in the
+    panel just silently 401ing with no explanation.
+    """
+    runtime = _runtime(hass)
+    user = connection.user
+    access_level = runtime.store.settings.get("access_level", DEFAULT_ACCESS_LEVEL)
+    allowed = bool(user.is_owner or access_level == ACCESS_LEVEL_OWNER_AND_ADMINS)
+    connection.send_result(
+        msg["id"],
+        {
+            "is_owner": bool(user.is_owner),
+            "access_level": access_level,
+            "allowed": allowed,
+        },
+    )
 
 
 # ----------------------------------------------------------------------------
@@ -77,7 +166,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/users/list"})
 @websocket_api.async_response
 async def ws_users_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -85,7 +174,7 @@ async def ws_users_list(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"users": await runtime.users.async_list_users()})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/users/detail", vol.Required("user_id"): str}
 )
@@ -99,7 +188,7 @@ async def ws_users_detail(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], detail)
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/users/create",
@@ -120,7 +209,7 @@ async def ws_users_create(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], record)
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/users/update",
@@ -151,7 +240,7 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/users/deactivate", vol.Required("user_id"): str}
 )
@@ -170,7 +259,7 @@ async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> Non
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/users/delete", vol.Required("user_id"): str}
 )
@@ -190,7 +279,7 @@ async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/users/revoke_token",
@@ -213,7 +302,7 @@ async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> N
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/users/revoke_all_sessions", vol.Required("user_id"): str}
 )
@@ -229,7 +318,7 @@ async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dic
     connection.send_result(msg["id"], {"revoked": count})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/users/set_password",
@@ -265,7 +354,7 @@ async def ws_users_set_password(hass: HomeAssistant, connection, msg: dict) -> N
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/sessions/connect"})
 @websocket_api.async_response
 async def ws_sessions_connect(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -280,7 +369,7 @@ async def ws_sessions_connect(hass: HomeAssistant, connection, msg: dict) -> Non
     connection.send_result(msg["id"], {"session_key": key})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/sessions/list"})
 @websocket_api.async_response
 async def ws_sessions_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -293,7 +382,7 @@ async def ws_sessions_list(hass: HomeAssistant, connection, msg: dict) -> None:
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/audit/query",
@@ -323,7 +412,7 @@ async def ws_audit_query(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"events": records})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/audit/verify_chain"})
 @websocket_api.async_response
 async def ws_audit_verify_chain(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -336,7 +425,7 @@ async def ws_audit_verify_chain(hass: HomeAssistant, connection, msg: dict) -> N
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/permissions/dashboards/list"})
 @websocket_api.async_response
 async def ws_permissions_dashboards_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -346,7 +435,7 @@ async def ws_permissions_dashboards_list(hass: HomeAssistant, connection, msg: d
     )
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/permissions/dashboard_config", vol.Optional("url_path"): vol.Any(None, str)}
 )
@@ -360,7 +449,7 @@ async def ws_permissions_dashboard_config(hass: HomeAssistant, connection, msg: 
     connection.send_result(msg["id"], {"config": config})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/permissions/view_visibility/set",
@@ -386,7 +475,7 @@ async def ws_permissions_view_visibility_set(hass: HomeAssistant, connection, ms
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/permissions/dashboard_flags/set",
@@ -409,7 +498,7 @@ async def ws_permissions_dashboard_flags_set(hass: HomeAssistant, connection, ms
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/permissions/sidebar/push",
@@ -429,7 +518,7 @@ async def ws_permissions_sidebar_push(hass: HomeAssistant, connection, msg: dict
     connection.send_result(msg["id"], {"ok": True})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/permissions/drift/check"})
 @websocket_api.async_response
 async def ws_permissions_drift_check(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -442,7 +531,7 @@ async def ws_permissions_drift_check(hass: HomeAssistant, connection, msg: dict)
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/risk/list"})
 @websocket_api.async_response
 async def ws_risk_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -451,7 +540,7 @@ async def ws_risk_list(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"risk": results})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/risk/posture"})
 @websocket_api.async_response
 async def ws_risk_posture(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -465,7 +554,7 @@ async def ws_risk_posture(hass: HomeAssistant, connection, msg: dict) -> None:
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/detections/list", vol.Optional("status"): str, vol.Optional("limit", default=200): int}
 )
@@ -479,7 +568,7 @@ async def ws_detections_list(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], {"detections": detections[: msg.get("limit", 200)]})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/detections/set_status",
@@ -499,7 +588,7 @@ async def ws_detections_set_status(hass: HomeAssistant, connection, msg: dict) -
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/vulns/list"})
 @websocket_api.async_response
 async def ws_vulns_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -507,7 +596,7 @@ async def ws_vulns_list(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"findings": list(runtime.store.data["vuln_findings"].values())})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/vulns/scan_now"})
 @websocket_api.async_response
 async def ws_vulns_scan_now(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -517,7 +606,7 @@ async def ws_vulns_scan_now(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"findings": findings})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/vulns/set_status",
@@ -540,7 +629,7 @@ async def ws_vulns_set_status(hass: HomeAssistant, connection, msg: dict) -> Non
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/scanner/list"})
 @websocket_api.async_response
 async def ws_scanner_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -548,7 +637,7 @@ async def ws_scanner_list(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"findings": list(runtime.store.data["scanner_findings"].values())})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/scanner/scan_now", vol.Optional("domain"): str}
 )
@@ -563,7 +652,7 @@ async def ws_scanner_scan_now(hass: HomeAssistant, connection, msg: dict) -> Non
         connection.send_result(msg["id"], {"results": results})
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/scanner/export", vol.Required("finding_id"): str}
 )
@@ -582,7 +671,7 @@ async def ws_scanner_export(hass: HomeAssistant, connection, msg: dict) -> None:
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/health/list"})
 @websocket_api.async_response
 async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -596,7 +685,7 @@ async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
     )
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/misconfig/set_status",
@@ -626,7 +715,7 @@ async def ws_misconfig_set_status(hass: HomeAssistant, connection, msg: dict) ->
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboard/summary"})
 @websocket_api.async_response
 async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -668,24 +757,24 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
     )
 
 
-@websocket_api.require_admin
-@websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboard/nodes"})
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboard/devices"})
 @websocket_api.async_response
-async def ws_dashboard_nodes(hass: HomeAssistant, connection, msg: dict) -> None:
+async def ws_dashboard_devices(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    overview = await runtime.vulns.async_node_overview()
+    overview = await runtime.vulns.async_device_overview()
 
-    scored_nodes = [n for n in overview["nodes"] if n["total_findings"] > 0]
+    scored_devices = [d for d in overview["devices"] if d["total_findings"] > 0]
     combined_risk_score = (
-        round(sum(n["risk_score"] for n in scored_nodes) / len(scored_nodes), 1)
-        if scored_nodes
+        round(sum(d["risk_score"] for d in scored_devices) / len(scored_devices), 1)
+        if scored_devices
         else 0.0
     )
 
     connection.send_result(
         msg["id"],
         {
-            "nodes": overview["nodes"],
+            "devices": overview["devices"],
             "status_counts": overview["status_counts"],
             "by_vendor": overview["by_vendor"],
             "combined_risk_score": combined_risk_score,
@@ -693,12 +782,77 @@ async def ws_dashboard_nodes(hass: HomeAssistant, connection, msg: dict) -> None
     )
 
 
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboard/integrations"})
+@websocket_api.async_response
+async def ws_dashboard_integrations(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    overview = await runtime.health.async_integration_overview()
+    connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
+# Settings — the in-panel Settings tab. Mirrors the native "Configure"
+# options flow (config_flow.py) over the exact same store: HaSocData.settings
+# is the single source of truth, entry.options is kept as a synced copy for
+# pre-load prefill only. See config_flow.py's module docstring.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/settings/get"})
+@websocket_api.async_response
+async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], dict(runtime.store.settings))
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/settings/set",
+        vol.Optional(CONF_ACCESS_LEVEL): vol.In(
+            [ACCESS_LEVEL_OWNER_ONLY, ACCESS_LEVEL_OWNER_AND_ADMINS]
+        ),
+        vol.Optional(CONF_AUDIT_RETENTION_DAYS): vol.All(vol.Coerce(int), vol.Range(min=7, max=3650)),
+        vol.Optional(CONF_AUDIT_MAX_BYTES): vol.All(vol.Coerce(int), vol.Range(min=1_000_000)),
+        vol.Optional(CONF_SCANNER_ENABLED): bool,
+        vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
+        vol.Optional(CONF_NVD_API_KEY): str,
+        vol.Optional(CONF_RISK_LEARNING_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=90)),
+        vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
+        vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
+    }
+)
+@websocket_api.async_response
+async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    changes = {k: v for k, v in msg.items() if k not in ("type", "id")}
+    if changes:
+        runtime.store.async_update_settings(**changes)
+
+        # Keep entry.options in sync so the native Configure dialog (and a
+        # pre-runtime prefill) never shows a value this tab already changed.
+        entries = hass.config_entries.async_entries(DOMAIN)
+        if entries:
+            hass.config_entries.async_update_entry(
+                entries[0], options=dict(runtime.store.settings)
+            )
+
+        runtime.audit.async_log(
+            "user_updated",
+            user_id=connection.user.id,
+            detail={"action": "settings_changed", "changes": changes},
+        )
+    connection.send_result(msg["id"], dict(runtime.store.settings))
+
+
 # ----------------------------------------------------------------------------
 # Live-update subscription
 # ----------------------------------------------------------------------------
 
 
-@websocket_api.require_admin
+@require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/subscribe", vol.Optional("topic", default="dashboard"): str}
 )

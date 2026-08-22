@@ -13,14 +13,16 @@ async def test_default_shape() -> None:
 
 async def test_load_save_round_trip(hass: HomeAssistant) -> None:
     store = HaSocData(hass)
-    await store.async_load()
+    had_data = await store.async_load()
+    assert had_data is False
     assert store.settings["scanner_enabled"] is True
 
     store.async_update_settings(scanner_enabled=False)
     await store.async_save_now()
 
     store2 = HaSocData(hass)
-    await store2.async_load()
+    had_data2 = await store2.async_load()
+    assert had_data2 is True
     assert store2.settings["scanner_enabled"] is False
 
 

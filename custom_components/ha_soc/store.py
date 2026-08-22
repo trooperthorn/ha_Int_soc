@@ -17,8 +17,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .const import (
+    DEFAULT_ACCESS_LEVEL,
     DEFAULT_AUDIT_MAX_BYTES,
     DEFAULT_AUDIT_RETENTION_DAYS,
+    DEFAULT_MFA_GRACE_PERIOD_DAYS,
+    DEFAULT_MFA_POLICY,
     DEFAULT_RISK_LEARNING_PERIOD_DAYS,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
@@ -38,6 +41,9 @@ class SettingsData(TypedDict):
     scanner_network_checks_enabled: bool
     nvd_api_key: str | None
     risk_learning_period_days: int
+    access_level: str
+    mfa_policy: str
+    mfa_grace_period_days: int
 
 
 class StoreData(TypedDict):
@@ -62,6 +68,11 @@ class StoreData(TypedDict):
     # read by risk.py for the P_integration posture term:
     # {state, error_count_24h, unavailable_ratio, retry_transitions_24h, domain, title}
     integration_health: dict[str, dict[str, Any]]
+    # user_id -> ISO timestamp of when mfa_policy.py first observed this
+    # admin out of MFA compliance (active, admin, no MFA module). Cleared
+    # the moment they become compliant again, so a future lapse restarts
+    # the grace-period clock rather than reusing a stale start time.
+    mfa_grace_started: dict[str, str]
 
 
 def default_store_data() -> StoreData:
@@ -74,6 +85,9 @@ def default_store_data() -> StoreData:
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
             nvd_api_key=None,
             risk_learning_period_days=DEFAULT_RISK_LEARNING_PERIOD_DAYS,
+            access_level=DEFAULT_ACCESS_LEVEL,
+            mfa_policy=DEFAULT_MFA_POLICY,
+            mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
         ),
         permissions_matrix={},
         vuln_findings={},
@@ -83,6 +97,7 @@ def default_store_data() -> StoreData:
         user_baselines={},
         posture_history=[],
         integration_health={},
+        mfa_grace_started={},
     )
 
 
@@ -117,7 +132,14 @@ class HaSocData:
         )
         self.data: StoreData = default_store_data()
 
-    async def async_load(self) -> None:
+    async def async_load(self) -> bool:
+        """Load persisted state. Returns True if a prior save existed.
+
+        The return value lets the caller distinguish "this is the very
+        first time HA SOC has ever run" (nothing on disk yet) from a normal
+        restart — used once, in __init__.py, to decide whether a pre-setup
+        options-flow save should be seeded into settings.
+        """
         stored = await self._store.async_load()
         if stored is not None:
             # Merge onto defaults so a Store written by an older minor
@@ -125,6 +147,7 @@ class HaSocData:
             defaults = default_store_data()
             defaults.update(stored)  # type: ignore[typeddict-item]
             self.data = defaults
+        return stored is not None
 
     def async_schedule_save(self) -> None:
         """Debounced save — safe to call after every small mutation."""
@@ -160,6 +183,7 @@ class HaSocData:
         """Garbage-collect stale matrix entries for a deleted user."""
         self.data["permissions_matrix"].pop(user_id, None)
         self.data["user_baselines"].pop(user_id, None)
+        self.data["mfa_grace_started"].pop(user_id, None)
         self.async_schedule_save()
 
     # -- Generic finding-table helpers (vulns / misconfig / scanner) ------
