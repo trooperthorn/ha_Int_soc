@@ -5,12 +5,14 @@ imports of is_hassio/get_addons_info from inside health.py, so patching
 the source modules (rather than health.py's own namespace) works — unlike
 probe.py, which imports is_hassio at module scope.
 """
+from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
+import homeassistant.util.dt as dt_util
 
 from custom_components.ha_soc.const import DOMAIN
 from custom_components.ha_soc.health import IntegrationHealth
@@ -138,6 +140,90 @@ async def test_ssh_addon_with_host_network_is_flagged(
         findings = await health._check_ssh_addon_exposed()
     assert len(findings) == 1
     assert findings[0]["detail"]["host_network"] is True
+
+
+_PROBE_ADDON = {"local_ha_soc_probe": {"name": "HA SOC Probe", "state": "started"}}
+
+
+async def test_probe_not_reporting_no_finding_off_supervisor(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    findings = await health._check_probe_addon_not_reporting()
+    assert findings == []
+
+
+async def test_probe_not_reporting_no_finding_when_already_reported(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    health._store.data["host_probe"] = {"open_ports": [], "reported_at": dt_util.utcnow().isoformat()}
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=_PROBE_ADDON),
+    ):
+        findings = await health._check_probe_addon_not_reporting()
+    assert findings == []
+    assert health._probe_unreported_since is None
+
+
+async def test_probe_not_reporting_within_grace_produces_no_finding_yet(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=_PROBE_ADDON),
+    ):
+        findings = await health._check_probe_addon_not_reporting()
+    assert findings == []
+    # First observation is tracked so a later pass can tell it's overdue.
+    assert health._probe_unreported_since is not None
+
+
+async def test_probe_not_reporting_past_grace_is_flagged(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    health._probe_unreported_since = dt_util.utcnow() - timedelta(minutes=31)
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=_PROBE_ADDON),
+    ):
+        findings = await health._check_probe_addon_not_reporting()
+    assert len(findings) == 1
+    assert findings[0]["id"] == "misconfig:probe_addon_not_reporting"
+    assert findings[0]["check"] == "probe_addon_not_reporting"
+
+
+async def test_probe_not_reporting_clears_and_resolves_once_reported(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    health._probe_unreported_since = dt_util.utcnow() - timedelta(minutes=31)
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=_PROBE_ADDON),
+    ):
+        findings = await health._check_probe_addon_not_reporting()
+        assert len(findings) == 1
+
+        health._store.data["host_probe"] = {"open_ports": [], "reported_at": dt_util.utcnow().isoformat()}
+        findings = await health._check_probe_addon_not_reporting()
+
+    assert findings == []
+    assert health._probe_unreported_since is None
+    resolved = health._store.data["misconfig_findings"]["misconfig:probe_addon_not_reporting"]
+    assert resolved["status"] == "resolved"
+
+
+async def test_probe_not_reporting_ignores_stopped_addon(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    stopped = {"local_ha_soc_probe": {"name": "HA SOC Probe", "state": "stopped"}}
+    health._probe_unreported_since = dt_util.utcnow() - timedelta(minutes=31)
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=stopped),
+    ):
+        findings = await health._check_probe_addon_not_reporting()
+    assert findings == []
+    assert health._probe_unreported_since is None
 
 
 @pytest.fixture

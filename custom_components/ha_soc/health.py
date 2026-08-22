@@ -54,6 +54,7 @@ import homeassistant.util.dt as dt
 
 from .const import (
     DOMAIN,
+    PROBE_ADDON_NAME,
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_INFO,
@@ -125,6 +126,14 @@ _FAILING_STATES = (
 # way to enumerate every third-party SSH add-on's slug ahead of time.
 _KNOWN_SSH_ADDON_SLUGS = {"core_ssh"}
 
+# How long the HA SOC Probe add-on can be installed and running without
+# ever successfully reporting before this is worth a Repairs issue rather
+# than just the add-on's own log. Generous on purpose: the add-on itself
+# (see ha_soc_probe's run script) retries every 30s-5min on a rejected
+# report, so a genuinely healthy pairing reconnects within that window,
+# not this one — this only fires for a setup that's actually stuck.
+PROBE_NOT_REPORTING_GRACE = timedelta(minutes=30)
+
 
 def _iso_now() -> str:
     return dt.utcnow().isoformat()
@@ -192,6 +201,12 @@ class IntegrationHealth:
         self._retry_buckets: dict[str, dict[int, int]] = {}
         self._unavail_samples: dict[str, list[tuple[float, float]]] = {}
         self._started_at: datetime | None = None
+        # In-memory only, like _started_at: when this run of the integration
+        # first observed the probe add-on installed+running with no report
+        # yet. Deliberately resets on every reload rather than persisting —
+        # a fresh grace window after a reload is the right call here, the
+        # same way _started_at's own startup grace works.
+        self._probe_unreported_since: datetime | None = None
 
         self._dispatcher_unsub: Callable[[], None] | None = None
         self._timer_unsub: Callable[[], None] | None = None
@@ -562,6 +577,7 @@ class IntegrationHealth:
             self._check_addon_protection_mode,
             self._check_ssh_addon_inventory,
             self._check_ssh_addon_exposed,
+            self._check_probe_addon_not_reporting,
         )
         results: list[dict] = []
         for check in checks:
@@ -969,3 +985,63 @@ class IntegrationHealth:
             }))
 
         return self._async_finalize_check("ssh_addon_exposed", items)
+
+    async def _check_probe_addon_not_reporting(self) -> list[dict]:
+        """check="probe_addon_not_reporting" — Supervisor-only; no-ops off Supervisor.
+
+        Deliberately scoped to "installed, running, and has NEVER once
+        reported successfully" — a real, stuck "half setup" state with no
+        benign explanation. Deliberately NOT "used to report, now quiet":
+        judging that correctly would need this add-on's own configured
+        scan_interval_hours (1-24h, this integration doesn't read add-on
+        options) to know what "overdue" even means, and a healthy pairing
+        already recovers from a transient gap on its own — see the add-on's
+        run script, which retries every 30s-5min on a rejected report
+        rather than waiting out its full scan interval. A probe that
+        reported once and has since gone quiet is almost always just
+        between scans or riding out a Home Assistant Core restart, not
+        broken; nothing here should page anyone about that.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            self._probe_unreported_since = None
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass) or {}
+        info = next(
+            (i for i in addons.values() if i.get("name") == PROBE_ADDON_NAME), None
+        )
+        running = bool(info is not None and info.get("state") == "started")
+
+        if not running or self._store.data.get("host_probe") is not None:
+            self._probe_unreported_since = None
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        now = dt.utcnow()
+        if self._probe_unreported_since is None:
+            self._probe_unreported_since = now
+        if now - self._probe_unreported_since < PROBE_NOT_REPORTING_GRACE:
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        finding = _new_finding(
+            "misconfig:probe_addon_not_reporting", "probe_addon_not_reporting", SEVERITY_MEDIUM,
+            title="HA SOC Probe add-on is running but has never reported in",
+            summary=(
+                "The HA SOC Probe add-on is installed and running, but "
+                "hasn't successfully reported any data since HA SOC last "
+                "started — it looks half set up. Check the add-on's own "
+                "log (Settings > Add-ons > HA SOC Probe > Log) for why; a "
+                "common cause is this config entry not having finished "
+                "loading yet when the add-on made its first attempt."
+            ),
+            detail={},
+        )
+        return self._async_finalize_check(
+            "probe_addon_not_reporting",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )

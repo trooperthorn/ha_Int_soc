@@ -21,6 +21,17 @@ SOC integration via its `ha_soc.ingest_probe_result` service, over
 Supervisor's Core API proxy (`SUPERVISOR_TOKEN` + `homeassistant_api`
 permission — no separate credentials or setup on your end).
 
+If a report is rejected — most commonly a brief window of HTTP 400 right
+after Home Assistant Core itself restarts, while the HA SOC integration
+is still loading — this add-on does not wait out the full
+`scan_interval_hours` before trying again. It holds in a short, capped
+retry loop (30s, backing off to a 5-minute cap) instead, logging a clear
+"Holding — ..." warning on every attempt, so a half-connected setup shows
+up in this add-on's own log rather than silently going quiet for hours.
+If it stays in that state for more than 30 minutes, the HA SOC
+integration itself also raises a Repairs issue (Settings > Repairs) —
+visible even to someone who never opens the add-on's log at all.
+
 ## What it deliberately does NOT do
 
 - **No process-name attribution.** Knowing *which port* is open is useful

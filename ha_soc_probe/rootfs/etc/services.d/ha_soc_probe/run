@@ -14,10 +14,21 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-SCANNER_VERSION="0.1.0"
+SCANNER_VERSION="0.1.1"
 
 SCAN_INTERVAL_HOURS=$(bashio::config 'scan_interval_hours')
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+
+# When a report is rejected (e.g. HTTP 400 — the HA SOC integration isn't
+# loaded yet, commonly for a few seconds/minutes right after Home Assistant
+# Core itself restarts), don't wait out the full scan interval before trying
+# again: that can be up to 24h, during which this add-on looks "running but
+# stuck" with nothing to show it's actually just waiting. Hold in a short,
+# capped-exponential retry loop instead, so it reconnects within seconds to
+# a few minutes of the integration coming back — and says so, clearly and
+# repeatedly, in this add-on's own log every time it retries.
+RETRY_INTERVAL_SECONDS=30
+MAX_RETRY_INTERVAL_SECONDS=300
 
 # Prints "<proto> <hex-port>" for every LISTEN-state row in a
 # /proc/net/{tcp,tcp6} table. Column 2 is "local_address:hex_port",
@@ -69,6 +80,8 @@ PORTS
 
 bashio::log.info "HA SOC Probe starting — scanning every ${SCAN_INTERVAL_HOURS}h."
 
+retry_seconds="${RETRY_INTERVAL_SECONDS}"
+
 while true; do
     open_ports_json=$(build_open_ports_json)
     port_count=$(echo "${open_ports_json}" | jq 'length')
@@ -88,9 +101,21 @@ while true; do
 
     if [ "${http_code}" = "200" ]; then
         bashio::log.info "Reported to HA SOC."
-    else
-        bashio::log.warning "Could not report to HA SOC (HTTP ${http_code}). Is the HA SOC integration installed and loaded?"
+        retry_seconds="${RETRY_INTERVAL_SECONDS}"
+        sleep "$(( SCAN_INTERVAL_HOURS * 3600 ))"
+        continue
     fi
 
-    sleep "$(( SCAN_INTERVAL_HOURS * 3600 ))"
+    # Holding, not crashing: a 400 here almost always means the HA SOC
+    # integration's service isn't registered yet (not loaded, or Core is
+    # mid-restart) rather than anything wrong with this add-on itself.
+    # Retry soon instead of waiting out the full scan interval, and say so
+    # plainly and repeatedly — this line is the "half setup" flag the user
+    # sees in the add-on's own log until the integration side catches up.
+    bashio::log.warning "Holding — HA SOC did not accept the report (HTTP ${http_code}). Is the HA SOC integration installed and loaded? Retrying in ${retry_seconds}s."
+    sleep "${retry_seconds}"
+    retry_seconds=$(( retry_seconds * 2 ))
+    if [ "${retry_seconds}" -gt "${MAX_RETRY_INTERVAL_SECONDS}" ]; then
+        retry_seconds="${MAX_RETRY_INTERVAL_SECONDS}"
+    fi
 done

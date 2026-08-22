@@ -184,6 +184,15 @@ integration's Scanner tab shows a "not available" (Core/Container) or
 add-on isn't there to provide this data — never silent, empty results
 that could be misread as "scanned, nothing found."
 
+If the add-on is installed and running but the integration keeps
+rejecting its reports (typically a brief window right after Home
+Assistant Core itself restarts, while this integration is still
+loading), the add-on holds in a short, capped retry loop instead of
+waiting out its full `scan_interval_hours` — and if that stuck state
+lasts more than 30 minutes, `health.py` raises a Repairs issue
+(`probe_addon_not_reporting`) so a half-set-up pairing is visible in
+Home Assistant itself, not just the add-on's own log.
+
 The add-on's config.yaml/Dockerfile/run-script were written and reviewed
 against Home Assistant's official add-on documentation and real, current
 official add-ons, and its port-extraction logic was tested against a
