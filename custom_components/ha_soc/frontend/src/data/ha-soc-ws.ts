@@ -80,6 +80,28 @@ export interface DashboardSummary {
   total_users_count: number;
   critical_high_vuln_count: number;
   risk_band_counts: Record<string, number>;
+  mfa_counts: { enabled: number; disabled: number };
+  detection_severity_counts: Record<string, number>;
+}
+
+export type NodeStatus = "up" | "warning" | "critical" | "down" | "unmanaged" | "other";
+
+export interface NodeOverviewRow {
+  device_id: string;
+  name: string;
+  vendor: string;
+  os: string;
+  risk_score: number;
+  total_findings: number;
+  severity_counts: { critical: number; high: number; medium: number; low: number };
+  status: NodeStatus;
+}
+
+export interface NodeOverview {
+  nodes: NodeOverviewRow[];
+  status_counts: Record<NodeStatus, number>;
+  by_vendor: Record<string, number>;
+  combined_risk_score: number;
 }
 
 const ws = <T>(hass: HomeAssistant, msg: Record<string, unknown>) => hass.callWS<T>(msg);
@@ -214,6 +236,9 @@ export const setMisconfigStatus = (hass: HomeAssistant, findingId: string, statu
 
 export const fetchDashboardSummary = (hass: HomeAssistant) =>
   ws<DashboardSummary>(hass, { type: "ha_soc/dashboard/summary" });
+
+export const fetchDashboardNodes = (hass: HomeAssistant) =>
+  ws<NodeOverview>(hass, { type: "ha_soc/dashboard/nodes" });
 
 export const subscribeTopic = (
   hass: HomeAssistant,

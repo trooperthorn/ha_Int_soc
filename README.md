@@ -1,5 +1,7 @@
 # HA SOC
 
+<img src="icon.png" width="72" height="72" align="left" alt="HA SOC shield icon">
+
 A Home Assistant custom integration that centralizes user account security,
 audit logging, dashboard permissions, device/integration vulnerability
 tracking, and a SOC-style risk dashboard — built on the same architectural
@@ -48,6 +50,20 @@ imply otherwise.
 - **SOC Dashboard** — the NOC/SOC end state: posture score, open detections,
   users-at-risk, vulnerability/detection breakdowns, and a live suspicious-
   activity feed.
+
+## Icon / branding
+
+`icon.png` (256×256), `icon@2x.png` (512×512), and the source `icon.svg`
+live at the repo root — a shield, matching the sidebar panel's
+`mdi:shield-search` icon. They're committed here for quick reference and
+the GitHub repo card, but neither HACS nor Home Assistant's own "Add
+Integration" search actually reads icons from a repo directly — both
+source integration icons from the shared
+[home-assistant/brands](https://github.com/home-assistant/brands) CDN. To
+make this icon show up in either place, submit `icon.png` and
+`icon@2x.png` there under `custom_integrations/ha_soc/` per that repo's
+contribution guide. Until that PR merges, HA/HACS show a generic
+placeholder instead — that's expected, not a bug here.
 
 ## Installation
 

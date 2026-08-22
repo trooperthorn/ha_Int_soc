@@ -66,6 +66,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_health_list,
         ws_misconfig_set_status,
         ws_dashboard_summary,
+        ws_dashboard_nodes,
         ws_subscribe,
     ):
         websocket_api.async_register_command(hass, handler)
@@ -632,6 +633,7 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
     runtime = _runtime(hass)
     posture = runtime.risk.last_posture_result or await runtime.risk.async_compute_posture()
     risk_results = runtime.risk.last_risk_results or await runtime.risk.async_recompute_all()
+    users = await runtime.users.async_list_users()
     detections = list(runtime.store.data["detections"].values())
     open_detections = [d for d in detections if d.get("status") == "open"]
     users_at_risk = [r for r in risk_results.values() if r.get("score", 0) >= 60]
@@ -639,6 +641,7 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
         f for f in runtime.store.data["vuln_findings"].values() if f.get("status") != "dismissed"
     ]
     high_crit_vulns = [f for f in vulns if (f.get("cvss") or 0) >= 7.0]
+    active_users = [u for u in users if u.get("is_active")]
 
     connection.send_result(
         msg["id"],
@@ -653,6 +656,39 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
                 band: len([r for r in risk_results.values() if r.get("band") == band])
                 for band in ("low", "moderate", "high", "critical")
             },
+            "mfa_counts": {
+                "enabled": len([u for u in active_users if u.get("mfa_enabled")]),
+                "disabled": len([u for u in active_users if not u.get("mfa_enabled")]),
+            },
+            "detection_severity_counts": {
+                severity: len([d for d in detections if d.get("severity") == severity])
+                for severity in ("critical", "high", "medium", "low", "info")
+            },
+        },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboard/nodes"})
+@websocket_api.async_response
+async def ws_dashboard_nodes(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    overview = await runtime.vulns.async_node_overview()
+
+    scored_nodes = [n for n in overview["nodes"] if n["total_findings"] > 0]
+    combined_risk_score = (
+        round(sum(n["risk_score"] for n in scored_nodes) / len(scored_nodes), 1)
+        if scored_nodes
+        else 0.0
+    )
+
+    connection.send_result(
+        msg["id"],
+        {
+            "nodes": overview["nodes"],
+            "status_counts": overview["status_counts"],
+            "by_vendor": overview["by_vendor"],
+            "combined_risk_score": combined_risk_score,
         },
     )
 

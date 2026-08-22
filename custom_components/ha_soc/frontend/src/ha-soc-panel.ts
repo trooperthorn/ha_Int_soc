@@ -1,6 +1,7 @@
 import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
+import type { HaSocNavigateDetail, SocTab } from "./nav";
 
 import "./views/users-view";
 import "./views/audit-view";
@@ -8,7 +9,7 @@ import "./views/permissions-view";
 import "./views/scanner-view";
 import "./views/dashboard-view";
 
-type TabId = "dashboard" | "users" | "audit" | "permissions" | "scanner";
+type TabId = SocTab;
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
@@ -76,8 +77,12 @@ export class HaSocPanel extends LitElement {
           `
         )}
       </div>
-      ${this._renderTab()}
+      <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
     `;
+  }
+
+  private _onNavigate(ev: CustomEvent<HaSocNavigateDetail>) {
+    this._tab = ev.detail.tab;
   }
 
   private _renderTab() {

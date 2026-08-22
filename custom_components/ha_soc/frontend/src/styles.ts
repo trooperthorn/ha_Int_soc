@@ -12,6 +12,36 @@ export const sharedStyles = css`
     padding: 16px;
     max-width: 1400px;
     margin: 0 auto;
+
+    /* Validated categorical palette (dataviz skill reference instance) —
+       adjacent-pair CVD/contrast checked for chart use (bars, lines,
+       stacks). Light values here; .dark overrides the dark-mode steps. */
+    --cat-1: #2a78d6;
+    --cat-2: #eb6834;
+    --cat-3: #1baf7a;
+    --cat-4: #eda100;
+    --cat-5: #e87ba4;
+    --cat-6: #008300;
+    --cat-7: #4a3aa7;
+    --cat-8: #e34948;
+    --cat-other: #9aa0a6;
+
+    /* Reserved status roles — never reused as a plain series color. */
+    --status-good: #0ca30c;
+    --status-warning: #fab219;
+    --status-serious: #ec835a;
+    --status-critical: #d03b3b;
+  }
+  :host(.dark) {
+    --cat-1: #3987e5;
+    --cat-2: #d95926;
+    --cat-3: #199e70;
+    --cat-4: #c98500;
+    --cat-5: #d55181;
+    --cat-6: #008300;
+    --cat-7: #9085e9;
+    --cat-8: #e66767;
+    --cat-other: #7a807f;
   }
   .tabs {
     display: flex;

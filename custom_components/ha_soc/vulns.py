@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -79,6 +80,29 @@ MATCH_STRING_CACHE_TTL = timedelta(days=7)
 MAX_FINDINGS_PER_DEVICE = 10
 
 MAX_SUMMARY_CHARS = 500
+
+# Node-overview health buckets for the SOC Dashboard's "All Nodes" table and
+# status tiles. Distinct from the finding-lifecycle STATUS_* vocabulary in
+# const.py — these describe a device's current standing, not a finding's.
+NODE_STATUS_UP = "up"
+NODE_STATUS_WARNING = "warning"
+NODE_STATUS_CRITICAL = "critical"
+NODE_STATUS_DOWN = "down"
+NODE_STATUS_UNMANAGED = "unmanaged"
+NODE_STATUS_OTHER = "other"
+NODE_STATUSES = (
+    NODE_STATUS_UP,
+    NODE_STATUS_WARNING,
+    NODE_STATUS_CRITICAL,
+    NODE_STATUS_DOWN,
+    NODE_STATUS_UNMANAGED,
+    NODE_STATUS_OTHER,
+)
+
+# Proxy risk score (0-10, the same scale as CVSS) for a device whose only
+# open finding is the network-free firmware-currency heuristic, which has
+# no CVSS of its own to report.
+FIRMWARE_ONLY_RISK_SCORE = 5.0
 
 # Starter manufacturer -> NVD virtualMatchString table. Deliberately small
 # and manufacturer-only (model substrings are left blank below); this is
@@ -212,6 +236,118 @@ class DeviceVulnerabilityTracker:
             )
 
         return findings
+
+    async def async_node_overview(self) -> dict[str, Any]:
+        """Per-device rows for the SOC Dashboard's node-centric widgets.
+
+        Pure read/aggregate over device_registry + the existing
+        vuln_findings table — never triggers a scan itself (call
+        `async_run_scan` separately for that, e.g. from the periodic loop
+        or a "scan now" action).
+
+        Risk score is deliberately kept on the same 0-10 scale as CVSS
+        itself: the highest CVSS among that device's open (non-dismissed)
+        findings. A device whose only open finding is the firmware-currency
+        heuristic (which carries no CVSS) gets a fixed proxy score instead
+        of being scored as risk-free — see FIRMWARE_ONLY_RISK_SCORE.
+        """
+        registry = dr.async_get(self.hass)
+        entity_registry = er.async_get(self.hass)
+        physical_devices = [
+            device
+            for device in registry.devices.values()
+            if device.entry_type != dr.DeviceEntryType.SERVICE
+        ]
+
+        findings_by_device: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for finding in self.store.data.get(FINDINGS_TABLE, {}).values():
+            if finding.get("status") == STATUS_DISMISSED:
+                continue
+            findings_by_device[finding["device_id"]].append(finding)
+
+        nodes: list[dict[str, Any]] = []
+        status_counts = dict.fromkeys(NODE_STATUSES, 0)
+        by_vendor: dict[str, int] = defaultdict(int)
+
+        for device in physical_devices:
+            device_findings = findings_by_device.get(device.id, [])
+
+            severity_counts = {
+                SEVERITY_CRITICAL: 0,
+                SEVERITY_HIGH: 0,
+                SEVERITY_MEDIUM: 0,
+                SEVERITY_LOW: 0,
+            }
+            for finding in device_findings:
+                band = finding.get("severity")
+                if band == SEVERITY_INFO:
+                    # Folded into "low" for this 4-column view — an
+                    # unscored CVE still belongs somewhere on the table,
+                    # and a 5th column for a rare case isn't worth it here.
+                    band = SEVERITY_LOW
+                if band in severity_counts:
+                    severity_counts[band] += 1
+
+            scored = [f["cvss"] for f in device_findings if f.get("cvss") is not None]
+            if scored:
+                risk_score = round(max(scored), 1)
+            elif device_findings:
+                risk_score = FIRMWARE_ONLY_RISK_SCORE
+            else:
+                risk_score = 0.0
+
+            status = self._node_status(device, device_findings, entity_registry)
+            status_counts[status] += 1
+
+            vendor = device.manufacturer or "Unknown"
+            by_vendor[vendor] += len(device_findings)
+
+            nodes.append(
+                {
+                    "device_id": device.id,
+                    "name": _device_name(device),
+                    "vendor": vendor,
+                    "os": device.model or vendor,
+                    "risk_score": risk_score,
+                    "total_findings": len(device_findings),
+                    "severity_counts": severity_counts,
+                    "status": status,
+                }
+            )
+
+        nodes.sort(key=lambda n: n["risk_score"], reverse=True)
+
+        return {
+            "nodes": nodes,
+            "status_counts": status_counts,
+            "by_vendor": dict(by_vendor),
+        }
+
+    def _node_status(
+        self,
+        device: dr.DeviceEntry,
+        device_findings: list[dict[str, Any]],
+        entity_registry: er.EntityRegistry,
+    ) -> str:
+        if not device.manufacturer:
+            # No vendor info means nothing here could ever be scanned or
+            # correlated meaningfully — "unmanaged", not silently "up".
+            return NODE_STATUS_UNMANAGED
+
+        entities = er.async_entries_for_device(
+            entity_registry, device.id, include_disabled_entities=False
+        )
+        if entities:
+            states = [self.hass.states.get(entry.entity_id) for entry in entities]
+            available = [s for s in states if s is not None]
+            if available and all(s.state in ("unavailable", "unknown") for s in available):
+                return NODE_STATUS_DOWN
+
+        if any(f.get("severity") in (SEVERITY_CRITICAL, SEVERITY_HIGH) for f in device_findings):
+            return NODE_STATUS_CRITICAL
+        if device_findings:
+            return NODE_STATUS_WARNING
+        return NODE_STATUS_UP
 
     def _check_firmware_currency(
         self, devices_by_id: dict[str, dr.DeviceEntry]
