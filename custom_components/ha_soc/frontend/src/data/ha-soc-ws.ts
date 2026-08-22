@@ -160,6 +160,35 @@ export interface ProbeOverview {
   result: HostProbeResult | null;
 }
 
+// Mirrors peripherals.py's async_peripheral_overview() — reuses Home
+// Assistant core's own USB discovery data (the same source that already
+// auto-detects a Zigbee/Z-Wave USB stick), so this is available on any
+// install where core itself can see the device, not just Supervisor ones.
+export interface AssignedIntegration {
+  entry_id: string;
+  domain: string;
+  title: string;
+}
+
+export interface PeripheralDevice {
+  key: string;
+  raw_name: string;
+  tty_path: string;
+  by_id_path: string | null;
+  vid: string;
+  pid: string;
+  serial_number: string | null;
+  assigned_integration: AssignedIntegration | null;
+  ignored: boolean;
+}
+
+export interface PeripheralOverview {
+  available: boolean;
+  devices: PeripheralDevice[];
+  total_count: number;
+  unassigned_count: number;
+}
+
 // Mirrors store.py's SettingsData exactly — the same object backs both
 // this Settings tab and the native "Configure" options-flow dialog.
 export type AccessLevel = "owner_only" | "owner_and_admins";
@@ -349,6 +378,12 @@ export const fetchAccessInfo = (hass: HomeAssistant) =>
 
 export const fetchProbeStatus = (hass: HomeAssistant) =>
   ws<ProbeOverview>(hass, { type: "ha_soc/probe/status" });
+
+export const fetchPeripherals = (hass: HomeAssistant) =>
+  ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });
+
+export const setPeripheralIgnored = (hass: HomeAssistant, key: string, ignored: boolean, rawName: string) =>
+  ws(hass, { type: "ha_soc/peripherals/set_ignored", key, ignored, raw_name: rawName });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

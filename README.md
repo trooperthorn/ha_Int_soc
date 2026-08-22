@@ -64,6 +64,15 @@ imply otherwise.
 - **Host Probe (optional add-on)** — real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
+- **Local Peripherals** — every USB serial device Home Assistant itself can
+  see, its `/dev/tty` path, and a best-effort match against which
+  integration (if any) is using it, with an Ignore action for devices
+  that are intentionally unused. Reuses core's own USB discovery
+  (`homeassistant.components.usb`) — the same data that already
+  auto-detects a Zigbee/Z-Wave stick — rather than adding this to the
+  Probe add-on: unlike host port scanning, serial-device visibility isn't
+  structurally out of reach for a regular integration, so it doesn't need
+  one.
 
 ## Icon / branding
 
@@ -113,6 +122,7 @@ custom_components/ha_soc/
 ├── risk.py / detections.py — risk scoring engine, 12-rule detection catalog
 ├── mfa_policy.py         — audit-only/auto-deactivate enforcement for admins without MFA
 ├── probe.py              — optional HA SOC Probe add-on detection + result ingestion
+├── peripherals.py        — USB/serial device visibility (Local Peripherals tab)
 ├── websocket_api.py      — the ha_soc/* command surface the panel calls
 ├── sensor.py / binary_sensor.py / repairs.py — entities + Repairs integration
 ├── panel.py              — sidebar panel registration

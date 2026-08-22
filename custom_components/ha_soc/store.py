@@ -77,6 +77,11 @@ class StoreData(TypedDict):
     # probe.py) via the ha_soc.ingest_probe_result service. None until the
     # add-on has reported at least once.
     host_probe: dict[str, Any] | None
+    # Stable device key (vid:pid:serial_number, see peripherals.py) ->
+    # {ignored_at, ignored_by, raw_name} for a USB/serial device an admin
+    # has confirmed is intentionally unassigned, so it stops being flagged
+    # on the Local Peripherals tab and dashboard summary.
+    peripheral_ignored: dict[str, dict[str, Any]]
 
 
 def default_store_data() -> StoreData:
@@ -103,6 +108,7 @@ def default_store_data() -> StoreData:
         integration_health={},
         mfa_grace_started={},
         host_probe=None,
+        peripheral_ignored={},
     )
 
 
@@ -248,4 +254,18 @@ class HaSocData:
     # -- Host probe (optional add-on) ----------------------------------------
     def async_set_host_probe_result(self, result: dict[str, Any]) -> None:
         self.data["host_probe"] = result
+        self.async_schedule_save()
+
+    # -- USB/serial peripherals ----------------------------------------------
+    def async_set_peripheral_ignored(
+        self, key: str, ignored: bool, *, by_user_id: str | None, raw_name: str, at: str
+    ) -> None:
+        if ignored:
+            self.data["peripheral_ignored"][key] = {
+                "ignored_at": at,
+                "ignored_by": by_user_id,
+                "raw_name": raw_name,
+            }
+        else:
+            self.data["peripheral_ignored"].pop(key, None)
         self.async_schedule_save()

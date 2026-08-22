@@ -13,12 +13,14 @@ import {
   DeviceStatus,
   IntegrationOverview,
   IntegrationIssueCategory,
+  PeripheralOverview,
   fetchDashboardSummary,
   fetchDashboardDevices,
   fetchDashboardIntegrations,
   fetchDetections,
   fetchRisk,
   fetchUsers,
+  fetchPeripherals,
   setDetectionStatus,
 } from "../data/ha-soc-ws";
 
@@ -366,6 +368,17 @@ export class HaSocDashboardView extends LitElement {
       .devices-footer select {
         margin-left: auto;
       }
+
+      /* -- Local Peripherals summary card ---------------------------------- */
+      .peripherals-stats {
+        display: flex;
+        gap: 32px;
+      }
+      .peripherals-stat-value {
+        font-size: 26px;
+        font-weight: 700;
+        line-height: 1.3;
+      }
     `,
   ];
 
@@ -374,6 +387,7 @@ export class HaSocDashboardView extends LitElement {
   @state() private _summary: DashboardSummary | null = null;
   @state() private _deviceOverview: DeviceOverview | null = null;
   @state() private _integrationOverview: IntegrationOverview | null = null;
+  @state() private _peripherals: PeripheralOverview | null = null;
   @state() private _detections: Detection[] = [];
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _users: HaSocUser[] = [];
@@ -398,10 +412,11 @@ export class HaSocDashboardView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [summary, deviceOverview, integrationOverview, detections, risk, users] = await Promise.all([
+      const [summary, deviceOverview, integrationOverview, peripherals, detections, risk, users] = await Promise.all([
         fetchDashboardSummary(this.hass),
         fetchDashboardDevices(this.hass),
         fetchDashboardIntegrations(this.hass),
+        fetchPeripherals(this.hass),
         fetchDetections(this.hass),
         fetchRisk(this.hass),
         fetchUsers(this.hass),
@@ -409,6 +424,7 @@ export class HaSocDashboardView extends LitElement {
       this._summary = summary;
       this._deviceOverview = deviceOverview;
       this._integrationOverview = integrationOverview;
+      this._peripherals = peripherals;
       this._detections = detections;
       this._risk = risk;
       this._users = users;
@@ -680,6 +696,43 @@ export class HaSocDashboardView extends LitElement {
         </div>
       </div>
 
+      ${this._renderPeripheralsCard()}
+
+      <div class="card">
+        <h3>Recent suspicious activity</h3>
+        ${!openDetections.length
+          ? html`<div class="empty">No open detections.</div>`
+          : html`
+              <table>
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Rule</th>
+                    <th>Severity</th>
+                    <th>User</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${openDetections.map(
+                    (det) => html`
+                      <tr>
+                        <td>${new Date(det.last_seen).toLocaleString()}</td>
+                        <td>${det.title}</td>
+                        <td><span class="pill ${det.severity}"><span class="dot"></span>${det.severity}</span></td>
+                        <td>${this._nameFor(det.user_id)}</td>
+                        <td>
+                          <button class="ha-btn" @click=${() => this._onAck(det.id)}>Ack</button>
+                          <button class="ha-btn" @click=${() => this._onResolve(det.id)}>Resolve</button>
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            `}
+      </div>
+
       <h2 class="section-title">Devices &amp; Integrations</h2>
       <div class="row2">
         <div class="card" id="devices-card">
@@ -809,46 +862,38 @@ export class HaSocDashboardView extends LitElement {
               `}
         </div>
       </div>
-
-      <div class="card">
-        <h3>Recent suspicious activity</h3>
-        ${!openDetections.length
-          ? html`<div class="empty">No open detections.</div>`
-          : html`
-              <table>
-                <thead>
-                  <tr>
-                    <th>Time</th>
-                    <th>Rule</th>
-                    <th>Severity</th>
-                    <th>User</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${openDetections.map(
-                    (det) => html`
-                      <tr>
-                        <td>${new Date(det.last_seen).toLocaleString()}</td>
-                        <td>${det.title}</td>
-                        <td><span class="pill ${det.severity}"><span class="dot"></span>${det.severity}</span></td>
-                        <td>${this._nameFor(det.user_id)}</td>
-                        <td>
-                          <button class="ha-btn" @click=${() => this._onAck(det.id)}>Ack</button>
-                          <button class="ha-btn" @click=${() => this._onResolve(det.id)}>Resolve</button>
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              </table>
-            `}
-      </div>
     `;
   }
 
   private _sortArrow(key: DeviceSortKey) {
     if (this._deviceSort.key !== key) return nothing;
     return html`<span class="arrow">${this._deviceSort.dir === "asc" ? "▲" : "▼"}</span>`;
+  }
+
+  private _renderPeripheralsCard() {
+    const p = this._peripherals;
+    if (!p || !p.available) return nothing;
+
+    return html`
+      <div class="card clickable" @click=${() => this._goto("peripherals")} title="View Local Peripherals">
+        <h3>Local Peripherals</h3>
+        ${!p.total_count
+          ? html`<div class="empty">No USB serial devices detected.</div>`
+          : html`
+              <div class="peripherals-stats">
+                <div>
+                  <div class="peripherals-stat-value">${p.total_count}</div>
+                  <div class="muted">Serial device${p.total_count === 1 ? "" : "s"} detected</div>
+                </div>
+                <div>
+                  <div class="peripherals-stat-value" style="color:${p.unassigned_count ? "var(--status-warning)" : "inherit"}">
+                    ${p.unassigned_count}
+                  </div>
+                  <div class="muted">Unassigned</div>
+                </div>
+              </div>
+            `}
+      </div>
+    `;
   }
 }
