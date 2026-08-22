@@ -97,6 +97,14 @@ export const sharedStyles = css`
   tr:hover td {
     background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.03);
   }
+  tr.row-disabled td {
+    background: rgba(var(--rgb-error-color, 219, 68, 55), 0.05);
+    color: var(--secondary-text-color);
+  }
+  tr.row-disabled td:first-child > div:first-child {
+    text-decoration: line-through;
+    text-decoration-color: var(--secondary-text-color);
+  }
   .pill {
     display: inline-flex;
     align-items: center;

@@ -80,17 +80,25 @@ GENERIC_ISSUE_TRANSLATION_KEY = "misconfig_finding"
 # Per-integration issue categories for the "Issues by Integration" dashboard
 # widget. Each config entry gets AT MOST one category — priority order below
 # (credential first: a broken credential is usually the root cause behind
-# what would otherwise look like a communication or collection problem).
+# what would otherwise look like a communication or collection problem;
+# debug_logging/disabled last since neither is necessarily a problem, just
+# something worth a human's attention).
 ISSUE_CATEGORY_CREDENTIAL = "credential"
 ISSUE_CATEGORY_FAILING = "failing"
 ISSUE_CATEGORY_COMMUNICATION = "communication"
 ISSUE_CATEGORY_COLLECTION = "collection"
+ISSUE_CATEGORY_ERRORS = "errors"
+ISSUE_CATEGORY_DEBUG_LOGGING = "debug_logging"
+ISSUE_CATEGORY_DISABLED = "disabled"
 ISSUE_CATEGORY_NONE = "none"
 ISSUE_CATEGORIES = (
     ISSUE_CATEGORY_CREDENTIAL,
     ISSUE_CATEGORY_FAILING,
     ISSUE_CATEGORY_COMMUNICATION,
     ISSUE_CATEGORY_COLLECTION,
+    ISSUE_CATEGORY_ERRORS,
+    ISSUE_CATEGORY_DEBUG_LOGGING,
+    ISSUE_CATEGORY_DISABLED,
 )
 
 # A loaded, non-retrying integration with more than this fraction of its
@@ -99,6 +107,13 @@ ISSUE_CATEGORIES = (
 # reporting, which is a different problem than the integration itself
 # being down.
 COLLECTION_UNAVAILABLE_RATIO_THRESHOLD = 0.2
+
+# A loaded integration that isn't failing outright or losing devices
+# (collection, above) but is still logging more than this many
+# WARNING+ records in 24h — "errors" — has non-fatal issues fetching or
+# handling devices/entities worth a human's attention.
+ERROR_COUNT_ISSUE_THRESHOLD = 5
+
 _FAILING_STATES = (
     ConfigEntryState.SETUP_ERROR,
     ConfigEntryState.MIGRATION_ERROR,
@@ -270,6 +285,7 @@ class IntegrationHealth:
             "title": entry.title,
             "state": entry.state.value,
             "reason": entry.reason,
+            "disabled_by": entry.disabled_by.value if entry.disabled_by else None,
             "error_count_24h": _prune_and_sum(
                 self._error_buckets.get(entry.domain, {}), now_hour, ERROR_BUCKET_SPAN_HOURS
             ),
@@ -290,15 +306,31 @@ class IntegrationHealth:
 
         Category is a priority-ordered classification, not a combination —
         each entry gets at most one, in this order:
-          1. credential    - a reauth flow is currently pending for it.
-          2. failing       - state is setup_error/migration_error/failed_unload.
-          3. communication - state is setup_retry (can't reach its hub/cloud
-                              service at all right now).
-          4. collection    - state is loaded, but more than
-                              COLLECTION_UNAVAILABLE_RATIO_THRESHOLD of its
-                              entities are unavailable/unknown (it's
-                              connected, but specific devices aren't
-                              reporting).
+          1. credential      - a reauth flow is currently pending for it.
+          2. failing         - state is setup_error/migration_error/
+                                failed_unload.
+          3. communication   - state is setup_retry (can't reach its
+                                hub/cloud service at all right now).
+          4. collection      - state is loaded, but more than
+                                COLLECTION_UNAVAILABLE_RATIO_THRESHOLD of its
+                                entities are unavailable/unknown (it's
+                                connected, but specific devices aren't
+                                reporting).
+          5. errors          - state is loaded and not already flagged
+                                collection, but it's logged more than
+                                ERROR_COUNT_ISSUE_THRESHOLD WARNING+ records
+                                in 24h — non-fatal trouble fetching/handling
+                                devices or entities.
+          6. debug_logging   - any of this domain's loggers (core, custom,
+                                or manifest-declared) is currently at DEBUG
+                                level or more verbose. Not necessarily a
+                                problem, but worth knowing about: verbose
+                                logs can carry sensitive data and cost
+                                performance, and are easy to forget enabled.
+          7. disabled        - the entry is registered but disabled_by is
+                                set. Also not necessarily a problem — just
+                                worth surfacing rather than looking like it
+                                silently vanished.
         Anything else (loaded and healthy, or not yet tracked) has no
         category and is excluded from the counts/records below.
         """
@@ -308,12 +340,17 @@ class IntegrationHealth:
             if flow.get("context", {}).get("source") == SOURCE_REAUTH
             and flow["context"].get("entry_id")
         }
+        debug_domains = {
+            domain
+            for prefix, domain in self._logger_prefixes
+            if logging.getLogger(prefix).getEffectiveLevel() <= logging.DEBUG
+        }
 
         integrations: list[dict] = []
         category_counts = dict.fromkeys(ISSUE_CATEGORIES, 0)
 
         for record in self._store.data["integration_health"].values():
-            category = self._issue_category(record, reauth_entry_ids)
+            category = self._issue_category(record, reauth_entry_ids, debug_domains)
             if category == ISSUE_CATEGORY_NONE:
                 continue
             category_counts[category] += 1
@@ -323,18 +360,22 @@ class IntegrationHealth:
         return {"integrations": integrations, "category_counts": category_counts}
 
     @staticmethod
-    def _issue_category(record: dict, reauth_entry_ids: set[str]) -> str:
+    def _issue_category(record: dict, reauth_entry_ids: set[str], debug_domains: set[str]) -> str:
         if record["entry_id"] in reauth_entry_ids:
             return ISSUE_CATEGORY_CREDENTIAL
         if record["state"] in (s.value for s in _FAILING_STATES):
             return ISSUE_CATEGORY_FAILING
         if record["state"] == ConfigEntryState.SETUP_RETRY.value:
             return ISSUE_CATEGORY_COMMUNICATION
-        if (
-            record["state"] == ConfigEntryState.LOADED.value
-            and record["unavailable_ratio"] > COLLECTION_UNAVAILABLE_RATIO_THRESHOLD
-        ):
-            return ISSUE_CATEGORY_COLLECTION
+        if record["state"] == ConfigEntryState.LOADED.value:
+            if record["unavailable_ratio"] > COLLECTION_UNAVAILABLE_RATIO_THRESHOLD:
+                return ISSUE_CATEGORY_COLLECTION
+            if record["error_count_24h"] > ERROR_COUNT_ISSUE_THRESHOLD:
+                return ISSUE_CATEGORY_ERRORS
+        if record["domain"] in debug_domains:
+            return ISSUE_CATEGORY_DEBUG_LOGGING
+        if record.get("disabled_by") is not None:
+            return ISSUE_CATEGORY_DISABLED
         return ISSUE_CATEGORY_NONE
 
     # -- Log-volume attribution ----------------------------------------------

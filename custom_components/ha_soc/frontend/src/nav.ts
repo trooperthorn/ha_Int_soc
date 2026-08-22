@@ -1,7 +1,7 @@
 /** Cross-view navigation: any view can ask the panel to switch tabs by
  * dispatching this bubbling, composed event — it crosses shadow DOM
  * boundaries up to <ha-soc-panel>, which owns the actual tab state. */
-export type SocTab = "dashboard" | "users" | "audit" | "permissions" | "scanner" | "settings";
+export type SocTab = "dashboard" | "users" | "audit" | "permissions" | "scanner" | "logs" | "settings";
 
 export const HA_SOC_NAVIGATE = "ha-soc-navigate";
 

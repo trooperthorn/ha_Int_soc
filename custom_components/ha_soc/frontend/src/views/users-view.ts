@@ -109,11 +109,11 @@ export class HaSocUsersView extends LitElement {
             ${this._users.map((u) => {
               const risk = this._risk[u.id];
               return html`
-                <tr>
+                <tr class=${u.is_active ? "" : "row-disabled"}>
                   <td>
                     <div>${u.name ?? u.id}</div>
                     ${u.is_owner ? html`<span class="tag enforced">owner</span>` : nothing}
-                    ${!u.is_active ? html`<span class="tag cosmetic">disabled</span>` : nothing}
+                    ${!u.is_active ? html`<span class="tag cosmetic">deactivated</span>` : nothing}
                   </td>
                   <td>${u.is_admin ? "Admin" : "User"}${u.local_only ? " · local only" : ""}</td>
                   <td>

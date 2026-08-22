@@ -1,4 +1,4 @@
-import { LitElement, html, nothing } from "lit";
+import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
@@ -12,11 +12,8 @@ export class HaSocSettingsView extends LitElement {
 
   @property({ attribute: false }) hass!: HomeAssistant;
 
-  @state() private _saved: HaSocSettings | null = null;
-  @state() private _draft: HaSocSettings | null = null;
+  @state() private _settings: HaSocSettings | null = null;
   @state() private _loading = true;
-  @state() private _saving = false;
-  @state() private _justSaved = false;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -26,49 +23,33 @@ export class HaSocSettingsView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const settings = await fetchSettings(this.hass);
-      this._saved = settings;
-      this._draft = { ...settings };
+      this._settings = await fetchSettings(this.hass);
     } finally {
       this._loading = false;
     }
   }
 
-  private _set<K extends keyof HaSocSettings>(key: K, value: HaSocSettings[K]) {
-    if (!this._draft) return;
-    this._draft = { ...this._draft, [key]: value };
-    this._justSaved = false;
-  }
-
-  private get _dirty(): boolean {
-    if (!this._draft || !this._saved) return false;
-    return (Object.keys(this._draft) as (keyof HaSocSettings)[]).some(
-      (k) => this._draft![k] !== this._saved![k]
-    );
-  }
-
-  private async _onSave() {
-    if (!this._draft || !this._dirty) return;
-    this._saving = true;
+  // Applies immediately, like every other tab's toggles (permissions-view's
+  // require_admin/show_in_sidebar, scanner-view's status selects) — no
+  // separate Save step to forget. A control that only stages a change
+  // locally can't survive a tab switch (each view remounts fresh from the
+  // backend), which read as "my selection didn't take" even though it
+  // technically just wasn't saved yet.
+  private async _update<K extends keyof HaSocSettings>(key: K, value: HaSocSettings[K]) {
+    if (!this._settings) return;
+    const previous = this._settings;
+    this._settings = { ...this._settings, [key]: value };
     try {
-      const saved = await updateSettings(this.hass, this._draft);
-      this._saved = saved;
-      this._draft = { ...saved };
-      this._justSaved = true;
-    } finally {
-      this._saving = false;
+      this._settings = await updateSettings(this.hass, { [key]: value });
+    } catch (e) {
+      this._settings = previous;
+      throw e;
     }
   }
 
-  private _onDiscard() {
-    if (!this._saved) return;
-    this._draft = { ...this._saved };
-    this._justSaved = false;
-  }
-
   render() {
-    if (this._loading || !this._draft) return html`<div class="empty">Loading settings…</div>`;
-    const d = this._draft;
+    if (this._loading || !this._settings) return html`<div class="empty">Loading settings…</div>`;
+    const s = this._settings;
 
     return html`
       <div class="card">
@@ -83,9 +64,9 @@ export class HaSocSettingsView extends LitElement {
         <label class="settings-row">
           <span>Who can use this panel</span>
           <select
-            .value=${d.access_level}
+            .value=${s.access_level}
             @change=${(e: Event) =>
-              this._set("access_level", (e.target as HTMLSelectElement).value as HaSocSettings["access_level"])}
+              this._update("access_level", (e.target as HTMLSelectElement).value as HaSocSettings["access_level"])}
           >
             <option value="owner_only">Account owner only</option>
             <option value="owner_and_admins">Owner and all administrators</option>
@@ -106,9 +87,9 @@ export class HaSocSettingsView extends LitElement {
         <label class="settings-row">
           <span>Policy for admins without MFA enabled</span>
           <select
-            .value=${d.mfa_policy}
+            .value=${s.mfa_policy}
             @change=${(e: Event) =>
-              this._set("mfa_policy", (e.target as HTMLSelectElement).value as HaSocSettings["mfa_policy"])}
+              this._update("mfa_policy", (e.target as HTMLSelectElement).value as HaSocSettings["mfa_policy"])}
           >
             <option value="audit_only">Audit only — flag via Repairs, never act</option>
             <option value="auto_deactivate">Deactivate after grace period</option>
@@ -120,10 +101,10 @@ export class HaSocSettingsView extends LitElement {
             type="number"
             min="1"
             max="365"
-            .value=${String(d.mfa_grace_period_days)}
-            ?disabled=${d.mfa_policy !== "auto_deactivate"}
+            .value=${String(s.mfa_grace_period_days)}
+            ?disabled=${s.mfa_policy !== "auto_deactivate"}
             @change=${(e: Event) =>
-              this._set("mfa_grace_period_days", Number((e.target as HTMLInputElement).value))}
+              this._update("mfa_grace_period_days", Number((e.target as HTMLInputElement).value))}
           />
         </label>
       </div>
@@ -140,8 +121,8 @@ export class HaSocSettingsView extends LitElement {
           <input
             type="password"
             placeholder="unset"
-            .value=${d.nvd_api_key ?? ""}
-            @change=${(e: Event) => this._set("nvd_api_key", (e.target as HTMLInputElement).value || null)}
+            .value=${s.nvd_api_key ?? ""}
+            @change=${(e: Event) => this._update("nvd_api_key", (e.target as HTMLInputElement).value || null)}
           />
         </label>
         <label class="settings-row">
@@ -150,9 +131,9 @@ export class HaSocSettingsView extends LitElement {
             type="number"
             min="1"
             max="90"
-            .value=${String(d.risk_learning_period_days)}
+            .value=${String(s.risk_learning_period_days)}
             @change=${(e: Event) =>
-              this._set("risk_learning_period_days", Number((e.target as HTMLInputElement).value))}
+              this._update("risk_learning_period_days", Number((e.target as HTMLInputElement).value))}
           />
         </label>
       </div>
@@ -167,8 +148,8 @@ export class HaSocSettingsView extends LitElement {
           <span>Run the weekly scan automatically</span>
           <input
             type="checkbox"
-            .checked=${d.scanner_enabled}
-            @change=${(e: Event) => this._set("scanner_enabled", (e.target as HTMLInputElement).checked)}
+            .checked=${s.scanner_enabled}
+            @change=${(e: Event) => this._update("scanner_enabled", (e.target as HTMLInputElement).checked)}
           />
         </label>
         <label class="settings-row">
@@ -181,9 +162,9 @@ export class HaSocSettingsView extends LitElement {
           </span>
           <input
             type="checkbox"
-            .checked=${d.scanner_network_checks_enabled}
+            .checked=${s.scanner_network_checks_enabled}
             @change=${(e: Event) =>
-              this._set("scanner_network_checks_enabled", (e.target as HTMLInputElement).checked)}
+              this._update("scanner_network_checks_enabled", (e.target as HTMLInputElement).checked)}
           />
         </label>
       </div>
@@ -201,9 +182,9 @@ export class HaSocSettingsView extends LitElement {
             type="number"
             min="7"
             max="3650"
-            .value=${String(d.audit_retention_days)}
+            .value=${String(s.audit_retention_days)}
             @change=${(e: Event) =>
-              this._set("audit_retention_days", Number((e.target as HTMLInputElement).value))}
+              this._update("audit_retention_days", Number((e.target as HTMLInputElement).value))}
           />
         </label>
         <label class="settings-row">
@@ -211,37 +192,22 @@ export class HaSocSettingsView extends LitElement {
           <input
             type="number"
             min="1"
-            .value=${String(Math.round(d.audit_max_bytes / MB))}
+            .value=${String(Math.round(s.audit_max_bytes / MB))}
             @change=${(e: Event) =>
-              this._set("audit_max_bytes", Math.round(Number((e.target as HTMLInputElement).value) * MB))}
+              this._update("audit_max_bytes", Math.round(Number((e.target as HTMLInputElement).value) * MB))}
           />
         </label>
       </div>
 
       <div class="card">
-        <h3>Roadmap</h3>
+        <h3>Host Probe Add-on</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          <span class="tag cosmetic">not yet implemented</span> An optional, HAOS-only
-          companion add-on for real socket-level port scanning of the host — the one
-          check that genuinely needs a separate container. Everything else once
-          considered alongside it (SSH-add-on exposure, HA config-check issues) turned
-          out to already be reachable from inside this integration and does not need
-          one. See the README for the current design notes. There is no toggle for this
-          here because there is nothing yet for a toggle to control.
+          Real socket-level port visibility on the Home Assistant host needs the optional
+          <strong>HA SOC Probe</strong> companion add-on — see the Scanner tab's Host
+          Probe card for its current status, and the project README for install steps.
+          Nothing to configure here; the add-on's own scan interval is set from its own
+          add-on Configuration tab.
         </p>
-      </div>
-
-      <div class="toolbar" style="position:sticky;bottom:0;background:var(--primary-background-color);padding:12px 0;">
-        ${this._justSaved && !this._dirty
-          ? html`<span class="muted" style="font-size:12.5px;">Saved.</span>`
-          : nothing}
-        <span class="spacer"></span>
-        <button class="ha-btn" ?disabled=${!this._dirty || this._saving} @click=${this._onDiscard}>
-          Discard changes
-        </button>
-        <button class="ha-btn" ?disabled=${!this._dirty || this._saving} @click=${this._onSave}>
-          ${this._saving ? "Saving…" : "Save changes"}
-        </button>
       </div>
     `;
   }

@@ -2,7 +2,7 @@ import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { AuditEvent, queryAudit, verifyAuditChain } from "../data/ha-soc-ws";
+import { AuditEvent, HaSocUser, fetchUsers, queryAudit, verifyAuditChain } from "../data/ha-soc-ws";
 
 const CATEGORIES = [
   "",
@@ -24,13 +24,23 @@ export class HaSocAuditView extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _events: AuditEvent[] = [];
+  @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
   @state() private _category = "";
+  @state() private _userId = "";
   @state() private _verifyResult: { ok: boolean; records_checked: number } | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
+    this._loadUsers();
     this._load();
+  }
+
+  private async _loadUsers() {
+    // Independent of _load()'s filtered event query — this is just the
+    // lookup table for rendering names and populating the filter, loaded
+    // once rather than re-fetched on every filter change.
+    this._users = await fetchUsers(this.hass);
   }
 
   private async _load() {
@@ -38,11 +48,17 @@ export class HaSocAuditView extends LitElement {
     try {
       this._events = await queryAudit(this.hass, {
         category: this._category || undefined,
+        user_id: this._userId || undefined,
         limit: 200,
       });
     } finally {
       this._loading = false;
     }
+  }
+
+  private _nameFor(userId: string | null): string {
+    if (!userId) return "—";
+    return this._users.find((u) => u.id === userId)?.name ?? userId;
   }
 
   private async _onVerify() {
@@ -51,6 +67,11 @@ export class HaSocAuditView extends LitElement {
 
   private _onCategoryChange(e: Event) {
     this._category = (e.target as HTMLSelectElement).value;
+    this._load();
+  }
+
+  private _onUserChange(e: Event) {
+    this._userId = (e.target as HTMLSelectElement).value;
     this._load();
   }
 
@@ -67,6 +88,12 @@ export class HaSocAuditView extends LitElement {
           <select @change=${this._onCategoryChange}>
             ${CATEGORIES.map(
               (c) => html`<option value=${c} ?selected=${c === this._category}>${c || "All categories"}</option>`
+            )}
+          </select>
+          <select @change=${this._onUserChange}>
+            <option value="" ?selected=${this._userId === ""}>All users</option>
+            ${this._users.map(
+              (u) => html`<option value=${u.id} ?selected=${u.id === this._userId}>${u.name ?? u.id}</option>`
             )}
           </select>
           <span class="spacer"></span>
@@ -101,7 +128,7 @@ export class HaSocAuditView extends LitElement {
                       <tr>
                         <td>${new Date(e.ts).toLocaleString()}</td>
                         <td><span class="tag cosmetic">${e.category}</span></td>
-                        <td>${e.user_id ?? "—"}</td>
+                        <td>${this._nameFor(e.user_id)}</td>
                         <td>${e.domain ? `${e.domain}.${e.service}` : ""} ${
                           e.entity_ids?.length ? `(${e.entity_ids.join(", ")})` : ""
                         }</td>

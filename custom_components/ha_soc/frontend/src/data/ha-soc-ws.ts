@@ -108,8 +108,16 @@ export interface DeviceOverview {
 
 // Mirrors health.py's ISSUE_CATEGORY_* — at most one category per
 // integration, priority-ordered (credential > failing > communication >
-// collection). An integration with none of these doesn't appear at all.
-export type IntegrationIssueCategory = "credential" | "failing" | "communication" | "collection";
+// collection > errors > debug_logging > disabled). An integration with
+// none of these doesn't appear at all.
+export type IntegrationIssueCategory =
+  | "credential"
+  | "failing"
+  | "communication"
+  | "collection"
+  | "errors"
+  | "debug_logging"
+  | "disabled";
 
 export interface IntegrationIssueRow {
   entry_id: string;
@@ -117,6 +125,7 @@ export interface IntegrationIssueRow {
   title: string;
   state: string;
   reason: string | null;
+  disabled_by: string | null;
   error_count_24h: number;
   unavailable_ratio: number;
   retry_transitions_24h: number;
@@ -166,6 +175,26 @@ export interface HaSocSettings {
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
+}
+
+// Mirrors homeassistant/components/system_log's LogEntry.to_dict() exactly
+// (name/message/level/source/timestamp/exception/count/first_occurred) —
+// the same WARNING+ dedup buffer that backs Home Assistant's own
+// Settings > System > Logs page (/config/logs). Called directly rather
+// than proxied through ha_soc/* like every other command here: it's a
+// genuine core command (system_log/list, admin-gated on its own), the
+// same way HA's own frontend calls core commands directly without a
+// per-integration passthrough — and the panel already gates all tab
+// content on ha_soc/access/info before a Logs tab is ever reachable.
+export interface HaLogEntry {
+  name: string;
+  message: string[];
+  level: string;
+  source: [string, number];
+  timestamp: number;
+  exception: string;
+  count: number;
+  first_occurred: number;
 }
 
 export interface AccessInfo {
@@ -280,6 +309,8 @@ export const setDetectionStatus = (hass: HomeAssistant, detectionId: string, sta
 
 export const fetchVulns = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/list" }).then((r) => r.findings);
+
+export const fetchSystemLog = (hass: HomeAssistant) => ws<HaLogEntry[]>(hass, { type: "system_log/list" });
 
 export const scanVulnsNow = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/scan_now" }).then((r) => r.findings);

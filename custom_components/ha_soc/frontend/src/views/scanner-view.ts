@@ -96,6 +96,34 @@ export class HaSocScannerView extends LitElement {
 
     return html`
       <div class="card">
+        <h3>Misconfiguration Findings</h3>
+        ${!this._misconfigFindings.length
+          ? html`<div class="empty">No findings.</div>`
+          : html`
+              <table>
+                <thead>
+                  <tr>
+                    <th>Check</th>
+                    <th>Summary</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${this._misconfigFindings.map(
+                    (f: any) => html`
+                      <tr>
+                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.check}</span></td>
+                        <td>${f.summary}</td>
+                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}</td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            `}
+      </div>
+
+      <div class="card">
         <h3>Integration Security Scanner</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Static AST/regex analysis of every installed integration's source — core and
@@ -174,34 +202,6 @@ export class HaSocScannerView extends LitElement {
                         <td><span class="pill ${f.severity}"><span class="dot"></span>${f.cvss ?? "unscored"}</span></td>
                         <td>${f.confidence}</td>
                         <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              </table>
-            `}
-      </div>
-
-      <div class="card">
-        <h3>Misconfiguration Findings</h3>
-        ${!this._misconfigFindings.length
-          ? html`<div class="empty">No findings.</div>`
-          : html`
-              <table>
-                <thead>
-                  <tr>
-                    <th>Check</th>
-                    <th>Summary</th>
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${this._misconfigFindings.map(
-                    (f: any) => html`
-                      <tr>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.check}</span></td>
-                        <td>${f.summary}</td>
-                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}</td>
                       </tr>
                     `
                   )}

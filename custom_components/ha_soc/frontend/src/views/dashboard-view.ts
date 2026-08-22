@@ -2,7 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { navigate, navigateToHaPath, deviceDetailPath, devicesForIntegrationPath } from "../nav";
+import { navigate, navigateToHaPath, deviceDetailPath, devicesForIntegrationPath, SocTab } from "../nav";
 import {
   DashboardSummary,
   Detection,
@@ -44,7 +44,12 @@ const ISSUE_CATEGORY_LABELS: Record<IntegrationIssueCategory, string> = {
   credential: "Credential issue",
   communication: "Communication issue",
   collection: "Collection issue",
+  errors: "Logging errors",
+  debug_logging: "Debug logging enabled",
+  disabled: "Disabled",
 };
+
+const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
 
 @customElement("ha-soc-dashboard-view")
 export class HaSocDashboardView extends LitElement {
@@ -99,10 +104,18 @@ export class HaSocDashboardView extends LitElement {
       }
 
       /* -- Status tiles -------------------------------------------------- */
+      /* Stretches to fill whatever height row3's tallest sibling card
+         (the donut / gauge cards) ends up at, rather than sizing to its
+         own short content and leaving dead space below. */
+      .device-status-card {
+        display: flex;
+        flex-direction: column;
+      }
       .status-tiles {
         display: grid;
         grid-template-columns: repeat(5, 1fr);
         gap: 8px;
+        flex: 1;
       }
       .status-tile {
         border-radius: 10px;
@@ -110,6 +123,11 @@ export class HaSocDashboardView extends LitElement {
         text-align: center;
         background: var(--card-background-color, #fff);
         border: 1px solid var(--divider-color);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
       }
       .status-tile.active {
         outline: 2px solid var(--primary-color);
@@ -293,61 +311,60 @@ export class HaSocDashboardView extends LitElement {
         display: inline-block;
       }
 
-      /* -- Vertical bar chart (Issues by Integration) ------------------------- */
-      .vbar-chart {
-        display: flex;
-        align-items: flex-end;
-        gap: 10px;
-        height: 180px;
-        padding-top: 20px;
-      }
-      .vbar-col {
-        flex: 1;
+      /* -- Issues by Integration (list) ---------------------------------- */
+      .issues-list {
         display: flex;
         flex-direction: column;
+        max-height: 340px;
+        overflow-y: auto;
+      }
+      .issues-row {
+        display: flex;
         align-items: center;
-        justify-content: flex-end;
-        height: 100%;
+        gap: 10px;
+        padding: 8px 4px;
+        border-bottom: 1px solid var(--divider-color);
+        font-size: 13px;
+      }
+      .issues-row:last-child {
+        border-bottom: none;
+      }
+      .issues-dot {
+        width: 9px;
+        height: 9px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .issues-name {
+        flex: 1;
         min-width: 0;
-      }
-      .vbar-col .vbar-value {
-        font-size: 11px;
-        font-weight: 700;
-        margin-bottom: 4px;
-        font-variant-numeric: tabular-nums;
-      }
-      .vbar-col .vbar-fill {
-        width: 60%;
-        border-radius: 4px 4px 0 0;
-        min-height: 3px;
-      }
-      .vbar-col .vbar-label {
-        font-size: 10.5px;
-        color: var(--secondary-text-color);
-        margin-top: 6px;
-        text-align: center;
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
-        max-width: 100%;
       }
-      .vbar-legend {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-        margin-top: 14px;
+      .issues-category {
         font-size: 11px;
-        color: var(--secondary-text-color);
+        flex: none;
       }
-      .vbar-legend .row {
+      .issues-count {
+        font-weight: 700;
+        font-variant-numeric: tabular-nums;
+        flex: none;
+        min-width: 20px;
+        text-align: right;
+      }
+
+      /* -- All Devices pagination ------------------------------------------ */
+      .devices-footer {
         display: flex;
         align-items: center;
-        gap: 5px;
+        gap: 8px;
+        margin-top: 10px;
+        font-size: 12.5px;
+        color: var(--secondary-text-color);
       }
-      .vbar-legend .sw {
-        width: 8px;
-        height: 8px;
-        border-radius: 2px;
+      .devices-footer select {
+        margin-left: auto;
       }
     `,
   ];
@@ -367,6 +384,7 @@ export class HaSocDashboardView extends LitElement {
     key: "risk_score",
     dir: "desc",
   };
+  @state() private _devicePageSize: number | "all" = 20;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -414,7 +432,7 @@ export class HaSocDashboardView extends LitElement {
     return this._users.find((u) => u.id === userId)?.name ?? userId;
   }
 
-  private _goto(tab: "dashboard" | "users" | "audit" | "permissions" | "scanner" | "settings") {
+  private _goto(tab: SocTab) {
     navigate(this, tab);
   }
 
@@ -489,8 +507,14 @@ export class HaSocDashboardView extends LitElement {
       case "communication":
         return "var(--status-serious)";
       case "collection":
-      default:
         return "var(--status-warning)";
+      case "errors":
+        return "var(--cat-5)";
+      case "debug_logging":
+        return "var(--cat-1)";
+      case "disabled":
+      default:
+        return "var(--cat-other)";
     }
   }
 
@@ -525,8 +549,9 @@ export class HaSocDashboardView extends LitElement {
 
     const riskGaugePercent = Math.max(0, Math.min(100, (d.combined_risk_score / 10) * 100));
 
-    const maxErrorCount = Math.max(1, ...integ.integrations.map((i) => i.error_count_24h));
-    const integrationBars = integ.integrations.slice(0, 10);
+    const allFilteredDevices = this._sortedFilteredDevices();
+    const shownDevices =
+      this._devicePageSize === "all" ? allFilteredDevices : allFilteredDevices.slice(0, this._devicePageSize);
 
     const riskSegments = [
       { key: "low", color: "var(--status-good)", value: s.risk_band_counts.low ?? 0 },
@@ -548,7 +573,7 @@ export class HaSocDashboardView extends LitElement {
     return html`
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">
-        <div class="card">
+        <div class="card device-status-card">
           <h3>Device Status</h3>
           <div class="status-tiles">
             ${STATUS_TILES.map(
@@ -594,126 +619,6 @@ export class HaSocDashboardView extends LitElement {
           <div class="gauge-caption">
             Combined risk score of all devices — weighted so higher-severity CVEs count more.
           </div>
-        </div>
-      </div>
-
-      <div class="row2">
-        <div class="card" id="devices-card">
-          <h3>All Devices</h3>
-          ${this._deviceStatusFilter
-            ? html`
-                <div class="filter-chip" @click=${() => (this._deviceStatusFilter = null)}>
-                  ${STATUS_TILES.find((t) => t.key === this._deviceStatusFilter)?.label} ✕
-                </div>
-              `
-            : nothing}
-          <div class="devices-toolbar">
-            <input
-              type="text"
-              placeholder="Search devices…"
-              .value=${this._deviceSearch}
-              @input=${(e: Event) => (this._deviceSearch = (e.target as HTMLInputElement).value)}
-            />
-          </div>
-          ${this._sortedFilteredDevices().length === 0
-            ? html`<div class="empty">No devices found.</div>`
-            : html`
-                <div style="overflow-x:auto;">
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Health</th>
-                        <th class="sortable" @click=${() => this._onSort("name")}>
-                          Device${this._sortArrow("name")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("vendor")}>
-                          Vendor${this._sortArrow("vendor")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("risk_score")}>
-                          Risk Score${this._sortArrow("risk_score")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("total_findings")}>
-                          Total${this._sortArrow("total_findings")}
-                        </th>
-                        <th>Severity</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${this._sortedFilteredDevices().map(
-                        (device) => html`
-                          <tr
-                            class="clickable"
-                            title="Open in Home Assistant's Devices page"
-                            @click=${() => navigateToHaPath(deviceDetailPath(device.device_id))}
-                          >
-                            <td><span class="health-dot" style="background:${this._statusDotColor(device.status)}"></span></td>
-                            <td>${device.name}</td>
-                            <td class="muted">${device.vendor}</td>
-                            <td class="num">${device.risk_score.toFixed(1)}</td>
-                            <td class="num">${device.total_findings}</td>
-                            <td>
-                              <span class="sev-cell">
-                                ${SEVERITY_ORDER.map(
-                                  (sev) => html`
-                                    <span>
-                                      <span
-                                        class="sev-dot"
-                                        style="background:${sev === "critical"
-                                          ? "var(--status-critical)"
-                                          : sev === "high"
-                                          ? "var(--status-serious)"
-                                          : sev === "medium"
-                                          ? "var(--status-warning)"
-                                          : "var(--status-good)"}"
-                                      ></span
-                                      >${device.severity_counts[sev]}
-                                    </span>
-                                  `
-                                )}
-                              </span>
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              `}
-        </div>
-
-        <div class="card">
-          <h3>Issues by Integration</h3>
-          ${integrationBars.length === 0
-            ? html`<div class="empty">No integration issues detected.</div>`
-            : html`
-                <div class="vbar-chart">
-                  ${integrationBars.map((row) => {
-                    const heightPct = Math.max(6, (row.error_count_24h / maxErrorCount) * 100);
-                    const color = this._issueCategoryColor(row.issue_category);
-                    return html`
-                      <div
-                        class="vbar-col clickable"
-                        title="${row.title} — ${ISSUE_CATEGORY_LABELS[row.issue_category]}. Open in Home Assistant's Devices page"
-                        @click=${() => navigateToHaPath(devicesForIntegrationPath(row.entry_id))}
-                      >
-                        <div class="vbar-value">${row.error_count_24h}</div>
-                        <div class="vbar-fill" style="height:${heightPct}%; background:${color};"></div>
-                        <div class="vbar-label" title=${row.title}>${row.title}</div>
-                      </div>
-                    `;
-                  })}
-                </div>
-                <div class="vbar-legend">
-                  ${(Object.keys(ISSUE_CATEGORY_LABELS) as IntegrationIssueCategory[]).map(
-                    (cat) => html`
-                      <div class="row">
-                        <span class="sw" style="background:${this._issueCategoryColor(cat)}"></span>
-                        ${ISSUE_CATEGORY_LABELS[cat]}
-                      </div>
-                    `
-                  )}
-                </div>
-              `}
         </div>
       </div>
 
@@ -772,6 +677,136 @@ export class HaSocDashboardView extends LitElement {
               )}
             </div>
           </div>
+        </div>
+      </div>
+
+      <h2 class="section-title">Devices &amp; Integrations</h2>
+      <div class="row2">
+        <div class="card" id="devices-card">
+          <h3>All Devices</h3>
+          ${this._deviceStatusFilter
+            ? html`
+                <div class="filter-chip" @click=${() => (this._deviceStatusFilter = null)}>
+                  ${STATUS_TILES.find((t) => t.key === this._deviceStatusFilter)?.label} ✕
+                </div>
+              `
+            : nothing}
+          <div class="devices-toolbar">
+            <input
+              type="text"
+              placeholder="Search devices…"
+              .value=${this._deviceSearch}
+              @input=${(e: Event) => (this._deviceSearch = (e.target as HTMLInputElement).value)}
+            />
+          </div>
+          ${allFilteredDevices.length === 0
+            ? html`<div class="empty">No devices found.</div>`
+            : html`
+                <div style="overflow-x:auto;">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Health</th>
+                        <th class="sortable" @click=${() => this._onSort("name")}>
+                          Device${this._sortArrow("name")}
+                        </th>
+                        <th class="sortable" @click=${() => this._onSort("vendor")}>
+                          Vendor${this._sortArrow("vendor")}
+                        </th>
+                        <th class="sortable" @click=${() => this._onSort("risk_score")}>
+                          Risk Score${this._sortArrow("risk_score")}
+                        </th>
+                        <th class="sortable" @click=${() => this._onSort("total_findings")}>
+                          Total${this._sortArrow("total_findings")}
+                        </th>
+                        <th>Severity</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${shownDevices.map(
+                        (device) => html`
+                          <tr
+                            class="clickable"
+                            title="Open in Home Assistant's Devices page"
+                            @click=${() => navigateToHaPath(deviceDetailPath(device.device_id))}
+                          >
+                            <td><span class="health-dot" style="background:${this._statusDotColor(device.status)}"></span></td>
+                            <td>${device.name}</td>
+                            <td class="muted">${device.vendor}</td>
+                            <td class="num">${device.risk_score.toFixed(1)}</td>
+                            <td class="num">${device.total_findings}</td>
+                            <td>
+                              <span class="sev-cell">
+                                ${SEVERITY_ORDER.map(
+                                  (sev) => html`
+                                    <span>
+                                      <span
+                                        class="sev-dot"
+                                        style="background:${sev === "critical"
+                                          ? "var(--status-critical)"
+                                          : sev === "high"
+                                          ? "var(--status-serious)"
+                                          : sev === "medium"
+                                          ? "var(--status-warning)"
+                                          : "var(--status-good)"}"
+                                      ></span
+                                      >${device.severity_counts[sev]}
+                                    </span>
+                                  `
+                                )}
+                              </span>
+                            </td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="devices-footer">
+                  <span
+                    >Showing ${shownDevices.length} of ${allFilteredDevices.length} device${allFilteredDevices.length === 1 ? "" : "s"}</span
+                  >
+                  <select
+                    .value=${String(this._devicePageSize)}
+                    @change=${(e: Event) => {
+                      const v = (e.target as HTMLSelectElement).value;
+                      this._devicePageSize = v === "all" ? "all" : Number(v);
+                    }}
+                  >
+                    ${DEVICE_PAGE_SIZE_OPTIONS.map(
+                      (opt) => html`
+                        <option value=${String(opt)} ?selected=${opt === this._devicePageSize}>
+                          ${opt === "all" ? "Show all" : `Show ${opt}`}
+                        </option>
+                      `
+                    )}
+                  </select>
+                </div>
+              `}
+        </div>
+
+        <div class="card">
+          <h3>Issues by Integration</h3>
+          ${integ.integrations.length === 0
+            ? html`<div class="empty">No integration issues detected.</div>`
+            : html`
+                <div class="issues-list">
+                  ${integ.integrations.map(
+                    (row) => html`
+                      <div
+                        class="issues-row clickable"
+                        title="${row.title} — ${ISSUE_CATEGORY_LABELS[row.issue_category]}. Open in Home Assistant's Devices page"
+                        @click=${() => navigateToHaPath(devicesForIntegrationPath(row.entry_id))}
+                      >
+                        <span class="issues-dot" style="background:${this._issueCategoryColor(row.issue_category)}"></span>
+                        <span class="issues-name">${row.title}</span>
+                        <span class="issues-category muted">${ISSUE_CATEGORY_LABELS[row.issue_category]}</span>
+                        <span class="issues-count">${row.error_count_24h}</span>
+                      </div>
+                    `
+                  )}
+                </div>
+              `}
         </div>
       </div>
 
