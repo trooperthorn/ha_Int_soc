@@ -125,6 +125,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_dashboard_devices,
         ws_dashboard_integrations,
         ws_probe_status,
+        ws_peripherals_list,
+        ws_peripherals_set_ignored,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -806,6 +808,42 @@ async def ws_probe_status(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     overview = await async_probe_overview(hass, runtime.store)
     connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
+# Local Peripherals (USB/serial devices)
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/peripherals/list"})
+@websocket_api.async_response
+async def ws_peripherals_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .peripherals import async_peripheral_overview
+
+    runtime = _runtime(hass)
+    overview = await async_peripheral_overview(hass, runtime.store)
+    connection.send_result(msg["id"], overview)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/peripherals/set_ignored",
+        vol.Required("key"): str,
+        vol.Required("ignored"): bool,
+        vol.Optional("raw_name", default=""): str,
+    }
+)
+@websocket_api.async_response
+async def ws_peripherals_set_ignored(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .peripherals import async_set_peripheral_ignored
+
+    runtime = _runtime(hass)
+    async_set_peripheral_ignored(
+        runtime.store, msg["key"], msg["ignored"], by_user_id=connection.user.id, raw_name=msg["raw_name"]
+    )
+    connection.send_result(msg["id"], {"ok": True})
 
 
 # ----------------------------------------------------------------------------
