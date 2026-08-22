@@ -105,6 +105,11 @@ _FAILING_STATES = (
     ConfigEntryState.FAILED_UNLOAD,
 )
 
+# The official Terminal & SSH add-on's slug — everything else SSH-shaped
+# is matched by a name/slug substring instead, since this project has no
+# way to enumerate every third-party SSH add-on's slug ahead of time.
+_KNOWN_SSH_ADDON_SLUGS = {"core_ssh"}
+
 
 def _iso_now() -> str:
     return dt.utcnow().isoformat()
@@ -513,6 +518,9 @@ class IntegrationHealth:
             self._check_trusted_networks,
             self._check_device_cleartext_url,
             self._check_cloud_egress_inventory,
+            self._check_addon_protection_mode,
+            self._check_ssh_addon_inventory,
+            self._check_ssh_addon_exposed,
         )
         results: list[dict] = []
         for check in checks:
@@ -521,6 +529,46 @@ class IntegrationHealth:
             except Exception:  # noqa: BLE001 - one bad check must not stop the rest
                 _LOGGER.warning("HA SOC misconfig check %s failed", check.__name__, exc_info=True)
         return results
+
+    async def async_run_config_check(self) -> list[dict]:
+        """check="ha_config_invalid" — on its own slower interval.
+
+        Unlike every other check in this module, core creates no persistent
+        Repairs issue when the YAML configuration is invalid —
+        homeassistant.config.async_check_ha_config_file() is purely
+        on-demand (it's exactly what the "Check Configuration" button
+        calls), so this project has to run it itself and hold the result.
+        Deliberately NOT part of async_run_misconfig_checks()'s 5-minute
+        sweep: a full YAML re-validation is real CPU/IO work, unlike this
+        module's other checks, which only read already-in-memory registries
+        and counters. See __init__.py's CONFIG_CHECK_INTERVAL.
+        """
+        from homeassistant.config import async_check_ha_config_file
+
+        try:
+            error = await async_check_ha_config_file(self.hass)
+        except Exception:  # noqa: BLE001 - never let this take the periodic loop down
+            _LOGGER.warning("HA SOC config-check failed to run", exc_info=True)
+            return []
+
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        if error:
+            finding = _new_finding(
+                "misconfig:ha_config_invalid", "ha_config_invalid", SEVERITY_HIGH,
+                title="Home Assistant's YAML configuration is currently invalid",
+                summary=(
+                    "The last configuration check failed. A restart while "
+                    "this is broken would fail to fully start, or fall back "
+                    "to safe mode. See Settings > System > General > Check "
+                    "Configuration for the exact error."
+                ),
+                detail={"error": error},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+
+        return self._async_finalize_check("ha_config_invalid", items)
 
     async def _check_http_insecure(self) -> list[dict]:
         """check="http_insecure" — matches translations/en.json's http_insecure key."""
@@ -739,3 +787,144 @@ class IntegrationHealth:
         # Inventory, not a problem: no Repairs mirror, upsert only.
         self._store.async_upsert_finding("misconfig_findings", finding["id"], finding)
         return [finding]
+
+    async def _check_addon_protection_mode(self) -> list[dict]:
+        """check="addon_unprotected" — Supervisor-only; no-ops off Supervisor.
+
+        "Protected mode" is a real, generic Supervisor add-on setting (any
+        add-on can have it, not just SSH-related ones) — disabling it grants
+        that add-on's container elevated access to the Supervisor API and
+        other add-ons, a real, deliberate weakening of Docker-level
+        isolation a user has to consciously flip.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            return self._async_finalize_check("addon_unprotected", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass) or {}
+        items: list[tuple[dict, str, dict[str, str]]] = []
+
+        for slug, info in addons.items():
+            if info.get("protected", True):
+                continue
+            name = info.get("name") or slug
+            finding = _new_finding(
+                f"misconfig:addon_unprotected:{slug}", "addon_unprotected", SEVERITY_MEDIUM,
+                title=f"{name} is running with Protection mode disabled",
+                summary=(
+                    f"{name} has Supervisor's Protection mode turned off, "
+                    "granting it elevated access to the Supervisor API, "
+                    "Docker, and other add-ons rather than staying isolated "
+                    "to its own container. Only a small number of add-ons "
+                    "(ones that manage other add-ons/backups) legitimately "
+                    "need this."
+                ),
+                detail={"slug": slug},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+
+        return self._async_finalize_check("addon_unprotected", items)
+
+    async def _check_ssh_addon_inventory(self) -> list[dict]:
+        """check="ssh_addon_inventory" — informational, never mirrored.
+
+        Best-effort by nature: matched against the official Terminal & SSH
+        add-on's known slug plus a name/slug substring fallback for the
+        many community SSH add-ons this project can't enumerate ahead of
+        time — absence from this list is not proof no SSH access exists.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            return []
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass) or {}
+        ssh_addons = [
+            {"slug": slug, "name": info.get("name") or slug, "state": info.get("state")}
+            for slug, info in addons.items()
+            if slug in _KNOWN_SSH_ADDON_SLUGS
+            or "ssh" in slug.lower()
+            or "ssh" in (info.get("name") or "").lower()
+        ]
+
+        finding = _new_finding(
+            "misconfig:ssh_addon_inventory", "ssh_addon_inventory", SEVERITY_INFO,
+            title="SSH-capable add-ons installed",
+            summary=(
+                f"{len(ssh_addons)} installed add-on(s) look SSH-capable by "
+                "name. Informational only — being installed and running is "
+                "normal and often intentional."
+            ),
+            detail={"addons": ssh_addons},
+        )
+        self._store.async_upsert_finding("misconfig_findings", finding["id"], finding)
+        return [finding]
+
+    async def _check_ssh_addon_exposed(self) -> list[dict]:
+        """check="ssh_addon_exposed" — Supervisor-only; no-ops off Supervisor.
+
+        Unlike the inventory above, this one IS a real, mirrored finding:
+        the official Terminal & SSH add-on (core_ssh) ships with its port
+        *unbound* by default (ingress-only — reachable only through Home
+        Assistant's own authenticated web terminal, not a direct SSH
+        client). A host-bound port, or host_network enabled outright, means
+        someone deliberately opened direct SSH access that bypasses Home
+        Assistant's login entirely — worth a human reviewing it, not just
+        noting it exists.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            return self._async_finalize_check("ssh_addon_exposed", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass) or {}
+        items: list[tuple[dict, str, dict[str, str]]] = []
+
+        for slug, info in addons.items():
+            name = info.get("name") or slug
+            is_ssh = (
+                slug in _KNOWN_SSH_ADDON_SLUGS
+                or "ssh" in slug.lower()
+                or "ssh" in name.lower()
+            )
+            if not is_ssh:
+                continue
+
+            host_network = bool(info.get("host_network"))
+            published_ports = sorted(
+                host_port for host_port in (info.get("network") or {}).values()
+                if host_port is not None
+            )
+            if not host_network and not published_ports:
+                continue  # ingress-only (core_ssh's shipped default) or not running
+
+            finding = _new_finding(
+                f"misconfig:ssh_addon_exposed:{slug}", "ssh_addon_exposed", SEVERITY_HIGH,
+                title=f"{name} is reachable directly on the host network",
+                summary=(
+                    f"{name} is exposed via "
+                    f"{'host networking' if host_network else 'a published port'}, "
+                    "reachable over SSH without going through Home Assistant's "
+                    "own login at all. Confirm this is intentional and that "
+                    "the add-on's own credentials are strong."
+                ),
+                detail={
+                    "slug": slug,
+                    "host_network": host_network,
+                    "published_ports": published_ports,
+                },
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+
+        return self._async_finalize_check("ssh_addon_exposed", items)

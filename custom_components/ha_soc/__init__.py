@@ -26,6 +26,7 @@ from .health import IntegrationHealth
 from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
 from .permissions import PermissionsMatrix
+from .probe import async_register_probe_service, async_unregister_probe_service
 from .repairs import async_sync_admin_mfa_issues, async_sync_vuln_issues
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
@@ -39,6 +40,7 @@ _LOGGER = logging.getLogger(__name__)
 ANALYSIS_INTERVAL = timedelta(minutes=5)
 VULN_SCAN_INTERVAL = timedelta(hours=24)
 SCANNER_SWEEP_INTERVAL = timedelta(days=7)
+CONFIG_CHECK_INTERVAL = timedelta(hours=6)
 
 
 @dataclass
@@ -127,6 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     scanner.async_start(hass)
 
     async_register_websocket_api(hass)
+    async_register_probe_service(hass, store)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -166,6 +169,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         finally:
             async_dispatcher_send(hass, f"{SIGNAL_UPDATE}_scanner")
 
+    async def _async_config_check(_now=None) -> None:
+        try:
+            await health.async_run_config_check()
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("HA SOC config-validity check failed")
+        finally:
+            async_dispatcher_send(hass, f"{SIGNAL_UPDATE}_dashboard")
+
     entry.async_on_unload(
         async_track_time_interval(hass, _async_periodic_analysis, ANALYSIS_INTERVAL)
     )
@@ -175,10 +186,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     entry.async_on_unload(
         async_track_time_interval(hass, _async_scanner_sweep, SCANNER_SWEEP_INTERVAL)
     )
+    entry.async_on_unload(
+        async_track_time_interval(hass, _async_config_check, CONFIG_CHECK_INTERVAL)
+    )
 
     # Kick off a first pass shortly after startup rather than waiting a full
     # interval, so the dashboard isn't empty on a fresh install.
     hass.async_create_task(_async_periodic_analysis())
+    hass.async_create_task(_async_config_check())
     if store.settings.get("scanner_enabled", True):
         hass.async_create_task(_async_scanner_sweep())
 
@@ -197,5 +212,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
         await runtime.health.async_stop()
         runtime.scanner.async_stop()
 
+    async_unregister_probe_service(hass)
     await async_unregister_panel(hass)
     return True

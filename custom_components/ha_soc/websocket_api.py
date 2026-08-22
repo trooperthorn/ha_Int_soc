@@ -124,6 +124,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_dashboard_summary,
         ws_dashboard_devices,
         ws_dashboard_integrations,
+        ws_probe_status,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -788,6 +789,22 @@ async def ws_dashboard_devices(hass: HomeAssistant, connection, msg: dict) -> No
 async def ws_dashboard_integrations(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     overview = await runtime.health.async_integration_overview()
+    connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
+# Host Probe (optional add-on)
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/probe/status"})
+@websocket_api.async_response
+async def ws_probe_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .probe import async_probe_overview
+
+    runtime = _runtime(hass)
+    overview = await async_probe_overview(hass, runtime.store)
     connection.send_result(msg["id"], overview)
 
 

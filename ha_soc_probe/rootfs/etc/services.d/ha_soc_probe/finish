@@ -1,0 +1,6 @@
+#!/usr/bin/with-contenv bashio
+# The run script's loop should never exit on its own — this only fires if
+# it crashed. s6 restarts the service automatically after this script
+# returns; all this does is make that visible in the add-on's log.
+EXIT_CODE="${1:-0}"
+bashio::log.warning "HA SOC Probe exited with code ${EXIT_CODE} — restarting."

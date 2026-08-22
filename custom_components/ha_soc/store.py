@@ -73,6 +73,10 @@ class StoreData(TypedDict):
     # the moment they become compliant again, so a future lapse restarts
     # the grace-period clock rather than reusing a stale start time.
     mfa_grace_started: dict[str, str]
+    # Latest result ingested from the optional HA SOC Probe add-on (see
+    # probe.py) via the ha_soc.ingest_probe_result service. None until the
+    # add-on has reported at least once.
+    host_probe: dict[str, Any] | None
 
 
 def default_store_data() -> StoreData:
@@ -98,6 +102,7 @@ def default_store_data() -> StoreData:
         posture_history=[],
         integration_health={},
         mfa_grace_started={},
+        host_probe=None,
     )
 
 
@@ -238,4 +243,9 @@ class HaSocData:
         history.append(snapshot)
         if len(history) > max_days:
             del history[: len(history) - max_days]
+        self.async_schedule_save()
+
+    # -- Host probe (optional add-on) ----------------------------------------
+    def async_set_host_probe_result(self, result: dict[str, Any]) -> None:
+        self.data["host_probe"] = result
         self.async_schedule_save()

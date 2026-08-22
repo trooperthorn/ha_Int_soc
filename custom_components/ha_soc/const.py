@@ -94,3 +94,17 @@ DETECTION_RESOLVED = "resolved"
 LEVEL_ENFORCED = "enforced"
 LEVEL_COSMETIC = "cosmetic"
 LEVEL_BEST_EFFORT = "best_effort"
+
+# -- Optional HA SOC Probe add-on ----------------------------------------
+# The add-on's own `name:` in its config.yaml — matched exactly against
+# homeassistant.components.hassio.get_addons_info()'s per-addon `name`
+# field to detect it, since a Supervisor add-on's `slug` is derived from
+# the installing repository (not something this integration controls or
+# can predict ahead of publishing that repository), while `name` is a
+# literal string this project owns and sets once.
+PROBE_ADDON_NAME = "HA SOC Probe"
+
+# Service this integration exposes for the add-on to call back into, via
+# Supervisor's core-API proxy (SUPERVISOR_TOKEN + POST
+# http://supervisor/core/api/services/<domain>/<service>).
+SERVICE_INGEST_PROBE_RESULT = "ingest_probe_result"

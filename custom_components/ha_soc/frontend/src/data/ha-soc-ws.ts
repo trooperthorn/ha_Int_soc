@@ -128,6 +128,29 @@ export interface IntegrationOverview {
   category_counts: Record<IntegrationIssueCategory, number>;
 }
 
+// Mirrors probe.py's async_probe_overview() — an honest three-way answer,
+// never silently-empty data mistakeable for "scanned, nothing found".
+export interface OpenPort {
+  port: number;
+  proto: "tcp" | "udp";
+  process?: string | null;
+}
+
+export interface HostProbeResult {
+  open_ports: OpenPort[];
+  scanner_version: string | null;
+  reported_at: string;
+}
+
+export interface ProbeOverview {
+  supervisor: boolean;
+  installed: boolean;
+  running: boolean;
+  version: string | null;
+  update_available: boolean;
+  result: HostProbeResult | null;
+}
+
 // Mirrors store.py's SettingsData exactly — the same object backs both
 // this Settings tab and the native "Configure" options-flow dialog.
 export type AccessLevel = "owner_only" | "owner_and_admins";
@@ -292,6 +315,9 @@ export const fetchDashboardIntegrations = (hass: HomeAssistant) =>
 
 export const fetchAccessInfo = (hass: HomeAssistant) =>
   ws<AccessInfo>(hass, { type: "ha_soc/access/info" });
+
+export const fetchProbeStatus = (hass: HomeAssistant) =>
+  ws<ProbeOverview>(hass, { type: "ha_soc/probe/status" });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });
