@@ -83,16 +83,26 @@ imply otherwise.
   `proximity` unknown members, registry tidiness), each severity-scaled
   to how directly it can defeat a security-relevant automation.
 - **Security Integrations Health** — an always-present Dashboard section
-  covering the entities/integrations a security-focused install cares
-  about most: every `lock`/`siren`/`valve` entity regardless of which
-  integration owns it (state, "jammed"/unavailable problem flags, and
-  battery level via the same device-registry-linked-sensor convention
-  Home Assistant's own frontend uses for its battery icon), plus
-  config-entry health for a curated allowlist (Kidde HomeSafe, Elk-M1
-  Security, UniFi Protect, Keymaster, Emporia Vue). Every source is
-  independently toggleable in Settings and reports honestly whether it's
-  even installed — never silently hidden just because a domain isn't
-  present on this install.
+  covering the entities a security-focused install cares about most:
+  every `lock`/`siren`/`valve` entity regardless of which integration owns
+  it (state, "jammed"/unavailable problem flags, and battery level via the
+  same device-registry-linked-sensor convention Home Assistant's own
+  frontend uses for its battery icon), plus a Local Peripherals summary
+  tile. Any tile backed by real devices links straight to those devices
+  in Home Assistant's own Devices page (filtered by domain). Config-entry
+  health for the curated integration allowlist (Kidde HomeSafe, Elk-M1
+  Security, UniFi Protect, Keymaster, Emporia Vue) lives in Settings
+  instead, alongside the per-source include/exclude toggles — each row
+  reports honestly whether it's even installed (and links to its devices
+  when it is) rather than being silently hidden just because a domain
+  isn't present on this install.
+- **Notify coverage gaps** — a config-hygiene check (HIGH severity) for a
+  narrower, very concrete worry: an automation that calls `notify.*` when
+  triggered by a lock/siren/valve entity or one of the named security
+  integrations, where that source isn't tracked (or has been toggled off)
+  in Security Integrations Health above. If that integration goes quietly
+  unavailable, nothing on the dashboard reflects it and the only sign is
+  the notification never arriving — this surfaces the gap instead.
 - **Local Peripherals** — every USB serial device Home Assistant itself can
   see, its `/dev/tty` path, and a best-effort match against which
   integration (if any) is using it, with an Ignore action for devices

@@ -2,7 +2,14 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { navigate, navigateToHaPath, deviceDetailPath, devicesForIntegrationPath, SocTab } from "../nav";
+import {
+  navigate,
+  navigateToHaPath,
+  deviceDetailPath,
+  devicesForIntegrationPath,
+  devicesForDomainPath,
+  SocTab,
+} from "../nav";
 import {
   DashboardSummary,
   Detection,
@@ -26,13 +33,6 @@ import {
   setDetectionStatus,
 } from "../data/ha-soc-ws";
 
-const SECURITY_INTEGRATION_LABELS: Record<string, string> = {
-  kidde_homesafe: "Kidde HomeSafe",
-  elkm1: "Elk-M1 Security",
-  unifiprotect: "UniFi Protect",
-  keymaster: "Keymaster",
-  emporia_vue: "Emporia Vue",
-};
 const SECURITY_ENTITY_DOMAIN_LABELS: Record<string, string> = {
   lock: "Locks",
   siren: "Sirens",
@@ -329,11 +329,12 @@ export class HaSocDashboardView extends LitElement {
       }
 
       /* -- Issues by Integration (list) ---------------------------------- */
+      /* Dynamic height on purpose — grows with however many integrations
+         actually have issues, rather than clipping to a fixed height and
+         forcing an inner scrollbar for a list that's usually short. */
       .issues-list {
         display: flex;
         flex-direction: column;
-        max-height: 340px;
-        overflow-y: auto;
       }
       .issues-row {
         display: flex;
@@ -382,17 +383,6 @@ export class HaSocDashboardView extends LitElement {
       }
       .devices-footer select {
         margin-left: auto;
-      }
-
-      /* -- Local Peripherals summary card ---------------------------------- */
-      .peripherals-stats {
-        display: flex;
-        gap: 32px;
-      }
-      .peripherals-stat-value {
-        font-size: 26px;
-        font-weight: 700;
-        line-height: 1.3;
       }
 
       /* -- Security Integrations Health card --------------------------------- */
@@ -770,8 +760,6 @@ export class HaSocDashboardView extends LitElement {
         </div>
       </div>
 
-      ${this._renderPeripheralsCard()}
-
       <div class="card">
         <h3>Recent suspicious activity</h3>
         ${!openDetections.length
@@ -965,8 +953,9 @@ export class HaSocDashboardView extends LitElement {
             : html`<span class="tag enforced">all clear</span>`}
         </h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          Every lock/siren/valve entity regardless of integration, plus config-entry health
-          for a curated set of security-relevant integrations. Configurable in Settings.
+          Every lock/siren/valve entity regardless of integration, plus local USB/serial
+          peripherals. The curated security-integration health list (Kidde, Elk-M1, UniFi
+          Protect, Keymaster, Emporia Vue) moved to Settings — configurable there too.
         </p>
         <div class="security-health-grid">
           ${Object.entries(SECURITY_ENTITY_DOMAIN_LABELS)
@@ -976,7 +965,11 @@ export class HaSocDashboardView extends LitElement {
               const problems = rows.filter((r) => r.problem).length;
               const lowBattery = rows.filter((r) => r.low_battery).length;
               return html`
-                <div class="security-source-tile">
+                <div
+                  class="security-source-tile ${rows.length ? "clickable" : ""}"
+                  title=${rows.length ? `View ${label.toLowerCase()} in Home Assistant's Devices page` : ""}
+                  @click=${() => rows.length && navigateToHaPath(devicesForDomainPath(domain))}
+                >
                   <div class="label">${label}</div>
                   <div class="value" style="color:${problems ? "var(--error-color,#db4437)" : "inherit"}">
                     ${rows.length}
@@ -987,52 +980,33 @@ export class HaSocDashboardView extends LitElement {
                 </div>
               `;
             })}
-          ${Object.entries(SECURITY_INTEGRATION_LABELS)
-            .filter(([domain]) => sec.sources_enabled[domain] ?? true)
-            .map(([domain, label]) => {
-              const rows = sec.integrations.filter((i) => i.domain === domain);
-              const installed = rows.some((r) => r.installed);
-              const bad = rows.some((r) => r.installed && r.state !== "loaded");
-              return html`
-                <div class="security-source-tile">
-                  <div class="label">${label}</div>
-                  <div
-                    class="value"
-                    style="font-size:14px;color:${bad ? "var(--error-color,#db4437)" : "inherit"};"
-                  >
-                    ${!installed ? "not installed" : bad ? rows.find((r) => r.state !== "loaded")!.state : "loaded"}
-                  </div>
-                </div>
-              `;
-            })}
+          ${this._renderPeripheralsTile()}
         </div>
       </div>
     `;
   }
 
-  private _renderPeripheralsCard() {
+  private _renderPeripheralsTile() {
     const p = this._peripherals;
     if (!p || !p.available) return nothing;
 
     return html`
-      <div class="card clickable" @click=${() => this._goto("peripherals")} title="View Local Peripherals">
-        <h3>Local Peripherals</h3>
-        ${!p.total_count
-          ? html`<div class="empty">No USB serial devices detected.</div>`
-          : html`
-              <div class="peripherals-stats">
-                <div>
-                  <div class="peripherals-stat-value">${p.total_count}</div>
-                  <div class="muted">Serial device${p.total_count === 1 ? "" : "s"} detected</div>
-                </div>
-                <div>
-                  <div class="peripherals-stat-value" style="color:${p.unassigned_count ? "var(--status-warning)" : "inherit"}">
-                    ${p.unassigned_count}
-                  </div>
-                  <div class="muted">Unassigned</div>
-                </div>
-              </div>
-            `}
+      <div
+        class="security-source-tile clickable"
+        title="View Local Peripherals"
+        @click=${() => this._goto("peripherals")}
+      >
+        <div class="label">Local Peripherals</div>
+        <div class="value" style="color:${p.unassigned_count ? "var(--status-warning)" : "inherit"}">
+          ${p.total_count}
+        </div>
+        <div class="sub">
+          ${p.total_count
+            ? p.unassigned_count
+              ? `${p.unassigned_count} unassigned`
+              : "none unassigned"
+            : "no USB serial devices detected"}
+        </div>
       </div>
     `;
   }

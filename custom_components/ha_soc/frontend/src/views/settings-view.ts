@@ -2,14 +2,18 @@ import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { HaSocSettings, fetchSettings, updateSettings } from "../data/ha-soc-ws";
+import { navigateToHaPath, devicesForIntegrationPath } from "../nav";
+import { HaSocSettings, SecurityOverview, fetchSettings, fetchSecurityHealth, updateSettings } from "../data/ha-soc-ws";
 
 const MB = 1024 * 1024;
 
-const SECURITY_SOURCE_LABELS: { domain: string; label: string }[] = [
+const ENTITY_DOMAIN_SOURCE_LABELS: { domain: string; label: string }[] = [
   { domain: "lock", label: "Lock entities (any integration)" },
   { domain: "siren", label: "Siren entities (any integration)" },
   { domain: "valve", label: "Valve entities (any integration)" },
+];
+
+const NAMED_INTEGRATION_SOURCE_LABELS: { domain: string; label: string }[] = [
   { domain: "kidde_homesafe", label: "Kidde HomeSafe" },
   { domain: "elkm1", label: "Elk-M1 Security" },
   { domain: "unifiprotect", label: "UniFi Protect" },
@@ -24,6 +28,7 @@ export class HaSocSettingsView extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _settings: HaSocSettings | null = null;
+  @state() private _security: SecurityOverview | null = null;
   @state() private _loading = true;
 
   connectedCallback(): void {
@@ -35,6 +40,16 @@ export class HaSocSettingsView extends LitElement {
     this._loading = true;
     try {
       this._settings = await fetchSettings(this.hass);
+      // Fetched separately: a failure here (e.g. the security_health
+      // websocket command erroring) must never block settings from
+      // loading — it only means the Integrations Loaded status/link
+      // below degrades to "not installed" until the next successful load,
+      // not that the whole page gets stuck on "Loading settings…".
+      try {
+        this._security = await fetchSecurityHealth(this.hass);
+      } catch {
+        this._security = null;
+      }
     } finally {
       this._loading = false;
     }
@@ -61,6 +76,33 @@ export class HaSocSettingsView extends LitElement {
   private _updateSecuritySource(domain: string, enabled: boolean) {
     if (!this._settings) return;
     this._update("security_sources_enabled", { ...this._settings.security_sources_enabled, [domain]: enabled });
+  }
+
+  private _renderIntegrationRow(domain: string, label: string) {
+    const s = this._settings!;
+    const rows = this._security?.integrations.filter((i) => i.domain === domain) ?? [];
+    const installed = rows.some((r) => r.installed);
+    const bad = rows.some((r) => r.installed && r.state !== "loaded");
+    const entryId = rows.find((r) => r.installed)?.entry_id ?? null;
+    const statusText = !installed ? "not installed" : bad ? rows.find((r) => r.state !== "loaded")!.state : "loaded";
+
+    return html`
+      <div class="settings-row">
+        <span>${label}</span>
+        <span
+          class="muted ${installed && entryId ? "clickable" : ""}"
+          style="font-size:12px;${bad ? "color:var(--error-color,#db4437);" : ""}"
+          title=${installed && entryId ? "View in Home Assistant's Devices page" : ""}
+          @click=${() => installed && entryId && navigateToHaPath(devicesForIntegrationPath(entryId))}
+          >${statusText}</span
+        >
+        <input
+          type="checkbox"
+          .checked=${s.security_sources_enabled?.[domain] ?? true}
+          @change=${(e: Event) => this._updateSecuritySource(domain, (e.target as HTMLInputElement).checked)}
+        />
+      </div>
+    `;
   }
 
   render() {
@@ -223,7 +265,7 @@ export class HaSocSettingsView extends LitElement {
           installed" rather than being hidden, and turning a toggle off here only affects
           this dashboard section, nothing else.
         </p>
-        ${SECURITY_SOURCE_LABELS.map(
+        ${ENTITY_DOMAIN_SOURCE_LABELS.map(
           ({ domain, label }) => html`
             <label class="settings-row">
               <span>${label}</span>
@@ -236,6 +278,10 @@ export class HaSocSettingsView extends LitElement {
             </label>
           `
         )}
+        <h4 style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);">
+          Integrations Loaded
+        </h4>
+        ${NAMED_INTEGRATION_SOURCE_LABELS.map(({ domain, label }) => this._renderIntegrationRow(domain, label))}
       </div>
 
       <div class="card">

@@ -59,3 +59,7 @@ export function deviceDetailPath(deviceId: string): string {
 export function devicesForIntegrationPath(configEntryId: string): string {
   return `/config/devices/dashboard?historyBack=1&config_entry=${configEntryId}`;
 }
+
+export function devicesForDomainPath(domain: string): string {
+  return `/config/devices/dashboard?historyBack=1&domain=${domain}`;
+}
