@@ -72,7 +72,7 @@ export class HaSocDashboardView extends LitElement {
 
       .row3 {
         display: grid;
-        grid-template-columns: 1.3fr 1fr 1fr;
+        grid-template-columns: 1.3fr 1fr 1fr 1fr;
         gap: 12px;
         margin-bottom: 16px;
       }
@@ -565,6 +565,13 @@ export class HaSocDashboardView extends LitElement {
 
     const riskGaugePercent = Math.max(0, Math.min(100, (d.combined_risk_score / 10) * 100));
 
+    const entityCounts = s.entity_state_counts ?? { unavailable: 0, unknown: 0, total: 0 };
+    const failedUnknownTotal = entityCounts.unavailable + entityCounts.unknown;
+    const failedUnknownSegments = [
+      { key: "unavailable", label: "Failed (unavailable)", color: "var(--status-critical)", value: entityCounts.unavailable },
+      { key: "unknown", label: "Unknown", color: "var(--status-warning)", value: entityCounts.unknown },
+    ];
+
     const allFilteredDevices = this._sortedFilteredDevices();
     const shownDevices =
       this._devicePageSize === "all" ? allFilteredDevices : allFilteredDevices.slice(0, this._devicePageSize);
@@ -634,6 +641,25 @@ export class HaSocDashboardView extends LitElement {
           </div>
           <div class="gauge-caption">
             Combined risk score of all devices — weighted so higher-severity CVEs count more.
+          </div>
+        </div>
+
+        <div class="card clickable" @click=${() => this._goto("entity_remap")} title="Fix broken entity references">
+          <h3>Failed / Unknown Entities</h3>
+          <div class="donut-wrap">
+            <div class="donut" style="background:${this._donutGradient(failedUnknownSegments)}">
+              <div class="center">${failedUnknownTotal.toLocaleString()}</div>
+            </div>
+            <div class="legend">
+              ${failedUnknownSegments.map(
+                (seg) => html`
+                  <div class="row">
+                    <span class="sw" style="background:${seg.color}"></span>${seg.label}
+                    <span class="val">${seg.value.toLocaleString()}</span>
+                  </div>
+                `
+              )}
+            </div>
           </div>
         </div>
       </div>

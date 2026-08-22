@@ -64,6 +64,10 @@
     "misconfig_finding": {
       "title": "{title}",
       "description": "{summary} Review this finding in the HA SOC misconfiguration report."
+    },
+    "stale_access_token": {
+      "title": "Long-lived access token unused for a long time",
+      "description": "The token \"{token_name}\" belonging to \"{user_name}\" hasn't been used since {last_used}. A long-lived access token never expires on its own — an old, forgotten one is standing attack surface if it ever leaked. Revoke it from the HA SOC Users & Access tab if it's no longer needed."
     }
   }
 }

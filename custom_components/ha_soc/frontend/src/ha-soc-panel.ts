@@ -11,6 +11,7 @@ import "./views/scanner-view";
 import "./views/dashboard-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
+import "./views/entity-remap-view";
 import "./views/settings-view";
 
 type TabId = SocTab;
@@ -23,6 +24,7 @@ const TABS: { id: TabId; label: string }[] = [
   { id: "scanner", label: "Scanner" },
   { id: "logs", label: "Logs" },
   { id: "peripherals", label: "Local Peripherals" },
+  { id: "entity_remap", label: "Entity ReMap" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -164,6 +166,8 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;
       case "peripherals":
         return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
+      case "entity_remap":
+        return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
       case "settings":
         return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":

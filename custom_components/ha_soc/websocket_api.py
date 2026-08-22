@@ -127,6 +127,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_probe_status,
         ws_peripherals_list,
         ws_peripherals_set_ignored,
+        ws_entity_remap_find_references,
+        ws_entity_remap_apply,
+        ws_entity_remap_broken_references,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -735,6 +738,12 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
     high_crit_vulns = [f for f in vulns if (f.get("cvss") or 0) >= 7.0]
     active_users = [u for u in users if u.get("is_active")]
 
+    from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN
+
+    all_states = hass.states.async_all()
+    unavailable_count = sum(1 for s in all_states if s.state == STATE_UNAVAILABLE)
+    unknown_count = sum(1 for s in all_states if s.state == STATE_UNKNOWN)
+
     connection.send_result(
         msg["id"],
         {
@@ -744,6 +753,11 @@ async def ws_dashboard_summary(hass: HomeAssistant, connection, msg: dict) -> No
             "users_at_risk_count": len(users_at_risk),
             "total_users_count": len(risk_results),
             "critical_high_vuln_count": len(high_crit_vulns),
+            "entity_state_counts": {
+                "unavailable": unavailable_count,
+                "unknown": unknown_count,
+                "total": len(all_states),
+            },
             "risk_band_counts": {
                 band: len([r for r in risk_results.values() if r.get("band") == band])
                 for band in ("low", "moderate", "high", "critical")
@@ -844,6 +858,62 @@ async def ws_peripherals_set_ignored(hass: HomeAssistant, connection, msg: dict)
         runtime.store, msg["key"], msg["ignored"], by_user_id=connection.user.id, raw_name=msg["raw_name"]
     )
     connection.send_result(msg["id"], {"ok": True})
+
+
+# ----------------------------------------------------------------------------
+# Entity ReMap — find and fix broken/stale entity_id references across
+# automations, scripts, scenes, dashboards, and helpers. See entity_remap.py
+# for exactly what's editable vs. detect-only and why.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/entity_remap/find_references", vol.Required("entity_id"): str}
+)
+@websocket_api.async_response
+async def ws_entity_remap_find_references(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .entity_remap import async_find_references
+
+    report = await async_find_references(hass, msg["entity_id"])
+    connection.send_result(msg["id"], report)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/entity_remap/apply",
+        vol.Required("old_entity_id"): str,
+        vol.Required("new_entity_id"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_entity_remap_apply(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .entity_remap import async_apply_remap
+
+    runtime = _runtime(hass)
+    old_id, new_id = msg["old_entity_id"], msg["new_entity_id"]
+    if old_id == new_id:
+        connection.send_error(msg["id"], "same_entity", "Old and replacement entity are the same.")
+        return
+
+    result = await async_apply_remap(hass, old_id, new_id)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "entity_remap_applied", **result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/entity_remap/broken_references"})
+@websocket_api.async_response
+async def ws_entity_remap_broken_references(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .entity_remap import async_scan_broken_references
+
+    broken = await async_scan_broken_references(hass)
+    connection.send_result(msg["id"], {"broken": broken})
 
 
 # ----------------------------------------------------------------------------

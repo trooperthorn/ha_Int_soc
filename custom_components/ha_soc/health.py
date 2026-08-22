@@ -578,6 +578,7 @@ class IntegrationHealth:
             self._check_ssh_addon_inventory,
             self._check_ssh_addon_exposed,
             self._check_probe_addon_not_reporting,
+            self._check_broken_entity_references,
         )
         results: list[dict] = []
         for check in checks:
@@ -1041,6 +1042,46 @@ class IntegrationHealth:
         )
         return self._async_finalize_check(
             "probe_addon_not_reporting",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )
+
+    async def _check_broken_entity_references(self) -> list[dict]:
+        """check="broken_entity_references" — one aggregated finding.
+
+        Spook-inspired: the large majority (37 of 41) of Spook's automated
+        chores are variations on "does this automation/script/scene/
+        helper reference an entity that no longer exists" — see this
+        project's README for the fuller scoping rationale on why a
+        curated subset rather than Spook's full catalog. This is that
+        subset's proactive half: entity_remap.py's single-pass scan
+        across automations, scripts, scenes, and structured helper
+        fields (not Lovelace — see that module's docstring on why). Each
+        broken reference found is directly actionable from the new
+        Entity ReMap tab: pick the broken entity_id, pick its
+        replacement, and every editable reference gets corrected in
+        place.
+        """
+        from .entity_remap import async_scan_broken_references
+
+        broken = await async_scan_broken_references(self.hass)
+        if not broken:
+            return self._async_finalize_check("broken_entity_references", [])
+
+        finding = _new_finding(
+            "misconfig:broken_entity_references", "broken_entity_references", SEVERITY_LOW,
+            title="Automations, scripts, or scenes reference entities that no longer exist",
+            summary=(
+                f"{len(broken)} entity_id(s) are referenced by an automation, script, "
+                "scene, or helper but don't correspond to any known entity — most often "
+                "left behind after a device was replaced or an entity was renamed. Fix "
+                "them from the HA SOC Entity ReMap tab."
+            ),
+            detail={"broken": broken},
+        )
+        return self._async_finalize_check(
+            "broken_entity_references",
             [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
                 "title": finding["title"], "summary": finding["summary"],
             })],

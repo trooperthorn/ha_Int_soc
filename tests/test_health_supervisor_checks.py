@@ -226,6 +226,36 @@ async def test_probe_not_reporting_ignores_stopped_addon(
     assert health._probe_unreported_since is None
 
 
+async def test_broken_entity_references_empty_when_nothing_broken(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    findings = await health._check_broken_entity_references()
+    assert findings == []
+
+
+async def test_broken_entity_references_flags_dangling_automation_entity(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    from homeassistant.setup import async_setup_component
+
+    config = [
+        {
+            "id": "auto1",
+            "alias": "Broken",
+            "trigger": [{"platform": "state", "entity_id": "sensor.gone"}],
+            "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    findings = await health._check_broken_entity_references()
+    assert len(findings) == 1
+    assert findings[0]["check"] == "broken_entity_references"
+    broken_ids = [b["entity_id"] for b in findings[0]["detail"]["broken"]]
+    assert "sensor.gone" in broken_ids
+
+
 @pytest.fixture
 async def entry(hass: HomeAssistant) -> MockConfigEntry:
     config_entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
