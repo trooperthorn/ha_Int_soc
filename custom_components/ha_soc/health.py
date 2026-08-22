@@ -33,6 +33,7 @@ from collections.abc import Callable
 from datetime import datetime, timedelta
 import ipaddress
 import logging
+from typing import Any
 
 from homeassistant.config import async_hass_config_yaml
 from homeassistant.config_entries import (
@@ -54,6 +55,7 @@ import homeassistant.util.dt as dt
 
 from .const import (
     DOMAIN,
+    PROBE_ADDON_NAME,
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_INFO,
@@ -125,6 +127,14 @@ _FAILING_STATES = (
 # way to enumerate every third-party SSH add-on's slug ahead of time.
 _KNOWN_SSH_ADDON_SLUGS = {"core_ssh"}
 
+# How long the HA SOC Probe add-on can be installed and running without
+# ever successfully reporting before this is worth a Repairs issue rather
+# than just the add-on's own log. Generous on purpose: the add-on itself
+# (see ha_soc_probe's run script) retries every 30s-5min on a rejected
+# report, so a genuinely healthy pairing reconnects within that window,
+# not this one — this only fires for a setup that's actually stuck.
+PROBE_NOT_REPORTING_GRACE = timedelta(minutes=30)
+
 
 def _iso_now() -> str:
     return dt.utcnow().isoformat()
@@ -192,6 +202,12 @@ class IntegrationHealth:
         self._retry_buckets: dict[str, dict[int, int]] = {}
         self._unavail_samples: dict[str, list[tuple[float, float]]] = {}
         self._started_at: datetime | None = None
+        # In-memory only, like _started_at: when this run of the integration
+        # first observed the probe add-on installed+running with no report
+        # yet. Deliberately resets on every reload rather than persisting —
+        # a fresh grace window after a reload is the right call here, the
+        # same way _started_at's own startup grace works.
+        self._probe_unreported_since: datetime | None = None
 
         self._dispatcher_unsub: Callable[[], None] | None = None
         self._timer_unsub: Callable[[], None] | None = None
@@ -562,6 +578,22 @@ class IntegrationHealth:
             self._check_addon_protection_mode,
             self._check_ssh_addon_inventory,
             self._check_ssh_addon_exposed,
+            self._check_probe_addon_not_reporting,
+            self._check_broken_entity_references,
+            self._check_unknown_service_references,
+            self._check_unknown_device_references,
+            self._check_unknown_area_floor_label_references,
+            self._check_alert_unknown_references,
+            self._check_notify_group_unknown_members,
+            self._check_person_unknown_trackers,
+            self._check_group_unknown_members,
+            self._check_proximity_unknown_references,
+            self._check_lovelace_missing_resources,
+            self._check_empty_areas_and_floors,
+            self._check_unused_labels_and_blueprints,
+            self._check_unknown_customize_entities,
+            self._check_orphaned_statistics,
+            self._check_energy_unknown_references,
         )
         results: list[dict] = []
         for check in checks:
@@ -969,3 +1001,356 @@ class IntegrationHealth:
             }))
 
         return self._async_finalize_check("ssh_addon_exposed", items)
+
+    async def _check_probe_addon_not_reporting(self) -> list[dict]:
+        """check="probe_addon_not_reporting" — Supervisor-only; no-ops off Supervisor.
+
+        Deliberately scoped to "installed, running, and has NEVER once
+        reported successfully" — a real, stuck "half setup" state with no
+        benign explanation. Deliberately NOT "used to report, now quiet":
+        judging that correctly would need this add-on's own configured
+        scan_interval_hours (1-24h, this integration doesn't read add-on
+        options) to know what "overdue" even means, and a healthy pairing
+        already recovers from a transient gap on its own — see the add-on's
+        run script, which retries every 30s-5min on a rejected report
+        rather than waiting out its full scan interval. A probe that
+        reported once and has since gone quiet is almost always just
+        between scans or riding out a Home Assistant Core restart, not
+        broken; nothing here should page anyone about that.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            self._probe_unreported_since = None
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass) or {}
+        info = next(
+            (i for i in addons.values() if i.get("name") == PROBE_ADDON_NAME), None
+        )
+        running = bool(info is not None and info.get("state") == "started")
+
+        if not running or self._store.data.get("host_probe") is not None:
+            self._probe_unreported_since = None
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        now = dt.utcnow()
+        if self._probe_unreported_since is None:
+            self._probe_unreported_since = now
+        if now - self._probe_unreported_since < PROBE_NOT_REPORTING_GRACE:
+            return self._async_finalize_check("probe_addon_not_reporting", [])
+
+        finding = _new_finding(
+            "misconfig:probe_addon_not_reporting", "probe_addon_not_reporting", SEVERITY_MEDIUM,
+            title="HA SOC Probe add-on is running but has never reported in",
+            summary=(
+                "The HA SOC Probe add-on is installed and running, but "
+                "hasn't successfully reported any data since HA SOC last "
+                "started — it looks half set up. Check the add-on's own "
+                "log (Settings > Add-ons > HA SOC Probe > Log) for why; a "
+                "common cause is this config entry not having finished "
+                "loading yet when the add-on made its first attempt."
+            ),
+            detail={},
+        )
+        return self._async_finalize_check(
+            "probe_addon_not_reporting",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )
+
+    def _async_hygiene_finding(
+        self, check: str, severity: str, title: str, summary: str, items: list[Any]
+    ) -> list[dict]:
+        """Shared plumbing for every config_hygiene.py-backed check below:
+        one aggregated finding when items is non-empty, none when it's
+        empty (so a resolved condition clears via the normal
+        _async_resolve_missing path). Repairs mirroring is handled by
+        _async_finalize_check itself, which already skips it for
+        SEVERITY_INFO — no special-casing needed here for the purely
+        informational/tidiness checks.
+        """
+        if not items:
+            return self._async_finalize_check(check, [])
+        finding = _new_finding(
+            f"misconfig:{check}", check, severity, title=title, summary=summary, detail={"items": items},
+        )
+        return self._async_finalize_check(
+            check,
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {"title": title, "summary": summary})],
+        )
+
+    async def _check_unknown_service_references(self) -> list[dict]:
+        """check="unknown_service_references" — Spook-inspired.
+
+        An automation/script action calling a service that no longer
+        exists silently no-ops at runtime — for a security-relevant
+        automation (arm a lock, send a notification), that's a control
+        that looks configured but has quietly stopped doing anything.
+        """
+        from .config_hygiene import async_unknown_service_references
+
+        items = await async_unknown_service_references(self.hass)
+        return self._async_hygiene_finding(
+            "unknown_service_references", SEVERITY_MEDIUM,
+            "Automations/scripts call services that no longer exist",
+            f"{len(items)} action(s) target a service that isn't registered — likely left behind "
+            "after an integration was removed or renamed. That action silently does nothing when "
+            "the automation/script runs.",
+            items,
+        )
+
+    async def _check_unknown_device_references(self) -> list[dict]:
+        """check="unknown_device_references" — Spook-inspired."""
+        from .config_hygiene import async_unknown_device_references
+
+        items = await async_unknown_device_references(self.hass)
+        return self._async_hygiene_finding(
+            "unknown_device_references", SEVERITY_MEDIUM,
+            "Automations/scripts reference devices that no longer exist",
+            f"{len(items)} device trigger/condition/action reference(s) point at a device_id no "
+            "longer in the device registry — that trigger/condition/action can never fire.",
+            items,
+        )
+
+    async def _check_unknown_area_floor_label_references(self) -> list[dict]:
+        """check="unknown_area_floor_label_references" — Spook-inspired.
+
+        Weaker signal than a device/service/entity reference (targeting a
+        whole area/floor/label is less commonly the crux of a single
+        security automation), still collected for the same "insight into
+        what could affect a security automation" reason as the rest.
+        """
+        from .config_hygiene import async_unknown_area_floor_label_references
+
+        items = await async_unknown_area_floor_label_references(self.hass)
+        return self._async_hygiene_finding(
+            "unknown_area_floor_label_references", SEVERITY_LOW,
+            "Automations/scripts target areas, floors, or labels that no longer exist",
+            f"{len(items)} area/floor/label reference(s) in automations or scripts point at "
+            "something no longer in the registry.",
+            items,
+        )
+
+    async def _check_alert_unknown_references(self) -> list[dict]:
+        """check="alert_unknown_references" — Spook-inspired, HIGH severity.
+
+        The alert: integration exists specifically to page someone about
+        a bad state (a leak, smoke, a door left open) — a broken watched
+        entity or notifier means it silently stops alerting at all, the
+        single most directly security-relevant item in this whole sweep.
+        """
+        from .config_hygiene import async_alert_unknown_references
+
+        items = await async_alert_unknown_references(self.hass)
+        return self._async_hygiene_finding(
+            "alert_unknown_references", SEVERITY_HIGH,
+            "An alert: entry references an entity or notifier that no longer exists",
+            f"{len(items)} alert: reference(s) (watched entity or notify target) point at "
+            "something that no longer exists — that alert has silently stopped working.",
+            items,
+        )
+
+    async def _check_notify_group_unknown_members(self) -> list[dict]:
+        """check="notify_group_unknown_members" — Spook-inspired.
+
+        A notify group silently missing a member means whoever that
+        member represented stops receiving notifications with no error
+        anywhere — including, potentially, security alerts.
+        """
+        from .config_hygiene import async_notify_group_unknown_members
+
+        items = await async_notify_group_unknown_members(self.hass)
+        return self._async_hygiene_finding(
+            "notify_group_unknown_members", SEVERITY_MEDIUM,
+            "A notify group references a member that no longer exists",
+            f"{len(items)} notify group member reference(s) point at a service or entity that no "
+            "longer exists — notifications sent to that group silently reach fewer recipients.",
+            items,
+        )
+
+    async def _check_person_unknown_trackers(self) -> list[dict]:
+        """check="person_unknown_trackers" — Spook-inspired.
+
+        Presence detection commonly drives auto-arm/disarm and geofenced
+        security automations — a person entity with a stale
+        device_tracker is working off incomplete presence data.
+        """
+        from .config_hygiene import async_person_unknown_trackers
+
+        items = await async_person_unknown_trackers(self.hass)
+        return self._async_hygiene_finding(
+            "person_unknown_trackers", SEVERITY_MEDIUM,
+            "A person entity references a device tracker that no longer exists",
+            f"{len(items)} person/device_tracker reference(s) point at a tracker that no longer "
+            "exists — presence detection for that person is based on incomplete data.",
+            items,
+        )
+
+    async def _check_group_unknown_members(self) -> list[dict]:
+        """check="group_unknown_members" — Spook-inspired."""
+        from .config_hygiene import async_group_unknown_members
+
+        items = await async_group_unknown_members(self.hass)
+        return self._async_hygiene_finding(
+            "group_unknown_members", SEVERITY_LOW,
+            "A group entity references a member that no longer exists",
+            f"{len(items)} group member reference(s) point at an entity that no longer exists — "
+            "an aggregation like \"all doors\"/\"all locks\" is silently monitoring fewer entities "
+            "than configured.",
+            items,
+        )
+
+    async def _check_proximity_unknown_references(self) -> list[dict]:
+        """check="proximity_unknown_references" — Spook-inspired."""
+        from .config_hygiene import async_proximity_unknown_references
+
+        items = await async_proximity_unknown_references(self.hass)
+        return self._async_hygiene_finding(
+            "proximity_unknown_references", SEVERITY_LOW,
+            "A proximity entry references a zone or tracked entity that no longer exists",
+            f"{len(items)} proximity reference(s) (zone, tracked entity, or ignored zone) point at "
+            "something that no longer exists.",
+            items,
+        )
+
+    async def _check_lovelace_missing_resources(self) -> list[dict]:
+        """check="lovelace_missing_resources" — informational.
+
+        Reliability, not security: a missing dashboard resource breaks a
+        card's rendering in the browser, nothing backend depends on it.
+        Only /local/ resource URLs are checkable at all — see
+        config_hygiene.py's docstring on why HACS-managed and other
+        externally-registered static paths aren't verifiable.
+        """
+        from .config_hygiene import async_lovelace_missing_resources
+
+        items = await async_lovelace_missing_resources(self.hass)
+        return self._async_hygiene_finding(
+            "lovelace_missing_resources", SEVERITY_INFO,
+            "A Lovelace resource points at a local file that doesn't exist",
+            f"{len(items)} dashboard resource(s) under /local/ don't correspond to a real file — "
+            "the card(s) using them will fail to render.",
+            items,
+        )
+
+    async def _check_empty_areas_and_floors(self) -> list[dict]:
+        """check="empty_areas_and_floors" — informational, pure registry tidiness."""
+        from .config_hygiene import async_empty_areas_and_floors
+
+        result = await async_empty_areas_and_floors(self.hass)
+        items = [{"kind": "area", "name": n} for n in result["areas"]] + [
+            {"kind": "floor", "name": n} for n in result["floors"]
+        ]
+        return self._async_hygiene_finding(
+            "empty_areas_and_floors", SEVERITY_INFO,
+            "Areas or floors with nothing assigned to them",
+            f"{len(items)} area(s)/floor(s) have no devices or entities assigned — organizational "
+            "tidiness only, no functional impact.",
+            items,
+        )
+
+    async def _check_unused_labels_and_blueprints(self) -> list[dict]:
+        """check="unused_labels_and_blueprints" — informational, pure registry tidiness."""
+        from .config_hygiene import async_unused_labels_and_blueprints
+
+        result = await async_unused_labels_and_blueprints(self.hass)
+        items = [{"kind": "label", "name": n} for n in result["labels"]] + [
+            {"kind": "blueprint", "name": n} for n in result["blueprints"]
+        ]
+        return self._async_hygiene_finding(
+            "unused_labels_and_blueprints", SEVERITY_INFO,
+            "Labels or blueprints that aren't attached to or used by anything",
+            f"{len(items)} label(s)/blueprint(s) aren't attached to or used by anything — "
+            "organizational tidiness only, no functional impact.",
+            items,
+        )
+
+    async def _check_unknown_customize_entities(self) -> list[dict]:
+        """check="unknown_customize_entities" — informational.
+
+        A stale customize: block does nothing — it's a dead attribute
+        override for an entity that no longer exists, not a functional
+        problem, just clutter worth knowing about.
+        """
+        from .config_hygiene import async_unknown_customize_entities
+
+        entity_ids = await async_unknown_customize_entities(self.hass)
+        items = [{"entity_id": e} for e in entity_ids]
+        return self._async_hygiene_finding(
+            "unknown_customize_entities", SEVERITY_INFO,
+            "customize: blocks for entities that no longer exist",
+            f"{len(items)} customize: entry/entries reference an entity_id that no longer exists — "
+            "dead configuration, safe to remove.",
+            items,
+        )
+
+    async def _check_orphaned_statistics(self) -> list[dict]:
+        """check="orphaned_statistics" — informational, database bloat only."""
+        from .config_hygiene import async_orphaned_statistics
+
+        statistic_ids = await async_orphaned_statistics(self.hass)
+        items = [{"statistic_id": s} for s in statistic_ids]
+        return self._async_hygiene_finding(
+            "orphaned_statistics", SEVERITY_INFO,
+            "Long-term statistics exist for entities that no longer exist",
+            f"{len(items)} statistic series have no corresponding live entity — most often left "
+            "behind after an entity was renamed or removed. Database bloat only.",
+            items,
+        )
+
+    async def _check_energy_unknown_references(self) -> list[dict]:
+        """check="energy_unknown_references" — informational."""
+        from .config_hygiene import async_energy_unknown_references
+
+        items = await async_energy_unknown_references(self.hass)
+        return self._async_hygiene_finding(
+            "energy_unknown_references", SEVERITY_INFO,
+            "The Energy dashboard references a source that no longer exists",
+            f"{len(items)} Energy dashboard reference(s) point at a statistic/entity that no "
+            "longer exists — that source will show as missing data on the Energy dashboard.",
+            items,
+        )
+
+    async def _check_broken_entity_references(self) -> list[dict]:
+        """check="broken_entity_references" — one aggregated finding.
+
+        Spook-inspired: the large majority (37 of 41) of Spook's automated
+        chores are variations on "does this automation/script/scene/
+        helper reference an entity that no longer exists" — see this
+        project's README for the fuller scoping rationale on why a
+        curated subset rather than Spook's full catalog. This is that
+        subset's proactive half: entity_remap.py's single-pass scan
+        across automations, scripts, scenes, and structured helper
+        fields (not Lovelace — see that module's docstring on why). Each
+        broken reference found is directly actionable from the new
+        Entity ReMap tab: pick the broken entity_id, pick its
+        replacement, and every editable reference gets corrected in
+        place.
+        """
+        from .entity_remap import async_scan_broken_references
+
+        broken = await async_scan_broken_references(self.hass)
+        if not broken:
+            return self._async_finalize_check("broken_entity_references", [])
+
+        finding = _new_finding(
+            "misconfig:broken_entity_references", "broken_entity_references", SEVERITY_LOW,
+            title="Automations, scripts, or scenes reference entities that no longer exist",
+            summary=(
+                f"{len(broken)} entity_id(s) are referenced by an automation, script, "
+                "scene, or helper but don't correspond to any known entity — most often "
+                "left behind after a device was replaced or an entity was renamed. Fix "
+                "them from the HA SOC Entity ReMap tab."
+            ),
+            detail={"broken": broken},
+        )
+        return self._async_finalize_check(
+            "broken_entity_references",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )

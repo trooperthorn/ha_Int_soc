@@ -27,7 +27,11 @@ from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
 from .permissions import PermissionsMatrix
 from .probe import async_register_probe_service, async_unregister_probe_service
-from .repairs import async_sync_admin_mfa_issues, async_sync_vuln_issues
+from .repairs import (
+    async_sync_admin_mfa_issues,
+    async_sync_stale_token_issues,
+    async_sync_vuln_issues,
+)
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
 from .store import HaSocData, SettingsData
@@ -142,6 +146,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
             await risk.async_compute_posture()
             user_list = await users.async_list_users()
             await async_sync_admin_mfa_issues(hass, user_list)
+            await async_sync_stale_token_issues(hass)
             await async_enforce_mfa_policy(store, users, audit, user_list)
         except Exception:  # noqa: BLE001 - never let the analysis loop die silently
             _LOGGER.exception("HA SOC periodic analysis pass failed")

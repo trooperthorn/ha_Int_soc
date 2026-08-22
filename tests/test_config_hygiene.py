@@ -1,0 +1,305 @@
+"""Tests for config_hygiene.py — the Spook-inspired proactive sweep for
+reference kinds beyond plain entity_id (service/device/area/floor/label/
+alert/notify-group/person/group/proximity/lovelace-resource/registry
+tidiness/customize/statistics/energy).
+"""
+from __future__ import annotations
+
+import pytest
+from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import area_registry as ar, device_registry as dr, entity_registry as er, floor_registry as fr, label_registry as lr
+from homeassistant.setup import async_setup_component
+
+from custom_components.ha_soc import config_hygiene as ch
+
+
+# -- Unknown service references (the recursive walker) -----------------------
+
+
+async def test_unknown_service_reference_is_found(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto1",
+            "alias": "Broken Service",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"service": "nonexistent_domain.nonexistent_service", "data": {}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_service_references(hass)
+    assert any(f["service"] == "nonexistent_domain.nonexistent_service" for f in found)
+
+
+async def test_known_service_reference_is_not_flagged(hass: HomeAssistant) -> None:
+    assert await async_setup_component(hass, "persistent_notification", {})
+    config = [
+        {
+            "id": "auto2",
+            "alias": "Working Service",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_service_references(hass)
+    assert not any(f["service"] == "persistent_notification.create" for f in found)
+
+
+async def test_unknown_service_found_inside_nested_choose_block(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto3",
+            "alias": "Nested",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [
+                {
+                    "choose": [
+                        {
+                            "conditions": [],
+                            "sequence": [{"service": "ghost_domain.ghost_service", "data": {}}],
+                        }
+                    ]
+                }
+            ],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_service_references(hass)
+    assert any(f["service"] == "ghost_domain.ghost_service" for f in found)
+
+
+async def test_templated_service_call_is_not_flagged(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto4",
+            "alias": "Dynamic",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"service": "{{ 'light.turn_on' }}", "data": {}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    # Should not crash, and should not report the template text itself as
+    # a broken "domain.service" — it never matches the plain-string shape.
+    found = await ch.async_unknown_service_references(hass)
+    assert not any("{{" in f["service"] for f in found)
+
+
+# -- Unknown device references ------------------------------------------------
+
+
+async def test_unknown_device_reference_is_found(hass: HomeAssistant) -> None:
+    # Real finding from an earlier version of this test: HA validates
+    # every device trigger/condition/action against the device registry
+    # at automation SETUP time — an automation authored against a device
+    # that never existed fails to set up and gets disabled, with HA's own
+    # clear error log. This check's actual gap is narrower and still
+    # real: a device that existed (so the automation loaded fine) and was
+    # later REMOVED from the registry, leaving the automation's already-
+    # loaded config holding a now-dangling device_id with no HA-native
+    # warning at all. Simulate exactly that.
+    entry = MockConfigEntry(domain="test_platform")
+    entry.add_to_hass(hass)
+    device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("test", "dev1")})
+
+    config = [
+        {
+            "id": "auto5",
+            "alias": "Device Automation",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"device_id": device.id, "domain": "switch", "type": "turn_on", "entity_id": "switch.x"}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    # Confirm it loaded successfully before deleting the device.
+    found_before = await ch.async_unknown_device_references(hass)
+    assert not any(f["device_id"] == device.id for f in found_before)
+
+    dr.async_get(hass).async_remove_device(device.id)
+
+    found_after = await ch.async_unknown_device_references(hass)
+    assert any(f["device_id"] == device.id for f in found_after)
+
+
+# -- Unknown area/floor/label references -------------------------------------
+
+
+async def test_unknown_area_reference_is_found(hass: HomeAssistant) -> None:
+    config = [
+        {
+            "id": "auto6",
+            "alias": "Ghost Area",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"service": "light.turn_on", "target": {"area_id": "nonexistent-area"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_area_floor_label_references(hass)
+    assert any(f["ref_type"] == "area" and f["ref_id"] == "nonexistent-area" for f in found)
+
+
+async def test_real_area_reference_is_not_flagged(hass: HomeAssistant) -> None:
+    area = ar.async_get(hass).async_get_or_create("Kitchen")
+    config = [
+        {
+            "id": "auto7",
+            "alias": "Real Area",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [{"service": "light.turn_on", "target": {"area_id": area.id}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_area_floor_label_references(hass)
+    assert not any(f["ref_id"] == area.id for f in found)
+
+
+# -- alert: unknown entity/notifier references -------------------------------
+
+
+async def test_alert_unknown_entity_and_notifier(hass: HomeAssistant) -> None:
+    from unittest.mock import patch
+
+    fake_config = {
+        "alert": {
+            "broken_alert": {
+                "name": "Broken",
+                "entity_id": "binary_sensor.nonexistent",
+                "notifiers": ["nonexistent_notifier"],
+            }
+        }
+    }
+    with patch("homeassistant.config.async_hass_config_yaml", return_value=fake_config):
+        found = await ch.async_alert_unknown_references(hass)
+
+    kinds = {(f["alert_id"], f["kind"]) for f in found}
+    assert ("broken_alert", "entity") in kinds
+    assert ("broken_alert", "notifier") in kinds
+
+
+async def test_alert_with_real_entity_is_not_flagged(hass: HomeAssistant) -> None:
+    from unittest.mock import patch
+
+    hass.states.async_set("binary_sensor.smoke", "off")
+    fake_config = {"alert": {"real_alert": {"name": "Real", "entity_id": "binary_sensor.smoke", "notifiers": []}}}
+    with patch("homeassistant.config.async_hass_config_yaml", return_value=fake_config):
+        found = await ch.async_alert_unknown_references(hass)
+
+    assert not any(f["alert_id"] == "real_alert" for f in found)
+
+
+# -- person: unknown device_tracker -------------------------------------------
+
+
+async def test_person_unknown_tracker_is_found(hass: HomeAssistant) -> None:
+    hass.states.async_set("person.alice", "home", {"device_trackers": ["device_tracker.nonexistent"]})
+    found = await ch.async_person_unknown_trackers(hass)
+    assert any(f["person"] == "person.alice" and f["ref"] == "device_tracker.nonexistent" for f in found)
+
+
+async def test_person_real_tracker_is_not_flagged(hass: HomeAssistant) -> None:
+    hass.states.async_set("device_tracker.alice_phone", "home")
+    hass.states.async_set("person.alice", "home", {"device_trackers": ["device_tracker.alice_phone"]})
+    found = await ch.async_person_unknown_trackers(hass)
+    assert not any(f["ref"] == "device_tracker.alice_phone" for f in found)
+
+
+# -- group: unknown member -----------------------------------------------------
+
+
+async def test_group_unknown_member_is_found(hass: HomeAssistant) -> None:
+    hass.states.async_set("group.all_locks", "locked", {"entity_id": ["lock.nonexistent"]})
+    found = await ch.async_group_unknown_members(hass)
+    assert any(f["group"] == "group.all_locks" and f["ref"] == "lock.nonexistent" for f in found)
+
+
+# -- Registry tidiness: empty areas/floors -------------------------------------
+
+
+async def test_empty_area_is_found(hass: HomeAssistant) -> None:
+    ar.async_get(hass).async_get_or_create("Unused Room")
+    result = await ch.async_empty_areas_and_floors(hass)
+    assert "Unused Room" in result["areas"]
+
+
+async def test_area_with_device_is_not_empty(hass: HomeAssistant) -> None:
+    area = ar.async_get(hass).async_get_or_create("Used Room")
+    entry = MockConfigEntry(domain="test_platform")
+    entry.add_to_hass(hass)
+    dr.async_get(hass).async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={("test", "dev1")}, suggested_area="Used Room"
+    )
+    result = await ch.async_empty_areas_and_floors(hass)
+    assert "Used Room" not in result["areas"]
+
+
+async def test_empty_floor_is_found(hass: HomeAssistant) -> None:
+    fr.async_get(hass).async_create("Unused Floor")
+    result = await ch.async_empty_areas_and_floors(hass)
+    assert "Unused Floor" in result["floors"]
+
+
+# -- customize: blocks ----------------------------------------------------------
+
+
+async def test_unknown_customize_entity_is_found(hass: HomeAssistant) -> None:
+    from unittest.mock import patch
+
+    fake_config = {"homeassistant": {"customize": {"light.nonexistent": {"friendly_name": "Ghost"}}}}
+    with patch("homeassistant.config.async_hass_config_yaml", return_value=fake_config):
+        found = await ch.async_unknown_customize_entities(hass)
+
+    assert "light.nonexistent" in found
+
+
+async def test_customize_for_real_entity_is_not_flagged(hass: HomeAssistant) -> None:
+    from unittest.mock import patch
+
+    hass.states.async_set("light.kitchen", "on")
+    fake_config = {"homeassistant": {"customize": {"light.kitchen": {"friendly_name": "Kitchen"}}}}
+    with patch("homeassistant.config.async_hass_config_yaml", return_value=fake_config):
+        found = await ch.async_unknown_customize_entities(hass)
+
+    assert "light.kitchen" not in found
+
+
+# -- Degrade-honestly paths (component not loaded at all) ---------------------
+
+
+async def test_orphaned_statistics_returns_empty_without_recorder(hass: HomeAssistant) -> None:
+    found = await ch.async_orphaned_statistics(hass)
+    assert found == []
+
+
+async def test_energy_returns_empty_without_manager(hass: HomeAssistant) -> None:
+    found = await ch.async_energy_unknown_references(hass)
+    assert found == []
+
+
+async def test_lovelace_missing_resources_returns_empty_without_lovelace(hass: HomeAssistant) -> None:
+    found = await ch.async_lovelace_missing_resources(hass)
+    assert found == []
+
+
+async def test_proximity_returns_empty_without_entries(hass: HomeAssistant) -> None:
+    found = await ch.async_proximity_unknown_references(hass)
+    assert found == []
+
+
+async def test_notify_group_returns_empty_without_entries(hass: HomeAssistant) -> None:
+    found = await ch.async_notify_group_unknown_members(hass)
+    assert found == []

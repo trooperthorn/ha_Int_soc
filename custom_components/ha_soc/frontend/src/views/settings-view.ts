@@ -6,6 +6,17 @@ import { HaSocSettings, fetchSettings, updateSettings } from "../data/ha-soc-ws"
 
 const MB = 1024 * 1024;
 
+const SECURITY_SOURCE_LABELS: { domain: string; label: string }[] = [
+  { domain: "lock", label: "Lock entities (any integration)" },
+  { domain: "siren", label: "Siren entities (any integration)" },
+  { domain: "valve", label: "Valve entities (any integration)" },
+  { domain: "kidde_homesafe", label: "Kidde HomeSafe" },
+  { domain: "elkm1", label: "Elk-M1 Security" },
+  { domain: "unifiprotect", label: "UniFi Protect" },
+  { domain: "keymaster", label: "Keymaster" },
+  { domain: "emporia_vue", label: "Emporia Vue" },
+];
+
 @customElement("ha-soc-settings-view")
 export class HaSocSettingsView extends LitElement {
   static styles = sharedStyles;
@@ -45,6 +56,11 @@ export class HaSocSettingsView extends LitElement {
       this._settings = previous;
       throw e;
     }
+  }
+
+  private _updateSecuritySource(domain: string, enabled: boolean) {
+    if (!this._settings) return;
+    this._update("security_sources_enabled", { ...this._settings.security_sources_enabled, [domain]: enabled });
   }
 
   render() {
@@ -197,6 +213,29 @@ export class HaSocSettingsView extends LitElement {
               this._update("audit_max_bytes", Math.round(Number((e.target as HTMLInputElement).value) * MB))}
           />
         </label>
+      </div>
+
+      <div class="card">
+        <h3>Security Integrations Health</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          What shows up in the always-present Dashboard security card. A source stays on
+          by default — a device or integration you haven't installed just reports "not
+          installed" rather than being hidden, and turning a toggle off here only affects
+          this dashboard section, nothing else.
+        </p>
+        ${SECURITY_SOURCE_LABELS.map(
+          ({ domain, label }) => html`
+            <label class="settings-row">
+              <span>${label}</span>
+              <input
+                type="checkbox"
+                .checked=${s.security_sources_enabled[domain] ?? true}
+                @change=${(e: Event) =>
+                  this._updateSecuritySource(domain, (e.target as HTMLInputElement).checked)}
+              />
+            </label>
+          `
+        )}
       </div>
 
       <div class="card">

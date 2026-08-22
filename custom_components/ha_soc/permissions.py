@@ -286,10 +286,24 @@ class PermissionsMatrix:
 
         try:
             return await lovelace_config.async_load(False)
-        except HomeAssistantError:
-            _LOGGER.warning(
-                "Failed to load dashboard config for url_path=%s", url_path, exc_info=True
-            )
+        except HomeAssistantError as err:
+            # ConfigNotFound specifically means "this dashboard is
+            # registered but has never actually been saved/configured" —
+            # a normal state (e.g. a just-created additional dashboard
+            # nobody has opened yet), not a failure. Logging that at
+            # warning+traceback level reads as a crash when it isn't one;
+            # every other HomeAssistantError here is genuinely unexpected
+            # and keeps the louder log.
+            from homeassistant.components.lovelace.const import ConfigNotFound
+
+            if isinstance(err, ConfigNotFound):
+                _LOGGER.debug(
+                    "Dashboard url_path=%s has no saved configuration yet", url_path
+                )
+            else:
+                _LOGGER.warning(
+                    "Failed to load dashboard config for url_path=%s", url_path, exc_info=True
+                )
             return None
         except (AttributeError, TypeError):
             _LOGGER.warning(

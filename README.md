@@ -64,6 +64,35 @@ imply otherwise.
 - **Host Probe (optional add-on)** — real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
+- **Entity ReMap** — finds and fixes broken/stale entity_id references
+  across automations, scripts, scenes, Lovelace dashboards, and
+  config-entry-backed helpers. Neither Home Assistant core nor
+  [Spook](https://github.com/frenck/spook) (researched directly against
+  both projects' source before building this — see below) actually solves
+  this: renaming or replacing an entity only ever touches the entity
+  registry, and everything that referenced the old entity_id keeps that
+  exact string and silently breaks. Every reference found is labeled
+  honestly editable or not — a reference living only inside a Jinja
+  template is detected but never auto-rewritten, since a text edit there
+  risks corrupting the template or missing a dynamic reference. A
+  Spook-inspired proactive sweep also surfaces broken references as a
+  dashboard donut and a Repairs issue without anyone needing to search
+  for a specific entity first — see below for the full sweep, which now
+  covers every reference kind in Spook's catalog (service/device/area/
+  floor/label references, `alert`/notify-group/`person`/`group`/
+  `proximity` unknown members, registry tidiness), each severity-scaled
+  to how directly it can defeat a security-relevant automation.
+- **Security Integrations Health** — an always-present Dashboard section
+  covering the entities/integrations a security-focused install cares
+  about most: every `lock`/`siren`/`valve` entity regardless of which
+  integration owns it (state, "jammed"/unavailable problem flags, and
+  battery level via the same device-registry-linked-sensor convention
+  Home Assistant's own frontend uses for its battery icon), plus
+  config-entry health for a curated allowlist (Kidde HomeSafe, Elk-M1
+  Security, UniFi Protect, Keymaster, Emporia Vue). Every source is
+  independently toggleable in Settings and reports honestly whether it's
+  even installed — never silently hidden just because a domain isn't
+  present on this install.
 - **Local Peripherals** — every USB serial device Home Assistant itself can
   see, its `/dev/tty` path, and a best-effort match against which
   integration (if any) is using it, with an Ignore action for devices
@@ -123,6 +152,10 @@ custom_components/ha_soc/
 ├── mfa_policy.py         — audit-only/auto-deactivate enforcement for admins without MFA
 ├── probe.py              — optional HA SOC Probe add-on detection + result ingestion
 ├── peripherals.py        — USB/serial device visibility (Local Peripherals tab)
+├── entity_remap.py       — find/fix broken entity_id references (Entity ReMap tab)
+├── config_hygiene.py     — Spook-inspired broken-reference sweep (service/device/area/
+│                           floor/label/alert/notify-group/person/group/proximity/registry)
+├── security_health.py    — lock/siren/valve entities + curated integration health (Dashboard)
 ├── websocket_api.py      — the ha_soc/* command surface the panel calls
 ├── sensor.py / binary_sensor.py / repairs.py — entities + Repairs integration
 ├── panel.py              — sidebar panel registration
@@ -184,6 +217,15 @@ integration's Scanner tab shows a "not available" (Core/Container) or
 add-on isn't there to provide this data — never silent, empty results
 that could be misread as "scanned, nothing found."
 
+If the add-on is installed and running but the integration keeps
+rejecting its reports (typically a brief window right after Home
+Assistant Core itself restarts, while this integration is still
+loading), the add-on holds in a short, capped retry loop instead of
+waiting out its full `scan_interval_hours` — and if that stuck state
+lasts more than 30 minutes, `health.py` raises a Repairs issue
+(`probe_addon_not_reporting`) so a half-set-up pairing is visible in
+Home Assistant itself, not just the add-on's own log.
+
 The add-on's config.yaml/Dockerfile/run-script were written and reviewed
 against Home Assistant's official add-on documentation and real, current
 official add-ons, and its port-extraction logic was tested against a
@@ -191,3 +233,92 @@ realistic `/proc/net/tcp` fixture — but unlike the integration itself
 (validated against a real `pytest-homeassistant-custom-component` harness),
 it has not yet been built and run against a real Supervisor. See
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
+
+## Entity ReMap, config hygiene, and what's borrowed from Spook
+
+Before building this, both [Spook](https://github.com/frenck/spook) (a
+well-known, actively developed, MIT-licensed HACS add-on) and Home
+Assistant core itself were checked directly against their source —
+not from memory — to answer two questions honestly.
+
+**What does Spook actually do?** Its ~114-item catalog splits into ~73
+"services" (mostly exposing already-possible admin actions — area/label
+CRUD, entity enable/disable — as automatable; genuinely useful, but not
+something a SOC report would flag) and 41 automated "chores": 37 are
+variations on "does this automation/script/scene/dashboard/helper
+reference an entity/area/device/floor/label that no longer exists," the
+remaining 4 are pure registry tidiness (empty areas/floors, unused
+labels/blueprints), and exactly one — stale long-lived access tokens
+unused for 180+ days — is a genuine credential-hygiene finding on its own
+(adopted via an original implementation against `hass.auth`, not Spook's
+code, mirrored into Repairs; see `repairs.py`).
+
+That first pass under-weighted the 37 broken-reference chores: even
+though a stale reference isn't a vulnerability by itself, it can silently
+defeat a security-relevant automation — an `alert:` that stops paging
+about a leak, a notify group that quietly drops a recipient, an
+automation action calling a service that no longer exists. **Every
+reference kind in Spook's chore catalog is now covered**, in
+`config_hygiene.py` (verified against the installed Home Assistant
+package before writing a line — service calls via a recursive walk of
+each automation/script's validated config; device/area/floor/label
+references via Home Assistant's own `referenced_devices`/`referenced_areas`
+family, the same mechanism `entity_remap.py` already uses for entities;
+`alert:`/legacy notify-group config via `homeassistant.config`'s merged-YAML
+re-parse, since neither stores its live config anywhere queryable;
+`person`/`group` members via their state attributes; `proximity` via its
+config entry — confirmed migrated off YAML entirely in the installed
+core version). Severity scales with how directly the broken reference can
+defeat a security control (`alert:` references are high; pure registry
+tidiness like empty areas or orphaned statistics is informational-only,
+never mirrored to Repairs, matching this project's existing inventory-only
+findings) — every one of the 41 chores is collected and reported, exactly
+none silently dropped, but not every one gets the same loudness.
+
+One real, dynamically-tested finding from building this: Home Assistant
+already validates a device trigger/condition/action against the device
+registry at automation *setup* time and disables the whole automation
+with its own clear error if the device never existed — so
+`unknown_device_references` can only ever catch the narrower, still-real
+case of a device that existed when the automation last loaded and was
+*later* removed from the registry.
+
+**Does Spook (or core) fix broken references?** No — verified directly in
+both codebases, not assumed. Renaming an entity's ID, in core's UI or via
+Spook's own `homeassistant.update_entity_id` service (itself a thin
+wrapper over the same core registry call), only ever updates the entity
+registry entry itself; nothing listens for that change and rewrites the
+automations/scripts/scenes/dashboards/helpers that still hold the old
+literal string. Spook's own broken-reference chores can *detect* the
+fallout after the fact, but explicitly do not fix it (`is_fixable=False`
+on every one of them). This is genuine, unclaimed gap — **Entity ReMap**
+is that fix, built from scratch against Home Assistant's own APIs:
+
+- **Automations / scripts / scenes** — real, structured references (a
+  trigger's `entity_id:`, a service call's `target:`) are rewritten by
+  replicating the exact read/lock/atomic-write/reload sequence
+  `homeassistant.components.config`'s own editor views use internally
+  (there's no importable library function for this). A reference that
+  only exists inside a Jinja template is *never* rewritten — only
+  detected and flagged for manual review, since a text-level rewrite
+  there could corrupt the template or miss a computed reference.
+- **Views (Lovelace dashboards)** — storage-mode dashboards are freely
+  read/writable through the same object core's own frontend uses.
+  YAML-mode dashboards are a confirmed, hard dead end (core's own
+  `LovelaceYAML.async_save()` raises `HomeAssistantError("Not
+  supported")`) and are reported as "manual edit required," never
+  silently skipped.
+- **Helpers** — the 13 config-entry-backed helper domains that store a
+  source entity_id as a plain option field (derivative, utility_meter,
+  threshold, generic_thermostat, generic_hygrostat, integration, min_max,
+  filter, switch_as_x, trend, history_stats, statistics, mold_indicator —
+  every field name verified against the installed package, not guessed)
+  are rewritten directly. Template helpers, and any other config entry
+  that merely *mentions* the entity_id in its stored data, get the same
+  detect-only treatment as templated automation fields.
+
+Nothing here performs an entity registry rename — Entity ReMap only ever
+touches the *consuming* configuration. If the old entity_id should also be
+renamed in the registry, that's Home Assistant's own existing Settings >
+Entities rename, unaffected by and safe to combine with what this module
+does.

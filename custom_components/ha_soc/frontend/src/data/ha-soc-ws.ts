@@ -82,6 +82,7 @@ export interface DashboardSummary {
   risk_band_counts: Record<string, number>;
   mfa_counts: { enabled: number; disabled: number };
   detection_severity_counts: Record<string, number>;
+  entity_state_counts: { unavailable: number; unknown: number; total: number };
 }
 
 // Mirrors vulns.py's DEVICE_STATUS_* — a device's live availability, a
@@ -204,6 +205,38 @@ export interface HaSocSettings {
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
+  security_sources_enabled: Record<string, boolean>;
+}
+
+// Mirrors security_health.py's async_security_overview().
+export interface SecurityEntityRow {
+  entity_id: string;
+  name: string | null;
+  domain: string;
+  state: string;
+  device_class: string | null;
+  problem: boolean;
+  battery_entity_id: string | null;
+  battery_level: number | null;
+  low_battery: boolean;
+  config_entry_id: string | null;
+  platform: string | null;
+}
+
+export interface SecurityIntegrationRow {
+  entry_id: string | null;
+  domain: string;
+  title: string | null;
+  state: string | null;
+  installed: boolean;
+}
+
+export interface SecurityOverview {
+  entities: SecurityEntityRow[];
+  integrations: SecurityIntegrationRow[];
+  problem_count: number;
+  low_battery_count: number;
+  sources_enabled: Record<string, boolean>;
 }
 
 // Mirrors homeassistant/components/system_log's LogEntry.to_dict() exactly
@@ -224,6 +257,45 @@ export interface HaLogEntry {
   exception: string;
   count: number;
   first_occurred: number;
+}
+
+// Mirrors entity_remap.py's async_find_references()/async_apply_remap().
+// Every reference item is honestly labeled editable/not — nothing implies a
+// fix happened until an explicit apply call returns.
+export type EntityRemapKind = "automation" | "script" | "scene" | "dashboard" | "helper" | "other";
+
+export interface EntityRemapReferenceItem {
+  kind: EntityRemapKind;
+  id: string;
+  name: string;
+  editable: boolean;
+  reason: string | null;
+  template_only: boolean;
+}
+
+export interface EntityRemapReport {
+  entity_id: string;
+  automation: EntityRemapReferenceItem[];
+  script: EntityRemapReferenceItem[];
+  scene: EntityRemapReferenceItem[];
+  dashboard: EntityRemapReferenceItem[];
+  helper: EntityRemapReferenceItem[];
+  other: EntityRemapReferenceItem[];
+  total_count: number;
+  editable_count: number;
+  paths: { automation: string; script: string; scene: string };
+}
+
+export interface EntityRemapApplyResult {
+  old_entity_id: string;
+  new_entity_id: string;
+  fixed: Record<EntityRemapKind, number>;
+  errors: string[];
+}
+
+export interface BrokenEntityReference {
+  entity_id: string;
+  referenced_by: { kind: string; name: string }[];
 }
 
 export interface AccessInfo {
@@ -341,6 +413,20 @@ export const fetchVulns = (hass: HomeAssistant) =>
 
 export const fetchSystemLog = (hass: HomeAssistant) => ws<HaLogEntry[]>(hass, { type: "system_log/list" });
 
+// Real core command, called directly for the same reason fetchSystemLog is:
+// a genuine, already-admin-gated core command, not something worth proxying
+// through ha_soc/* just to relabel it.
+export interface EntityRegistryEntry {
+  entity_id: string;
+  name: string | null;
+  original_name: string | null;
+  platform: string;
+  disabled_by: string | null;
+}
+
+export const fetchEntityRegistry = (hass: HomeAssistant) =>
+  ws<EntityRegistryEntry[]>(hass, { type: "config/entity_registry/list" });
+
 export const scanVulnsNow = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/scan_now" }).then((r) => r.findings);
 
@@ -384,6 +470,24 @@ export const fetchPeripherals = (hass: HomeAssistant) =>
 
 export const setPeripheralIgnored = (hass: HomeAssistant, key: string, ignored: boolean, rawName: string) =>
   ws(hass, { type: "ha_soc/peripherals/set_ignored", key, ignored, raw_name: rawName });
+
+export const findEntityRemapReferences = (hass: HomeAssistant, entityId: string) =>
+  ws<EntityRemapReport>(hass, { type: "ha_soc/entity_remap/find_references", entity_id: entityId });
+
+export const applyEntityRemap = (hass: HomeAssistant, oldEntityId: string, newEntityId: string) =>
+  ws<EntityRemapApplyResult>(hass, {
+    type: "ha_soc/entity_remap/apply",
+    old_entity_id: oldEntityId,
+    new_entity_id: newEntityId,
+  });
+
+export const fetchBrokenEntityReferences = (hass: HomeAssistant) =>
+  ws<{ broken: BrokenEntityReference[] }>(hass, { type: "ha_soc/entity_remap/broken_references" }).then(
+    (r) => r.broken
+  );
+
+export const fetchSecurityHealth = (hass: HomeAssistant) =>
+  ws<SecurityOverview>(hass, { type: "ha_soc/security_health/list" });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

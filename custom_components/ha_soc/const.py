@@ -108,3 +108,24 @@ PROBE_ADDON_NAME = "HA SOC Probe"
 # Supervisor's core-API proxy (SUPERVISOR_TOKEN + POST
 # http://supervisor/core/api/services/<domain>/<service>).
 SERVICE_INGEST_PROBE_RESULT = "ingest_probe_result"
+
+# -- Security Integrations Health (Dashboard section) --------------------
+# A curated allowlist of integration domains whose config-entry health is
+# always worth surfacing on the dashboard for a security-focused install —
+# alongside every entity in a security-relevant ENTITY domain (lock/siren/
+# valve), regardless of which integration owns it. Each source is
+# independently toggleable in Settings; this list is the default/known
+# set, not a hard limit — an integration domain not in this list simply
+# isn't offered as a toggle yet, it isn't blocked from anything else.
+SECURITY_INTEGRATION_DOMAINS: list[str] = [
+    "kidde_homesafe",  # Kidde HomeSafe smoke/CO detectors
+    "elkm1",  # Elk-M1 security/alarm panel
+    "emporia_vue",  # Emporia Vue energy monitor
+    "unifiprotect",  # UniFi Protect cameras/NVR
+    "keymaster",  # Lock code/keypad management
+]
+SECURITY_ENTITY_DOMAINS: list[str] = ["lock", "siren", "valve"]
+DEFAULT_SECURITY_SOURCES_ENABLED: dict[str, bool] = dict.fromkeys(
+    SECURITY_INTEGRATION_DOMAINS + SECURITY_ENTITY_DOMAINS, True
+)
+CONF_SECURITY_SOURCES_ENABLED = "security_sources_enabled"

@@ -11,18 +11,20 @@ import "./views/scanner-view";
 import "./views/dashboard-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
+import "./views/entity-remap-view";
 import "./views/settings-view";
 
 type TabId = SocTab;
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "entity_remap", label: "Entity ReMap" },
   { id: "users", label: "Users & Access" },
-  { id: "audit", label: "Audit Log" },
   { id: "permissions", label: "Permissions" },
+  { id: "audit", label: "Audit Log" },
+  { id: "peripherals", label: "Local Peripherals" },
   { id: "scanner", label: "Scanner" },
   { id: "logs", label: "Logs" },
-  { id: "peripherals", label: "Local Peripherals" },
   { id: "settings", label: "Settings" },
 ];
 
@@ -164,6 +166,8 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;
       case "peripherals":
         return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
+      case "entity_remap":
+        return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
       case "settings":
         return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":
