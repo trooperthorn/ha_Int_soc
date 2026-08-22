@@ -75,11 +75,24 @@ imply otherwise.
   honestly editable or not — a reference living only inside a Jinja
   template is detected but never auto-rewritten, since a text edit there
   risks corrupting the template or missing a dynamic reference. A
-  Spook-inspired proactive sweep (the one part of Spook's ~114-item
-  catalog that's genuinely this project's scope — the other ~113 are
-  config-hygiene/convenience tooling, not security) also surfaces broken
-  references as a dashboard donut and a Repairs issue without anyone
-  needing to search for a specific entity first.
+  Spook-inspired proactive sweep also surfaces broken references as a
+  dashboard donut and a Repairs issue without anyone needing to search
+  for a specific entity first — see below for the full sweep, which now
+  covers every reference kind in Spook's catalog (service/device/area/
+  floor/label references, `alert`/notify-group/`person`/`group`/
+  `proximity` unknown members, registry tidiness), each severity-scaled
+  to how directly it can defeat a security-relevant automation.
+- **Security Integrations Health** — an always-present Dashboard section
+  covering the entities/integrations a security-focused install cares
+  about most: every `lock`/`siren`/`valve` entity regardless of which
+  integration owns it (state, "jammed"/unavailable problem flags, and
+  battery level via the same device-registry-linked-sensor convention
+  Home Assistant's own frontend uses for its battery icon), plus
+  config-entry health for a curated allowlist (Kidde HomeSafe, Elk-M1
+  Security, UniFi Protect, Keymaster, Emporia Vue). Every source is
+  independently toggleable in Settings and reports honestly whether it's
+  even installed — never silently hidden just because a domain isn't
+  present on this install.
 - **Local Peripherals** — every USB serial device Home Assistant itself can
   see, its `/dev/tty` path, and a best-effort match against which
   integration (if any) is using it, with an Ignore action for devices
@@ -140,6 +153,9 @@ custom_components/ha_soc/
 ├── probe.py              — optional HA SOC Probe add-on detection + result ingestion
 ├── peripherals.py        — USB/serial device visibility (Local Peripherals tab)
 ├── entity_remap.py       — find/fix broken entity_id references (Entity ReMap tab)
+├── config_hygiene.py     — Spook-inspired broken-reference sweep (service/device/area/
+│                           floor/label/alert/notify-group/person/group/proximity/registry)
+├── security_health.py    — lock/siren/valve entities + curated integration health (Dashboard)
 ├── websocket_api.py      — the ha_soc/* command surface the panel calls
 ├── sensor.py / binary_sensor.py / repairs.py — entities + Repairs integration
 ├── panel.py              — sidebar panel registration
@@ -218,28 +234,54 @@ realistic `/proc/net/tcp` fixture — but unlike the integration itself
 it has not yet been built and run against a real Supervisor. See
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
 
-## Entity ReMap, and what it does (and doesn't) borrow from Spook
+## Entity ReMap, config hygiene, and what's borrowed from Spook
 
 Before building this, both [Spook](https://github.com/frenck/spook) (a
 well-known, actively developed, MIT-licensed HACS add-on) and Home
 Assistant core itself were checked directly against their source —
 not from memory — to answer two questions honestly.
 
-**What does Spook actually do?** Its ~114-item catalog is overwhelmingly
-configuration-hygiene and convenience tooling, not security in the sense
-this project uses the word: 37 of its 41 automated "chores" are variations
-on "does this automation/script/scene/dashboard/helper reference an
-entity/area/device/floor/label that no longer exists," 5 are pure registry
-tidiness (empty areas, unused labels), and its ~73 "services" mostly expose
-already-possible admin actions (area/label CRUD, entity enable/disable) as
-automatable — genuinely useful, but not something a SOC report would flag.
-Exactly one chore, stale long-lived access tokens unused for 180+ days, is
-a real credential-hygiene finding — and that's the one this project
-actually adopted (own implementation against `hass.auth`, not Spook's
-code, mirrored into Repairs; see `repairs.py`). "Ingest all of Spook"
-as literally stated would mean absorbing ~113 items unrelated to this
-project's mission — done selectively instead, with the reasoning kept
-here rather than silently dropping the rest of the ask.
+**What does Spook actually do?** Its ~114-item catalog splits into ~73
+"services" (mostly exposing already-possible admin actions — area/label
+CRUD, entity enable/disable — as automatable; genuinely useful, but not
+something a SOC report would flag) and 41 automated "chores": 37 are
+variations on "does this automation/script/scene/dashboard/helper
+reference an entity/area/device/floor/label that no longer exists," the
+remaining 4 are pure registry tidiness (empty areas/floors, unused
+labels/blueprints), and exactly one — stale long-lived access tokens
+unused for 180+ days — is a genuine credential-hygiene finding on its own
+(adopted via an original implementation against `hass.auth`, not Spook's
+code, mirrored into Repairs; see `repairs.py`).
+
+That first pass under-weighted the 37 broken-reference chores: even
+though a stale reference isn't a vulnerability by itself, it can silently
+defeat a security-relevant automation — an `alert:` that stops paging
+about a leak, a notify group that quietly drops a recipient, an
+automation action calling a service that no longer exists. **Every
+reference kind in Spook's chore catalog is now covered**, in
+`config_hygiene.py` (verified against the installed Home Assistant
+package before writing a line — service calls via a recursive walk of
+each automation/script's validated config; device/area/floor/label
+references via Home Assistant's own `referenced_devices`/`referenced_areas`
+family, the same mechanism `entity_remap.py` already uses for entities;
+`alert:`/legacy notify-group config via `homeassistant.config`'s merged-YAML
+re-parse, since neither stores its live config anywhere queryable;
+`person`/`group` members via their state attributes; `proximity` via its
+config entry — confirmed migrated off YAML entirely in the installed
+core version). Severity scales with how directly the broken reference can
+defeat a security control (`alert:` references are high; pure registry
+tidiness like empty areas or orphaned statistics is informational-only,
+never mirrored to Repairs, matching this project's existing inventory-only
+findings) — every one of the 41 chores is collected and reported, exactly
+none silently dropped, but not every one gets the same loudness.
+
+One real, dynamically-tested finding from building this: Home Assistant
+already validates a device trigger/condition/action against the device
+registry at automation *setup* time and disables the whole automation
+with its own clear error if the device never existed — so
+`unknown_device_references` can only ever catch the narrower, still-real
+case of a device that existed when the automation last loaded and was
+*later* removed from the registry.
 
 **Does Spook (or core) fix broken references?** No — verified directly in
 both codebases, not assumed. Renaming an entity's ID, in core's UI or via
