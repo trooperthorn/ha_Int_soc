@@ -103,3 +103,29 @@ read the module docstrings, they're written for exactly that.
   a human to confirm or dismiss, never an automatic verdict.
 - The audit log is **tamper-evident, not tamper-proof** — anyone with the
   filesystem access that reaches `.storage/` can rewrite the hash chain too.
+
+## Planned: optional HA SOC Probe add-on
+
+Action item to pick back up later — not started.
+
+An optional, HAOS-only companion add-on for the one class of check that
+genuinely needs a separate container: real socket-level **port scanning**
+of the host (what's actually listening, not just what's configured).
+Everything else originally floated alongside this idea turned out to
+already be reachable from inside the integration itself and does **not**
+need an add-on:
+
+- Whether an SSH-capable add-on is installed/exposed, and HA config-check /
+  Repairs issues — both readable today via the Supervisor `supervisor/api`
+  websocket proxy and `issue_registry`, already available to `health.py`.
+  This should just become an extension of `health.py`'s misconfig checks,
+  no add-on required.
+- Only the add-on itself (working name: `ha_soc_probe`) needs building —
+  a small container that periodically probes its own host's open ports and
+  calls back into HA over the REST API (`POST /api/services/ha_soc.ingest_probe_result`),
+  the same pattern other monitoring add-ons use, so no new communication
+  channel is needed on the integration side.
+- The integration should detect the add-on's presence via the Supervisor
+  add-on list and only show that panel section when it's actually
+  installed — Container/Core installs must never look like they silently
+  lack data; they should show the section is unavailable, honestly.
