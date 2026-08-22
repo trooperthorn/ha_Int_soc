@@ -1,6 +1,7 @@
 """HaSocData load/save round-trip and finding-lifecycle helpers."""
 from homeassistant.core import HomeAssistant
 
+from custom_components.ha_soc.const import DEFAULT_SECURITY_SOURCES_ENABLED
 from custom_components.ha_soc.store import HaSocData, default_store_data
 
 
@@ -43,6 +44,34 @@ async def test_finding_lifecycle(hass: HomeAssistant) -> None:
     # Re-upserting (simulating a re-scan) must preserve the analyst's status.
     store.async_upsert_finding("vuln_findings", "dev1:CVE-2024-1", {"severity": "high", "status": "new"})
     assert store.data["vuln_findings"]["dev1:CVE-2024-1"]["status"] == "confirmed"
+
+
+async def test_load_merges_missing_nested_settings_keys(hass: HomeAssistant) -> None:
+    """A real production bug: a store written before security_sources_enabled
+    existed (any install that ran before that feature shipped) has a full
+    `settings` dict on disk that is simply missing the new key entirely. The
+    old load path did `defaults.update(stored)`, a one-level-deep merge —
+    since `settings` is itself a top-level key present in `stored`, that
+    replaced the correctly-defaulted `settings` sub-dict wholesale with the
+    on-disk one, permanently dropping `security_sources_enabled`. The
+    Settings tab's frontend reads `s.security_sources_enabled[domain]`
+    unconditionally, so a missing key there crashed its render every time,
+    with no server-side error — "Settings never loads, no error in the log".
+    """
+    store = HaSocData(hass)
+    await store.async_load()
+
+    old_settings = dict(store.data["settings"])
+    del old_settings["security_sources_enabled"]
+    old_settings["scanner_enabled"] = False  # a real prior customization that must survive the merge
+    store.data["settings"] = old_settings
+    await store.async_save_now()
+
+    store2 = HaSocData(hass)
+    had_data = await store2.async_load()
+    assert had_data is True
+    assert store2.settings["security_sources_enabled"] == DEFAULT_SECURITY_SOURCES_ENABLED
+    assert store2.settings["scanner_enabled"] is False
 
 
 async def test_purge_user(hass: HomeAssistant) -> None:

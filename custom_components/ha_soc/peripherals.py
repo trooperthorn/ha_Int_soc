@@ -36,11 +36,22 @@ import homeassistant.util.dt as dt_util
 from .store import HaSocData
 
 
-def _device_key(vid: str, pid: str, serial_number: str | None) -> str:
-    """Stable identity across reboots — a /dev/ttyUSB0-style path can be
-    reassigned to a different physical device on replug/reboot, but
-    vendor/product/serial together reliably identify the same unit."""
-    return f"{vid}:{pid}:{serial_number or 'noserial'}"
+def _device_key(vid: str | None, pid: str | None, serial_number: str | None, resolved_device: str) -> str:
+    """Stable identity across reboots for a real USB device — a
+    /dev/ttyUSB0-style path can be reassigned to a different physical
+    device on replug/reboot, but vendor/product/serial together reliably
+    identify the same unit. Home Assistant's scan_serial_ports() can also
+    return native/platform serial ports with no USB vendor/product at all
+    (SerialDevice, as opposed to USBDevice — a real HA core distinction,
+    not this module's invention); those have no such stable triple, so
+    resolved_device is the best available fallback — honestly weaker,
+    since a native port's device node isn't guaranteed stable either, but
+    the identity concept degrading gracefully to "the path" for a device
+    class with genuinely less identifying information available.
+    """
+    if vid is not None and pid is not None:
+        return f"{vid}:{pid}:{serial_number or 'noserial'}"
+    return f"native:{resolved_device}"
 
 
 def _assigned_integration(hass: HomeAssistant, *paths: str) -> dict[str, str] | None:
@@ -80,9 +91,24 @@ async def async_peripheral_overview(hass: HomeAssistant, store: HaSocData) -> di
 
     devices: list[dict[str, Any]] = []
     for device in usb_devices:
-        tty_path = os.path.realpath(device.device)
+        # vid/pid: only USBDevice (a real USB device HA could attribute to
+        # a vendor/product) has these — SerialDevice (native/platform
+        # serial ports, no USB descriptor) doesn't, a real HA core
+        # distinction as of the scan_serial_ports() version that
+        # introduced it. getattr degrades this to None on either an older
+        # HA core that predates the split (irrelevant there — every
+        # object was USBDevice-shaped) or a genuine SerialDevice.
+        vid = getattr(device, "vid", None)
+        pid = getattr(device, "pid", None)
+        # resolved_device: present on the HA core version that added the
+        # USBDevice/SerialDevice split (backed by the `serialx` library),
+        # already the by-id-vs-realpath distinction this module used to
+        # compute itself. Fall back to computing it the old way — realpath
+        # of `.device` — on an older core that doesn't have this field yet.
+        resolved_device = getattr(device, "resolved_device", None)
+        tty_path = resolved_device if resolved_device is not None else os.path.realpath(device.device)
         by_id_path = device.device if device.device != tty_path else None
-        key = _device_key(device.vid, device.pid, device.serial_number)
+        key = _device_key(vid, pid, device.serial_number, tty_path)
         assigned = _assigned_integration(hass, tty_path, by_id_path or "")
 
         devices.append(
@@ -93,13 +119,13 @@ async def async_peripheral_overview(hass: HomeAssistant, store: HaSocData) -> di
                     device.serial_number,
                     device.manufacturer,
                     device.description,
-                    device.vid,
-                    device.pid,
+                    vid,
+                    pid,
                 ),
                 "tty_path": tty_path,
                 "by_id_path": by_id_path,
-                "vid": device.vid,
-                "pid": device.pid,
+                "vid": vid,
+                "pid": pid,
                 "serial_number": device.serial_number,
                 "assigned_integration": assigned,
                 "ignored": key in ignored,
