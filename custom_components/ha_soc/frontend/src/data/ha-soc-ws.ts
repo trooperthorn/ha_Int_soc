@@ -205,6 +205,38 @@ export interface HaSocSettings {
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
+  security_sources_enabled: Record<string, boolean>;
+}
+
+// Mirrors security_health.py's async_security_overview().
+export interface SecurityEntityRow {
+  entity_id: string;
+  name: string | null;
+  domain: string;
+  state: string;
+  device_class: string | null;
+  problem: boolean;
+  battery_entity_id: string | null;
+  battery_level: number | null;
+  low_battery: boolean;
+  config_entry_id: string | null;
+  platform: string | null;
+}
+
+export interface SecurityIntegrationRow {
+  entry_id: string | null;
+  domain: string;
+  title: string | null;
+  state: string | null;
+  installed: boolean;
+}
+
+export interface SecurityOverview {
+  entities: SecurityEntityRow[];
+  integrations: SecurityIntegrationRow[];
+  problem_count: number;
+  low_battery_count: number;
+  sources_enabled: Record<string, boolean>;
 }
 
 // Mirrors homeassistant/components/system_log's LogEntry.to_dict() exactly
@@ -453,6 +485,9 @@ export const fetchBrokenEntityReferences = (hass: HomeAssistant) =>
   ws<{ broken: BrokenEntityReference[] }>(hass, { type: "ha_soc/entity_remap/broken_references" }).then(
     (r) => r.broken
   );
+
+export const fetchSecurityHealth = (hass: HomeAssistant) =>
+  ws<SecurityOverview>(hass, { type: "ha_soc/security_health/list" });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

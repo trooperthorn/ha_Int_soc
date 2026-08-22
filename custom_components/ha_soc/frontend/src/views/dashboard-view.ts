@@ -14,6 +14,7 @@ import {
   IntegrationOverview,
   IntegrationIssueCategory,
   PeripheralOverview,
+  SecurityOverview,
   fetchDashboardSummary,
   fetchDashboardDevices,
   fetchDashboardIntegrations,
@@ -21,8 +22,22 @@ import {
   fetchRisk,
   fetchUsers,
   fetchPeripherals,
+  fetchSecurityHealth,
   setDetectionStatus,
 } from "../data/ha-soc-ws";
+
+const SECURITY_INTEGRATION_LABELS: Record<string, string> = {
+  kidde_homesafe: "Kidde HomeSafe",
+  elkm1: "Elk-M1 Security",
+  unifiprotect: "UniFi Protect",
+  keymaster: "Keymaster",
+  emporia_vue: "Emporia Vue",
+};
+const SECURITY_ENTITY_DOMAIN_LABELS: Record<string, string> = {
+  lock: "Locks",
+  siren: "Sirens",
+  valve: "Valves",
+};
 
 type DeviceSortKey = "name" | "vendor" | "risk_score" | "total_findings";
 
@@ -379,6 +394,33 @@ export class HaSocDashboardView extends LitElement {
         font-weight: 700;
         line-height: 1.3;
       }
+
+      /* -- Security Integrations Health card --------------------------------- */
+      .security-health-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+        gap: 12px;
+        margin-top: 8px;
+      }
+      .security-source-tile {
+        border: 1px solid var(--divider-color);
+        border-radius: 8px;
+        padding: 10px 12px;
+      }
+      .security-source-tile .label {
+        font-size: 12px;
+        color: var(--secondary-text-color);
+        margin-bottom: 4px;
+      }
+      .security-source-tile .value {
+        font-size: 20px;
+        font-weight: 700;
+      }
+      .security-source-tile .sub {
+        font-size: 11px;
+        color: var(--secondary-text-color);
+        margin-top: 2px;
+      }
     `,
   ];
 
@@ -388,6 +430,7 @@ export class HaSocDashboardView extends LitElement {
   @state() private _deviceOverview: DeviceOverview | null = null;
   @state() private _integrationOverview: IntegrationOverview | null = null;
   @state() private _peripherals: PeripheralOverview | null = null;
+  @state() private _security: SecurityOverview | null = null;
   @state() private _detections: Detection[] = [];
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _users: HaSocUser[] = [];
@@ -412,19 +455,22 @@ export class HaSocDashboardView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [summary, deviceOverview, integrationOverview, peripherals, detections, risk, users] = await Promise.all([
-        fetchDashboardSummary(this.hass),
-        fetchDashboardDevices(this.hass),
-        fetchDashboardIntegrations(this.hass),
-        fetchPeripherals(this.hass),
-        fetchDetections(this.hass),
-        fetchRisk(this.hass),
-        fetchUsers(this.hass),
-      ]);
+      const [summary, deviceOverview, integrationOverview, peripherals, security, detections, risk, users] =
+        await Promise.all([
+          fetchDashboardSummary(this.hass),
+          fetchDashboardDevices(this.hass),
+          fetchDashboardIntegrations(this.hass),
+          fetchPeripherals(this.hass),
+          fetchSecurityHealth(this.hass),
+          fetchDetections(this.hass),
+          fetchRisk(this.hass),
+          fetchUsers(this.hass),
+        ]);
       this._summary = summary;
       this._deviceOverview = deviceOverview;
       this._integrationOverview = integrationOverview;
       this._peripherals = peripherals;
+      this._security = security;
       this._detections = detections;
       this._risk = risk;
       this._users = users;
@@ -594,6 +640,8 @@ export class HaSocDashboardView extends LitElement {
     ];
 
     return html`
+      ${this._renderSecurityCard()}
+
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">
         <div class="card device-status-card">
@@ -894,6 +942,72 @@ export class HaSocDashboardView extends LitElement {
   private _sortArrow(key: DeviceSortKey) {
     if (this._deviceSort.key !== key) return nothing;
     return html`<span class="arrow">${this._deviceSort.dir === "asc" ? "▲" : "▼"}</span>`;
+  }
+
+  private _renderSecurityCard() {
+    const sec = this._security;
+    if (!sec) return nothing;
+
+    const entitiesByDomain: Record<string, typeof sec.entities> = {};
+    for (const e of sec.entities) {
+      (entitiesByDomain[e.domain] ??= []).push(e);
+    }
+
+    return html`
+      <div class="card">
+        <h3>
+          Security Integrations Health
+          ${sec.problem_count || sec.low_battery_count
+            ? html`<span class="tag" style="background:rgba(219,68,55,0.15);color:var(--error-color,#db4437);">
+                ${sec.problem_count} problem${sec.problem_count === 1 ? "" : "s"}, ${sec.low_battery_count} low
+                battery
+              </span>`
+            : html`<span class="tag enforced">all clear</span>`}
+        </h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Every lock/siren/valve entity regardless of integration, plus config-entry health
+          for a curated set of security-relevant integrations. Configurable in Settings.
+        </p>
+        <div class="security-health-grid">
+          ${Object.entries(SECURITY_ENTITY_DOMAIN_LABELS)
+            .filter(([domain]) => sec.sources_enabled[domain] ?? true)
+            .map(([domain, label]) => {
+              const rows = entitiesByDomain[domain] ?? [];
+              const problems = rows.filter((r) => r.problem).length;
+              const lowBattery = rows.filter((r) => r.low_battery).length;
+              return html`
+                <div class="security-source-tile">
+                  <div class="label">${label}</div>
+                  <div class="value" style="color:${problems ? "var(--error-color,#db4437)" : "inherit"}">
+                    ${rows.length}
+                  </div>
+                  <div class="sub">
+                    ${problems ? `${problems} problem${problems === 1 ? "" : "s"}` : "none reporting a problem"}${lowBattery ? `, ${lowBattery} low battery` : ""}
+                  </div>
+                </div>
+              `;
+            })}
+          ${Object.entries(SECURITY_INTEGRATION_LABELS)
+            .filter(([domain]) => sec.sources_enabled[domain] ?? true)
+            .map(([domain, label]) => {
+              const rows = sec.integrations.filter((i) => i.domain === domain);
+              const installed = rows.some((r) => r.installed);
+              const bad = rows.some((r) => r.installed && r.state !== "loaded");
+              return html`
+                <div class="security-source-tile">
+                  <div class="label">${label}</div>
+                  <div
+                    class="value"
+                    style="font-size:14px;color:${bad ? "var(--error-color,#db4437)" : "inherit"};"
+                  >
+                    ${!installed ? "not installed" : bad ? rows.find((r) => r.state !== "loaded")!.state : "loaded"}
+                  </div>
+                </div>
+              `;
+            })}
+        </div>
+      </div>
+    `;
   }
 
   private _renderPeripheralsCard() {

@@ -131,6 +131,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_entity_remap_find_references,
         ws_entity_remap_apply,
         ws_entity_remap_broken_references,
+        ws_security_health_list,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -915,6 +916,23 @@ async def ws_entity_remap_broken_references(hass: HomeAssistant, connection, msg
 
     broken = await async_scan_broken_references(hass)
     connection.send_result(msg["id"], {"broken": broken})
+
+
+# ----------------------------------------------------------------------------
+# Security Integrations Health — always-present Dashboard card. See
+# security_health.py for exactly what "problem"/"low battery" mean and why.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/security_health/list"})
+@websocket_api.async_response
+async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .security_health import async_security_overview
+
+    runtime = _runtime(hass)
+    overview = await async_security_overview(hass, runtime.store)
+    connection.send_result(msg["id"], overview)
 
 
 # ----------------------------------------------------------------------------
