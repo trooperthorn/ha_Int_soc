@@ -257,6 +257,44 @@ realistic `/proc/net/tcp` fixture — but unlike the integration itself
 it has not yet been built and run against a real Supervisor. See
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
 
+## Firewall Rules (read and write)
+
+Everything else in this project observes and reports; it never mutates a
+host security control. The Firewall Rules card, on the Scanner tab, is
+the one deliberate exception — reading, and optionally writing, the host's
+iptables rules through the HA SOC Probe add-on. It needs the add-on to
+declare a real `CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its
+`config.yaml`), which lowers the add-on's Supervisor security rating by
+one point — a documented, deliberate trade-off, not an accident.
+
+The design exists to answer one question safely: change which ports are
+reachable from where without risking a lockout.
+
+- Every rule this project ever applies lives in one dedicated iptables
+  chain (`HA_SOC_RULES`) the add-on owns outright — never the host's raw
+  `INPUT` chain, never anything Docker itself manages.
+- A proposed ruleset is never permanent on arrival. Proposing one requires
+  acknowledging that the current ruleset will be backed up first; the
+  button that starts this reads **Test**, and relabels itself **Apply**
+  once the change is live, alongside a running countdown (30–60s).
+- The countdown is enforced by a **local, self-contained timer inside the
+  add-on process** — a plain backgrounded `sleep`, not a scheduled
+  callback from Home Assistant. If the new rules break the very network
+  path Core would need to tell the add-on to revert, the revert still has
+  to happen without that path working, so nothing about it depends on
+  that path. If you don't click Apply in time (or the add-on itself
+  crashes mid-test), the pre-change ruleset is restored automatically —
+  an interrupted test is always treated as failed, never as "probably
+  still fine."
+- Core only ever proposes and displays; the add-on is the only thing that
+  actually touches iptables, and its own report is always the final word
+  on what's really active.
+
+See [`custom_components/ha_soc/firewall.py`](custom_components/ha_soc/firewall.py)'s
+module docstring for the full state machine and
+[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md)'s "Firewall rules" section
+for the add-on side of the same design.
+
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 
 Before building this, both [Spook](https://github.com/frenck/spook) (a

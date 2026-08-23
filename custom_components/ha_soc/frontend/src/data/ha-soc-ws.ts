@@ -166,6 +166,45 @@ export interface ProbeOverview {
   result: HostProbeResult | null;
 }
 
+// Mirrors firewall.py's RULE_SCHEMA / pending-test state machine. See that
+// module's docstring for the full read/write safety design — Core only
+// ever proposes and displays; the add-on is the only thing that actually
+// touches iptables, and its own report (known_rules) is always the final
+// word on what's really active.
+export type FirewallRuleAction = "allow" | "deny";
+export type FirewallRuleProto = "tcp" | "udp";
+
+export interface FirewallRule {
+  action: FirewallRuleAction;
+  proto: FirewallRuleProto;
+  port: number;
+  source?: string | null;
+}
+
+export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired";
+
+export interface FirewallPendingTest {
+  test_id: string;
+  proposed_rules: FirewallRule[];
+  status: FirewallTestStatus;
+  requested_by: string;
+  requested_at: string;
+  // null until the add-on's poll actually picks this up and applies it —
+  // still "testing" but not live on the host yet.
+  applied_at: string | null;
+  expires_at: string;
+  window_seconds: number;
+  resolved_at?: string;
+  resolved_by?: string;
+}
+
+export interface FirewallStatus {
+  known_rules: FirewallRule[] | null;
+  known_rules_reported_at: string | null;
+  pending: FirewallPendingTest | null;
+  history: FirewallPendingTest[];
+}
+
 // Mirrors peripherals.py's async_peripheral_overview() — reuses Home
 // Assistant core's own USB discovery data (the same source that already
 // auto-detects a Zigbee/Z-Wave USB stick), so this is available on any
@@ -489,6 +528,22 @@ export const fetchVersion = (hass: HomeAssistant) => ws<VersionInfo>(hass, { typ
 
 export const fetchProbeStatus = (hass: HomeAssistant) =>
   ws<ProbeOverview>(hass, { type: "ha_soc/probe/status" });
+
+export const fetchFirewallStatus = (hass: HomeAssistant) =>
+  ws<FirewallStatus>(hass, { type: "ha_soc/firewall/status" });
+
+export const proposeFirewallTest = (hass: HomeAssistant, rules: FirewallRule[], backupAcknowledged: boolean) =>
+  ws<FirewallPendingTest>(hass, {
+    type: "ha_soc/firewall/test",
+    rules,
+    backup_acknowledged: backupAcknowledged,
+  });
+
+export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/confirm", test_id: testId });
+
+export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

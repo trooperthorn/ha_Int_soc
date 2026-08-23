@@ -1,11 +1,13 @@
 name: HA SOC Probe
-version: "2026.08.23.2"
+version: "2026.08.23.3"
 slug: ha_soc_probe
 description: >-
   Optional host-level companion for the HA SOC integration. Reports the
-  real listening TCP ports on the Home Assistant host — the one thing a
-  Python integration structurally cannot see from inside its own
-  container, even on Home Assistant OS.
+  real listening TCP ports on the Home Assistant host, and — since this
+  release — can read and (opt-in, per proposed change) write the host's
+  firewall rules on HA SOC's behalf. Both are things a Python integration
+  structurally cannot do from inside its own container, even on Home
+  Assistant OS.
 url: https://github.com/trooperthorn/ha_int_soc
 arch:
   - aarch64
@@ -15,6 +17,15 @@ startup: services
 boot: auto
 host_network: true
 homeassistant_api: true
+# NET_ADMIN is required for the firewall read/write feature — a real
+# CAP_NET_ADMIN is the only way a container can run iptables against the
+# host's actual netfilter tables, Protection Mode or not (see the HA SOC
+# integration's README for the full Supervisor security-rating breakdown
+# this incurs — a documented, deliberate -1). Every rule this add-on ever
+# applies lives in its own dedicated iptables chain (HA_SOC_RULES); it
+# never touches the raw INPUT chain or anything Docker itself manages.
+privileged:
+  - NET_ADMIN
 options:
   scan_interval_hours: 6
 schema:

@@ -129,3 +129,37 @@ DEFAULT_SECURITY_SOURCES_ENABLED: dict[str, bool] = dict.fromkeys(
     SECURITY_INTEGRATION_DOMAINS + SECURITY_ENTITY_DOMAINS, True
 )
 CONF_SECURITY_SOURCES_ENABLED = "security_sources_enabled"
+
+# -- Firewall rules (Host Probe add-on, NET_ADMIN) ------------------------
+# Read AND write host iptables state — the one thing in this project that
+# actually mutates a host security control instead of just observing one.
+# Requires the add-on to declare `privileged: [NET_ADMIN]` (a real -1 on
+# the Supervisor security rating, see security_health.py/README) on top of
+# the `host_network: true` it already has. Every rule this project ever
+# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN below)
+# that this project owns outright — never touched: the raw INPUT chain,
+# anything Docker itself manages, or any pre-existing host firewall rule.
+HA_SOC_RULES_CHAIN = "HA_SOC_RULES"
+
+# Service the add-on calls on a fast (~5s) interval to pick up a pending
+# apply/confirm/revert instruction — the reverse direction of
+# SERVICE_INGEST_PROBE_RESULT, using return_response=True on an ordinary
+# service call rather than a new listening port on the add-on (this
+# project's own scanner.py already treats "a security tool with more open
+# listening sockets than it needs" as the wrong default).
+SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
+
+FIREWALL_RULE_ACTIONS = ["allow", "deny"]
+FIREWALL_RULE_PROTOS = ["tcp", "udp"]
+
+# Pending-test state machine (HaSocData.data["firewall"]["pending"]).
+FIREWALL_TEST_TESTING = "testing"
+FIREWALL_TEST_CONFIRMED = "confirmed"
+FIREWALL_TEST_REVERTED = "reverted"
+FIREWALL_TEST_EXPIRED = "expired"
+
+# Window a proposed ruleset stays live before the add-on reverts it
+# automatically if nobody confirms — the whole safety mechanism this
+# feature exists for. The user asked for "30-60 seconds"; 45s is the
+# midpoint, not independently user-configurable yet (see firewall.py).
+DEFAULT_FIREWALL_TEST_WINDOW_SECONDS = 45

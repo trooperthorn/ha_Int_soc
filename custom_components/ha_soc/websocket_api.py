@@ -135,6 +135,10 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_entity_remap_apply,
         ws_entity_remap_broken_references,
         ws_security_health_list,
+        ws_firewall_status,
+        ws_firewall_test,
+        ws_firewall_confirm,
+        ws_firewall_cancel,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -981,6 +985,110 @@ async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) ->
     runtime = _runtime(hass)
     overview = await async_security_overview(hass, runtime.store)
     connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
+# Firewall rules — read AND write host iptables state via the optional
+# HA SOC Probe add-on's NET_ADMIN capability. See firewall.py's module
+# docstring for the full test/confirm/revert safety design; every mutating
+# command here is audit-logged since this is the one control in the project
+# that actually changes a host security setting rather than just reporting
+# on one.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/status"})
+@websocket_api.async_response
+async def ws_firewall_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_get_status
+
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], await async_get_status(hass, runtime.store))
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/firewall/test",
+        vol.Required("rules"): [dict],
+        vol.Required("backup_acknowledged"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_firewall_test(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_propose_test
+
+    runtime = _runtime(hass)
+    ok, reason, pending = await async_propose_test(
+        hass,
+        runtime.store,
+        rules=msg["rules"],
+        backup_acknowledged=msg["backup_acknowledged"],
+        user_id=connection.user.id,
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_test_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={
+            "action": "firewall_test_proposed",
+            "test_id": pending["test_id"],
+            "rules": pending["proposed_rules"],
+        },
+    )
+    connection.send_result(msg["id"], pending)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/firewall/confirm", vol.Required("test_id"): str}
+)
+@websocket_api.async_response
+async def ws_firewall_confirm(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_confirm_test
+
+    runtime = _runtime(hass)
+    ok, reason = await async_confirm_test(
+        hass, runtime.store, test_id=msg["test_id"], user_id=connection.user.id
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_confirm_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_test_confirmed", "test_id": msg["test_id"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/firewall/cancel", vol.Required("test_id"): str}
+)
+@websocket_api.async_response
+async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_cancel_test
+
+    runtime = _runtime(hass)
+    ok, reason = await async_cancel_test(
+        hass, runtime.store, test_id=msg["test_id"], user_id=connection.user.id
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_cancel_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_test_cancelled", "test_id": msg["test_id"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
 
 
 # ----------------------------------------------------------------------------

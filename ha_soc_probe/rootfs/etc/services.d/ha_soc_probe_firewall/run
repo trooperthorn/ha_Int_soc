@@ -1,0 +1,244 @@
+#!/usr/bin/with-contenv bashio
+# ==============================================================================
+# HA SOC Probe — firewall command poller.
+#
+# This is the ONLY thing in this add-on that ever mutates host state — see
+# the HA SOC integration's firewall.py module docstring for the full
+# read/write design. This script's job is narrow and specific:
+#
+#   1. Poll ha_soc.poll_firewall_command every POLL_INTERVAL_SECONDS for a
+#      pending apply/confirm/revert instruction.
+#   2. On "apply": back up the full ruleset (iptables-save), replace the
+#      contents of the dedicated HA_SOC_RULES chain with the proposed
+#      rules, and arm a LOCAL, self-contained revert timer — a plain
+#      `sleep N` backgrounded from this same process, not a cron job or a
+#      call back out to Home Assistant. This is the one property that
+#      actually matters: if the new rules break the very network path this
+#      add-on (or Home Assistant Core) needs to reach anything else, the
+#      revert still has to happen, and nothing here depends on that broken
+#      path working again to make it happen.
+#   3. On "confirm"/"revert": mark the test resolved (making the armed
+#      timer from step 2 a no-op when it wakes) and report back
+#      immediately via ha_soc.ingest_probe_result, rather than waiting for
+#      the next slow port-scan cycle to say so.
+#   4. On startup: if a previous run left an unresolved test behind (this
+#      process crashed or the add-on was restarted mid-window — the local
+#      timer from step 2 dies with the process that armed it), restore its
+#      backup immediately. An unresolved test found at startup is treated
+#      as failed, not as "still in progress" — there is no way to know how
+#      long its window has already been open, so the only safe assumption
+#      is the same one this whole feature exists to make automatic: when
+#      in doubt, go back to the last known-good state.
+#
+# Every rule this ever applies lives in one chain this project owns
+# outright (HA_SOC_RULES) — never the raw INPUT chain, never anything
+# Docker itself manages. A full `iptables-save` backup is still taken
+# before every apply as defense in depth, even though day to day this
+# script's real footprint is exactly one chain.
+# ==============================================================================
+set -uo pipefail
+
+CHAIN="HA_SOC_RULES"
+STATE_DIR="/data"
+CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
+POLL_URL="http://supervisor/core/api/services/ha_soc/poll_firewall_command?return_response"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+POLL_INTERVAL_SECONDS=5
+
+backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup_${1}.rules"; }
+resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
+
+# --- Chain management --------------------------------------------------------
+
+ensure_chain() {
+    iptables -N "${CHAIN}" 2>/dev/null || true
+    if ! iptables -C INPUT -j "${CHAIN}" 2>/dev/null; then
+        iptables -I INPUT -j "${CHAIN}"
+    fi
+}
+
+flush_chain() {
+    iptables -F "${CHAIN}" 2>/dev/null || true
+}
+
+# One proposed rule (JSON object: action/proto/port/source) -> one iptables
+# append onto the dedicated chain. "source" absent/null means "any source".
+apply_rule() {
+    local action="$1" proto="$2" port="$3" source="$4" target="ACCEPT"
+    [ "${action}" = "deny" ] && target="DROP"
+    if [ -n "${source}" ] && [ "${source}" != "null" ]; then
+        iptables -A "${CHAIN}" -s "${source}" -p "${proto}" --dport "${port}" -j "${target}"
+    else
+        iptables -A "${CHAIN}" -p "${proto}" --dport "${port}" -j "${target}"
+    fi
+}
+
+# Replaces the chain's entire contents with the proposed ruleset (a JSON
+# array). Flush-then-apply, never incremental — a proposed ruleset is
+# always the FULL desired state, not a diff.
+apply_ruleset() {
+    local rules_json="$1" count i rule action proto port source
+    flush_chain
+    count=$(echo "${rules_json}" | jq 'length')
+    for (( i = 0; i < count; i++ )); do
+        rule=$(echo "${rules_json}" | jq -c ".[${i}]")
+        action=$(echo "${rule}" | jq -r '.action')
+        proto=$(echo "${rule}" | jq -r '.proto')
+        port=$(echo "${rule}" | jq -r '.port')
+        source=$(echo "${rule}" | jq -r '.source // "null"')
+        apply_rule "${action}" "${proto}" "${port}" "${source}"
+    done
+}
+
+# The chain's current, real contents, translated back into the same
+# {action, proto, port, source} shape the integration proposes rules in —
+# what Core displays as "known_rules" is always this, never Core's own
+# optimistic memory of what it last proposed.
+known_rules_json() {
+    local lines
+    lines=$(
+        iptables -S "${CHAIN}" 2>/dev/null | awk -v chain="${CHAIN}" '
+            $1 == "-A" && $2 == chain {
+                proto = ""; port = ""; source = ""; target = "ACCEPT"
+                for (i = 3; i <= NF; i++) {
+                    if ($i == "-p") { proto = $(i + 1) }
+                    else if ($i == "-s") { source = $(i + 1) }
+                    else if ($i == "--dport") { port = $(i + 1) }
+                    else if ($i == "-j") { target = $(i + 1) }
+                }
+                action = (target == "ACCEPT") ? "allow" : "deny"
+                src_json = (source == "") ? "null" : "\"" source "\""
+                printf "{\"action\":\"%s\",\"proto\":\"%s\",\"port\":%s,\"source\":%s}\n", action, proto, port, src_json
+            }
+        '
+    )
+    if [ -z "${lines}" ]; then
+        echo "[]"
+    else
+        echo "${lines}" | jq -s -c '.'
+    fi
+}
+
+# --- Reporting back to Core ---------------------------------------------------
+
+report_resolution() {
+    local test_id="$1" status="$2" payload
+    payload=$(jq -n \
+        --argjson known_rules "$(known_rules_json)" \
+        --arg test_id "${test_id}" \
+        --arg status "${status}" \
+        '{firewall_known_rules: $known_rules, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status}')
+    curl -sS -o /dev/null -w '%{http_code}\n' \
+        -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${INGEST_URL}" >/tmp/ha_soc_fw_report_code 2>/dev/null || true
+    bashio::log.info "Reported firewall test ${test_id} as ${status} to HA SOC (HTTP $(cat /tmp/ha_soc_fw_report_code 2>/dev/null || echo '?'))."
+}
+
+# Restores the pre-test backup for a test_id and marks it resolved, unless
+# something else (a "confirm", or an earlier revert) already resolved it —
+# checked right before restoring, since this is called both from the
+# armed local timer AND from the startup crash-recovery check below, and
+# both must be safe to call on an already-resolved test (a no-op).
+revert_test() {
+    local test_id="$1" backup_path resolved_marker
+    backup_path=$(backup_path_for "${test_id}")
+    resolved_marker=$(resolved_marker_for "${test_id}")
+
+    if [ -e "${resolved_marker}" ]; then
+        return 0
+    fi
+    touch "${resolved_marker}"
+
+    if [ -r "${backup_path}" ]; then
+        iptables-restore < "${backup_path}"
+        bashio::log.warning "Firewall test ${test_id} was not confirmed in time — reverted to the pre-test ruleset."
+    else
+        bashio::log.error "Firewall test ${test_id} needs reverting but its backup (${backup_path}) is missing — leaving the chain as-is. This should not happen."
+    fi
+    report_resolution "${test_id}" "reverted"
+}
+
+confirm_test() {
+    local test_id="$1" resolved_marker
+    resolved_marker=$(resolved_marker_for "${test_id}")
+    if [ -e "${resolved_marker}" ]; then
+        return 0
+    fi
+    touch "${resolved_marker}"
+    report_resolution "${test_id}" "confirmed"
+}
+
+# The local safety net: armed the instant a ruleset is applied, entirely
+# independent of any further poll cycle or network round-trip succeeding.
+arm_revert_timer() {
+    local test_id="$1" window_seconds="$2"
+    (
+        sleep "${window_seconds}"
+        revert_test "${test_id}"
+    ) &
+    disown
+}
+
+# --- Startup ------------------------------------------------------------------
+
+mkdir -p "${STATE_DIR}"
+ensure_chain
+
+if [ -s "${CURRENT_TEST_FILE}" ]; then
+    stale_test_id=$(cat "${CURRENT_TEST_FILE}")
+    resolved_marker=$(resolved_marker_for "${stale_test_id}")
+    if [ ! -e "${resolved_marker}" ]; then
+        bashio::log.warning "Found an unresolved firewall test (${stale_test_id}) left over from a previous run — reverting it now rather than trusting a timer that died with that process."
+        revert_test "${stale_test_id}"
+    fi
+fi
+: > "${CURRENT_TEST_FILE}"
+
+bashio::log.info "HA SOC Probe firewall poller starting — checking for pending firewall work every ${POLL_INTERVAL_SECONDS}s."
+
+# --- Main poll loop -------------------------------------------------------
+
+while true; do
+    current_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
+
+    payload=$(jq -n --arg current_test_id "${current_test_id}" '{current_test_id: $current_test_id}')
+    response=$(curl -sS -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${POLL_URL}" 2>/dev/null || echo "")
+
+    action=$(echo "${response}" | jq -r '.service_response.action // "none"' 2>/dev/null || echo "none")
+
+    case "${action}" in
+        apply)
+            test_id=$(echo "${response}" | jq -r '.service_response.test_id')
+            rules_json=$(echo "${response}" | jq -c '.service_response.rules')
+            window_seconds=$(echo "${response}" | jq -r '.service_response.window_seconds')
+
+            bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
+            iptables-save > "$(backup_path_for "${test_id}")"
+            echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
+            apply_ruleset "${rules_json}"
+            arm_revert_timer "${test_id}" "${window_seconds}"
+            ;;
+        confirm)
+            test_id=$(echo "${response}" | jq -r '.service_response.test_id')
+            confirm_test "${test_id}"
+            : > "${CURRENT_TEST_FILE}"
+            ;;
+        revert)
+            test_id=$(echo "${response}" | jq -r '.service_response.test_id')
+            revert_test "${test_id}"
+            : > "${CURRENT_TEST_FILE}"
+            ;;
+        *)
+            :
+            ;;
+    esac
+
+    sleep "${POLL_INTERVAL_SECONDS}"
+done

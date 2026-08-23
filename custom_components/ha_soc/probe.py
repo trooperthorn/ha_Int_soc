@@ -33,11 +33,17 @@ from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.core import HomeAssistant, ServiceCall, callback
+from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers.hassio import is_hassio
 import homeassistant.util.dt as dt_util
 
-from .const import DOMAIN, PROBE_ADDON_NAME, SERVICE_INGEST_PROBE_RESULT
+from .const import (
+    DOMAIN,
+    PROBE_ADDON_NAME,
+    SERVICE_INGEST_PROBE_RESULT,
+    SERVICE_POLL_FIREWALL_COMMAND,
+)
+from .firewall import RULE_SCHEMA, async_next_addon_command, async_report_from_addon
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -63,10 +69,29 @@ _PORT_SCHEMA = vol.Schema(
 
 INGEST_SERVICE_SCHEMA = vol.Schema(
     {
-        vol.Required("open_ports"): [_PORT_SCHEMA],
+        # Optional, not required: the firewall poller (a separate,
+        # ~5s-cadence s6 service from the port scanner) also calls this
+        # service, purely to report firewall state, and must never be
+        # forced to send a port list just to satisfy the schema — the
+        # handler below only touches store.data["host_probe"] when
+        # open_ports is actually present, so a firewall-only report can
+        # never stomp the port scanner's own, much slower-cadence data.
+        vol.Optional("open_ports"): [_PORT_SCHEMA],
         vol.Optional("scanner_version"): vol.Any(None, str),
+        # Firewall report fields — all optional so an add-on build that
+        # predates the firewall feature (or one where NET_ADMIN wasn't
+        # granted) keeps reporting ports normally. The add-on includes
+        # firewall_known_rules on its regular cycle, and calls this service
+        # out-of-cycle immediately after a test is confirmed or reverted so
+        # the two report fields below reach Core promptly rather than
+        # waiting for the next slow poll.
+        vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
+        vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
+        vol.Optional("firewall_resolved_status"): vol.Any(None, str),
     }
 )
+
+POLL_FIREWALL_SERVICE_SCHEMA = vol.Schema({vol.Optional("current_test_id"): vol.Any(None, str)})
 
 
 def _addon_info(hass: HomeAssistant) -> dict[str, Any] | None:
@@ -113,28 +138,52 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
 
 
 def async_register_probe_service(hass: HomeAssistant, store: HaSocData) -> None:
-    """Register ha_soc.ingest_probe_result — the add-on's only way in.
+    """Register the add-on's two ways in: ha_soc.ingest_probe_result (its
+    existing periodic report, now also carrying firewall state) and
+    ha_soc.poll_firewall_command (a fast ~5s poll for pending firewall
+    work — the reverse direction, using return_response=True on an
+    ordinary service call rather than a new listening port on the add-on).
 
-    Called via Supervisor's core-API proxy (SUPERVISOR_TOKEN + POST
-    http://supervisor/core/api/services/ha_soc/ingest_probe_result), the
-    same mechanism any Supervisor add-on uses to call a Home Assistant
-    service — no new communication channel on this side.
+    Both are called via Supervisor's core-API proxy (SUPERVISOR_TOKEN +
+    POST http://supervisor/core/api/services/ha_soc/<service>), the same
+    mechanism any Supervisor add-on uses to call a Home Assistant service —
+    no new communication channel on this side.
     """
 
-    @callback
-    def _handle_ingest(call: ServiceCall) -> None:
-        store.async_set_host_probe_result(
-            {
-                "open_ports": call.data["open_ports"],
-                "scanner_version": call.data.get("scanner_version"),
-                "reported_at": dt_util.utcnow().isoformat(),
-            }
+    async def _handle_ingest(call: ServiceCall) -> None:
+        if call.data.get("open_ports") is not None:
+            store.async_set_host_probe_result(
+                {
+                    "open_ports": call.data["open_ports"],
+                    "scanner_version": call.data.get("scanner_version"),
+                    "reported_at": dt_util.utcnow().isoformat(),
+                }
+            )
+        await async_report_from_addon(
+            hass,
+            store,
+            known_rules=call.data.get("firewall_known_rules"),
+            resolved_test_id=call.data.get("firewall_resolved_test_id"),
+            resolved_status=call.data.get("firewall_resolved_status"),
+        )
+
+    async def _handle_poll_firewall(call: ServiceCall) -> dict:
+        return await async_next_addon_command(
+            hass, store, current_test_id=call.data.get("current_test_id")
         )
 
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_PROBE_RESULT, _handle_ingest, schema=INGEST_SERVICE_SCHEMA
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_POLL_FIREWALL_COMMAND,
+        _handle_poll_firewall,
+        schema=POLL_FIREWALL_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 def async_unregister_probe_service(hass: HomeAssistant) -> None:
     hass.services.async_remove(DOMAIN, SERVICE_INGEST_PROBE_RESULT)
+    hass.services.async_remove(DOMAIN, SERVICE_POLL_FIREWALL_COMMAND)

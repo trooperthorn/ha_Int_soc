@@ -1,5 +1,24 @@
 # Changelog
 
+## 2026.08.23.3
+
+- Added: optional host firewall read/write, gated behind a new `NET_ADMIN`
+  capability this add-on now requests in `config.yaml` (a documented -1 on
+  the Supervisor security rating — see the HA SOC integration's README).
+  A new, second background service polls HA SOC every ~5s for a proposed
+  ruleset, applies it to a dedicated `HA_SOC_RULES` iptables chain this
+  add-on owns outright (never the raw `INPUT` chain, never anything Docker
+  itself manages), and arms a fully local, self-contained revert timer the
+  moment it applies anything — a plain backgrounded `sleep` in this same
+  process, not a callback that depends on the network path it just changed
+  still working. A ruleset backup (`iptables-save`) is taken before every
+  apply; an unconfirmed test is restored automatically once its window
+  elapses, and if this add-on itself crashes or restarts mid-test, the
+  next startup finds the unresolved test and restores it immediately
+  rather than trusting a timer that died with the old process.
+- Changed: `iptables` and `iproute2` are now installed in the add-on image
+  (previously `iproute2`'s presence was merely assumed).
+
 ## 2026.08.23.2
 
 - Added: each reported open port now includes its bind address (e.g.

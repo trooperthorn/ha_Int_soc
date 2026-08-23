@@ -90,6 +90,12 @@ class StoreData(TypedDict):
     # has confirmed is intentionally unassigned, so it stops being flagged
     # on the Local Peripherals tab and dashboard summary.
     peripheral_ignored: dict[str, dict[str, Any]]
+    # See firewall.py's module docstring for the full state machine.
+    # known_rules/known_rules_reported_at mirror the add-on's last report
+    # of the actual HA_SOC_RULES chain contents; pending is the single
+    # in-flight test (None once resolved); history is a capped log of past
+    # applies for the Audit Log-adjacent record of who changed what.
+    firewall: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -118,6 +124,12 @@ def default_store_data() -> StoreData:
         mfa_grace_started={},
         host_probe=None,
         peripheral_ignored={},
+        firewall={
+            "known_rules": None,
+            "known_rules_reported_at": None,
+            "pending": None,
+            "history": [],
+        },
     )
 
 
