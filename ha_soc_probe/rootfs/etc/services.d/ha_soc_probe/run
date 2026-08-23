@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-SCANNER_VERSION="2026.08.23.1"
+SCANNER_VERSION="2026.08.23.2"
 
 SCAN_INTERVAL_HOURS=$(bashio::config 'scan_interval_hours')
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
@@ -30,25 +30,50 @@ CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result
 RETRY_INTERVAL_SECONDS=30
 MAX_RETRY_INTERVAL_SECONDS=300
 
-# Prints "<proto> <hex-port>" for every LISTEN-state row in a
-# /proc/net/{tcp,tcp6} table. Column 2 is "local_address:hex_port",
-# column 4 is connection state; 0A is TCP_LISTEN. Plain field/string
-# handling only, no gawk-only extensions (strtonum etc.) — Alpine's
-# default awk is busybox awk, not gawk.
+# Prints "<proto> <hex-bind-address> <hex-port>" for every LISTEN-state
+# row in a /proc/net/{tcp,tcp6} table. Column 2 is
+# "hex_bind_address:hex_port", column 4 is connection state; 0A is
+# TCP_LISTEN. Plain field/string handling only, no gawk-only extensions
+# (strtonum etc.) — Alpine's default awk is busybox awk, not gawk.
 extract_listening_ports() {
     local file="$1" proto="$2"
     [ -r "${file}" ] || return 0
     awk -v proto="${proto}" '
         NR > 1 && $4 == "0A" {
             split($2, addr, ":")
-            print proto " " addr[2]
+            print proto " " addr[1] " " addr[2]
         }
     ' "${file}"
 }
 
-# Builds a JSON array of {"port": N, "proto": "tcp"} objects from the
-# host's current listening sockets. Hex->decimal via printf (POSIX,
-# portable) rather than awk's strtonum (gawk-only, not available here).
+# /proc/net/tcp's bind address is 8 hex chars — the 4 bytes of an IPv4
+# address in the kernel's native (little-endian) word order, i.e.
+# reversed relative to normal dotted-decimal reading order. "0100007F"
+# is 127.0.0.1: bytes 01 00 00 7F read backwards. Same printf-based
+# hex->decimal conversion already used for the port, applied per octet.
+hex_to_ipv4() {
+    local hex="$1"
+    printf '%d.%d.%d.%d' \
+        "0x${hex:6:2}" "0x${hex:4:2}" "0x${hex:2:2}" "0x${hex:0:2}"
+}
+
+# "<ip> <interface>" for every IPv4 address currently configured on the
+# host — real, not guessed, since this add-on shares the host's network
+# namespace (host_network: true in config.yaml). Degrades to nothing if
+# `ip` isn't available, which just means every port reports its bind
+# address with an "unresolved" interface below rather than failing outright.
+build_interface_map() {
+    command -v ip >/dev/null 2>&1 || return 0
+    ip -4 -o addr show 2>/dev/null | awk '{split($4, cidr, "/"); print cidr[1], $2}'
+}
+
+# Builds a JSON array of {"port", "proto", "address", "interface"}
+# objects from the host's current listening sockets. IPv6 addresses
+# (32 hex chars, four little-endian 32-bit words — a materially more
+# involved decode than IPv4's single 32-bit swap) are deliberately left
+# unresolved rather than risk silently reporting a wrong address: a
+# security tool showing an incorrect bind address is worse than one that
+# honestly says "not decoded".
 build_open_ports_json() {
     local entries
     entries=$(
@@ -62,15 +87,42 @@ build_open_ports_json() {
         return
     fi
 
-    local json="[" first=1 proto port_hex port_dec
-    while read -r proto port_hex; do
+    declare -A iface_map
+    local iface_line ip ifname
+    while read -r iface_line; do
+        [ -n "${iface_line}" ] || continue
+        ip=${iface_line%% *}
+        ifname=${iface_line#* }
+        iface_map["${ip}"]="${ifname}"
+    done <<IFACES
+$(build_interface_map)
+IFACES
+
+    local json="[" first=1 proto ip_hex port_hex port_dec address interface
+    while read -r proto ip_hex port_hex; do
         port_dec=$(printf '%d' "0x${port_hex}")
+        if [ "${#ip_hex}" -eq 8 ]; then
+            address=$(hex_to_ipv4 "${ip_hex}")
+            if [ "${address}" = "0.0.0.0" ]; then
+                interface="(all interfaces)"
+            else
+                interface="${iface_map[${address}]:-unresolved}"
+            fi
+        else
+            address="null"
+            interface="null"
+        fi
         if [ "${first}" -eq 1 ]; then
             first=0
         else
             json="${json},"
         fi
-        json="${json}{\"port\":${port_dec},\"proto\":\"${proto}\"}"
+        json="${json}{\"port\":${port_dec},\"proto\":\"${proto}\","
+        if [ "${address}" = "null" ]; then
+            json="${json}\"address\":null,\"interface\":null}"
+        else
+            json="${json}\"address\":\"${address}\",\"interface\":\"${interface}\"}"
+        fi
     done <<PORTS
 ${entries}
 PORTS

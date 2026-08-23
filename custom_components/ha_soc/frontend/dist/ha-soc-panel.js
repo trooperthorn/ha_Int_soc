@@ -15,12 +15,12 @@ const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
  */
-const x=globalThis,k=t=>t,S=x.trustedTypes,A=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,C="$lit$",E=`lit$${Math.random().toFixed(9).slice(2)}$`,P="?"+E,z=`<${P}>`,I=document,R=()=>I.createComment(""),U=t=>null===t||"object"!=typeof t&&"function"!=typeof t,F=Array.isArray,O="[ \t\n\f\r]",H=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,L=/-->/g,N=/>/g,D=RegExp(`>|${O}(?:([^\\s"'>=/]+)(${O}*=${O}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),T=/'/g,M=/"/g,V=/^(?:script|style|textarea|title)$/i,j=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),B=Symbol.for("lit-noChange"),q=Symbol.for("lit-nothing"),K=new WeakMap,W=I.createTreeWalker(I,129);function G(t,e){if(!F(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==A?A.createHTML(e):e}const Z=(t,e)=>{const s=t.length-1,i=[];let a,o=2===e?"<svg>":3===e?"<math>":"",n=H;for(let e=0;e<s;e++){const s=t[e];let r,l,d=-1,c=0;for(;c<s.length&&(n.lastIndex=c,l=n.exec(s),null!==l);)c=n.lastIndex,n===H?"!--"===l[1]?n=L:void 0!==l[1]?n=N:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),n=D):void 0!==l[3]&&(n=D):n===D?">"===l[0]?(n=a??H,d=-1):void 0===l[1]?d=-2:(d=n.lastIndex-l[2].length,r=l[1],n=void 0===l[3]?D:'"'===l[3]?M:T):n===M||n===T?n=D:n===L||n===N?n=H:(n=D,a=void 0);const h=n===D&&t[e+1].startsWith("/>")?" ":"";o+=n===H?s+z:d>=0?(i.push(r),s.slice(0,d)+C+s.slice(d)+E+h):s+E+(-2===d?e:h)}return[G(t,o+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,o=0;const n=t.length-1,r=this.parts,[l,d]=Z(t,e);if(this.el=J.createElement(l,s),W.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=W.nextNode())&&r.length<n;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(C)){const e=d[o++],s=i.getAttribute(t).split(E),n=/([.?@])?(.*)/.exec(e);r.push({type:1,index:a,name:n[2],strings:s,ctor:"."===n[1]?et:"?"===n[1]?st:"@"===n[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(E)&&(r.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(E),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],R()),W.nextNode(),r.push({type:2,index:++a});i.append(t[e],R())}}}else if(8===i.nodeType)if(i.data===P)r.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(E,t+1));)r.push({type:7,index:a}),t+=E.length-1}a++}}static createElement(t,e){const s=I.createElement("template");return s.innerHTML=t,s}}function Y(t,e,s=t,i){if(e===B)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const o=U(e)?void 0:e._$litDirective$;return a?.constructor!==o&&(a?._$AO?.(!1),void 0===o?a=void 0:(a=new o(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Y(t,a._$AS(t,e.values),a,i)),e}class X{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??I).importNode(e,!0);W.currentNode=i;let a=W.nextNode(),o=0,n=0,r=s[0];for(;void 0!==r;){if(o===r.index){let e;2===r.type?e=new Q(a,a.nextSibling,this,t):1===r.type?e=new r.ctor(a,r.name,r.strings,this,t):6===r.type&&(e=new at(a,this,t)),this._$AV.push(e),r=s[++n]}o!==r?.index&&(a=W.nextNode(),o++)}return W.currentNode=I,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class Q{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=q,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Y(this,t,e),U(t)?t===q||null==t||""===t?(this._$AH!==q&&this._$AR(),this._$AH=q):t!==this._$AH&&t!==B&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>F(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==q&&U(this._$AH)?this._$AA.nextSibling.data=t:this.T(I.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(G(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new X(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=K.get(t.strings);return void 0===e&&K.set(t.strings,e=new J(t)),e}k(t){F(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new Q(this.O(R()),this.O(R()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=q,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=q}_$AI(t,e=this,s,i){const a=this.strings;let o=!1;if(void 0===a)t=Y(this,t,e,0),o=!U(t)||t!==this._$AH&&t!==B,o&&(this._$AH=t);else{const i=t;let n,r;for(t=a[0],n=0;n<a.length-1;n++)r=Y(this,i[s+n],e,n),r===B&&(r=this._$AH[n]),o||=!U(r)||r!==this._$AH[n],r===q?t=q:t!==q&&(t+=(r??"")+a[n+1]),this._$AH[n]=r}o&&!i&&this.j(t)}j(t){t===q?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===q?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==q)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Y(this,t,e,0)??q)===B)return;const s=this._$AH,i=t===q&&s!==q||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==q&&(s===q||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Y(this,t)}}const ot=x.litHtmlPolyfillSupport;ot?.(J,Q),(x.litHtmlVersions??=[]).push("3.3.3");const nt=globalThis;
+const x=globalThis,k=t=>t,S=x.trustedTypes,A=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,C="$lit$",E=`lit$${Math.random().toFixed(9).slice(2)}$`,P="?"+E,z=`<${P}>`,I=document,R=()=>I.createComment(""),U=t=>null===t||"object"!=typeof t&&"function"!=typeof t,F=Array.isArray,L="[ \t\n\f\r]",O=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,H=/-->/g,N=/>/g,D=RegExp(`>|${L}(?:([^\\s"'>=/]+)(${L}*=${L}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),T=/'/g,M=/"/g,V=/^(?:script|style|textarea|title)$/i,B=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),j=Symbol.for("lit-noChange"),q=Symbol.for("lit-nothing"),K=new WeakMap,W=I.createTreeWalker(I,129);function G(t,e){if(!F(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==A?A.createHTML(e):e}const Z=(t,e)=>{const s=t.length-1,i=[];let a,o=2===e?"<svg>":3===e?"<math>":"",n=O;for(let e=0;e<s;e++){const s=t[e];let r,l,d=-1,c=0;for(;c<s.length&&(n.lastIndex=c,l=n.exec(s),null!==l);)c=n.lastIndex,n===O?"!--"===l[1]?n=H:void 0!==l[1]?n=N:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),n=D):void 0!==l[3]&&(n=D):n===D?">"===l[0]?(n=a??O,d=-1):void 0===l[1]?d=-2:(d=n.lastIndex-l[2].length,r=l[1],n=void 0===l[3]?D:'"'===l[3]?M:T):n===M||n===T?n=D:n===H||n===N?n=O:(n=D,a=void 0);const h=n===D&&t[e+1].startsWith("/>")?" ":"";o+=n===O?s+z:d>=0?(i.push(r),s.slice(0,d)+C+s.slice(d)+E+h):s+E+(-2===d?e:h)}return[G(t,o+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,o=0;const n=t.length-1,r=this.parts,[l,d]=Z(t,e);if(this.el=J.createElement(l,s),W.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=W.nextNode())&&r.length<n;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(C)){const e=d[o++],s=i.getAttribute(t).split(E),n=/([.?@])?(.*)/.exec(e);r.push({type:1,index:a,name:n[2],strings:s,ctor:"."===n[1]?et:"?"===n[1]?st:"@"===n[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(E)&&(r.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(E),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],R()),W.nextNode(),r.push({type:2,index:++a});i.append(t[e],R())}}}else if(8===i.nodeType)if(i.data===P)r.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(E,t+1));)r.push({type:7,index:a}),t+=E.length-1}a++}}static createElement(t,e){const s=I.createElement("template");return s.innerHTML=t,s}}function Y(t,e,s=t,i){if(e===j)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const o=U(e)?void 0:e._$litDirective$;return a?.constructor!==o&&(a?._$AO?.(!1),void 0===o?a=void 0:(a=new o(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Y(t,a._$AS(t,e.values),a,i)),e}class X{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??I).importNode(e,!0);W.currentNode=i;let a=W.nextNode(),o=0,n=0,r=s[0];for(;void 0!==r;){if(o===r.index){let e;2===r.type?e=new Q(a,a.nextSibling,this,t):1===r.type?e=new r.ctor(a,r.name,r.strings,this,t):6===r.type&&(e=new at(a,this,t)),this._$AV.push(e),r=s[++n]}o!==r?.index&&(a=W.nextNode(),o++)}return W.currentNode=I,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class Q{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=q,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Y(this,t,e),U(t)?t===q||null==t||""===t?(this._$AH!==q&&this._$AR(),this._$AH=q):t!==this._$AH&&t!==j&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>F(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==q&&U(this._$AH)?this._$AA.nextSibling.data=t:this.T(I.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(G(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new X(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=K.get(t.strings);return void 0===e&&K.set(t.strings,e=new J(t)),e}k(t){F(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new Q(this.O(R()),this.O(R()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=q,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=q}_$AI(t,e=this,s,i){const a=this.strings;let o=!1;if(void 0===a)t=Y(this,t,e,0),o=!U(t)||t!==this._$AH&&t!==j,o&&(this._$AH=t);else{const i=t;let n,r;for(t=a[0],n=0;n<a.length-1;n++)r=Y(this,i[s+n],e,n),r===j&&(r=this._$AH[n]),o||=!U(r)||r!==this._$AH[n],r===q?t=q:t!==q&&(t+=(r??"")+a[n+1]),this._$AH[n]=r}o&&!i&&this.j(t)}j(t){t===q?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===q?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==q)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Y(this,t,e,0)??q)===j)return;const s=this._$AH,i=t===q&&s!==q||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==q&&(s===q||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Y(this,t)}}const ot=x.litHtmlPolyfillSupport;ot?.(J,Q),(x.litHtmlVersions??=[]).push("3.3.3");const nt=globalThis;
 /**
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */class rt extends w{constructor(){super(...arguments),this.renderOptions={host:this},this._$Do=void 0}createRenderRoot(){const t=super.createRenderRoot();return this.renderOptions.renderBefore??=t.firstChild,t}update(t){const e=this.render();this.hasUpdated||(this.renderOptions.isConnected=this.isConnected),super.update(t),this._$Do=((t,e,s)=>{const i=s?.renderBefore??e;let a=i._$litPart$;if(void 0===a){const t=s?.renderBefore??null;i._$litPart$=a=new Q(e.insertBefore(R(),t),t,void 0,s??{})}return a._$AI(t),a})(e,this.renderRoot,this.renderOptions)}connectedCallback(){super.connectedCallback(),this._$Do?.setConnected(!0)}disconnectedCallback(){super.disconnectedCallback(),this._$Do?.setConnected(!1)}render(){return B}}rt._$litElement$=!0,rt.finalized=!0,nt.litElementHydrateSupport?.({LitElement:rt});const lt=nt.litElementPolyfillSupport;lt?.({LitElement:rt}),(nt.litElementVersions??=[]).push("4.2.2");
+ */class rt extends w{constructor(){super(...arguments),this.renderOptions={host:this},this._$Do=void 0}createRenderRoot(){const t=super.createRenderRoot();return this.renderOptions.renderBefore??=t.firstChild,t}update(t){const e=this.render();this.hasUpdated||(this.renderOptions.isConnected=this.isConnected),super.update(t),this._$Do=((t,e,s)=>{const i=s?.renderBefore??e;let a=i._$litPart$;if(void 0===a){const t=s?.renderBefore??null;i._$litPart$=a=new Q(e.insertBefore(R(),t),t,void 0,s??{})}return a._$AI(t),a})(e,this.renderRoot,this.renderOptions)}connectedCallback(){super.connectedCallback(),this._$Do?.setConnected(!0)}disconnectedCallback(){super.disconnectedCallback(),this._$Do?.setConnected(!1)}render(){return j}}rt._$litElement$=!0,rt.finalized=!0,nt.litElementHydrateSupport?.({LitElement:rt});const lt=nt.litElementPolyfillSupport;lt?.({LitElement:rt}),(nt.litElementVersions??=[]).push("4.2.2");
 /**
  * @license
  * Copyright 2017 Google LLC
@@ -36,7 +36,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */function ut(t){return pt({...t,state:!0,attribute:!1})}const vt=(t,e)=>t.callWS(e),gt=t=>vt(t,{type:"ha_soc/users/list"}).then(t=>t.users),_t=t=>vt(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),yt=(t,e)=>vt(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),bt=(t,e,s)=>vt(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),mt=t=>vt(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),ft=t=>vt(t,{type:"ha_soc/health/list"}),$t=t=>vt(t,{type:"ha_soc/dashboard/devices"}),wt=t=>vt(t,{type:"ha_soc/dashboard/integrations"}),xt=t=>vt(t,{type:"ha_soc/probe/status"}),kt=t=>vt(t,{type:"ha_soc/peripherals/list"}),St=t=>vt(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),At=t=>vt(t,{type:"ha_soc/security_health/list"}),Ct=n`
+ */function ut(t){return pt({...t,state:!0,attribute:!1})}const vt=(t,e)=>t.callWS(e),gt=t=>vt(t,{type:"ha_soc/users/list"}).then(t=>t.users),_t=t=>vt(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),yt=(t,e)=>vt(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),bt=(t,e,s)=>vt(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),mt=t=>vt(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),ft=t=>vt(t,{type:"ha_soc/logs/fault"}),$t=t=>vt(t,{type:"ha_soc/health/list"}),wt=t=>vt(t,{type:"ha_soc/dashboard/devices"}),xt=t=>vt(t,{type:"ha_soc/dashboard/integrations"}),kt=t=>vt(t,{type:"ha_soc/probe/status"}),St=t=>vt(t,{type:"ha_soc/peripherals/list"}),At=t=>vt(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),Ct=t=>vt(t,{type:"ha_soc/security_health/list"}),Et=n`
   :host {
     display: block;
     padding: 16px;
@@ -265,7 +265,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
   .settings-row select {
     min-width: 220px;
   }
-`;let Et=class extends rt{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._busyUserId=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[t,e]=await Promise.all([gt(this.hass),_t(this.hass)]);this._users=t,this._risk=e}finally{this._loading=!1}}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>vt(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>vt(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onResetPassword(t){const e=prompt("New password for this user (owner-only action):");if(e){this._busyUserId=t;try{const s=await((t,e,s)=>vt(t,{type:"ha_soc/users/set_password",user_id:e,password:s}))(this.hass,t,e);s&&!1===s.ok&&alert("Could not set password — only the account owner can reset another user's password.")}finally{this._busyUserId=null}}}render(){return this._loading?j`<div class="empty">Loading users…</div>`:this._users.length?j`
+`;let Pt=class extends rt{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._busyUserId=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[t,e]=await Promise.all([gt(this.hass),_t(this.hass)]);this._users=t,this._risk=e}finally{this._loading=!1}}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>vt(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>vt(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onResetPassword(t){const e=prompt("New password for this user (owner-only action):");if(e){this._busyUserId=t;try{const s=await((t,e,s)=>vt(t,{type:"ha_soc/users/set_password",user_id:e,password:s}))(this.hass,t,e);s&&!1===s.ok&&alert("Could not set password — only the account owner can reset another user's password.")}finally{this._busyUserId=null}}}render(){return this._loading?B`<div class="empty">Loading users…</div>`:this._users.length?B`
       <div class="card">
         <h3>Users &amp; Access</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -286,28 +286,28 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             </tr>
           </thead>
           <tbody>
-            ${this._users.map(t=>{const e=this._risk[t.id];return j`
+            ${this._users.map(t=>{const e=this._risk[t.id];return B`
                 <tr class=${t.is_active?"":"row-disabled"}>
                   <td>
                     <div>${t.name??t.id}</div>
-                    ${t.is_owner?j`<span class="tag enforced">owner</span>`:q}
-                    ${t.is_active?q:j`<span class="tag cosmetic">deactivated</span>`}
+                    ${t.is_owner?B`<span class="tag enforced">owner</span>`:q}
+                    ${t.is_active?q:B`<span class="tag cosmetic">deactivated</span>`}
                   </td>
                   <td>${t.is_admin?"Admin":"User"}${t.local_only?" · local only":""}</td>
                   <td>
-                    ${t.mfa_enabled?j`<span class="pill good"><span class="dot"></span>enabled</span>`:j`<span class="pill high"><span class="dot"></span>none</span>`}
+                    ${t.mfa_enabled?B`<span class="pill good"><span class="dot"></span>enabled</span>`:B`<span class="pill high"><span class="dot"></span>none</span>`}
                   </td>
                   <td>
-                    ${e?j`<span class="pill ${"critical"===e.band||"high"===e.band?"high":"moderate"===e.band?"medium":"good"}">
+                    ${e?B`<span class="pill ${"critical"===e.band||"high"===e.band?"high":"moderate"===e.band?"medium":"good"}">
                           <span class="dot"></span>${e.score}
-                        </span>`:j`<span class="muted">—</span>`}
+                        </span>`:B`<span class="muted">—</span>`}
                   </td>
                   <td>
                     <div>${this._fmtDate(t.last_login_at)}</div>
-                    ${t.last_login_ip?j`<div class="muted">${t.last_login_ip}</div>`:q}
+                    ${t.last_login_ip?B`<div class="muted">${t.last_login_ip}</div>`:q}
                   </td>
                   <td>
-                    ${t.llat_count>0?j`<span class="chip">${t.llat_count} long-lived</span>`:j`<span class="muted">none</span>`}
+                    ${t.llat_count>0?B`<span class="chip">${t.llat_count} long-lived</span>`:B`<span class="muted">none</span>`}
                   </td>
                   <td>
                     <div class="toolbar" style="margin:0;">
@@ -339,7 +339,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </tbody>
         </table>
       </div>
-    `:j`<div class="empty">No users found.</div>`}};Et.styles=Ct,t([pt({attribute:!1})],Et.prototype,"hass",void 0),t([ut()],Et.prototype,"_users",void 0),t([ut()],Et.prototype,"_risk",void 0),t([ut()],Et.prototype,"_loading",void 0),t([ut()],Et.prototype,"_busyUserId",void 0),Et=t([dt("ha-soc-users-view")],Et);const Pt=["","service_call","login_ok","login_fail","token_created","user_added","user_updated","user_removed","lovelace_change","entity_registry_change"];let zt=class extends rt{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._category="",this._userId="",this._verifyResult=null}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await gt(this.hass)}async _load(){this._loading=!0;try{this._events=await((t,e={})=>vt(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,vt(t,{type:"ha_soc/audit/verify_chain"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){return j`
+    `:B`<div class="empty">No users found.</div>`}};Pt.styles=Et,t([pt({attribute:!1})],Pt.prototype,"hass",void 0),t([ut()],Pt.prototype,"_users",void 0),t([ut()],Pt.prototype,"_risk",void 0),t([ut()],Pt.prototype,"_loading",void 0),t([ut()],Pt.prototype,"_busyUserId",void 0),Pt=t([dt("ha-soc-users-view")],Pt);const zt=["","service_call","login_ok","login_fail","token_created","user_added","user_updated","user_removed","lovelace_change","entity_registry_change"];let It=class extends rt{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._category="",this._userId="",this._verifyResult=null}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await gt(this.hass)}async _load(){this._loading=!0;try{this._events=await((t,e={})=>vt(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,vt(t,{type:"ha_soc/audit/verify_chain"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){return B`
       <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -349,20 +349,20 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         </p>
         <div class="toolbar">
           <select @change=${this._onCategoryChange}>
-            ${Pt.map(t=>j`<option value=${t} ?selected=${t===this._category}>${t||"All categories"}</option>`)}
+            ${zt.map(t=>B`<option value=${t} ?selected=${t===this._category}>${t||"All categories"}</option>`)}
           </select>
           <select @change=${this._onUserChange}>
             <option value="" ?selected=${""===this._userId}>All users</option>
-            ${this._users.map(t=>j`<option value=${t.id} ?selected=${t.id===this._userId}>${t.name??t.id}</option>`)}
+            ${this._users.map(t=>B`<option value=${t.id} ?selected=${t.id===this._userId}>${t.name??t.id}</option>`)}
           </select>
           <span class="spacer"></span>
           <button class="ha-btn" @click=${this._onVerify}>Verify chain integrity</button>
           <button class="ha-btn" @click=${this._load}>Refresh</button>
         </div>
-        ${this._verifyResult?j`<p class="${this._verifyResult.ok?"muted":""}" style="font-size:12.5px;">
+        ${this._verifyResult?B`<p class="${this._verifyResult.ok?"muted":""}" style="font-size:12.5px;">
               ${this._verifyResult.ok?`Chain intact — ${this._verifyResult.records_checked} records checked.`:"Chain broken — see logs for the first mismatched record."}
             </p>`:null}
-        ${this._loading?j`<div class="empty">Loading…</div>`:this._events.length?j`
+        ${this._loading?B`<div class="empty">Loading…</div>`:this._events.length?B`
               <table>
                 <thead>
                   <tr>
@@ -374,7 +374,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._events.map(t=>j`
+                  ${this._events.map(t=>B`
                       <tr>
                         <td>${new Date(t.ts).toLocaleString()}</td>
                         <td><span class="tag cosmetic">${t.category}</span></td>
@@ -385,9 +385,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">No matching events.</div>`}
+            `:B`<div class="empty">No matching events.</div>`}
       </div>
-    `}};zt.styles=Ct,t([pt({attribute:!1})],zt.prototype,"hass",void 0),t([ut()],zt.prototype,"_events",void 0),t([ut()],zt.prototype,"_users",void 0),t([ut()],zt.prototype,"_loading",void 0),t([ut()],zt.prototype,"_category",void 0),t([ut()],zt.prototype,"_userId",void 0),t([ut()],zt.prototype,"_verifyResult",void 0),zt=t([dt("ha-soc-audit-view")],zt);let It=class extends rt{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._drift=[],this._viewsError=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([gt(this.hass),(t=this.hass,vt(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,vt(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e){const s=t.visibleUserIds??this._users.map(t=>t.id),i=s.includes(e)?s.filter(t=>t!==e):[...s,e],a=i.length===this._users.length?[]:i;await((t,e,s,i)=>vt(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,t.path,a),await this._loadViews()}async _onToggleFlag(t,e,s){await((t,e,s)=>vt(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,t,{[e]:s}),await this._load()}async _onCheckDrift(){var t;this._drift=await(t=this.hass,vt(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}render(){if(this._loading)return j`<div class="empty">Loading dashboards…</div>`;const t=this._dashboards.find(t=>(t.url_path??null)===(this._selected??null));return j`
+    `}};It.styles=Et,t([pt({attribute:!1})],It.prototype,"hass",void 0),t([ut()],It.prototype,"_events",void 0),t([ut()],It.prototype,"_users",void 0),t([ut()],It.prototype,"_loading",void 0),t([ut()],It.prototype,"_category",void 0),t([ut()],It.prototype,"_userId",void 0),t([ut()],It.prototype,"_verifyResult",void 0),It=t([dt("ha-soc-audit-view")],It);let Rt=class extends rt{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._drift=[],this._viewsError=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([gt(this.hass),(t=this.hass,vt(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,vt(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e){const s=t.visibleUserIds??this._users.map(t=>t.id),i=s.includes(e)?s.filter(t=>t!==e):[...s,e],a=i.length===this._users.length?[]:i;await((t,e,s,i)=>vt(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,t.path,a),await this._loadViews()}async _onToggleFlag(t,e,s){await((t,e,s)=>vt(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,t,{[e]:s}),await this._load()}async _onCheckDrift(){var t;this._drift=await(t=this.hass,vt(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}render(){if(this._loading)return B`<div class="empty">Loading dashboards…</div>`;const t=this._dashboards.find(t=>(t.url_path??null)===(this._selected??null));return B`
       <div class="card">
         <h3>Permissions Matrix</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -399,11 +399,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         </p>
         <div class="toolbar">
           <select .value=${this._selected??"__default__"} @change=${this._onSelectDashboard}>
-            ${this._dashboards.map(t=>j`<option value=${t.url_path??"__default__"}>
+            ${this._dashboards.map(t=>B`<option value=${t.url_path??"__default__"}>
                   ${t.title??t.url_path??"Overview"}
                 </option>`)}
           </select>
-          ${t?j`
+          ${t?B`
                 <label style="font-size:12.5px;display:flex;align-items:center;gap:4px;">
                   <input
                     type="checkbox"
@@ -425,23 +425,23 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           <button class="ha-btn" @click=${this._onCheckDrift}>Check drift</button>
         </div>
 
-        ${this._drift.length?j`<p style="font-size:12.5px;color:var(--warning-color);">
+        ${this._drift.length?B`<p style="font-size:12.5px;color:var(--warning-color);">
               ${this._drift.length} view(s) no longer match the policy last applied here — likely edited directly in the dashboard editor.
             </p>`:q}
 
-        ${this._views.length?j`
+        ${this._views.length?B`
               <table>
                 <thead>
                   <tr>
                     <th>View</th>
-                    ${this._users.map(t=>j`<th>${t.name??t.id}</th>`)}
+                    ${this._users.map(t=>B`<th>${t.name??t.id}</th>`)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._views.map(t=>j`
+                  ${this._views.map(t=>B`
                       <tr>
                         <td>${t.title}</td>
-                        ${this._users.map(e=>{const s=null===t.visibleUserIds||t.visibleUserIds.includes(e.id);return j`
+                        ${this._users.map(e=>{const s=null===t.visibleUserIds||t.visibleUserIds.includes(e.id);return B`
                             <td>
                               <input
                                 type="checkbox"
@@ -454,18 +454,18 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">
+            `:B`<div class="empty">
               ${this._viewsError??"This dashboard has no views, or is YAML-managed (read-only)."}
             </div>`}
       </div>
-    `}};It.styles=Ct,t([pt({attribute:!1})],It.prototype,"hass",void 0),t([ut()],It.prototype,"_users",void 0),t([ut()],It.prototype,"_dashboards",void 0),t([ut()],It.prototype,"_selected",void 0),t([ut()],It.prototype,"_views",void 0),t([ut()],It.prototype,"_loading",void 0),t([ut()],It.prototype,"_drift",void 0),t([ut()],It.prototype,"_viewsError",void 0),It=t([dt("ha-soc-permissions-view")],It);const Rt=["new","confirmed","dismissed","resolved"];let Ut=class extends rt{constructor(){super(...arguments),this._scannerFindings=[],this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._scanning=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s,i,a]=await Promise.all([(t=this.hass,vt(t,{type:"ha_soc/scanner/list"}).then(t=>t.findings)),mt(this.hass),ft(this.hass),xt(this.hass)]);this._scannerFindings=e,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a}finally{this._loading=!1}var t}async _onScanIntegrations(){this._scanning=!0;try{await(t=this.hass,vt(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0;try{await(t=this.hass,vt(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){await((t,e,s,i)=>vt(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}async _onMisconfigStatus(t,e){await((t,e,s,i)=>vt(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}_renderStatusSelect(t,e,s){return j`
+    `}};Rt.styles=Et,t([pt({attribute:!1})],Rt.prototype,"hass",void 0),t([ut()],Rt.prototype,"_users",void 0),t([ut()],Rt.prototype,"_dashboards",void 0),t([ut()],Rt.prototype,"_selected",void 0),t([ut()],Rt.prototype,"_views",void 0),t([ut()],Rt.prototype,"_loading",void 0),t([ut()],Rt.prototype,"_drift",void 0),t([ut()],Rt.prototype,"_viewsError",void 0),Rt=t([dt("ha-soc-permissions-view")],Rt);const Ut=["new","confirmed","dismissed","resolved"],Ft=["critical","high","medium","low","info"];function Lt(t){const e=Ft.indexOf(t);return-1===e?Ft.length:e}let Ot=class extends rt{constructor(){super(...arguments),this._scannerFindings=[],this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._scanning=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s,i,a]=await Promise.all([(t=this.hass,vt(t,{type:"ha_soc/scanner/list"}).then(t=>t.findings)),mt(this.hass),$t(this.hass),kt(this.hass)]);this._scannerFindings=e,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a}finally{this._loading=!1}var t}async _onScanIntegrations(){this._scanning=!0;try{await(t=this.hass,vt(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0;try{await(t=this.hass,vt(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){await((t,e,s,i)=>vt(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}async _onMisconfigStatus(t,e){await((t,e,s,i)=>vt(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}_groupedVulnFindings(){const t=new Map;for(const e of this._vulnFindings){const s=String(e.device_name??"Unknown device"),i=t.get(s);i?i.push(e):t.set(s,[e])}const e=Array.from(t.entries()).map(([t,e])=>({device_name:t,findings:[...e].sort((t,e)=>Lt(t.severity)-Lt(e.severity))}));return e.sort((t,e)=>Lt(t.findings[0].severity)-Lt(e.findings[0].severity)),e}_renderStatusSelect(t,e,s){return B`
       <select @change=${t=>s(t.target.value)}>
-        ${Rt.map(t=>j`<option value=${t} ?selected=${t===e}>${t}</option>`)}
+        ${Ut.map(t=>B`<option value=${t} ?selected=${t===e}>${t}</option>`)}
       </select>
-    `}render(){return this._loading?j`<div class="empty">Loading findings…</div>`:j`
+    `}render(){return this._loading?B`<div class="empty">Loading findings…</div>`:B`
       <div class="card">
         <h3>Misconfiguration Findings</h3>
-        ${this._misconfigFindings.length?j`
+        ${this._misconfigFindings.length?B`
               <table>
                 <thead>
                   <tr>
@@ -475,7 +475,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._misconfigFindings.map(t=>j`
+                  ${this._misconfigFindings.map(t=>B`
                       <tr>
                         <td><span class="pill ${t.severity}"><span class="dot"></span>${t.check}</span></td>
                         <td>${t.summary}</td>
@@ -484,7 +484,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">No findings.</div>`}
+            `:B`<div class="empty">No findings.</div>`}
       </div>
 
       <div class="card">
@@ -500,7 +500,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             Scan all integrations now
           </button>
         </div>
-        ${this._scannerFindings.length?j`
+        ${this._scannerFindings.length?B`
               <table>
                 <thead>
                   <tr>
@@ -513,7 +513,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._scannerFindings.map(t=>j`
+                  ${this._scannerFindings.map(t=>B`
                       <tr>
                         <td>${t.domain}</td>
                         <td><span class="pill ${t.severity}"><span class="dot"></span>${t.pattern}</span></td>
@@ -525,7 +525,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">No findings.</div>`}
+            `:B`<div class="empty">No findings.</div>`}
       </div>
 
       <div class="card">
@@ -540,11 +540,10 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             Scan devices now
           </button>
         </div>
-        ${this._vulnFindings.length?j`
+        ${this._vulnFindings.length?B`
               <table>
                 <thead>
                   <tr>
-                    <th>Device</th>
                     <th>CVE</th>
                     <th>CVSS</th>
                     <th>Confidence</th>
@@ -552,22 +551,31 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._vulnFindings.map(t=>j`
+                  ${this._groupedVulnFindings().map(t=>B`
                       <tr>
-                        <td>${t.device_name}</td>
-                        <td>${t.cve_id??"—"}</td>
-                        <td><span class="pill ${t.severity}"><span class="dot"></span>${t.cvss??"unscored"}</span></td>
-                        <td>${t.confidence}</td>
-                        <td>${this._renderStatusSelect(t.id,t.status,e=>this._onVulnStatus(t.id,e))}</td>
+                        <td colspan="4" style="font-weight:600;background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                          ${t.device_name}
+                          <span class="muted" style="font-weight:400;font-size:11.5px;"
+                            >(${t.findings.length} finding${1===t.findings.length?"":"s"})</span
+                          >
+                        </td>
                       </tr>
+                      ${t.findings.map(t=>B`
+                          <tr>
+                            <td>${t.cve_id??"—"}</td>
+                            <td><span class="pill ${t.severity}"><span class="dot"></span>${t.cvss??"unscored"}</span></td>
+                            <td>${t.confidence}</td>
+                            <td>${this._renderStatusSelect(t.id,t.status,e=>this._onVulnStatus(t.id,e))}</td>
+                          </tr>
+                        `)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">No findings.</div>`}
+            `:B`<div class="empty">No findings.</div>`}
       </div>
 
       ${this._renderProbeCard()}
-    `}_renderProbeCard(){const t=this._probe;if(!t)return q;if(!t.supervisor)return j`
+    `}_renderProbeCard(){const t=this._probe;if(!t)return q;if(!t.supervisor)return B`
         <div class="card">
           <h3>Host Probe <span class="tag cosmetic">not available</span></h3>
           <p class="muted" style="font-size:12.5px;">
@@ -577,7 +585,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             Supervisor (Core/Container), so this feature has nothing to attach to here.
           </p>
         </div>
-      `;if(!t.installed)return j`
+      `;if(!t.installed)return B`
         <div class="card">
           <h3>Host Probe <span class="tag cosmetic">not installed</span></h3>
           <p class="muted" style="font-size:12.5px;">
@@ -588,14 +596,14 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             "HA SOC Probe". See the README for the exact URL.
           </p>
         </div>
-      `;const e=t.result;return j`
+      `;const e=t.result;return B`
       <div class="card">
         <h3>
           Host Probe
           <span class="tag ${t.running?"enforced":"cosmetic"}">
             ${t.running?"running":"installed, not running"}
           </span>
-          ${t.update_available?j`<span class="tag cosmetic">update available</span>`:q}
+          ${t.update_available?B`<span class="tag cosmetic">update available</span>`:q}
         </h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Version ${t.version??"unknown"}. Reports the host's real listening TCP
@@ -603,31 +611,39 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           owns a port needs the add-on to also see the host's process list
           (<code>host_pid</code>), a privilege this add-on deliberately doesn't request.
         </p>
-        ${e?j`
+        ${e?B`
               <p class="muted" style="font-size:12px;">
                 Last reported ${new Date(e.reported_at).toLocaleString()}
               </p>
-              ${e.open_ports.length?j`
+              ${e.open_ports.length?B`
                     <table>
                       <thead>
                         <tr>
                           <th>Port</th>
                           <th>Protocol</th>
+                          <th>Bind address</th>
+                          <th>Interface</th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${e.open_ports.slice().sort((t,e)=>t.port-e.port).map(t=>j`
+                        ${e.open_ports.slice().sort((t,e)=>t.port-e.port).map(t=>B`
                               <tr>
                                 <td>${t.port}</td>
                                 <td>${t.proto}</td>
+                                <td class="muted">${t.address??"—"}</td>
+                                <td>
+                                  ${"(all interfaces)"===t.interface?B`<span class="pill high"
+                                        ><span class="dot"></span>all interfaces</span
+                                      >`:B`<span class="muted">${t.interface??"—"}</span>`}
+                                </td>
                               </tr>
                             `)}
                       </tbody>
                     </table>
-                  `:j`<div class="empty">No listening ports reported.</div>`}
-            `:j`<div class="empty">No scan reported yet.</div>`}
+                  `:B`<div class="empty">No listening ports reported.</div>`}
+            `:B`<div class="empty">No scan reported yet.</div>`}
       </div>
-    `}};Ut.styles=Ct,t([pt({attribute:!1})],Ut.prototype,"hass",void 0),t([ut()],Ut.prototype,"_scannerFindings",void 0),t([ut()],Ut.prototype,"_vulnFindings",void 0),t([ut()],Ut.prototype,"_misconfigFindings",void 0),t([ut()],Ut.prototype,"_probe",void 0),t([ut()],Ut.prototype,"_loading",void 0),t([ut()],Ut.prototype,"_scanning",void 0),Ut=t([dt("ha-soc-scanner-view")],Ut);function Ft(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function Ot(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}const Ht={lock:"Locks",siren:"Sirens",valve:"Valves"},Lt=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],Nt=["critical","high","medium","low"],Dt={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},Tt={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},Mt=[20,50,100,"all"],Vt=[20,50,100,"all"];let jt=class extends rt{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:"desc"},this._devicePageSize=20,this._integrationSearch="",this._integrationPageSize=20}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0;try{const[e,s,i,a,o,n,r,l]=await Promise.all([(t=this.hass,vt(t,{type:"ha_soc/dashboard/summary"})),$t(this.hass),wt(this.hass),kt(this.hass),At(this.hass),yt(this.hass),_t(this.hass),gt(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=o,this._detections=n,this._risk=r,this._users=l}finally{this._loading=!1}var t}async _onAck(t){await bt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await bt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){!function(t,e){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:{tab:e},bubbles:!0,composed:!0}))}(this,t)}_donutGradient(t){const e=t.reduce((t,e)=>t+e.value,0)||1;let s=0;const i=t.map(t=>{const i=s/e*100;s+=t.value;const a=s/e*100;return`${t.color} ${i}% ${a}%`});return`conic-gradient(${i.join(", ")})`}_onSort(t){this._deviceSort=this._deviceSort.key===t?{key:t,dir:"asc"===this._deviceSort.dir?"desc":"asc"}:{key:t,dir:"name"===t||"vendor"===t?"asc":"desc"}}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e)))),{key:i,dir:a}=this._deviceSort,o=[...s].sort((t,e)=>{const s=t[i],o=e[i],n="string"==typeof s?s.localeCompare(o):s-o;return"asc"===a?n:-n});return o}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t}_statusDotColor(t){switch(t){case"unavailable":return"var(--status-critical)";case"partial":return"var(--status-warning)";case"disabled":return"var(--cat-other)";case"no_entities":return"var(--primary-color)";default:return"var(--status-good)"}}render(){if(this._loading||!this._summary||!this._deviceOverview||!this._integrationOverview)return j`<div class="empty">Loading dashboard…</div>`;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=this._detections.filter(t=>"open"===t.status),a=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),o=a.critical+a.high+a.medium+a.low,n=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:a.critical},{key:"high",label:"High",color:"var(--status-serious)",value:a.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:a.medium},{key:"low",label:"Low",color:"var(--status-good)",value:a.low}],r=Math.max(0,Math.min(100,e.combined_risk_score/10*100)),l=t.entity_state_counts??{unavailable:0,unknown:0},d=l.unavailable+l.unknown,c=[{key:"unavailable",label:"Failed (unavailable)",color:"var(--status-critical)",value:l.unavailable},{key:"unknown",label:"Unknown",color:"var(--status-warning)",value:l.unknown}],h=this._sortedFilteredDevices(),p="all"===this._devicePageSize?h:h.slice(0,this._devicePageSize),u=this._filteredIntegrations(),v="all"===this._integrationPageSize?u:u.slice(0,this._integrationPageSize),g=[{key:"low",color:"var(--status-good)",value:t.risk_band_counts.low??0},{key:"moderate",color:"var(--status-warning)",value:t.risk_band_counts.moderate??0},{key:"high",color:"var(--status-serious)",value:t.risk_band_counts.high??0},{key:"critical",color:"var(--status-critical)",value:t.risk_band_counts.critical??0}],_=[{key:"enabled",color:"var(--cat-1)",value:t.mfa_counts.enabled},{key:"disabled",color:"var(--cat-2)",value:t.mfa_counts.disabled}],y=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}];return j`
+    `}};Ot.styles=Et,t([pt({attribute:!1})],Ot.prototype,"hass",void 0),t([ut()],Ot.prototype,"_scannerFindings",void 0),t([ut()],Ot.prototype,"_vulnFindings",void 0),t([ut()],Ot.prototype,"_misconfigFindings",void 0),t([ut()],Ot.prototype,"_probe",void 0),t([ut()],Ot.prototype,"_loading",void 0),t([ut()],Ot.prototype,"_scanning",void 0),Ot=t([dt("ha-soc-scanner-view")],Ot);function Ht(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function Nt(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}const Dt={lock:"Locks",siren:"Sirens",valve:"Valves"},Tt=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],Mt=["critical","high","medium","low"],Vt={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},Bt={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},jt=[20,50,100,"all"],qt=[20,50,100,"all"];let Kt=class extends rt{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:"desc"},this._devicePageSize=20,this._integrationSearch="",this._integrationPageSize=20}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0;try{const[e,s,i,a,o,n,r,l]=await Promise.all([(t=this.hass,vt(t,{type:"ha_soc/dashboard/summary"})),wt(this.hass),xt(this.hass),St(this.hass),Ct(this.hass),yt(this.hass),_t(this.hass),gt(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=o,this._detections=n,this._risk=r,this._users=l}finally{this._loading=!1}var t}async _onAck(t){await bt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await bt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){!function(t,e){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:{tab:e},bubbles:!0,composed:!0}))}(this,t)}_donutGradient(t){const e=t.reduce((t,e)=>t+e.value,0)||1;let s=0;const i=t.map(t=>{const i=s/e*100;s+=t.value;const a=s/e*100;return`${t.color} ${i}% ${a}%`});return`conic-gradient(${i.join(", ")})`}_onSort(t){this._deviceSort=this._deviceSort.key===t?{key:t,dir:"asc"===this._deviceSort.dir?"desc":"asc"}:{key:t,dir:"name"===t||"vendor"===t?"asc":"desc"}}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e)))),{key:i,dir:a}=this._deviceSort,o=[...s].sort((t,e)=>{const s=t[i],o=e[i],n="string"==typeof s?s.localeCompare(o):s-o;return"asc"===a?n:-n});return o}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t}_statusDotColor(t){switch(t){case"unavailable":return"var(--status-critical)";case"partial":return"var(--status-warning)";case"disabled":return"var(--cat-other)";case"no_entities":return"var(--primary-color)";default:return"var(--status-good)"}}render(){if(this._loading||!this._summary||!this._deviceOverview||!this._integrationOverview)return B`<div class="empty">Loading dashboard…</div>`;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=this._detections.filter(t=>"open"===t.status),a=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),o=a.critical+a.high+a.medium+a.low,n=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:a.critical},{key:"high",label:"High",color:"var(--status-serious)",value:a.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:a.medium},{key:"low",label:"Low",color:"var(--status-good)",value:a.low}],r=Math.max(0,Math.min(100,e.combined_risk_score/10*100)),l=t.entity_state_counts??{unavailable:0,unknown:0},d=l.unavailable+l.unknown,c=[{key:"unavailable",label:"Failed (unavailable)",color:"var(--status-critical)",value:l.unavailable},{key:"unknown",label:"Unknown",color:"var(--status-warning)",value:l.unknown}],h=this._sortedFilteredDevices(),p="all"===this._devicePageSize?h:h.slice(0,this._devicePageSize),u=this._filteredIntegrations(),v="all"===this._integrationPageSize?u:u.slice(0,this._integrationPageSize),g=[{key:"low",color:"var(--status-good)",value:t.risk_band_counts.low??0},{key:"moderate",color:"var(--status-warning)",value:t.risk_band_counts.moderate??0},{key:"high",color:"var(--status-serious)",value:t.risk_band_counts.high??0},{key:"critical",color:"var(--status-critical)",value:t.risk_band_counts.critical??0}],_=[{key:"enabled",color:"var(--cat-1)",value:t.mfa_counts.enabled},{key:"disabled",color:"var(--cat-2)",value:t.mfa_counts.disabled}],y=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}];return B`
       ${this._renderSecurityCard()}
 
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
@@ -635,7 +651,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card device-status-card">
           <h3>Device Status</h3>
           <div class="status-tiles">
-            ${Lt.map(t=>j`
+            ${Tt.map(t=>B`
                 <div
                   class="status-tile clickable ${t.key} ${this._deviceStatusFilter===t.key?"active":""}"
                   title="Filter the devices table below"
@@ -655,7 +671,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <div class="center">${o.toLocaleString()}</div>
             </div>
             <div class="legend">
-              ${n.map(t=>j`
+              ${n.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.label}
                     <span class="val">${t.value.toLocaleString()}</span>
@@ -683,7 +699,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <div class="center">${d.toLocaleString()}</div>
             </div>
             <div class="legend">
-              ${c.map(t=>j`
+              ${c.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.label}
                     <span class="val">${t.value.toLocaleString()}</span>
@@ -703,7 +719,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <div class="center">${t.total_users_count}</div>
             </div>
             <div class="legend">
-              ${g.map(t=>j`
+              ${g.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.key}
                     <span class="val">${t.value}</span>
@@ -735,7 +751,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <div class="center">${this._detections.length}</div>
             </div>
             <div class="legend">
-              ${y.map(t=>j`
+              ${y.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.key}
                     <span class="val">${t.value}</span>
@@ -748,7 +764,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
 
       <div class="card">
         <h3>Recent suspicious activity</h3>
-        ${i.length?j`
+        ${i.length?B`
               <table>
                 <thead>
                   <tr>
@@ -760,7 +776,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${i.map(t=>j`
+                  ${i.map(t=>B`
                       <tr>
                         <td>${new Date(t.last_seen).toLocaleString()}</td>
                         <td>${t.title}</td>
@@ -774,16 +790,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">No open detections.</div>`}
+            `:B`<div class="empty">No open detections.</div>`}
       </div>
 
       <h2 class="section-title">Devices &amp; Integrations</h2>
       <div class="row2">
         <div class="card" id="devices-card">
           <h3>All Devices</h3>
-          ${this._deviceStatusFilter?j`
+          ${this._deviceStatusFilter?B`
                 <div class="filter-chip" @click=${()=>this._deviceStatusFilter=null}>
-                  ${Lt.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
+                  ${Tt.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
                 </div>
               `:q}
           <div class="devices-toolbar">
@@ -794,7 +810,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               @input=${t=>this._deviceSearch=t.target.value}
             />
           </div>
-          ${0===h.length?j`<div class="empty">No devices found.</div>`:j`
+          ${0===h.length?B`<div class="empty">No devices found.</div>`:B`
                 <div style="overflow-x:auto;">
                   <table>
                     <thead>
@@ -816,11 +832,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${p.map(t=>j`
+                      ${p.map(t=>B`
                           <tr
                             class="clickable"
                             title="Open in Home Assistant's Devices page"
-                            @click=${()=>Ft(`/config/devices/device/${t.device_id}`)}
+                            @click=${()=>Ht(`/config/devices/device/${t.device_id}`)}
                           >
                             <td><span class="health-dot" style="background:${this._statusDotColor(t.status)}"></span></td>
                             <td>${t.name}</td>
@@ -829,7 +845,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                             <td class="num">${t.total_findings}</td>
                             <td>
                               <span class="sev-cell">
-                                ${Nt.map(e=>j`
+                                ${Mt.map(e=>B`
                                     <span>
                                       <span
                                         class="sev-dot"
@@ -853,7 +869,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     .value=${String(this._devicePageSize)}
                     @change=${t=>{const e=t.target.value;this._devicePageSize="all"===e?"all":Number(e)}}
                   >
-                    ${Mt.map(t=>j`
+                    ${jt.map(t=>B`
                         <option value=${String(t)} ?selected=${t===this._devicePageSize}>
                           ${"all"===t?"Show all":`Show ${t}`}
                         </option>
@@ -865,7 +881,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
 
         <div class="card">
           <h3>Issues by Integration</h3>
-          ${0===s.integrations.length?j`<div class="empty">No integration issues detected.</div>`:j`
+          ${0===s.integrations.length?B`<div class="empty">No integration issues detected.</div>`:B`
                 <div class="devices-toolbar">
                   <input
                     type="text"
@@ -874,7 +890,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     @input=${t=>this._integrationSearch=t.target.value}
                   />
                 </div>
-                ${0===u.length?j`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:j`
+                ${0===u.length?B`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:B`
                       <div style="overflow-x:auto;">
                         <table>
                           <thead>
@@ -884,11 +900,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                             </tr>
                           </thead>
                           <tbody>
-                            ${v.map(t=>{const e=Tt[t.issue_category];return j`
+                            ${v.map(t=>{const e=Bt[t.issue_category];return B`
                                 <tr
                                   class="clickable"
-                                  title="${t.title} — ${Dt[t.issue_category]}. Open in Home Assistant's Devices page"
-                                  @click=${()=>Ft(Ot(t.entry_id))}
+                                  title="${t.title} — ${Vt[t.issue_category]}. Open in Home Assistant's Devices page"
+                                  @click=${()=>Ht(Nt(t.entry_id))}
                                 >
                                   <td>${t.title}</td>
                                   <td>
@@ -911,7 +927,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                           .value=${String(this._integrationPageSize)}
                           @change=${t=>{const e=t.target.value;this._integrationPageSize="all"===e?"all":Number(e)}}
                         >
-                          ${Vt.map(t=>j`
+                          ${qt.map(t=>B`
                               <option value=${String(t)} ?selected=${t===this._integrationPageSize}>
                                 ${"all"===t?"Show all":`Show ${t}`}
                               </option>
@@ -922,14 +938,14 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               `}
         </div>
       </div>
-    `}_sortArrow(t){return this._deviceSort.key!==t?q:j`<span class="arrow">${"asc"===this._deviceSort.dir?"▲":"▼"}</span>`}_renderSecurityCard(){const t=this._security;if(!t)return q;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return j`
+    `}_sortArrow(t){return this._deviceSort.key!==t?q:B`<span class="arrow">${"asc"===this._deviceSort.dir?"▲":"▼"}</span>`}_renderSecurityCard(){const t=this._security;if(!t)return q;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return B`
       <div class="card">
         <h3>
           Security Integrations Health
-          ${t.problem_count||t.low_battery_count?j`<span class="tag" style="background:rgba(219,68,55,0.15);color:var(--error-color,#db4437);">
+          ${t.problem_count||t.low_battery_count?B`<span class="tag" style="background:rgba(219,68,55,0.15);color:var(--error-color,#db4437);">
                 ${t.problem_count} problem${1===t.problem_count?"":"s"}, ${t.low_battery_count} low
                 battery
-              </span>`:j`<span class="tag enforced">all clear</span>`}
+              </span>`:B`<span class="tag enforced">all clear</span>`}
         </h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Every lock/siren/valve entity regardless of integration, plus local USB/serial
@@ -937,11 +953,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           Protect, Keymaster, Emporia Vue) moved to Settings — configurable there too.
         </p>
         <div class="security-health-grid">
-          ${Object.entries(Ht).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem).length,o=i.filter(t=>t.low_battery).length;return j`
+          ${Object.entries(Dt).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem).length,o=i.filter(t=>t.low_battery).length;return B`
                 <div
                   class="security-source-tile ${i.length?"clickable":""}"
                   title=${i.length?`View ${s.toLowerCase()} in Home Assistant's Devices page`:""}
-                  @click=${()=>i.length&&Ft(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
+                  @click=${()=>i.length&&Ht(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
                 >
                   <div class="label">${s}</div>
                   <div class="value" style="color:${a?"var(--error-color,#db4437)":"inherit"}">
@@ -955,7 +971,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           ${this._renderPeripheralsTile()}
         </div>
       </div>
-    `}_renderPeripheralsTile(){const t=this._peripherals;return t&&t.available?j`
+    `}_renderPeripheralsTile(){const t=this._peripherals;return t&&t.available?B`
       <div
         class="security-source-tile clickable"
         title="View Local Peripherals"
@@ -969,7 +985,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           ${t.total_count?t.unassigned_count?`${t.unassigned_count} unassigned`:"none unassigned":"no USB serial devices detected"}
         </div>
       </div>
-    `:q}};function Bt(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}jt.styles=[Ct,n`
+    `:q}};function Wt(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}Kt.styles=[Et,n`
       h2.section-title {
         font-size: 13px;
         text-transform: uppercase;
@@ -1264,7 +1280,32 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         color: var(--secondary-text-color);
         margin-top: 2px;
       }
-    `],t([pt({attribute:!1})],jt.prototype,"hass",void 0),t([ut()],jt.prototype,"_summary",void 0),t([ut()],jt.prototype,"_deviceOverview",void 0),t([ut()],jt.prototype,"_integrationOverview",void 0),t([ut()],jt.prototype,"_peripherals",void 0),t([ut()],jt.prototype,"_security",void 0),t([ut()],jt.prototype,"_detections",void 0),t([ut()],jt.prototype,"_risk",void 0),t([ut()],jt.prototype,"_users",void 0),t([ut()],jt.prototype,"_loading",void 0),t([ut()],jt.prototype,"_deviceSearch",void 0),t([ut()],jt.prototype,"_deviceStatusFilter",void 0),t([ut()],jt.prototype,"_deviceSort",void 0),t([ut()],jt.prototype,"_devicePageSize",void 0),t([ut()],jt.prototype,"_integrationSearch",void 0),t([ut()],jt.prototype,"_integrationPageSize",void 0),jt=t([dt("ha-soc-dashboard-view")],jt);let qt=class extends rt{constructor(){super(...arguments),this._entries=[],this._loading=!0,this._domainFilter="",this._expanded=new Set}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._entries=await(t=this.hass,vt(t,{type:"system_log/list"}))}finally{this._loading=!1}var t}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>Bt(t.name)))).sort()}get _filtered(){return this._domainFilter?this._entries.filter(t=>Bt(t.name)===this._domainFilter):this._entries}render(){const t=this._filtered;return j`
+    `],t([pt({attribute:!1})],Kt.prototype,"hass",void 0),t([ut()],Kt.prototype,"_summary",void 0),t([ut()],Kt.prototype,"_deviceOverview",void 0),t([ut()],Kt.prototype,"_integrationOverview",void 0),t([ut()],Kt.prototype,"_peripherals",void 0),t([ut()],Kt.prototype,"_security",void 0),t([ut()],Kt.prototype,"_detections",void 0),t([ut()],Kt.prototype,"_risk",void 0),t([ut()],Kt.prototype,"_users",void 0),t([ut()],Kt.prototype,"_loading",void 0),t([ut()],Kt.prototype,"_deviceSearch",void 0),t([ut()],Kt.prototype,"_deviceStatusFilter",void 0),t([ut()],Kt.prototype,"_deviceSort",void 0),t([ut()],Kt.prototype,"_devicePageSize",void 0),t([ut()],Kt.prototype,"_integrationSearch",void 0),t([ut()],Kt.prototype,"_integrationPageSize",void 0),Kt=t([dt("ha-soc-dashboard-view")],Kt);const Gt=["DEBUG","INFO","WARNING","ERROR","CRITICAL"];let Zt=class extends rt{constructor(){super(...arguments),this._entries=[],this._fault=null,this._loading=!0,this._domainFilter="",this._levelFilter="",this._expanded=new Set}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([(t=this.hass,vt(t,{type:"system_log/list"})),ft(this.hass)]);this._entries=e,this._fault=s}finally{this._loading=!1}var t}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>Wt(t.name)))).sort()}get _levels(){const t=new Set(this._entries.map(t=>t.level.toUpperCase()));return Gt.filter(e=>t.has(e))}get _filtered(){return this._entries.filter(t=>(!this._domainFilter||Wt(t.name)===this._domainFilter)&&(!this._levelFilter||t.level.toUpperCase()===this._levelFilter))}_renderFaultLogCard(){const t=this._fault;return t?B`
+      <div class="card fault-log">
+        <h3>
+          Home Assistant Crash Log
+          ${t.exists&&t.content?.trim()?B`<span class="log-level critical"><span class="dot"></span>crash detected</span>`:B`<span class="tag enforced">none detected</span>`}
+        </h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          <code>home-assistant.log.fault</code> — Python's own faulthandler dump. This
+          file is only ever written when Home Assistant Core itself crashes at a fatal,
+          low level (segfault, abort, illegal instruction) — a normal Python exception
+          never creates it, and it's separate from the WARNING/ERROR table below. Home
+          Assistant appends to this file across restarts and only deletes it automatically
+          after a clean run finds it empty, so old content can persist here until it's
+          cleared by hand on the host — this view is read-only and never touches the file.
+        </p>
+        ${t.exists&&t.content?.trim()?B`
+              <p class="muted" style="font-size:12px;">
+                Last written ${new Date(t.modified_at).toLocaleString()} —
+                ${t.size_bytes.toLocaleString()} byte(s) total${t.truncated?", showing the most recent 64 KB":""}.
+              </p>
+              <pre>${t.content}</pre>
+            `:B`<div class="empty">No crash detected.</div>`}
+      </div>
+    `:q}render(){const t=this._filtered;return B`
+      ${this._renderFaultLogCard()}
+
       <div class="card">
         <h3>Home Assistant Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -1279,12 +1320,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="toolbar">
           <select @change=${t=>this._domainFilter=t.target.value}>
             <option value="" ?selected=${""===this._domainFilter}>All integrations</option>
-            ${this._domains.map(t=>j`<option value=${t} ?selected=${t===this._domainFilter}>${t}</option>`)}
+            ${this._domains.map(t=>B`<option value=${t} ?selected=${t===this._domainFilter}>${t}</option>`)}
+          </select>
+          <select @change=${t=>this._levelFilter=t.target.value}>
+            <option value="" ?selected=${""===this._levelFilter}>All levels</option>
+            ${this._levels.map(t=>B`<option value=${t} ?selected=${t===this._levelFilter}>${t}</option>`)}
           </select>
           <span class="spacer"></span>
           <button class="ha-btn" @click=${this._load}>Refresh</button>
         </div>
-        ${this._loading?j`<div class="empty">Loading…</div>`:t.length?j`
+        ${this._loading?B`<div class="empty">Loading…</div>`:t.length?B`
               <table>
                 <thead>
                   <tr>
@@ -1296,7 +1341,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${t.map((t,e)=>{const s=this._expanded.has(e);return j`
+                  ${t.map((t,e)=>{const s=this._expanded.has(e);return B`
                       <tr
                         class=${t.exception?"clickable":""}
                         title=${t.exception?"Click to show/hide the traceback":""}
@@ -1304,18 +1349,18 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       >
                         <td>${new Date(1e3*t.first_occurred).toLocaleString()}</td>
                         <td>
-                          <span class="pill ${function(t){switch(t){case"CRITICAL":return"critical";case"ERROR":return"high";case"WARNING":return"medium";default:return"low"}}(t.level)}"
+                          <span class="log-level ${function(t){const e=t.toUpperCase();return Gt.includes(e)?e.toLowerCase():"info"}(t.level)}"
                             ><span class="dot"></span>${t.level}</span
                           >
                         </td>
-                        <td class="muted">${Bt(t.name)}</td>
+                        <td class="muted">${Wt(t.name)}</td>
                         <td>
                           ${t.message[t.message.length-1]}
-                          ${t.source?j`<div class="muted" style="font-size:11px;">${t.source[0]}:${t.source[1]}</div>`:q}
+                          ${t.source?B`<div class="muted" style="font-size:11px;">${t.source[0]}:${t.source[1]}</div>`:q}
                         </td>
                         <td class="num">${t.count}</td>
                       </tr>
-                      ${s&&t.exception?j`
+                      ${s&&t.exception?B`
                             <tr>
                               <td colspan="5">
                                 <pre
@@ -1329,9 +1374,74 @@ ${t.exception}</pre
                     `})}
                 </tbody>
               </table>
-            `:j`<div class="empty">No matching log entries.</div>`}
+            `:B`<div class="empty">No matching log entries.</div>`}
       </div>
-    `}};qt.styles=Ct,t([pt({attribute:!1})],qt.prototype,"hass",void 0),t([ut()],qt.prototype,"_entries",void 0),t([ut()],qt.prototype,"_loading",void 0),t([ut()],qt.prototype,"_domainFilter",void 0),t([ut()],qt.prototype,"_expanded",void 0),qt=t([dt("ha-soc-logs-view")],qt);let Kt=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._busyKey=null,this._showIgnored=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._overview=await kt(this.hass)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>vt(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return j`<div class="empty">Loading peripherals…</div>`;const t=this._overview;if(!t||!t.available)return j`
+    `}};Zt.styles=[Et,n`
+      .log-level {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        padding: 3px 8px;
+        border-radius: 100px;
+      }
+      .log-level .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .log-level.debug {
+        background: rgba(154, 160, 166, 0.16);
+        color: var(--secondary-text-color);
+      }
+      .log-level.debug .dot {
+        background: var(--cat-other, #9aa0a6);
+      }
+      .log-level.info {
+        background: rgba(42, 120, 214, 0.14);
+        color: var(--cat-1, #2a78d6);
+      }
+      .log-level.info .dot {
+        background: var(--cat-1, #2a78d6);
+      }
+      .log-level.warning {
+        background: rgba(250, 178, 25, 0.16);
+        color: #7a5200;
+      }
+      .log-level.warning .dot {
+        background: var(--status-warning, #fab219);
+      }
+      .log-level.error {
+        background: rgba(236, 131, 90, 0.18);
+        color: var(--status-serious, #ec835a);
+      }
+      .log-level.error .dot {
+        background: var(--status-serious, #ec835a);
+      }
+      .log-level.critical {
+        background: rgba(208, 59, 59, 0.18);
+        color: var(--status-critical, #d03b3b);
+      }
+      .log-level.critical .dot {
+        background: var(--status-critical, #d03b3b);
+      }
+      :host(.dark) .log-level.warning {
+        color: var(--status-warning, #fab219);
+      }
+      .fault-log pre {
+        white-space: pre-wrap;
+        font-size: 11.5px;
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.04);
+        padding: 10px;
+        border-radius: 6px;
+        margin: 0;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+    `],t([pt({attribute:!1})],Zt.prototype,"hass",void 0),t([ut()],Zt.prototype,"_entries",void 0),t([ut()],Zt.prototype,"_fault",void 0),t([ut()],Zt.prototype,"_loading",void 0),t([ut()],Zt.prototype,"_domainFilter",void 0),t([ut()],Zt.prototype,"_levelFilter",void 0),t([ut()],Zt.prototype,"_expanded",void 0),Zt=t([dt("ha-soc-logs-view")],Zt);let Jt=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._busyKey=null,this._showIgnored=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._overview=await St(this.hass)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>vt(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return B`<div class="empty">Loading peripherals…</div>`;const t=this._overview;if(!t||!t.available)return B`
         <div class="card">
           <h3>Local Peripherals</h3>
           <p class="muted" style="font-size:12.5px;">
@@ -1341,7 +1451,7 @@ ${t.exception}</pre
             without it.
           </p>
         </div>
-      `;const e=t.devices.filter(t=>!t.ignored),s=t.devices.filter(t=>t.ignored);return j`
+      `;const e=t.devices.filter(t=>!t.ignored),s=t.devices.filter(t=>t.ignored);return B`
       <div class="card">
         <h3>Local Peripherals</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -1352,7 +1462,7 @@ ${t.exception}</pre
           match against every config entry's stored data — a miss doesn't prove a
           device is unused, only that this couldn't find it.
         </p>
-        ${t.devices.length?j`
+        ${t.devices.length?B`
               <table>
                 <thead>
                   <tr>
@@ -1363,16 +1473,16 @@ ${t.exception}</pre
                   </tr>
                 </thead>
                 <tbody>
-                  ${e.map(t=>j`
+                  ${e.map(t=>B`
                       <tr>
                         <td>${t.raw_name}</td>
                         <td class="muted">${t.tty_path}</td>
                         <td>
-                          ${t.assigned_integration?j`${t.assigned_integration.title}
-                                <span class="muted">(${t.assigned_integration.domain})</span>`:j`<span class="pill medium"><span class="dot"></span>unassigned</span>`}
+                          ${t.assigned_integration?B`${t.assigned_integration.title}
+                                <span class="muted">(${t.assigned_integration.domain})</span>`:B`<span class="pill medium"><span class="dot"></span>unassigned</span>`}
                         </td>
                         <td>
-                          ${t.assigned_integration?q:j`
+                          ${t.assigned_integration?q:B`
                                 <button
                                   class="ha-btn"
                                   ?disabled=${this._busyKey===t.key}
@@ -1386,7 +1496,7 @@ ${t.exception}</pre
                     `)}
                 </tbody>
               </table>
-            `:j`<div class="empty">
+            `:B`<div class="empty">
               No USB serial devices detected. If you're expecting one here, confirm
               Home Assistant actually has access to it — automatic on Home Assistant
               OS for devices your system exposes; a Container/Core install needs the
@@ -1394,12 +1504,12 @@ ${t.exception}</pre
             </div>`}
       </div>
 
-      ${s.length?j`
+      ${s.length?B`
             <div class="card">
               <h3 style="cursor:pointer;" @click=${()=>this._showIgnored=!this._showIgnored}>
                 Ignored (${s.length}) ${this._showIgnored?"▲":"▼"}
               </h3>
-              ${this._showIgnored?j`
+              ${this._showIgnored?B`
                     <table>
                       <thead>
                         <tr>
@@ -1409,7 +1519,7 @@ ${t.exception}</pre
                         </tr>
                       </thead>
                       <tbody>
-                        ${s.map(t=>j`
+                        ${s.map(t=>B`
                             <tr class="row-disabled">
                               <td>${t.raw_name}</td>
                               <td class="muted">${t.tty_path}</td>
@@ -1429,14 +1539,14 @@ ${t.exception}</pre
                   `:q}
             </div>
           `:q}
-    `}};Kt.styles=Ct,t([pt({attribute:!1})],Kt.prototype,"hass",void 0),t([ut()],Kt.prototype,"_overview",void 0),t([ut()],Kt.prototype,"_loading",void 0),t([ut()],Kt.prototype,"_busyKey",void 0),t([ut()],Kt.prototype,"_showIgnored",void 0),Kt=t([dt("ha-soc-peripherals-view")],Kt);const Wt={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let Gt=class extends rt{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._broken=[],this._brokenLoading=!0,this._brokenFilter=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){const[t,e]=await Promise.all([(s=this.hass,vt(s,{type:"config/entity_registry/list"})),St(this.hass)]);var s;this._entities=t,this._broken=e,this._brokenLoading=!1}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null;try{this._report=await(t=this.hass,e=this._oldEntityId,vt(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._onFind()}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0;try{const i=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,vt(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s}));await this._onFind(),this._broken=await St(this.hass),this._applyResult=i}finally{this._applying=!1}var t,e,s}}_renderKind(t,e){return e.length?j`
+    `}};Jt.styles=Et,t([pt({attribute:!1})],Jt.prototype,"hass",void 0),t([ut()],Jt.prototype,"_overview",void 0),t([ut()],Jt.prototype,"_loading",void 0),t([ut()],Jt.prototype,"_busyKey",void 0),t([ut()],Jt.prototype,"_showIgnored",void 0),Jt=t([dt("ha-soc-peripherals-view")],Jt);const Yt={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let Xt=class extends rt{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._broken=[],this._brokenLoading=!0,this._brokenFilter=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){const[t,e]=await Promise.all([(s=this.hass,vt(s,{type:"config/entity_registry/list"})),At(this.hass)]);var s;this._entities=t,this._broken=e,this._brokenLoading=!1}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null;try{this._report=await(t=this.hass,e=this._oldEntityId,vt(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._onFind()}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0;try{const i=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,vt(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s}));await this._onFind(),this._broken=await At(this.hass),this._applyResult=i}finally{this._applying=!1}var t,e,s}}_renderKind(t,e){return e.length?B`
       <div style="margin-bottom:12px;">
         <div style="font-size:12px;font-weight:600;color:var(--secondary-text-color);margin-bottom:4px;">
-          ${Wt[t]??t} (${e.length})
+          ${Yt[t]??t} (${e.length})
         </div>
         <table>
           <tbody>
-            ${e.map(t=>j`
+            ${e.map(t=>B`
                 <tr>
                   <td>${t.name}</td>
                   <td>
@@ -1450,7 +1560,7 @@ ${t.exception}</pre
           </tbody>
         </table>
       </div>
-    `:q}render(){const t=this._report,e=!!t&&t.editable_count>0&&!!this._newEntityId&&this._newEntityId!==this._oldEntityId;return j`
+    `:q}render(){const t=this._report,e=!!t&&t.editable_count>0&&!!this._newEntityId&&this._newEntityId!==this._oldEntityId;return B`
       <div class="card">
         <h3>Entity ReMap</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -1493,17 +1603,17 @@ ${t.exception}</pre
                referenced-but-missing — picking from the full entity registry made
                no sense here, since a genuinely broken entity isn't in it. -->
           <datalist id="ha-soc-remap-old-entities">
-            ${this._broken.map(t=>j`<option value=${t.entity_id}>${this._labelFor(t.entity_id)}</option>`)}
+            ${this._broken.map(t=>B`<option value=${t.entity_id}>${this._labelFor(t.entity_id)}</option>`)}
           </datalist>
           <!-- New/replacement entity picks from every real, currently-registered entity. -->
           <datalist id="ha-soc-remap-new-entities">
-            ${this._entities.map(t=>j`<option value=${t.entity_id}>${t.name??t.original_name??""}</option>`)}
+            ${this._entities.map(t=>B`<option value=${t.entity_id}>${t.name??t.original_name??""}</option>`)}
           </datalist>
         </div>
 
-        ${t?j`
+        ${t?B`
               <div style="margin-top:12px;">
-                ${0===t.total_count?j`<div class="empty">No references to ${t.entity_id} found anywhere.</div>`:j`
+                ${0===t.total_count?B`<div class="empty">No references to ${t.entity_id} found anywhere.</div>`:B`
                       <p class="muted" style="font-size:12.5px;">
                         ${t.total_count} reference(s) found — ${t.editable_count} can be fixed
                         automatically, the rest need a manual look.
@@ -1521,10 +1631,10 @@ ${t.exception}</pre
               </div>
             `:q}
 
-        ${this._applyResult?j`
+        ${this._applyResult?B`
               <div class="card" style="margin-top:12px;background:rgba(67,160,71,0.08);">
-                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${Wt[t]??t}`).join(", ")||"Nothing needed changing."}
-                ${this._applyResult.errors.length?j`<div style="color:var(--error-color);margin-top:6px;">
+                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${Yt[t]??t}`).join(", ")||"Nothing needed changing."}
+                ${this._applyResult.errors.length?B`<div style="color:var(--error-color);margin-top:6px;">
                       ${this._applyResult.errors.length} error(s): ${this._applyResult.errors.join("; ")}
                     </div>`:q}
               </div>
@@ -1533,7 +1643,7 @@ ${t.exception}</pre
 
       <div class="card">
         <h3>
-          Entities referenced but not found (${this._filteredBroken().length}${this._brokenFilter?j` of ${this._broken.length}`:q})
+          Entities referenced but not found (${this._filteredBroken().length}${this._brokenFilter?B` of ${this._broken.length}`:q})
         </h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           A proactive sweep of every automation, script, scene, and structured helper —
@@ -1541,7 +1651,7 @@ ${t.exception}</pre
           Dashboards aren't swept here (there's no equivalent core-provided index to walk
           cheaply); use the search above for a specific entity_id to also cover those.
         </p>
-        ${this._brokenFilter?j`
+        ${this._brokenFilter?B`
               <div class="toolbar" style="margin-bottom:8px;">
                 <span class="muted" style="font-size:12px;">
                   Filtered to <code>${this._brokenFilter}</code>
@@ -1549,7 +1659,7 @@ ${t.exception}</pre
                 <button class="ha-btn" @click=${()=>this._onClearBrokenFilter()}>Clear filter</button>
               </div>
             `:q}
-        ${this._brokenLoading?j`<div class="empty">Loading…</div>`:this._broken.length?this._filteredBroken().length?j`
+        ${this._brokenLoading?B`<div class="empty">Loading…</div>`:this._broken.length?this._filteredBroken().length?B`
                 <table>
                   <thead>
                     <tr>
@@ -1559,7 +1669,7 @@ ${t.exception}</pre
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._filteredBroken().map(t=>j`
+                    ${this._filteredBroken().map(t=>B`
                         <tr>
                           <td><code>${t.entity_id}</code></td>
                           <td class="muted" style="font-size:12px;">
@@ -1572,16 +1682,16 @@ ${t.exception}</pre
                       `)}
                   </tbody>
                 </table>
-              `:j`<div class="empty">No broken reference matches <code>${this._brokenFilter}</code>.</div>`:j`<div class="empty">Nothing found — no dangling entity references detected.</div>`}
+              `:B`<div class="empty">No broken reference matches <code>${this._brokenFilter}</code>.</div>`:B`<div class="empty">Nothing found — no dangling entity references detected.</div>`}
       </div>
-    `}};Gt.styles=Ct,t([pt({attribute:!1})],Gt.prototype,"hass",void 0),t([ut()],Gt.prototype,"_entities",void 0),t([ut()],Gt.prototype,"_oldEntityId",void 0),t([ut()],Gt.prototype,"_newEntityId",void 0),t([ut()],Gt.prototype,"_report",void 0),t([ut()],Gt.prototype,"_finding",void 0),t([ut()],Gt.prototype,"_applying",void 0),t([ut()],Gt.prototype,"_applyResult",void 0),t([ut()],Gt.prototype,"_broken",void 0),t([ut()],Gt.prototype,"_brokenLoading",void 0),t([ut()],Gt.prototype,"_brokenFilter",void 0),Gt=t([dt("ha-soc-entity-remap-view")],Gt);const Zt=1048576,Jt=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],Yt=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}];let Xt=class extends rt{constructor(){super(...arguments),this._settings=null,this._security=null,this._loading=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._settings=await(t=this.hass,vt(t,{type:"ha_soc/settings/get"}));try{this._security=await At(this.hass)}catch{this._security=null}}finally{this._loading=!1}var t}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await(i=this.hass,a={[t]:e},vt(i,{type:"ha_soc/settings/set",...a}))}catch(t){throw this._settings=s,t}var i,a}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderIntegrationRow(t,e){const s=this._settings,i=this._security?.integrations.filter(e=>e.domain===t)??[],a=i.some(t=>t.installed),o=i.some(t=>t.installed&&"loaded"!==t.state),n=i.find(t=>t.installed)?.entry_id??null,r=a?o?i.find(t=>"loaded"!==t.state).state:"loaded":"not installed";return j`
+    `}};Xt.styles=Et,t([pt({attribute:!1})],Xt.prototype,"hass",void 0),t([ut()],Xt.prototype,"_entities",void 0),t([ut()],Xt.prototype,"_oldEntityId",void 0),t([ut()],Xt.prototype,"_newEntityId",void 0),t([ut()],Xt.prototype,"_report",void 0),t([ut()],Xt.prototype,"_finding",void 0),t([ut()],Xt.prototype,"_applying",void 0),t([ut()],Xt.prototype,"_applyResult",void 0),t([ut()],Xt.prototype,"_broken",void 0),t([ut()],Xt.prototype,"_brokenLoading",void 0),t([ut()],Xt.prototype,"_brokenFilter",void 0),Xt=t([dt("ha-soc-entity-remap-view")],Xt);const Qt=1048576,te=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],ee=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}];let se=class extends rt{constructor(){super(...arguments),this._settings=null,this._security=null,this._loading=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._settings=await(t=this.hass,vt(t,{type:"ha_soc/settings/get"}));try{this._security=await Ct(this.hass)}catch{this._security=null}}finally{this._loading=!1}var t}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await(i=this.hass,a={[t]:e},vt(i,{type:"ha_soc/settings/set",...a}))}catch(t){throw this._settings=s,t}var i,a}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderIntegrationRow(t,e){const s=this._settings,i=this._security?.integrations.filter(e=>e.domain===t)??[],a=i.some(t=>t.installed),o=i.some(t=>t.installed&&"loaded"!==t.state),n=i.find(t=>t.installed)?.entry_id??null,r=a?o?i.find(t=>"loaded"!==t.state).state:"loaded":"not installed";return B`
       <div class="settings-row">
         <span>${e}</span>
         <span
           class="muted ${a&&n?"clickable":""}"
           style="font-size:12px;${o?"color:var(--error-color,#db4437);":""}"
           title=${a&&n?"View in Home Assistant's Devices page":""}
-          @click=${()=>a&&n&&Ft(Ot(n))}
+          @click=${()=>a&&n&&Ht(Nt(n))}
           >${r}</span
         >
         <input
@@ -1590,7 +1700,7 @@ ${t.exception}</pre
           @change=${e=>this._updateSecuritySource(t,e.target.checked)}
         />
       </div>
-    `}render(){if(this._loading||!this._settings)return j`<div class="empty">Loading settings…</div>`;const t=this._settings;return j`
+    `}render(){if(this._loading||!this._settings)return B`<div class="empty">Loading settings…</div>`;const t=this._settings;return B`
       <div class="card">
         <h3>Access Control</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -1725,8 +1835,8 @@ ${t.exception}</pre
           <input
             type="number"
             min="1"
-            .value=${String(Math.round(t.audit_max_bytes/Zt))}
-            @change=${t=>this._update("audit_max_bytes",Math.round(Number(t.target.value)*Zt))}
+            .value=${String(Math.round(t.audit_max_bytes/Qt))}
+            @change=${t=>this._update("audit_max_bytes",Math.round(Number(t.target.value)*Qt))}
           />
         </label>
       </div>
@@ -1739,7 +1849,7 @@ ${t.exception}</pre
           installed" rather than being hidden, and turning a toggle off here only affects
           this dashboard section, nothing else.
         </p>
-        ${Jt.map(({domain:e,label:s})=>j`
+        ${te.map(({domain:e,label:s})=>B`
             <label class="settings-row">
               <span>${s}</span>
               <input
@@ -1752,7 +1862,7 @@ ${t.exception}</pre
         <h4 style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);">
           Integrations Loaded
         </h4>
-        ${Yt.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
+        ${ee.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
       </div>
 
       <div class="card">
@@ -1765,10 +1875,10 @@ ${t.exception}</pre
           add-on Configuration tab.
         </p>
       </div>
-    `}};Xt.styles=Ct,t([pt({attribute:!1})],Xt.prototype,"hass",void 0),t([ut()],Xt.prototype,"_settings",void 0),t([ut()],Xt.prototype,"_security",void 0),t([ut()],Xt.prototype,"_loading",void 0),Xt=t([dt("ha-soc-settings-view")],Xt);const Qt=[{id:"dashboard",label:"Dashboard"},{id:"entity_remap",label:"Entity ReMap"},{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"},{id:"audit",label:"Audit Log"},{id:"peripherals",label:"Local Peripherals"},{id:"scanner",label:"Scanner"},{id:"logs",label:"Logs"},{id:"settings",label:"Settings"}];let te=class extends rt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await(t=this.hass,vt(t,{type:"ha_soc/access/info"}))}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}var t}async _loadFooterInfo(){try{this._version=(await(t=this.hass,vt(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await xt(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return j``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return j`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){return null===this._access?j`<div class="header">🛡️ HA SOC</div>`:this._access.allowed?j`
+    `}};se.styles=Et,t([pt({attribute:!1})],se.prototype,"hass",void 0),t([ut()],se.prototype,"_settings",void 0),t([ut()],se.prototype,"_security",void 0),t([ut()],se.prototype,"_loading",void 0),se=t([dt("ha-soc-settings-view")],se);const ie=[{id:"dashboard",label:"Dashboard"},{id:"entity_remap",label:"Entity ReMap"},{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"},{id:"audit",label:"Audit Log"},{id:"peripherals",label:"Local Peripherals"},{id:"scanner",label:"Scanner"},{id:"logs",label:"Logs"},{id:"settings",label:"Settings"}];let ae=class extends rt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await(t=this.hass,vt(t,{type:"ha_soc/access/info"}))}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}var t}async _loadFooterInfo(){try{this._version=(await(t=this.hass,vt(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await kt(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return B``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return B`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){return null===this._access?B`<div class="header">🛡️ HA SOC</div>`:this._access.allowed?B`
       <div class="header">🛡️ HA SOC</div>
       <div class="tabs">
-        ${Qt.map(t=>j`
+        ${ie.map(t=>B`
             <div class="tab ${this._tab===t.id?"active":""}" @click=${()=>this._tab=t.id}>
               ${t.label}
             </div>
@@ -1776,7 +1886,7 @@ ${t.exception}</pre
       </div>
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
       ${this._renderFooter()}
-    `:j`
+    `:B`
         <div class="denied">
           <div class="icon">🛡️🚫</div>
           <h2>Access restricted</h2>
@@ -1792,7 +1902,7 @@ ${t.exception}</pre
           </p>
         </div>
         ${this._renderFooter()}
-      `}_onNavigate(t){this._tab=t.detail.tab}_renderTab(){switch(this._tab){case"users":return j`<ha-soc-users-view .hass=${this.hass}></ha-soc-users-view>`;case"audit":return j`<ha-soc-audit-view .hass=${this.hass}></ha-soc-audit-view>`;case"permissions":return j`<ha-soc-permissions-view .hass=${this.hass}></ha-soc-permissions-view>`;case"scanner":return j`<ha-soc-scanner-view .hass=${this.hass}></ha-soc-scanner-view>`;case"logs":return j`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;case"peripherals":return j`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;case"entity_remap":return j`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;case"settings":return j`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;default:return j`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`}}};te.styles=n`
+      `}_onNavigate(t){this._tab=t.detail.tab}_renderTab(){switch(this._tab){case"users":return B`<ha-soc-users-view .hass=${this.hass}></ha-soc-users-view>`;case"audit":return B`<ha-soc-audit-view .hass=${this.hass}></ha-soc-audit-view>`;case"permissions":return B`<ha-soc-permissions-view .hass=${this.hass}></ha-soc-permissions-view>`;case"scanner":return B`<ha-soc-scanner-view .hass=${this.hass}></ha-soc-scanner-view>`;case"logs":return B`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;case"peripherals":return B`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;case"entity_remap":return B`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;case"settings":return B`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;default:return B`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`}}};ae.styles=n`
     :host {
       display: block;
       background: var(--primary-background-color);
@@ -1853,4 +1963,4 @@ ${t.exception}</pre
       color: var(--secondary-text-color);
       text-align: center;
     }
-  `,t([pt({attribute:!1})],te.prototype,"hass",void 0),t([pt({attribute:!1})],te.prototype,"narrow",void 0),t([pt({attribute:!1})],te.prototype,"panel",void 0),t([ut()],te.prototype,"_tab",void 0),t([ut()],te.prototype,"_access",void 0),t([ut()],te.prototype,"_version",void 0),t([ut()],te.prototype,"_probe",void 0),te=t([dt("ha-soc-panel")],te);export{te as HaSocPanel};
+  `,t([pt({attribute:!1})],ae.prototype,"hass",void 0),t([pt({attribute:!1})],ae.prototype,"narrow",void 0),t([pt({attribute:!1})],ae.prototype,"panel",void 0),t([ut()],ae.prototype,"_tab",void 0),t([ut()],ae.prototype,"_access",void 0),t([ut()],ae.prototype,"_version",void 0),t([ut()],ae.prototype,"_probe",void 0),ae=t([dt("ha-soc-panel")],ae);export{ae as HaSocPanel};

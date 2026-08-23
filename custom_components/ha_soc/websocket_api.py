@@ -42,6 +42,7 @@ from .const import (
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
     MFA_POLICY_AUTO_DEACTIVATE,
+    SEVERITY_ORDER,
     SIGNAL_UPDATE,
 )
 
@@ -122,6 +123,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_scanner_scan_now,
         ws_scanner_export,
         ws_health_list,
+        ws_logs_fault,
         ws_misconfig_set_status,
         ws_dashboard_summary,
         ws_dashboard_devices,
@@ -709,13 +711,34 @@ async def ws_scanner_export(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    findings = list(runtime.store.data["misconfig_findings"].values())
+    # Most severe first — SEVERITY_ORDER is critical/high/medium/low/info, so a
+    # finding whose severity isn't in that list (shouldn't happen, but never
+    # trust stored data blindly) sorts last rather than raising.
+    findings.sort(
+        key=lambda f: SEVERITY_ORDER.index(f["severity"]) if f["severity"] in SEVERITY_ORDER else len(SEVERITY_ORDER)
+    )
     connection.send_result(
         msg["id"],
         {
             "integrations": list(runtime.store.data["integration_health"].values()),
-            "misconfig_findings": list(runtime.store.data["misconfig_findings"].values()),
+            "misconfig_findings": findings,
         },
     )
+
+
+# ----------------------------------------------------------------------------
+# Logs
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/logs/fault"})
+@websocket_api.async_response
+async def ws_logs_fault(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .logs import async_fault_log_overview
+
+    connection.send_result(msg["id"], await async_fault_log_overview(hass))
 
 
 @require_soc_access

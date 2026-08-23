@@ -116,6 +116,29 @@ async def test_ingest_service_stores_result(hass: HomeAssistant, entry: MockConf
     assert result["reported_at"]
 
 
+async def test_ingest_service_accepts_address_and_interface(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    await hass.services.async_call(
+        DOMAIN,
+        "ingest_probe_result",
+        {
+            "open_ports": [
+                {"port": 8123, "proto": "tcp", "address": "0.0.0.0", "interface": "(all interfaces)"},
+                {"port": 22, "proto": "tcp", "address": "192.168.10.5", "interface": "eth0.10"},
+                {"port": 5353, "proto": "udp"},  # older report shape, no address/interface at all
+            ],
+        },
+        blocking=True,
+    )
+    ports = entry.runtime_data.store.data["host_probe"]["open_ports"]
+    assert ports[0]["address"] == "0.0.0.0"
+    assert ports[0]["interface"] == "(all interfaces)"
+    assert ports[1]["address"] == "192.168.10.5"
+    assert ports[1]["interface"] == "eth0.10"
+    assert ports[2].get("address") is None
+
+
 async def test_ingest_service_rejects_bad_port(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     with pytest.raises(vol.MultipleInvalid):
         await hass.services.async_call(

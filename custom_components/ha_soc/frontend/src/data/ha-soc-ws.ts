@@ -144,6 +144,11 @@ export interface OpenPort {
   port: number;
   proto: "tcp" | "udp";
   process?: string | null;
+  // Absent/null on a report from an older add-on version, or when the
+  // bind address is IPv6 (decoding that correctly wasn't worth the risk
+  // of silently showing a wrong address — see run.sh).
+  address?: string | null;
+  interface?: string | null;
 }
 
 export interface HostProbeResult {
@@ -416,6 +421,20 @@ export const fetchVulns = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/list" }).then((r) => r.findings);
 
 export const fetchSystemLog = (hass: HomeAssistant) => ws<HaLogEntry[]>(hass, { type: "system_log/list" });
+
+// Mirrors logs.py's async_fault_log_overview() — home-assistant.log.fault,
+// Python's faulthandler dump, only ever non-empty after a genuine fatal
+// (segfault-class) crash, never a normal Python exception.
+export interface FaultLogOverview {
+  exists: boolean;
+  content: string | null;
+  size_bytes: number;
+  modified_at: string | null;
+  truncated: boolean;
+}
+
+export const fetchFaultLog = (hass: HomeAssistant) =>
+  ws<FaultLogOverview>(hass, { type: "ha_soc/logs/fault" });
 
 // Real core command, called directly for the same reason fetchSystemLog is:
 // a genuine, already-admin-gated core command, not something worth proxying

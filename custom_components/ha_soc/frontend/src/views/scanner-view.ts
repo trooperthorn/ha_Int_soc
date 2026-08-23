@@ -16,6 +16,12 @@ import {
 } from "../data/ha-soc-ws";
 
 const STATUS_OPTIONS = ["new", "confirmed", "dismissed", "resolved"];
+const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
+
+function severityRank(severity: string): number {
+  const i = SEVERITY_ORDER.indexOf(severity);
+  return i === -1 ? SEVERITY_ORDER.length : i;
+}
 
 @customElement("ha-soc-scanner-view")
 export class HaSocScannerView extends LitElement {
@@ -81,6 +87,26 @@ export class HaSocScannerView extends LitElement {
   private async _onMisconfigStatus(id: string, status: string) {
     await setMisconfigStatus(this.hass, id, status);
     await this._load();
+  }
+
+  // One header row per device instead of repeating the device name on
+  // every CVE row — devices ordered by their own worst finding first,
+  // findings within a device also worst-first, so both the grouping and
+  // the reading order lead with what needs attention most.
+  private _groupedVulnFindings(): { device_name: string; findings: Finding[] }[] {
+    const byDevice = new Map<string, Finding[]>();
+    for (const f of this._vulnFindings) {
+      const name = String(f.device_name ?? "Unknown device");
+      const list = byDevice.get(name);
+      if (list) list.push(f);
+      else byDevice.set(name, [f]);
+    }
+    const groups = Array.from(byDevice.entries()).map(([device_name, findings]) => ({
+      device_name,
+      findings: [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity)),
+    }));
+    groups.sort((a, b) => severityRank(a.findings[0].severity) - severityRank(b.findings[0].severity));
+    return groups;
   }
 
   private _renderStatusSelect(id: string, current: string, onChange: (s: string) => void) {
@@ -186,7 +212,6 @@ export class HaSocScannerView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Device</th>
                     <th>CVE</th>
                     <th>CVSS</th>
                     <th>Confidence</th>
@@ -194,15 +219,26 @@ export class HaSocScannerView extends LitElement {
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._vulnFindings.map(
-                    (f: any) => html`
+                  ${this._groupedVulnFindings().map(
+                    (group) => html`
                       <tr>
-                        <td>${f.device_name}</td>
-                        <td>${f.cve_id ?? "—"}</td>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.cvss ?? "unscored"}</span></td>
-                        <td>${f.confidence}</td>
-                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
+                        <td colspan="4" style="font-weight:600;background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                          ${group.device_name}
+                          <span class="muted" style="font-weight:400;font-size:11.5px;"
+                            >(${group.findings.length} finding${group.findings.length === 1 ? "" : "s"})</span
+                          >
+                        </td>
                       </tr>
+                      ${group.findings.map(
+                        (f: any) => html`
+                          <tr>
+                            <td>${f.cve_id ?? "—"}</td>
+                            <td><span class="pill ${f.severity}"><span class="dot"></span>${f.cvss ?? "unscored"}</span></td>
+                            <td>${f.confidence}</td>
+                            <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
+                          </tr>
+                        `
+                      )}
                     `
                   )}
                 </tbody>
@@ -277,6 +313,8 @@ export class HaSocScannerView extends LitElement {
                         <tr>
                           <th>Port</th>
                           <th>Protocol</th>
+                          <th>Bind address</th>
+                          <th>Interface</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -288,6 +326,14 @@ export class HaSocScannerView extends LitElement {
                               <tr>
                                 <td>${p.port}</td>
                                 <td>${p.proto}</td>
+                                <td class="muted">${p.address ?? "—"}</td>
+                                <td>
+                                  ${p.interface === "(all interfaces)"
+                                    ? html`<span class="pill high"
+                                        ><span class="dot"></span>all interfaces</span
+                                      >`
+                                    : html`<span class="muted">${p.interface ?? "—"}</span>`}
+                                </td>
                               </tr>
                             `
                           )}

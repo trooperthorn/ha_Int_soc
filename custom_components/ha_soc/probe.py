@@ -47,6 +47,17 @@ _PORT_SCHEMA = vol.Schema(
         vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         vol.Required("proto"): vol.In(["tcp", "udp"]),
         vol.Optional("process"): vol.Any(None, str),
+        # Bind address decoded from /proc/net/tcp[6] (e.g. "192.168.10.5",
+        # or "0.0.0.0" meaning every interface) and, for an IPv4 address
+        # that isn't 0.0.0.0, a best-effort match against the host's own
+        # `ip addr` output — real, since this add-on shares the host's
+        # network namespace (host_network: true), not a guess. Both are
+        # optional: an older add-on version predates these fields, and
+        # IPv6 addresses are reported without interface resolution (see
+        # run.sh — decoding IPv6's byte layout correctly wasn't worth the
+        # risk of silently showing a wrong address).
+        vol.Optional("address"): vol.Any(None, str),
+        vol.Optional("interface"): vol.Any(None, str),
     }
 )
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026.08.23.2
+
+- Added: each reported open port now includes its bind address (e.g.
+  `192.168.10.5`, or `0.0.0.0` for "every interface") and, for an IPv4
+  address, a best-effort match against the host's real network interfaces
+  (`eth0.10`, etc.) — real, not guessed, since this add-on already shares
+  the host's network namespace. Meant for installs segmenting VLANs: a
+  service listening on `(all interfaces)` is reachable from every VLAN,
+  not just the one it's meant for. IPv6 bind addresses are reported as
+  `null` rather than risk decoding them incorrectly — see run.sh's
+  comments for why.
+
 ## 2026.08.23.1
 
 - Changed: version numbering switched from pre-1.0 semver (`0.1.x`) to
