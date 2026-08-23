@@ -235,4 +235,11 @@ export const sharedStyles = css`
   .settings-row select {
     min-width: 220px;
   }
+  .fw-subhead {
+    margin: 16px 0 6px;
+    font-size: 12.5px;
+    color: var(--secondary-text-color);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
 `;

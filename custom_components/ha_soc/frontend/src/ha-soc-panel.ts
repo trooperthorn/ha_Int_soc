@@ -2,7 +2,7 @@ import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
 import type { HaSocNavigateDetail, SocTab } from "./nav";
-import { AccessInfo, fetchAccessInfo } from "./data/ha-soc-ws";
+import { AccessInfo, ProbeOverview, fetchAccessInfo, fetchProbeStatus, fetchVersion } from "./data/ha-soc-ws";
 
 import "./views/users-view";
 import "./views/audit-view";
@@ -12,20 +12,26 @@ import "./views/dashboard-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
 import "./views/entity-remap-view";
+import "./views/integration-security-view";
 import "./views/settings-view";
 
 type TabId = SocTab;
 
-const TABS: { id: TabId; label: string }[] = [
+// ownerOnly tabs render disabled (with an "only available to owner"
+// tooltip) for a non-owner admin — matching the owner-only WS gate on
+// their commands, so a non-owner never lands on a tab that would just
+// error underneath.
+const TABS: { id: TabId; label: string; ownerOnly?: boolean }[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "entity_remap", label: "Entity ReMap" },
+  { id: "integration_security", label: "Integration Security" },
   { id: "users", label: "Users & Access" },
   { id: "permissions", label: "Permissions" },
   { id: "audit", label: "Audit Log" },
   { id: "peripherals", label: "Local Peripherals" },
   { id: "scanner", label: "Scanner" },
   { id: "logs", label: "Logs" },
-  { id: "settings", label: "Settings" },
+  { id: "settings", label: "Settings", ownerOnly: true },
 ];
 
 @customElement("ha-soc-panel")
@@ -57,6 +63,15 @@ export class HaSocPanel extends LitElement {
       color: var(--primary-color);
       border-bottom-color: var(--primary-color);
     }
+    .tab.disabled {
+      color: var(--disabled-text-color, #b0b0b0);
+      cursor: not-allowed;
+    }
+    .tab.disabled .lock {
+      font-size: 11px;
+      margin-left: 4px;
+      opacity: 0.8;
+    }
     .header {
       display: flex;
       align-items: center;
@@ -85,6 +100,12 @@ export class HaSocPanel extends LitElement {
       font-size: 13.5px;
       line-height: 1.5;
     }
+    .footer {
+      padding: 10px 16px 14px;
+      font-size: 11px;
+      color: var(--secondary-text-color);
+      text-align: center;
+    }
   `;
 
   @property({ attribute: false }) hass!: HomeAssistant;
@@ -93,10 +114,13 @@ export class HaSocPanel extends LitElement {
 
   @state() private _tab: TabId = "dashboard";
   @state() private _access: AccessInfo | null = null;
+  @state() private _version: string | null = null;
+  @state() private _probe: ProbeOverview | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this._loadAccess();
+    this._loadFooterInfo();
   }
 
   private async _loadAccess() {
@@ -109,6 +133,31 @@ export class HaSocPanel extends LitElement {
       // forever or, worse, rendering tabs that will just 401 underneath.
       this._access = { is_owner: false, access_level: "owner_only", allowed: false };
     }
+  }
+
+  private async _loadFooterInfo() {
+    // Both plain @websocket_api.require_admin (see websocket_api.py) —
+    // reachable even when access_level has this admin locked out of
+    // every other ha_soc/* command, so the footer still renders on the
+    // "Access restricted" screen too. Best-effort: a failure here just
+    // means the footer stays blank, never blocks the rest of the panel.
+    try {
+      this._version = (await fetchVersion(this.hass)).version;
+    } catch {
+      this._version = null;
+    }
+    try {
+      this._probe = await fetchProbeStatus(this.hass);
+    } catch {
+      this._probe = null;
+    }
+  }
+
+  private _renderFooter() {
+    if (!this._version) return html``;
+    const probeText =
+      this._probe?.installed && this._probe.version ? ` · HA SOC Probe v${this._probe.version}` : "";
+    return html`<div class="footer">HA SOC v${this._version}${probeText}</div>`;
   }
 
   render() {
@@ -131,20 +180,30 @@ export class HaSocPanel extends LitElement {
             from this panel's own Settings tab once they've signed in.
           </p>
         </div>
+        ${this._renderFooter()}
       `;
     }
     return html`
       <div class="header">🛡️ HA SOC</div>
       <div class="tabs">
-        ${TABS.map(
-          (t) => html`
+        ${TABS.map((t) => {
+          const locked = !!t.ownerOnly && !this._access?.is_owner;
+          if (locked) {
+            return html`
+              <div class="tab disabled" title="Only available to the account owner">
+                ${t.label}<span class="lock">🔒</span>
+              </div>
+            `;
+          }
+          return html`
             <div class="tab ${this._tab === t.id ? "active" : ""}" @click=${() => (this._tab = t.id)}>
               ${t.label}
             </div>
-          `
-        )}
+          `;
+        })}
       </div>
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
+      ${this._renderFooter()}
     `;
   }
 
@@ -168,7 +227,15 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
       case "entity_remap":
         return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
+      case "integration_security":
+        return html`<ha-soc-integration-security-view .hass=${this.hass}></ha-soc-integration-security-view>`;
       case "settings":
+        // Defense in depth: even if a non-owner reached this tab, the
+        // owner-only WS commands would reject them — so never render it.
+        if (!this._access?.is_owner) {
+          return html`<div class="denied"><div class="icon">🔒</div><h2>Owner only</h2>
+            <p>The Settings tab is available to the account owner only.</p></div>`;
+        }
         return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":
       default:

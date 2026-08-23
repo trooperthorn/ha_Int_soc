@@ -23,6 +23,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
@@ -33,6 +34,7 @@ from .const import (
     CONF_AUDIT_RETENTION_DAYS,
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
+    CONF_GITHUB_TOKEN,
     CONF_NVD_API_KEY,
     CONF_RISK_LEARNING_PERIOD_DAYS,
     CONF_SCANNER_ENABLED,
@@ -42,6 +44,9 @@ from .const import (
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
     MFA_POLICY_AUTO_DEACTIVATE,
+    REDACTED_PLACEHOLDER,
+    SECRET_SETTING_KEYS,
+    SEVERITY_ORDER,
     SIGNAL_UPDATE,
 )
 
@@ -87,10 +92,30 @@ def require_soc_access(func):
     return with_soc_access
 
 
+def require_owner(func):
+    """Owner-only gate — stricter than require_soc_access, ignoring access_level.
+
+    Settings carry the security-sensitive controls (the access level itself,
+    API credentials), so they are reachable by the account owner ONLY,
+    regardless of whether access_level has been opened up to other admins.
+    A non-owner admin is refused here even under owner_and_admins.
+    """
+
+    @wraps(func)
+    def with_owner(hass: HomeAssistant, connection, msg: dict) -> None:
+        user = connection.user
+        if user is None or not user.is_owner:
+            raise Unauthorized
+        func(hass, connection, msg)
+
+    return with_owner
+
+
 def async_register_websocket_api(hass: HomeAssistant) -> None:
     """Register every ha_soc/* command. Safe to call once per HA process."""
     for handler in (
         ws_access_info,
+        ws_version_get,
         ws_users_list,
         ws_users_detail,
         ws_users_create,
@@ -121,6 +146,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_scanner_scan_now,
         ws_scanner_export,
         ws_health_list,
+        ws_logs_fault,
         ws_misconfig_set_status,
         ws_dashboard_summary,
         ws_dashboard_devices,
@@ -132,6 +158,13 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_entity_remap_apply,
         ws_entity_remap_broken_references,
         ws_security_health_list,
+        ws_firewall_status,
+        ws_firewall_test,
+        ws_firewall_confirm,
+        ws_firewall_cancel,
+        ws_firewall_reset_pairing,
+        ws_integration_security_list,
+        ws_integration_security_refresh,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -166,6 +199,30 @@ async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
             "access_level": access_level,
             "allowed": allowed,
         },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/version/get"})
+@websocket_api.async_response
+async def ws_version_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    """The version shown in the panel's footer, on every tab.
+
+    Reads manifest.json (the single source of truth HA itself already
+    uses for update-checking) via the loader, rather than duplicating the
+    version as a second hardcoded string somewhere in this file — exactly
+    the kind of two-places-to-update drift the probe add-on's run.sh
+    SCANNER_VERSION constant already has to be manually kept in lockstep
+    for. Plain @websocket_api.require_admin, same as ha_soc/access/info:
+    a version number isn't sensitive, and an admin locked out by
+    access_level should still see it on the denied screen, not just once
+    they're let in.
+    """
+    from homeassistant.loader import async_get_integration
+
+    integration = await async_get_integration(hass, DOMAIN)
+    connection.send_result(
+        msg["id"], {"version": str(integration.version) if integration.version else None}
     )
 
 
@@ -274,9 +331,11 @@ async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.async_response
 async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    ok = await runtime.users.async_delete_user(msg["user_id"])
+    ok, reason = await runtime.users.async_delete_user(
+        msg["user_id"], requesting_user_id=connection.user.id
+    )
     if not ok:
-        connection.send_error(msg["id"], "delete_failed", "Could not delete user")
+        connection.send_error(msg["id"], reason or "delete_failed", "Could not delete user")
         return
     runtime.store.async_purge_user(msg["user_id"])
     runtime.audit.async_log(
@@ -317,13 +376,15 @@ async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    count = await runtime.users.async_revoke_all_sessions(msg["user_id"])
+    revoked = await runtime.users.async_revoke_all_sessions(msg["user_id"])
     runtime.audit.async_log(
         "user_updated",
         user_id=connection.user.id,
-        detail={"target_user_id": msg["user_id"], "action": "revoked_all_sessions", "count": count},
+        detail={"target_user_id": msg["user_id"], "action": "revoked_all_sessions", "revoked": revoked},
     )
-    connection.send_result(msg["id"], {"revoked": count})
+    # revoked = {"sessions": N, "long_lived_tokens": M} so the UI can state
+    # exactly what was cleared, including the long-lived tokens.
+    connection.send_result(msg["id"], {"revoked": revoked})
 
 
 @require_soc_access
@@ -684,13 +745,34 @@ async def ws_scanner_export(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    findings = list(runtime.store.data["misconfig_findings"].values())
+    # Most severe first — SEVERITY_ORDER is critical/high/medium/low/info, so a
+    # finding whose severity isn't in that list (shouldn't happen, but never
+    # trust stored data blindly) sorts last rather than raising.
+    findings.sort(
+        key=lambda f: SEVERITY_ORDER.index(f["severity"]) if f["severity"] in SEVERITY_ORDER else len(SEVERITY_ORDER)
+    )
     connection.send_result(
         msg["id"],
         {
             "integrations": list(runtime.store.data["integration_health"].values()),
-            "misconfig_findings": list(runtime.store.data["misconfig_findings"].values()),
+            "misconfig_findings": findings,
         },
     )
+
+
+# ----------------------------------------------------------------------------
+# Logs
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/logs/fault"})
+@websocket_api.async_response
+async def ws_logs_fault(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .logs import async_fault_log_overview
+
+    connection.send_result(msg["id"], await async_fault_log_overview(hass))
 
 
 @require_soc_access
@@ -885,8 +967,12 @@ async def ws_entity_remap_find_references(hass: HomeAssistant, connection, msg: 
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/entity_remap/apply",
-        vol.Required("old_entity_id"): str,
-        vol.Required("new_entity_id"): str,
+        # cv.entity_id enforces the domain.object_id shape, so a typo'd or
+        # empty string can't be substituted into an entity_id field and
+        # silently break the automation/script on next reload.
+        vol.Required("old_entity_id"): cv.entity_id,
+        vol.Required("new_entity_id"): cv.entity_id,
+        vol.Required("backup_acknowledged"): bool,
     }
 )
 @websocket_api.async_response
@@ -899,7 +985,16 @@ async def ws_entity_remap_apply(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "same_entity", "Old and replacement entity are the same.")
         return
 
-    result = await async_apply_remap(hass, old_id, new_id)
+    result = await async_apply_remap(
+        hass, old_id, new_id, backup_acknowledged=msg["backup_acknowledged"]
+    )
+    if result.get("error") == "backup_not_acknowledged":
+        connection.send_error(
+            msg["id"],
+            "backup_not_acknowledged",
+            "Acknowledge the backup before applying an entity remap.",
+        )
+        return
     runtime.audit.async_log(
         "user_updated",
         user_id=connection.user.id,
@@ -936,22 +1031,198 @@ async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) ->
 
 
 # ----------------------------------------------------------------------------
-# Settings — the in-panel Settings tab. Mirrors the native "Configure"
-# options flow (config_flow.py) over the exact same store: HaSocData.settings
-# is the single source of truth, entry.options is kept as a synced copy for
-# pre-load prefill only. See config_flow.py's module docstring.
+# Firewall rules — read AND write host iptables state via the optional
+# HA SOC Probe add-on's NET_ADMIN capability. See firewall.py's module
+# docstring for the full test/confirm/revert safety design; every mutating
+# command here is audit-logged since this is the one control in the project
+# that actually changes a host security setting rather than just reporting
+# on one.
 # ----------------------------------------------------------------------------
 
 
 @require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/status"})
+@websocket_api.async_response
+async def ws_firewall_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_get_status
+
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], await async_get_status(hass, runtime.store))
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/firewall/test",
+        vol.Required("rules"): [dict],
+        vol.Required("backup_acknowledged"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_firewall_test(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_propose_test
+
+    runtime = _runtime(hass)
+    ok, reason, pending = await async_propose_test(
+        hass,
+        runtime.store,
+        rules=msg["rules"],
+        backup_acknowledged=msg["backup_acknowledged"],
+        user_id=connection.user.id,
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_test_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={
+            "action": "firewall_test_proposed",
+            "test_id": pending["test_id"],
+            "rules": pending["proposed_rules"],
+        },
+    )
+    connection.send_result(msg["id"], pending)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/firewall/confirm", vol.Required("test_id"): str}
+)
+@websocket_api.async_response
+async def ws_firewall_confirm(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_confirm_test
+
+    runtime = _runtime(hass)
+    ok, reason = await async_confirm_test(
+        hass, runtime.store, test_id=msg["test_id"], user_id=connection.user.id
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_confirm_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_test_confirmed", "test_id": msg["test_id"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/reset_pairing"})
+@websocket_api.async_response
+async def ws_firewall_reset_pairing(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only recovery: clear the pinned add-on secret so the next
+    non-empty one re-pins (trust-on-first-use). Use if the add-on was
+    reinstalled/rotated its secret, or a bad first-boot pin locked out the
+    real add-on.
+    """
+    from .firewall import async_reset_addon_secret
+
+    runtime = _runtime(hass)
+    async_reset_addon_secret(runtime.store)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_pairing_reset"},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/firewall/cancel", vol.Required("test_id"): str}
+)
+@websocket_api.async_response
+async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .firewall import async_cancel_test
+
+    runtime = _runtime(hass)
+    ok, reason = await async_cancel_test(
+        hass, runtime.store, test_id=msg["test_id"], user_id=connection.user.id
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_cancel_rejected", reason)
+        return
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_test_cancelled", "test_id": msg["test_id"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+# ----------------------------------------------------------------------------
+# Integration Security — provenance (NOT safety) view of every installed
+# integration. See integration_security.py's docstring for the rule that
+# governs it: nothing here proves code is safe to run.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/integration_security/list"})
+@websocket_api.async_response
+async def ws_integration_security_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .integration_security import async_integration_security_overview
+
+    runtime = _runtime(hass)
+    overview = await async_integration_security_overview(hass, runtime.store)
+    overview["refreshed_at"] = runtime.store.data.get("integration_security", {}).get("refreshed_at")
+    connection.send_result(msg["id"], overview)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/integration_security/refresh"})
+@websocket_api.async_response
+async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Refresh the GitHub-derived signals. Needs the owner-set github_token;
+    returns a clear no-op reason when it's absent rather than erroring."""
+    from .github_provenance import async_refresh_github_signals
+    from .integration_security import async_integration_security_overview
+
+    runtime = _runtime(hass)
+    # Discover the repo URLs to look up from the current local overview.
+    overview = await async_integration_security_overview(hass, runtime.store)
+    repo_urls = [r["repo_url"] for r in overview["integrations"] if r.get("repo_url")]
+    result = await async_refresh_github_signals(hass, runtime.store, repo_urls)
+    connection.send_result(msg["id"], result)
+
+
+# ----------------------------------------------------------------------------
+# Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
+# carry the security-sensitive controls (access level, API credentials), so
+# they are reachable by the account owner alone, regardless of access_level.
+# HaSocData.settings is the single source of truth; entry.options is kept as
+# a synced copy for pre-load prefill only. See config_flow.py's docstring.
+# ----------------------------------------------------------------------------
+
+
+def _masked_settings(settings: dict) -> dict:
+    """A copy of settings safe to send to the frontend: every secret value
+    is replaced by a redaction placeholder (when set) or "" (when unset),
+    and a companion "<key>_set" boolean says whether one is configured — so
+    the form can show "configured" without ever receiving the raw secret.
+    """
+    out = dict(settings)
+    for key in SECRET_SETTING_KEYS:
+        value = settings.get(key) or ""
+        out[key] = REDACTED_PLACEHOLDER if value else ""
+        out[f"{key}_set"] = bool(value)
+    return out
+
+
+@require_owner
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/settings/get"})
 @websocket_api.async_response
 async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    connection.send_result(msg["id"], dict(runtime.store.settings))
+    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/settings/set",
@@ -963,6 +1234,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SCANNER_ENABLED): bool,
         vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
+        vol.Optional(CONF_GITHUB_TOKEN): str,
         vol.Optional(CONF_RISK_LEARNING_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=90)),
         vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
         vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
@@ -973,23 +1245,32 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     changes = {k: v for k, v in msg.items() if k not in ("type", "id")}
+    # A secret field left as the redaction placeholder means "leave it as
+    # it is" — the frontend never round-trips the real value back, so treat
+    # the placeholder as no-change rather than overwriting the stored secret
+    # with the mask string.
+    for key in SECRET_SETTING_KEYS:
+        if changes.get(key) == REDACTED_PLACEHOLDER:
+            del changes[key]
     if changes:
         runtime.store.async_update_settings(**changes)
 
-        # Keep entry.options in sync so the native Configure dialog (and a
-        # pre-runtime prefill) never shows a value this tab already changed.
+        # Keep entry.options in sync so a pre-runtime prefill never shows a
+        # value this tab already changed.
         entries = hass.config_entries.async_entries(DOMAIN)
         if entries:
             hass.config_entries.async_update_entry(
                 entries[0], options=dict(runtime.store.settings)
             )
 
+        # Secret values in `changes` are redacted inside audit.async_log()
+        # itself (see _redact_secrets_deep) before anything is persisted.
         runtime.audit.async_log(
             "user_updated",
             user_id=connection.user.id,
             detail={"action": "settings_changed", "changes": changes},
         )
-    connection.send_result(msg["id"], dict(runtime.store.settings))
+    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
 
 
 # ----------------------------------------------------------------------------

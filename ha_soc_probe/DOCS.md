@@ -21,6 +21,12 @@ SOC integration via its `ha_soc.ingest_probe_result` service, over
 Supervisor's Core API proxy (`SUPERVISOR_TOKEN` + `homeassistant_api`
 permission — no separate credentials or setup on your end).
 
+A second background service polls the HA SOC integration every ~5
+seconds for a proposed firewall change and, when one is pending, applies
+it to a dedicated `HA_SOC_RULES` iptables chain (see "Firewall rules"
+below). This is the one thing this add-on ever writes rather than just
+reads — everything else it does is observation only.
+
 If a report is rejected — most commonly a brief window of HTTP 400 right
 after Home Assistant Core itself restarts, while the HA SOC integration
 is still loading — this add-on does not wait out the full
@@ -31,6 +37,49 @@ up in this add-on's own log rather than silently going quiet for hours.
 If it stays in that state for more than 30 minutes, the HA SOC
 integration itself also raises a Repairs issue (Settings > Repairs) —
 visible even to someone who never opens the add-on's log at all.
+
+## Firewall rules (read and write)
+
+Starting with `2026.08.23.3` this add-on can also read and, if you choose
+to propose a change from the HA SOC panel, write the host's firewall
+rules. This is opt-in per change, not an always-on background behavior:
+nothing here is modified unless you propose a ruleset from HA SOC's
+Firewall Rules card, which requires acknowledging that a backup will be
+taken first.
+
+**Why this needed a new privilege.** Running `iptables` against the
+host's real netfilter tables needs a real `CAP_NET_ADMIN`, which Docker
+strips from every container by default — `host_network: true` alone
+isn't enough. This add-on's `config.yaml` now declares
+`privileged: [NET_ADMIN]`, which lowers the Supervisor security rating by
+one point. See the HA SOC integration's own README for the full breakdown
+of what that rating means and why every other elevated privilege this
+project could ask for was deliberately avoided (no `host_pid`, no
+`full_access`, no `docker_api`, no elevated `hassio_role`).
+
+**How the safety mechanism works.** Every rule this add-on ever applies
+lives in one dedicated chain, `HA_SOC_RULES`, which it owns outright —
+never the host's raw `INPUT` chain, never anything Docker itself manages.
+A proposed ruleset is never permanent on arrival:
+
+1. HA SOC takes a full ruleset backup (`iptables-save`) and applies the
+   proposed rules to `HA_SOC_RULES`.
+2. A confirmation window opens (roughly 30–60 seconds, set by HA SOC).
+   The instant the rules are applied, this add-on arms a **local** revert
+   timer — a plain backgrounded `sleep` inside this same process, not a
+   scheduled callback from Home Assistant. This is deliberate: if the new
+   rules break the very network path HA Core would need to tell this
+   add-on to revert, the revert still has to happen without that path
+   working. Nothing about the revert depends on anything outside this
+   container.
+3. If you confirm within the window, the rules stay and the timer becomes
+   a no-op. If you don't — or you cancel immediately — the pre-change
+   backup is restored automatically.
+4. If this add-on itself crashes or restarts while a test is still
+   unconfirmed (the local timer from step 2 dies with the old process),
+   the next startup finds the leftover unresolved test and restores its
+   backup immediately, rather than assuming it's still safely "in
+   progress." An interrupted test is always treated as failed.
 
 ## What it deliberately does NOT do
 

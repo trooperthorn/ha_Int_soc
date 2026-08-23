@@ -1,0 +1,7 @@
+#!/usr/bin/with-contenv bashio
+# The poll loop should never exit on its own — this only fires if it
+# crashed. s6 restarts the service automatically after this script
+# returns; the next run's startup check (see run's "Startup" section)
+# is what actually protects an in-flight test across that restart.
+EXIT_CODE="${1:-0}"
+bashio::log.warning "HA SOC Probe firewall poller exited with code ${EXIT_CODE} — restarting."

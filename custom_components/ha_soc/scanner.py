@@ -320,7 +320,16 @@ class IntegrationScanner:
             return
         # Newly added integration: scan it once, off the event loop, rather
         # than waiting for the next weekly sweep.
-        self.hass.async_create_task(self.async_scan_integration(entry.domain))
+        self.hass.async_create_task(self._async_scan_on_install(entry.domain))
+
+    async def _async_scan_on_install(self, domain: str) -> None:
+        """Wrapper for the fire-and-forget on-install scan task: without this,
+        a raise inside async_scan_integration would surface only as a silent
+        unretrieved task exception, so log-and-continue instead."""
+        try:
+            await self.async_scan_integration(domain)
+        except Exception:  # noqa: BLE001 - a failed on-install scan must not go unlogged
+            _LOGGER.exception("HA SOC scanner: on-install scan of domain %s failed", domain)
 
     def _scan_dir(self, directory: Path, domain: str) -> list[dict[str, Any]]:
         """Blocking: file I/O and `ast.parse`. Always run via an executor job."""
@@ -366,10 +375,25 @@ class IntegrationScanner:
             try:
                 source = path.read_text(encoding="utf-8")
                 tree = ast.parse(source)
-            except (OSError, SyntaxError, UnicodeDecodeError, ValueError):
+            except (
+                OSError,
+                SyntaxError,
+                UnicodeDecodeError,
+                ValueError,
+                RecursionError,
+                MemoryError,
+            ) as err:
                 # One bad file (binary fixture, non-UTF-8 source, a syntax
-                # error in code that HA itself may never load) must not abort
-                # the rest of this integration's scan.
+                # error in code that HA itself may never load, or a crafted
+                # file whose deeply-nested-but-trivial expressions drive
+                # CPython's parser into RecursionError/MemoryError) must not
+                # abort the rest of this integration's scan.
+                _LOGGER.debug(
+                    "HA SOC scanner: skipping %s in domain %s (%s)",
+                    path,
+                    domain,
+                    err.__class__.__name__,
+                )
                 continue
 
             lines = source.splitlines()
@@ -433,7 +457,10 @@ class IntegrationScanner:
         domains = {entry.domain for entry in self.hass.config_entries.async_entries()}
         results: dict[str, list[dict[str, Any]]] = {}
         for domain in domains:
-            results[domain] = await self.async_scan_integration(domain)
+            try:
+                results[domain] = await self.async_scan_integration(domain)
+            except Exception:  # noqa: BLE001 - one domain's failure must not abort the whole sweep
+                _LOGGER.exception("HA SOC scanner: scan of domain %s failed", domain)
             # Weekly sweep, not latency sensitive — but a large install can
             # have hundreds of integrations, and each one runs a blocking
             # executor job; yield so the event loop isn't starved between them.

@@ -69,7 +69,7 @@ async def test_find_and_apply_automation_reference(hass: HomeAssistant) -> None:
     assert len(report["automation"]) == 1
     assert report["automation"][0]["editable"] is True
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["automation"] == 1
     assert result["errors"] == []
 
@@ -124,7 +124,7 @@ async def test_automation_not_in_flat_file_is_not_editable(hass: HomeAssistant) 
     assert "split across multiple files" in report["automation"][0]["reason"]
     assert report["editable_count"] == 0
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["automation"] == 0
     assert result["errors"] == []
 
@@ -148,7 +148,7 @@ async def test_find_and_apply_script_reference(hass: HomeAssistant) -> None:
     report = await remap.async_find_references(hass, "sensor.old_name")
     assert len(report["script"]) == 1
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["script"] == 1
 
     on_disk = ha_yaml.load_yaml(hass.config.path("scripts.yaml"))
@@ -170,7 +170,7 @@ async def test_find_and_apply_scene_reference(hass: HomeAssistant) -> None:
     assert len(report["scene"]) == 1
     assert report["scene"][0]["editable"] is True
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["scene"] == 1
 
     on_disk = ha_yaml.load_yaml(hass.config.path("scenes.yaml"))
@@ -189,7 +189,7 @@ async def test_find_and_apply_scalar_helper_reference(hass: HomeAssistant) -> No
     assert len(report["helper"]) == 1
     assert report["helper"][0]["id"] == entry.entry_id
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["helper"] == 1
     assert entry.options["source"] == "sensor.new_name"
 
@@ -203,7 +203,7 @@ async def test_find_and_apply_list_helper_reference(hass: HomeAssistant) -> None
     report = await remap.async_find_references(hass, "sensor.old_name")
     assert len(report["helper"]) == 1
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["helper"] == 1
     assert entry.options["entity_ids"] == ["sensor.new_name", "sensor.other"]
 
@@ -218,7 +218,7 @@ async def test_unmodeled_entry_mention_is_detect_only(hass: HomeAssistant) -> No
     assert len(report["other"]) == 1
     assert report["other"][0]["editable"] is False
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["helper"] == 0
     assert entry.options["state"] == "{{ states('sensor.old_name') }}"
 
@@ -297,7 +297,7 @@ async def test_find_and_apply_storage_dashboard_reference(hass: HomeAssistant) -
     assert len(report["dashboard"]) == 1
     assert report["dashboard"][0]["editable"] is True
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["dashboard"] == 1
     assert storage_config.saved["views"][0]["cards"][0]["entities"] == ["sensor.new_name", "sensor.other"]
 
@@ -315,7 +315,7 @@ async def test_yaml_dashboard_reference_is_not_editable(hass: HomeAssistant) -> 
     assert report["dashboard"][0]["editable"] is False
     assert "YAML-mode" in report["dashboard"][0]["reason"]
 
-    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name")
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["dashboard"] == 0
     assert yaml_config.saved is None
 

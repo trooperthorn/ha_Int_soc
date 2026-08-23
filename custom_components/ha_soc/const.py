@@ -63,7 +63,15 @@ CONF_AUDIT_MAX_BYTES = "audit_max_bytes"
 CONF_SCANNER_ENABLED = "scanner_enabled"
 CONF_SCANNER_NETWORK_CHECKS_ENABLED = "scanner_network_checks_enabled"
 CONF_NVD_API_KEY = "nvd_api_key"
+CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
+
+# Settings keys whose values are secrets — never logged verbatim, never
+# returned raw to the frontend. audit.py redacts these inside async_log()
+# itself, and ws_settings_get returns a boolean "is set" flag for each
+# instead of the value. Add every future credential-shaped setting here.
+SECRET_SETTING_KEYS: frozenset[str] = frozenset({CONF_NVD_API_KEY, CONF_GITHUB_TOKEN})
+REDACTED_PLACEHOLDER = "[redacted]"
 
 # -- Severity vocabulary shared by vulns / misconfig / detections / scanner
 SEVERITY_CRITICAL = "critical"
@@ -129,3 +137,64 @@ DEFAULT_SECURITY_SOURCES_ENABLED: dict[str, bool] = dict.fromkeys(
     SECURITY_INTEGRATION_DOMAINS + SECURITY_ENTITY_DOMAINS, True
 )
 CONF_SECURITY_SOURCES_ENABLED = "security_sources_enabled"
+
+# -- Firewall rules (Host Probe add-on, NET_ADMIN) ------------------------
+# Read AND write host iptables state — the one thing in this project that
+# actually mutates a host security control instead of just observing one.
+# Requires the add-on to declare `privileged: [NET_ADMIN]` (a real -1 on
+# the Supervisor security rating, see security_health.py/README) on top of
+# the `host_network: true` it already has. Every rule this project ever
+# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN below)
+# that this project owns outright — never touched: the raw INPUT chain,
+# anything Docker itself manages, or any pre-existing host firewall rule.
+HA_SOC_RULES_CHAIN = "HA_SOC_RULES"
+
+# Service the add-on calls on a fast (~5s) interval to pick up a pending
+# apply/confirm/revert instruction — the reverse direction of
+# SERVICE_INGEST_PROBE_RESULT, using return_response=True on an ordinary
+# service call rather than a new listening port on the add-on (this
+# project's own scanner.py already treats "a security tool with more open
+# listening sockets than it needs" as the wrong default).
+SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
+
+FIREWALL_RULE_ACTIONS = ["allow", "deny"]
+FIREWALL_RULE_PROTOS = ["tcp", "udp"]
+
+# Pending-test state machine (HaSocData.data["firewall"]["pending"]).
+FIREWALL_TEST_TESTING = "testing"
+FIREWALL_TEST_CONFIRMED = "confirmed"
+FIREWALL_TEST_REVERTED = "reverted"
+FIREWALL_TEST_EXPIRED = "expired"
+
+# Window a proposed ruleset stays live before the add-on reverts it
+# automatically if nobody confirms — the whole safety mechanism this
+# feature exists for. The user asked for "30-60 seconds"; 45s is the
+# midpoint, not independently user-configurable yet (see firewall.py).
+DEFAULT_FIREWALL_TEST_WINDOW_SECONDS = 45
+
+# -- Integration Security (provenance) -----------------------------------
+# A PROVENANCE score, not a SAFETY score. HA integrations are arbitrary
+# Python running in-process with no sandbox — nothing measured here proves
+# code is safe to run. It measures how much is known about where the code
+# came from and how it's maintained. Every surface that shows this MUST
+# say so; never "Safe"/"Verified"/"Trusted"/a bare shield. See
+# integration_security.py's docstring for the full rationale.
+
+# Tier — how vetted the SOURCE of an installed integration is. This is the
+# generalization of HACS's own default-store-vs-custom concept to cover
+# every install path, not only HACS content.
+INTEGRATION_TIER_CORE = "core"  # ships inside HA Core; hassfest-validated
+INTEGRATION_TIER_HACS = "hacs"  # tracked by HACS from a GitHub repo
+INTEGRATION_TIER_CUSTOM = "custom"  # hand-copied / unmanaged custom_components
+
+# Per variance from the feature request: only the two lowest-provenance
+# HACS source origins are flagged, not default-store HACS content.
+INTEGRATION_FLAG_CUSTOM_REPO = "custom_repo"
+INTEGRATION_FLAG_CUSTOM_SOURCE_LIST = "custom_source_list"
+
+# GitHub REST base — a hardcoded literal, never built from user input.
+GITHUB_API_BASE = "https://api.github.com"
+
+# Cache TTL for a repo's GitHub-derived provenance signals, so a refresh
+# doesn't re-hit the API for repos already looked up recently.
+INTEGRATION_SECURITY_CACHE_TTL_HOURS = 24

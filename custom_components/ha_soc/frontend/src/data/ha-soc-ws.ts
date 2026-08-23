@@ -144,6 +144,11 @@ export interface OpenPort {
   port: number;
   proto: "tcp" | "udp";
   process?: string | null;
+  // Absent/null on a report from an older add-on version, or when the
+  // bind address is IPv6 (decoding that correctly wasn't worth the risk
+  // of silently showing a wrong address — see run.sh).
+  address?: string | null;
+  interface?: string | null;
 }
 
 export interface HostProbeResult {
@@ -159,6 +164,45 @@ export interface ProbeOverview {
   version: string | null;
   update_available: boolean;
   result: HostProbeResult | null;
+}
+
+// Mirrors firewall.py's RULE_SCHEMA / pending-test state machine. See that
+// module's docstring for the full read/write safety design — Core only
+// ever proposes and displays; the add-on is the only thing that actually
+// touches iptables, and its own report (known_rules) is always the final
+// word on what's really active.
+export type FirewallRuleAction = "allow" | "deny";
+export type FirewallRuleProto = "tcp" | "udp";
+
+export interface FirewallRule {
+  action: FirewallRuleAction;
+  proto: FirewallRuleProto;
+  port: number;
+  source?: string | null;
+}
+
+export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired";
+
+export interface FirewallPendingTest {
+  test_id: string;
+  proposed_rules: FirewallRule[];
+  status: FirewallTestStatus;
+  requested_by: string;
+  requested_at: string;
+  // null until the add-on's poll actually picks this up and applies it —
+  // still "testing" but not live on the host yet.
+  applied_at: string | null;
+  expires_at: string;
+  window_seconds: number;
+  resolved_at?: string;
+  resolved_by?: string;
+}
+
+export interface FirewallStatus {
+  known_rules: FirewallRule[] | null;
+  known_rules_reported_at: string | null;
+  pending: FirewallPendingTest | null;
+  history: FirewallPendingTest[];
 }
 
 // Mirrors peripherals.py's async_peripheral_overview() — reuses Home
@@ -200,12 +244,58 @@ export interface HaSocSettings {
   audit_max_bytes: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
+  // Secret fields come back masked ("[redacted]" when set, "" when unset);
+  // the companion *_set booleans say whether one is configured. Send a new
+  // value to change it; send nothing (or the placeholder) to leave it.
   nvd_api_key: string | null;
+  nvd_api_key_set?: boolean;
+  github_token?: string | null;
+  github_token_set?: boolean;
   risk_learning_period_days: number;
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
   security_sources_enabled: Record<string, boolean>;
+}
+
+// Mirrors integration_security.py's async_integration_security_overview().
+// PROVENANCE, not safety — the view must never imply "safe to run".
+export type IntegrationTier = "core" | "hacs" | "custom";
+
+export interface IntegrationGithubSignals {
+  stars: number | null;
+  forks: number | null;
+  archived: boolean;
+  pushed_at: string | null;
+  commit_verified: boolean | null;
+  has_release: boolean | null;
+  latest_release_tag: string | null;
+  collected_at: string;
+  error?: string;
+}
+
+export interface IntegrationSecurityRow {
+  domain: string;
+  name: string;
+  tier: IntegrationTier;
+  is_custom: boolean;
+  quality_scale: string | null;
+  integration_type: string | null;
+  version: string | null;
+  license_present: boolean | null;
+  repo_url: string | null;
+  flags: string[];
+  scanner_findings: number;
+  github: IntegrationGithubSignals | null;
+}
+
+export interface IntegrationSecurityOverview {
+  github_configured: boolean;
+  hacs_installed: boolean;
+  hacs_source_introspectable: boolean;
+  tier_counts: Record<IntegrationTier, number>;
+  integrations: IntegrationSecurityRow[];
+  refreshed_at: string | null;
 }
 
 // Mirrors security_health.py's async_security_overview().
@@ -302,6 +392,10 @@ export interface AccessInfo {
   is_owner: boolean;
   access_level: AccessLevel;
   allowed: boolean;
+}
+
+export interface VersionInfo {
+  version: string | null;
 }
 
 const ws = <T>(hass: HomeAssistant, msg: Record<string, unknown>) => hass.callWS<T>(msg);
@@ -413,6 +507,20 @@ export const fetchVulns = (hass: HomeAssistant) =>
 
 export const fetchSystemLog = (hass: HomeAssistant) => ws<HaLogEntry[]>(hass, { type: "system_log/list" });
 
+// Mirrors logs.py's async_fault_log_overview() — home-assistant.log.fault,
+// Python's faulthandler dump, only ever non-empty after a genuine fatal
+// (segfault-class) crash, never a normal Python exception.
+export interface FaultLogOverview {
+  exists: boolean;
+  content: string | null;
+  size_bytes: number;
+  modified_at: string | null;
+  truncated: boolean;
+}
+
+export const fetchFaultLog = (hass: HomeAssistant) =>
+  ws<FaultLogOverview>(hass, { type: "ha_soc/logs/fault" });
+
 // Real core command, called directly for the same reason fetchSystemLog is:
 // a genuine, already-admin-gated core command, not something worth proxying
 // through ha_soc/* just to relabel it.
@@ -462,8 +570,34 @@ export const fetchDashboardIntegrations = (hass: HomeAssistant) =>
 export const fetchAccessInfo = (hass: HomeAssistant) =>
   ws<AccessInfo>(hass, { type: "ha_soc/access/info" });
 
+export const fetchVersion = (hass: HomeAssistant) => ws<VersionInfo>(hass, { type: "ha_soc/version/get" });
+
 export const fetchProbeStatus = (hass: HomeAssistant) =>
   ws<ProbeOverview>(hass, { type: "ha_soc/probe/status" });
+
+export const fetchFirewallStatus = (hass: HomeAssistant) =>
+  ws<FirewallStatus>(hass, { type: "ha_soc/firewall/status" });
+
+export const proposeFirewallTest = (hass: HomeAssistant, rules: FirewallRule[], backupAcknowledged: boolean) =>
+  ws<FirewallPendingTest>(hass, {
+    type: "ha_soc/firewall/test",
+    rules,
+    backup_acknowledged: backupAcknowledged,
+  });
+
+export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/confirm", test_id: testId });
+
+export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
+
+export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
+  ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
+
+export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
+  ws<{ ok: boolean; reason?: string; refreshed?: number; skipped?: number }>(hass, {
+    type: "ha_soc/integration_security/refresh",
+  });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

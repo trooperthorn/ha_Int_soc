@@ -14,14 +14,7 @@
     "step": {
       "init": {
         "title": "HA SOC settings",
-        "data": {
-          "audit_retention_days": "Audit log retention (days)",
-          "audit_max_bytes": "Audit log size cap (bytes)",
-          "scanner_enabled": "Enable the integration security scanner",
-          "scanner_network_checks_enabled": "Allow network calls for the scanner (PyPI staleness/typosquat checks)",
-          "nvd_api_key": "NVD API key (optional, raises the CVE-lookup rate limit)",
-          "risk_learning_period_days": "Behavioral-detection learning period (days)"
-        }
+        "description": "All HA SOC settings live in the panel's Settings tab, which is available to the account owner only. {where}"
       }
     }
   },

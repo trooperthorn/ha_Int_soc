@@ -134,6 +134,19 @@ placeholder instead — that's expected, not a bug here.
 3. Settings → Devices & Services → Add Integration → **HA SOC**.
 4. A **SOC** panel appears in the sidebar (admin accounts only).
 
+## Versioning
+
+Calendar versioning: `YYYY.MM.DD.V` — the release date plus a same-day
+revision counter starting at 1 (e.g. the first release on August 23, 2026
+is `2026.08.23.1`; a second release that same day would be `2026.08.23.2`).
+Applies to both the integration (`manifest.json`) and the optional HA SOC
+Probe add-on (`ha_soc_probe/config.yaml`), so a released version number is
+always an unambiguous, directly comparable release identifier across the
+whole project — never a pre-1.0 `0.x.y` number implying "still in
+development." The current version is shown at the bottom of the panel on
+every tab, and in HACS/Settings → Devices & Services → HA SOC the way any
+integration's version is.
+
 ## Development
 
 ```bash
@@ -243,6 +256,79 @@ realistic `/proc/net/tcp` fixture — but unlike the integration itself
 (validated against a real `pytest-homeassistant-custom-component` harness),
 it has not yet been built and run against a real Supervisor. See
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
+
+## Integration Security (provenance)
+
+The Integration Security tab scores where each installed integration's code
+*came from* — it is a **provenance** signal, not a safety verdict. Home
+Assistant runs integrations in-process with no sandbox, so nothing here
+proves any integration is safe to run; a high-provenance integration can do
+anything a low-provenance one can. Every surface says so, and the tab never
+renders "Safe"/"Verified"/"Trusted" or a bare shield.
+
+Each installed integration is classified into a **tier** — Core (ships in
+HA, hassfest-validated), HACS-managed, or unmanaged Custom — and shown with
+signals gathered two ways:
+
+- **Local, always available** (no network, no privilege): tier, the
+  manifest's `quality_scale`/`integration_type`, whether a license file is
+  present, and any findings from this project's own integration scanner.
+  Where HACS is installed and its per-repo source is introspectable, the
+  two lowest-provenance HACS origins — a custom repository or a custom
+  source-list — are flagged (default-store HACS content is not).
+- **GitHub-derived, optional**: release-vs-branch, commit-signing/identity
+  assurance, maintenance recency, popularity, and archived status. These
+  need an outbound GitHub call and an optional token (set in the owner-only
+  Settings tab, which also raises GitHub's rate limit from 60 to 5,000
+  requests/hour). Without a token every GitHub signal is honestly shown as
+  "not collected" — never guessed.
+
+All HA SOC settings, including that token, live in the **Settings tab,
+which is available to the account owner only** — a non-owner admin sees it
+disabled. The native "Configure" dialog edits nothing (it can't identify
+the requesting user, so it can't enforce owner-only), pointing to the panel
+instead.
+
+See [`custom_components/ha_soc/integration_security.py`](custom_components/ha_soc/integration_security.py)
+and [`github_provenance.py`](custom_components/ha_soc/github_provenance.py).
+
+## Firewall Rules (read and write)
+
+Everything else in this project observes and reports; it never mutates a
+host security control. The Firewall Rules card, on the Scanner tab, is
+the one deliberate exception — reading, and optionally writing, the host's
+iptables rules through the HA SOC Probe add-on. It needs the add-on to
+declare a real `CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its
+`config.yaml`), which lowers the add-on's Supervisor security rating by
+one point — a documented, deliberate trade-off, not an accident.
+
+The design exists to answer one question safely: change which ports are
+reachable from where without risking a lockout.
+
+- Every rule this project ever applies lives in one dedicated iptables
+  chain (`HA_SOC_RULES`) the add-on owns outright — never the host's raw
+  `INPUT` chain, never anything Docker itself manages.
+- A proposed ruleset is never permanent on arrival. Proposing one requires
+  acknowledging that the current ruleset will be backed up first; the
+  button that starts this reads **Test**, and relabels itself **Apply**
+  once the change is live, alongside a running countdown (30–60s).
+- The countdown is enforced by a **local, self-contained timer inside the
+  add-on process** — a plain backgrounded `sleep`, not a scheduled
+  callback from Home Assistant. If the new rules break the very network
+  path Core would need to tell the add-on to revert, the revert still has
+  to happen without that path working, so nothing about it depends on
+  that path. If you don't click Apply in time (or the add-on itself
+  crashes mid-test), the pre-change ruleset is restored automatically —
+  an interrupted test is always treated as failed, never as "probably
+  still fine."
+- Core only ever proposes and displays; the add-on is the only thing that
+  actually touches iptables, and its own report is always the final word
+  on what's really active.
+
+See [`custom_components/ha_soc/firewall.py`](custom_components/ha_soc/firewall.py)'s
+module docstring for the full state machine and
+[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md)'s "Firewall rules" section
+for the add-on side of the same design.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 

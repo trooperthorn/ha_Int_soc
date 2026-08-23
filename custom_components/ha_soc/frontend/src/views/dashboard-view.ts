@@ -20,6 +20,7 @@ import {
   DeviceStatus,
   IntegrationOverview,
   IntegrationIssueCategory,
+  IntegrationIssueRow,
   PeripheralOverview,
   SecurityOverview,
   fetchDashboardSummary,
@@ -66,7 +67,28 @@ const ISSUE_CATEGORY_LABELS: Record<IntegrationIssueCategory, string> = {
   disabled: "Disabled",
 };
 
+// Issue category -> the same operational-status vocabulary the Device
+// Status tiles above already use (available/partial/unavailable/
+// disabled/no_entities), extended with "Warning" for the two categories
+// that are informational rather than a functional failure. Every
+// category short of "disabled" that actually stops the integration from
+// working (a failed setup, bad credentials, no communication, or a
+// device-collection ratio bad enough to flag) reads as Unavailable —
+// deliberately not split into finer severities, since this project has
+// no independent signal to rank them against each other and a false
+// precision there would be worse than an honest, coarser bucket.
+const ISSUE_STATUS: Record<IntegrationIssueCategory, { label: string; colorVar: string }> = {
+  failing: { label: "Unavailable", colorVar: "var(--status-critical)" },
+  credential: { label: "Unavailable", colorVar: "var(--status-critical)" },
+  communication: { label: "Unavailable", colorVar: "var(--status-critical)" },
+  collection: { label: "Unavailable", colorVar: "var(--status-critical)" },
+  errors: { label: "Warning", colorVar: "var(--status-warning)" },
+  debug_logging: { label: "Warning", colorVar: "var(--status-warning)" },
+  disabled: { label: "Disabled", colorVar: "var(--cat-other)" },
+};
+
 const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
+const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
 
 @customElement("ha-soc-dashboard-view")
 export class HaSocDashboardView extends LitElement {
@@ -328,50 +350,6 @@ export class HaSocDashboardView extends LitElement {
         display: inline-block;
       }
 
-      /* -- Issues by Integration (list) ---------------------------------- */
-      /* Dynamic height on purpose — grows with however many integrations
-         actually have issues, rather than clipping to a fixed height and
-         forcing an inner scrollbar for a list that's usually short. */
-      .issues-list {
-        display: flex;
-        flex-direction: column;
-      }
-      .issues-row {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 8px 4px;
-        border-bottom: 1px solid var(--divider-color);
-        font-size: 13px;
-      }
-      .issues-row:last-child {
-        border-bottom: none;
-      }
-      .issues-dot {
-        width: 9px;
-        height: 9px;
-        border-radius: 50%;
-        flex: none;
-      }
-      .issues-name {
-        flex: 1;
-        min-width: 0;
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .issues-category {
-        font-size: 11px;
-        flex: none;
-      }
-      .issues-count {
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-        flex: none;
-        min-width: 20px;
-        text-align: right;
-      }
-
       /* -- All Devices pagination ------------------------------------------ */
       .devices-footer {
         display: flex;
@@ -432,6 +410,8 @@ export class HaSocDashboardView extends LitElement {
     dir: "desc",
   };
   @state() private _devicePageSize: number | "all" = 20;
+  @state() private _integrationSearch = "";
+  @state() private _integrationPageSize: number | "all" = 20;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -535,6 +515,17 @@ export class HaSocDashboardView extends LitElement {
     return sorted;
   }
 
+  private _filteredIntegrations(): IntegrationIssueRow[] {
+    const integrations = this._integrationOverview?.integrations ?? [];
+    const q = this._integrationSearch.trim().toLowerCase();
+    if (!q) return integrations;
+    // Backend already sorts by error_count_24h desc — filtering preserves
+    // that order rather than re-sorting, same as the search box above.
+    return integrations.filter(
+      (row) => row.title.toLowerCase().includes(q) || row.domain.toLowerCase().includes(q)
+    );
+  }
+
   private _statusDotColor(status: string): string {
     switch (status) {
       case "unavailable":
@@ -547,26 +538,6 @@ export class HaSocDashboardView extends LitElement {
         return "var(--primary-color)";
       default:
         return "var(--status-good)";
-    }
-  }
-
-  private _issueCategoryColor(category: IntegrationIssueCategory): string {
-    switch (category) {
-      case "failing":
-        return "var(--status-critical)";
-      case "credential":
-        return "var(--cat-7)";
-      case "communication":
-        return "var(--status-serious)";
-      case "collection":
-        return "var(--status-warning)";
-      case "errors":
-        return "var(--cat-5)";
-      case "debug_logging":
-        return "var(--cat-1)";
-      case "disabled":
-      default:
-        return "var(--cat-other)";
     }
   }
 
@@ -611,6 +582,12 @@ export class HaSocDashboardView extends LitElement {
     const allFilteredDevices = this._sortedFilteredDevices();
     const shownDevices =
       this._devicePageSize === "all" ? allFilteredDevices : allFilteredDevices.slice(0, this._devicePageSize);
+
+    const allFilteredIntegrations = this._filteredIntegrations();
+    const shownIntegrations =
+      this._integrationPageSize === "all"
+        ? allFilteredIntegrations
+        : allFilteredIntegrations.slice(0, this._integrationPageSize);
 
     const riskSegments = [
       { key: "low", color: "var(--status-good)", value: s.risk_band_counts.low ?? 0 },
@@ -905,22 +882,69 @@ export class HaSocDashboardView extends LitElement {
           ${integ.integrations.length === 0
             ? html`<div class="empty">No integration issues detected.</div>`
             : html`
-                <div class="issues-list">
-                  ${integ.integrations.map(
-                    (row) => html`
-                      <div
-                        class="issues-row clickable"
-                        title="${row.title} — ${ISSUE_CATEGORY_LABELS[row.issue_category]}. Open in Home Assistant's Devices page"
-                        @click=${() => navigateToHaPath(devicesForIntegrationPath(row.entry_id))}
-                      >
-                        <span class="issues-dot" style="background:${this._issueCategoryColor(row.issue_category)}"></span>
-                        <span class="issues-name">${row.title}</span>
-                        <span class="issues-category muted">${ISSUE_CATEGORY_LABELS[row.issue_category]}</span>
-                        <span class="issues-count">${row.error_count_24h}</span>
-                      </div>
-                    `
-                  )}
+                <div class="devices-toolbar">
+                  <input
+                    type="text"
+                    placeholder="Search integrations…"
+                    .value=${this._integrationSearch}
+                    @input=${(e: Event) => (this._integrationSearch = (e.target as HTMLInputElement).value)}
+                  />
                 </div>
+                ${allFilteredIntegrations.length === 0
+                  ? html`<div class="empty">No integration matches "${this._integrationSearch}".</div>`
+                  : html`
+                      <div style="overflow-x:auto;">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th>Integration</th>
+                              <th>Severity</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${shownIntegrations.map((row) => {
+                              const status = ISSUE_STATUS[row.issue_category];
+                              return html`
+                                <tr
+                                  class="clickable"
+                                  title="${row.title} — ${ISSUE_CATEGORY_LABELS[row.issue_category]}. Open in Home Assistant's Devices page"
+                                  @click=${() => navigateToHaPath(devicesForIntegrationPath(row.entry_id))}
+                                >
+                                  <td>${row.title}</td>
+                                  <td>
+                                    <span class="sev-cell">
+                                      <span class="sev-dot" style="background:${status.colorVar}"></span>
+                                      ${status.label}
+                                      <span class="num">${row.error_count_24h}</span>
+                                    </span>
+                                  </td>
+                                </tr>
+                              `;
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                      <div class="devices-footer">
+                        <span
+                          >Showing ${shownIntegrations.length} of ${allFilteredIntegrations.length} integration${allFilteredIntegrations.length === 1 ? "" : "s"}</span
+                        >
+                        <select
+                          .value=${String(this._integrationPageSize)}
+                          @change=${(e: Event) => {
+                            const v = (e.target as HTMLSelectElement).value;
+                            this._integrationPageSize = v === "all" ? "all" : Number(v);
+                          }}
+                        >
+                          ${INTEGRATION_PAGE_SIZE_OPTIONS.map(
+                            (opt) => html`
+                              <option value=${String(opt)} ?selected=${opt === this._integrationPageSize}>
+                                ${opt === "all" ? "Show all" : `Show ${opt}`}
+                              </option>
+                            `
+                          )}
+                        </select>
+                      </div>
+                    `}
               `}
         </div>
       </div>

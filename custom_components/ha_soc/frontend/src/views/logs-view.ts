@@ -1,8 +1,8 @@
-import { LitElement, html, nothing } from "lit";
+import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { HaLogEntry, fetchSystemLog } from "../data/ha-soc-ws";
+import { FaultLogOverview, HaLogEntry, fetchFaultLog, fetchSystemLog } from "../data/ha-soc-ws";
 
 // Same core/custom logger-name convention health.py uses for its own
 // per-domain error attribution — anything that doesn't match either
@@ -16,28 +16,99 @@ function domainFor(loggerName: string): string {
   return loggerName.split(".")[0];
 }
 
-function levelPillClass(level: string): string {
-  switch (level) {
-    case "CRITICAL":
-      return "critical";
-    case "ERROR":
-      return "high";
-    case "WARNING":
-      return "medium";
-    default:
-      return "low";
-  }
+// Dedicated log-level palette — deliberately NOT the same `.pill.critical/
+// high/medium/low` classes finding severity uses elsewhere in this panel.
+// A log LEVEL and a finding SEVERITY are different axes that happen to
+// share adjectives; conflating them made ERROR and CRITICAL render
+// identically (both mapped to the same red) with no way to tell them
+// apart at a glance, which is exactly the problem this fixes. Five tiers,
+// Debug through Critical, each visually distinct.
+const LOG_LEVEL_ORDER = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
+
+function logLevelClass(level: string): string {
+  const normalized = level.toUpperCase();
+  return LOG_LEVEL_ORDER.includes(normalized) ? normalized.toLowerCase() : "info";
 }
 
 @customElement("ha-soc-logs-view")
 export class HaSocLogsView extends LitElement {
-  static styles = sharedStyles;
+  static styles = [
+    sharedStyles,
+    css`
+      .log-level {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        padding: 3px 8px;
+        border-radius: 100px;
+      }
+      .log-level .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        flex: none;
+      }
+      .log-level.debug {
+        background: rgba(154, 160, 166, 0.16);
+        color: var(--secondary-text-color);
+      }
+      .log-level.debug .dot {
+        background: var(--cat-other, #9aa0a6);
+      }
+      .log-level.info {
+        background: rgba(42, 120, 214, 0.14);
+        color: var(--cat-1, #2a78d6);
+      }
+      .log-level.info .dot {
+        background: var(--cat-1, #2a78d6);
+      }
+      .log-level.warning {
+        background: rgba(250, 178, 25, 0.16);
+        color: #7a5200;
+      }
+      .log-level.warning .dot {
+        background: var(--status-warning, #fab219);
+      }
+      .log-level.error {
+        background: rgba(236, 131, 90, 0.18);
+        color: var(--status-serious, #ec835a);
+      }
+      .log-level.error .dot {
+        background: var(--status-serious, #ec835a);
+      }
+      .log-level.critical {
+        background: rgba(208, 59, 59, 0.18);
+        color: var(--status-critical, #d03b3b);
+      }
+      .log-level.critical .dot {
+        background: var(--status-critical, #d03b3b);
+      }
+      :host(.dark) .log-level.warning {
+        color: var(--status-warning, #fab219);
+      }
+      .fault-log pre {
+        white-space: pre-wrap;
+        font-size: 11.5px;
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.04);
+        padding: 10px;
+        border-radius: 6px;
+        margin: 0;
+        max-height: 400px;
+        overflow-y: auto;
+      }
+    `,
+  ];
 
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _entries: HaLogEntry[] = [];
+  @state() private _fault: FaultLogOverview | null = null;
   @state() private _loading = true;
   @state() private _domainFilter = "";
+  @state() private _levelFilter = "";
   @state() private _expanded: Set<number> = new Set();
 
   connectedCallback(): void {
@@ -48,7 +119,9 @@ export class HaSocLogsView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      this._entries = await fetchSystemLog(this.hass);
+      const [entries, fault] = await Promise.all([fetchSystemLog(this.hass), fetchFaultLog(this.hass)]);
+      this._entries = entries;
+      this._fault = fault;
     } finally {
       this._loading = false;
     }
@@ -65,15 +138,61 @@ export class HaSocLogsView extends LitElement {
     return Array.from(new Set(this._entries.map((e) => domainFor(e.name)))).sort();
   }
 
+  private get _levels(): string[] {
+    const present = new Set(this._entries.map((e) => e.level.toUpperCase()));
+    return LOG_LEVEL_ORDER.filter((l) => present.has(l));
+  }
+
   private get _filtered(): HaLogEntry[] {
-    if (!this._domainFilter) return this._entries;
-    return this._entries.filter((e) => domainFor(e.name) === this._domainFilter);
+    return this._entries.filter((e) => {
+      if (this._domainFilter && domainFor(e.name) !== this._domainFilter) return false;
+      if (this._levelFilter && e.level.toUpperCase() !== this._levelFilter) return false;
+      return true;
+    });
+  }
+
+  private _renderFaultLogCard() {
+    const fault = this._fault;
+    if (!fault) return nothing;
+
+    return html`
+      <div class="card fault-log">
+        <h3>
+          Home Assistant Crash Log
+          ${fault.exists && fault.content?.trim()
+            ? html`<span class="log-level critical"><span class="dot"></span>crash detected</span>`
+            : html`<span class="tag enforced">none detected</span>`}
+        </h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          <code>home-assistant.log.fault</code> — Python's own faulthandler dump. This
+          file is only ever written when Home Assistant Core itself crashes at a fatal,
+          low level (segfault, abort, illegal instruction) — a normal Python exception
+          never creates it, and it's separate from the WARNING/ERROR table below. Home
+          Assistant appends to this file across restarts and only deletes it automatically
+          after a clean run finds it empty, so old content can persist here until it's
+          cleared by hand on the host — this view is read-only and never touches the file.
+        </p>
+        ${!fault.exists || !fault.content?.trim()
+          ? html`<div class="empty">No crash detected.</div>`
+          : html`
+              <p class="muted" style="font-size:12px;">
+                Last written ${new Date(fault.modified_at!).toLocaleString()} —
+                ${fault.size_bytes.toLocaleString()} byte(s) total${fault.truncated
+                  ? ", showing the most recent 64 KB"
+                  : ""}.
+              </p>
+              <pre>${fault.content}</pre>
+            `}
+      </div>
+    `;
   }
 
   render() {
     const filtered = this._filtered;
 
     return html`
+      ${this._renderFaultLogCard()}
+
       <div class="card">
         <h3>Home Assistant Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -90,6 +209,12 @@ export class HaSocLogsView extends LitElement {
             <option value="" ?selected=${this._domainFilter === ""}>All integrations</option>
             ${this._domains.map(
               (d) => html`<option value=${d} ?selected=${d === this._domainFilter}>${d}</option>`
+            )}
+          </select>
+          <select @change=${(e: Event) => (this._levelFilter = (e.target as HTMLSelectElement).value)}>
+            <option value="" ?selected=${this._levelFilter === ""}>All levels</option>
+            ${this._levels.map(
+              (l) => html`<option value=${l} ?selected=${l === this._levelFilter}>${l}</option>`
             )}
           </select>
           <span class="spacer"></span>
@@ -121,7 +246,7 @@ export class HaSocLogsView extends LitElement {
                       >
                         <td>${new Date(entry.first_occurred * 1000).toLocaleString()}</td>
                         <td>
-                          <span class="pill ${levelPillClass(entry.level)}"
+                          <span class="log-level ${logLevelClass(entry.level)}"
                             ><span class="dot"></span>${entry.level}</span
                           >
                         </td>

@@ -14,10 +14,28 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-SCANNER_VERSION="0.1.1"
+SCANNER_VERSION="2026.08.23.4"
 
 SCAN_INTERVAL_HOURS=$(bashio::config 'scan_interval_hours')
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+
+# Shared per-install secret proving this report really came from the add-on
+# and not a forged local service call. Shared with the firewall poller
+# service via /data (same container); whichever service starts first creates
+# it atomically, the other reads the same value. Core pins the first secret
+# it sees and rejects calls that can't present it (see firewall.py).
+SECRET_FILE="/data/ha_soc_probe_secret"
+PROBE_SECRET=""
+
+ensure_probe_secret() {
+    mkdir -p /data
+    if [ ! -s "${SECRET_FILE}" ]; then
+        ( set -o noclobber
+          head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
+        ) 2>/dev/null || true
+    fi
+    PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
 
 # When a report is rejected (e.g. HTTP 400 — the HA SOC integration isn't
 # loaded yet, commonly for a few seconds/minutes right after Home Assistant
@@ -30,25 +48,50 @@ CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result
 RETRY_INTERVAL_SECONDS=30
 MAX_RETRY_INTERVAL_SECONDS=300
 
-# Prints "<proto> <hex-port>" for every LISTEN-state row in a
-# /proc/net/{tcp,tcp6} table. Column 2 is "local_address:hex_port",
-# column 4 is connection state; 0A is TCP_LISTEN. Plain field/string
-# handling only, no gawk-only extensions (strtonum etc.) — Alpine's
-# default awk is busybox awk, not gawk.
+# Prints "<proto> <hex-bind-address> <hex-port>" for every LISTEN-state
+# row in a /proc/net/{tcp,tcp6} table. Column 2 is
+# "hex_bind_address:hex_port", column 4 is connection state; 0A is
+# TCP_LISTEN. Plain field/string handling only, no gawk-only extensions
+# (strtonum etc.) — Alpine's default awk is busybox awk, not gawk.
 extract_listening_ports() {
     local file="$1" proto="$2"
     [ -r "${file}" ] || return 0
     awk -v proto="${proto}" '
         NR > 1 && $4 == "0A" {
             split($2, addr, ":")
-            print proto " " addr[2]
+            print proto " " addr[1] " " addr[2]
         }
     ' "${file}"
 }
 
-# Builds a JSON array of {"port": N, "proto": "tcp"} objects from the
-# host's current listening sockets. Hex->decimal via printf (POSIX,
-# portable) rather than awk's strtonum (gawk-only, not available here).
+# /proc/net/tcp's bind address is 8 hex chars — the 4 bytes of an IPv4
+# address in the kernel's native (little-endian) word order, i.e.
+# reversed relative to normal dotted-decimal reading order. "0100007F"
+# is 127.0.0.1: bytes 01 00 00 7F read backwards. Same printf-based
+# hex->decimal conversion already used for the port, applied per octet.
+hex_to_ipv4() {
+    local hex="$1"
+    printf '%d.%d.%d.%d' \
+        "0x${hex:6:2}" "0x${hex:4:2}" "0x${hex:2:2}" "0x${hex:0:2}"
+}
+
+# "<ip> <interface>" for every IPv4 address currently configured on the
+# host — real, not guessed, since this add-on shares the host's network
+# namespace (host_network: true in config.yaml). Degrades to nothing if
+# `ip` isn't available, which just means every port reports its bind
+# address with an "unresolved" interface below rather than failing outright.
+build_interface_map() {
+    command -v ip >/dev/null 2>&1 || return 0
+    ip -4 -o addr show 2>/dev/null | awk '{split($4, cidr, "/"); print cidr[1], $2}'
+}
+
+# Builds a JSON array of {"port", "proto", "address", "interface"}
+# objects from the host's current listening sockets. IPv6 addresses
+# (32 hex chars, four little-endian 32-bit words — a materially more
+# involved decode than IPv4's single 32-bit swap) are deliberately left
+# unresolved rather than risk silently reporting a wrong address: a
+# security tool showing an incorrect bind address is worse than one that
+# honestly says "not decoded".
 build_open_ports_json() {
     local entries
     entries=$(
@@ -62,15 +105,42 @@ build_open_ports_json() {
         return
     fi
 
-    local json="[" first=1 proto port_hex port_dec
-    while read -r proto port_hex; do
+    declare -A iface_map
+    local iface_line ip ifname
+    while read -r iface_line; do
+        [ -n "${iface_line}" ] || continue
+        ip=${iface_line%% *}
+        ifname=${iface_line#* }
+        iface_map["${ip}"]="${ifname}"
+    done <<IFACES
+$(build_interface_map)
+IFACES
+
+    local json="[" first=1 proto ip_hex port_hex port_dec address interface
+    while read -r proto ip_hex port_hex; do
         port_dec=$(printf '%d' "0x${port_hex}")
+        if [ "${#ip_hex}" -eq 8 ]; then
+            address=$(hex_to_ipv4 "${ip_hex}")
+            if [ "${address}" = "0.0.0.0" ]; then
+                interface="(all interfaces)"
+            else
+                interface="${iface_map[${address}]:-unresolved}"
+            fi
+        else
+            address="null"
+            interface="null"
+        fi
         if [ "${first}" -eq 1 ]; then
             first=0
         else
             json="${json},"
         fi
-        json="${json}{\"port\":${port_dec},\"proto\":\"${proto}\"}"
+        json="${json}{\"port\":${port_dec},\"proto\":\"${proto}\","
+        if [ "${address}" = "null" ]; then
+            json="${json}\"address\":null,\"interface\":null}"
+        else
+            json="${json}\"address\":\"${address}\",\"interface\":\"${interface}\"}"
+        fi
     done <<PORTS
 ${entries}
 PORTS
@@ -78,6 +148,33 @@ PORTS
     echo "${json}"
 }
 
+# --- Privilege posture (recommended hardening — NOT yet applied) --------------
+# Everything below currently runs as root: s6 starts every service in this
+# add-on as root, and the container carries CAP_NET_ADMIN (config.yaml's
+# `privileged: [NET_ADMIN]`). This SCANNER service, unlike its firewall
+# sibling, needs neither. It only: reads the world-readable /proc/net/tcp[6]
+# (fine unprivileged), runs `ip -4 -o addr show` (works unprivileged), and
+# curls the Supervisor API with $SUPERVISOR_TOKEN (an env var — unprivileged).
+# NET_ADMIN is never exercised here; only ha_soc_probe_firewall's iptables
+# calls genuinely require root + NET_ADMIN, and that service MUST keep them.
+#
+# Recommended: drop THIS service to an unprivileged user by re-execing the
+# whole run script under `nobody` before the scan loop starts, e.g. as the
+# first runtime line above:
+#
+#     if [ "$(id -u)" -eq 0 ]; then
+#         exec s6-setuidgid nobody "$0" "$@"
+#     fi
+#
+# Left un-applied deliberately, because it must be validated against a real
+# Supervisor first and cannot be tested here: re-execing through the
+# `with-contenv` shebang re-reads /run/s6/container_environment/* (including
+# SUPERVISOR_TOKEN), and bashio::config re-reads /data/options.json — both
+# must be readable by `nobody` or the token auth / `scan_interval_hours`
+# lookup fail silently and the add-on stalls in the "Holding" retry loop
+# below. Confirm those read modes (and that /proc/net/tcp stays readable as
+# nobody) on a real HA OS install before enabling the exec above.
+ensure_probe_secret
 bashio::log.info "HA SOC Probe starting — scanning every ${SCAN_INTERVAL_HOURS}h."
 
 retry_seconds="${RETRY_INTERVAL_SECONDS}"
@@ -90,7 +187,8 @@ while true; do
     payload=$(jq -n \
         --argjson open_ports "${open_ports_json}" \
         --arg version "${SCANNER_VERSION}" \
-        '{open_ports: $open_ports, scanner_version: $version}')
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{open_ports: $open_ports, scanner_version: $version, probe_secret: $probe_secret}')
 
     http_code=$(curl -sS -o /tmp/ha_soc_probe_response.json -w '%{http_code}' \
         -X POST \

@@ -78,6 +78,25 @@ export class HaSocSettingsView extends LitElement {
     this._update("security_sources_enabled", { ...this._settings.security_sources_enabled, [domain]: enabled });
   }
 
+  // Secret fields are never pre-filled with their value (the backend only
+  // ever sends a mask). An empty, untouched field never fires @change, so
+  // it can't accidentally clear a stored secret; typing a value sets it.
+  private _renderSecretField(label: string, key: "nvd_api_key" | "github_token", isSet: boolean) {
+    return html`
+      <label class="settings-row">
+        <span>${label}</span>
+        <input
+          type="password"
+          placeholder=${isSet ? "configured — type to replace" : "unset"}
+          @change=${(e: Event) => {
+            const v = (e.target as HTMLInputElement).value;
+            this._update(key, v ? v : null);
+          }}
+        />
+      </label>
+    `;
+  }
+
   private _renderIntegrationRow(domain: string, label: string) {
     const s = this._settings!;
     const rows = this._security?.integrations.filter((i) => i.domain === domain) ?? [];
@@ -110,6 +129,21 @@ export class HaSocSettingsView extends LitElement {
     const s = this._settings;
 
     return html`
+      ${!s.github_token_set
+        ? html`
+            <div
+              style="background:#fdf6d8;color:#6b5300;border:1px solid #e8d071;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13.5px;line-height:1.5;"
+            >
+              <strong>No GitHub API key configured.</strong> The Integration Security tab
+              can still classify every integration and run local checks, but the
+              GitHub-derived provenance signals — release vs. branch, identity assurance,
+              maintenance recency, popularity, and archived status — stay
+              <em>“not collected”</em> until a token is set below. A token also raises
+              GitHub's rate limit from 60 to 5,000 requests/hour.
+            </div>
+          `
+        : ""}
+
       <div class="card">
         <h3>Access Control</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -174,15 +208,11 @@ export class HaSocSettingsView extends LitElement {
           vendor/model match against NVD, not a confirmed exploit — absence of a match is
           not evidence a device is secure.
         </p>
-        <label class="settings-row">
-          <span>NVD API key (optional — raises the public rate limit)</span>
-          <input
-            type="password"
-            placeholder="unset"
-            .value=${s.nvd_api_key ?? ""}
-            @change=${(e: Event) => this._update("nvd_api_key", (e.target as HTMLInputElement).value || null)}
-          />
-        </label>
+        ${this._renderSecretField(
+          "NVD API key (optional — raises the public rate limit)",
+          "nvd_api_key",
+          !!s.nvd_api_key_set
+        )}
         <label class="settings-row">
           <span>Risk-scoring learning period (days)</span>
           <input
@@ -194,6 +224,18 @@ export class HaSocSettingsView extends LitElement {
               this._update("risk_learning_period_days", Number((e.target as HTMLInputElement).value))}
           />
         </label>
+      </div>
+
+      <div class="card">
+        <h3>Integration Security (Provenance)</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          A <strong>provenance</strong> signal, not a safety verdict — it reflects how much
+          is known about where an integration's code comes from, never that the code is safe
+          to run. A GitHub token (a fine-grained token with public read access is enough)
+          lets the Integration Security tab collect release, signing, maintenance,
+          popularity, and archived-status signals for integrations with a known GitHub repo.
+        </p>
+        ${this._renderSecretField("GitHub API token (optional)", "github_token", !!s.github_token_set)}
       </div>
 
       <div class="card">
