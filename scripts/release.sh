@@ -39,10 +39,17 @@ done
 # --- Determine the new version -----------------------------------------------
 if [ -z "${VERSION}" ]; then
     today="$(date +%Y.%m.%d)"
-    # Highest existing same-day revision across tags (with or without a
-    # leading v), default 0, then +1.
-    highest="$(git tag -l "${today}.*" "v${today}.*" \
-        | sed -E "s/^v//; s/^${today}\.//" \
+    # Highest existing same-day revision, considering BOTH tags and the
+    # current manifest version — so if the manifest is already ahead of any
+    # tag for today (a bumped-but-untagged version), we never version
+    # backwards. Default 0, then +1.
+    manifest_ver="$(python3 -c "import json;print(json.load(open('custom_components/ha_soc/manifest.json'))['version'])")"
+    manifest_rev=""
+    case "${manifest_ver}" in
+        "${today}."*) manifest_rev="${manifest_ver##*.}" ;;
+    esac
+    highest="$( { git tag -l "${today}.*" "v${today}.*" \
+                    | sed -E "s/^v//; s/^${today}\.//"; echo "${manifest_rev}"; } \
         | grep -E '^[0-9]+$' | sort -n | tail -1 || true)"
     next=$(( ${highest:-0} + 1 ))
     VERSION="${today}.${next}"
