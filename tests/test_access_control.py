@@ -19,7 +19,7 @@ from custom_components.ha_soc.const import (
     ACCESS_LEVEL_OWNER_ONLY,
     DOMAIN,
 )
-from custom_components.ha_soc.websocket_api import require_soc_access, ws_access_info
+from custom_components.ha_soc.websocket_api import require_soc_access, ws_access_info, ws_version_get
 
 
 def _connection(*, is_admin: bool, is_owner: bool) -> MagicMock:
@@ -105,3 +105,27 @@ async def test_access_info_reports_state_for_owner(
         "access_level": ACCESS_LEVEL_OWNER_ONLY,
         "allowed": True,
     }
+
+
+async def test_version_get_reads_manifest_version(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    # Single source of truth: manifest.json, the same file HA itself
+    # already reads for update-checking — not a second hardcoded string
+    # in websocket_api.py that could drift from it on the next release.
+    import json
+    import os
+
+    manifest_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "custom_components", "ha_soc", "manifest.json")
+    with open(manifest_path) as f:
+        expected_version = json.load(f)["version"]
+
+    connection = _connection(is_admin=True, is_owner=False)
+
+    ws_version_get(hass, connection, {"id": 1})
+    await hass.async_block_till_done()
+
+    result = connection.send_result.call_args[0][1]
+    assert result == {"version": expected_version}
+    # And it follows the YYYY.MM.DD.V shape, not the old pre-1.0 semver.
+    assert len(expected_version.split(".")) == 4

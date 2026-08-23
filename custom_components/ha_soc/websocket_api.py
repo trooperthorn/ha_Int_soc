@@ -91,6 +91,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
     """Register every ha_soc/* command. Safe to call once per HA process."""
     for handler in (
         ws_access_info,
+        ws_version_get,
         ws_users_list,
         ws_users_detail,
         ws_users_create,
@@ -166,6 +167,30 @@ async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
             "access_level": access_level,
             "allowed": allowed,
         },
+    )
+
+
+@websocket_api.require_admin
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/version/get"})
+@websocket_api.async_response
+async def ws_version_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    """The version shown in the panel's footer, on every tab.
+
+    Reads manifest.json (the single source of truth HA itself already
+    uses for update-checking) via the loader, rather than duplicating the
+    version as a second hardcoded string somewhere in this file — exactly
+    the kind of two-places-to-update drift the probe add-on's run.sh
+    SCANNER_VERSION constant already has to be manually kept in lockstep
+    for. Plain @websocket_api.require_admin, same as ha_soc/access/info:
+    a version number isn't sensitive, and an admin locked out by
+    access_level should still see it on the denied screen, not just once
+    they're let in.
+    """
+    from homeassistant.loader import async_get_integration
+
+    integration = await async_get_integration(hass, DOMAIN)
+    connection.send_result(
+        msg["id"], {"version": str(integration.version) if integration.version else None}
     )
 
 

@@ -134,6 +134,19 @@ placeholder instead — that's expected, not a bug here.
 3. Settings → Devices & Services → Add Integration → **HA SOC**.
 4. A **SOC** panel appears in the sidebar (admin accounts only).
 
+## Versioning
+
+Calendar versioning: `YYYY.MM.DD.V` — the release date plus a same-day
+revision counter starting at 1 (e.g. the first release on August 23, 2026
+is `2026.08.23.1`; a second release that same day would be `2026.08.23.2`).
+Applies to both the integration (`manifest.json`) and the optional HA SOC
+Probe add-on (`ha_soc_probe/config.yaml`), so a released version number is
+always an unambiguous, directly comparable release identifier across the
+whole project — never a pre-1.0 `0.x.y` number implying "still in
+development." The current version is shown at the bottom of the panel on
+every tab, and in HACS/Settings → Devices & Services → HA SOC the way any
+integration's version is.
+
 ## Development
 
 ```bash

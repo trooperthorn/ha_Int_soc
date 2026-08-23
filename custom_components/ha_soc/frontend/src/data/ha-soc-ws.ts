@@ -304,6 +304,10 @@ export interface AccessInfo {
   allowed: boolean;
 }
 
+export interface VersionInfo {
+  version: string | null;
+}
+
 const ws = <T>(hass: HomeAssistant, msg: Record<string, unknown>) => hass.callWS<T>(msg);
 
 export const fetchUsers = (hass: HomeAssistant) =>
@@ -461,6 +465,8 @@ export const fetchDashboardIntegrations = (hass: HomeAssistant) =>
 
 export const fetchAccessInfo = (hass: HomeAssistant) =>
   ws<AccessInfo>(hass, { type: "ha_soc/access/info" });
+
+export const fetchVersion = (hass: HomeAssistant) => ws<VersionInfo>(hass, { type: "ha_soc/version/get" });
 
 export const fetchProbeStatus = (hass: HomeAssistant) =>
   ws<ProbeOverview>(hass, { type: "ha_soc/probe/status" });

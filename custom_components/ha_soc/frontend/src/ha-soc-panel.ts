@@ -2,7 +2,7 @@ import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
 import type { HaSocNavigateDetail, SocTab } from "./nav";
-import { AccessInfo, fetchAccessInfo } from "./data/ha-soc-ws";
+import { AccessInfo, ProbeOverview, fetchAccessInfo, fetchProbeStatus, fetchVersion } from "./data/ha-soc-ws";
 
 import "./views/users-view";
 import "./views/audit-view";
@@ -85,6 +85,12 @@ export class HaSocPanel extends LitElement {
       font-size: 13.5px;
       line-height: 1.5;
     }
+    .footer {
+      padding: 10px 16px 14px;
+      font-size: 11px;
+      color: var(--secondary-text-color);
+      text-align: center;
+    }
   `;
 
   @property({ attribute: false }) hass!: HomeAssistant;
@@ -93,10 +99,13 @@ export class HaSocPanel extends LitElement {
 
   @state() private _tab: TabId = "dashboard";
   @state() private _access: AccessInfo | null = null;
+  @state() private _version: string | null = null;
+  @state() private _probe: ProbeOverview | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this._loadAccess();
+    this._loadFooterInfo();
   }
 
   private async _loadAccess() {
@@ -109,6 +118,31 @@ export class HaSocPanel extends LitElement {
       // forever or, worse, rendering tabs that will just 401 underneath.
       this._access = { is_owner: false, access_level: "owner_only", allowed: false };
     }
+  }
+
+  private async _loadFooterInfo() {
+    // Both plain @websocket_api.require_admin (see websocket_api.py) —
+    // reachable even when access_level has this admin locked out of
+    // every other ha_soc/* command, so the footer still renders on the
+    // "Access restricted" screen too. Best-effort: a failure here just
+    // means the footer stays blank, never blocks the rest of the panel.
+    try {
+      this._version = (await fetchVersion(this.hass)).version;
+    } catch {
+      this._version = null;
+    }
+    try {
+      this._probe = await fetchProbeStatus(this.hass);
+    } catch {
+      this._probe = null;
+    }
+  }
+
+  private _renderFooter() {
+    if (!this._version) return html``;
+    const probeText =
+      this._probe?.installed && this._probe.version ? ` · HA SOC Probe v${this._probe.version}` : "";
+    return html`<div class="footer">HA SOC v${this._version}${probeText}</div>`;
   }
 
   render() {
@@ -131,6 +165,7 @@ export class HaSocPanel extends LitElement {
             from this panel's own Settings tab once they've signed in.
           </p>
         </div>
+        ${this._renderFooter()}
       `;
     }
     return html`
@@ -145,6 +180,7 @@ export class HaSocPanel extends LitElement {
         )}
       </div>
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
+      ${this._renderFooter()}
     `;
   }
 

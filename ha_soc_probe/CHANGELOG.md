@@ -1,5 +1,16 @@
 # Changelog
 
+## 2026.08.23.1
+
+- Changed: version numbering switched from pre-1.0 semver (`0.1.x`) to
+  calendar versioning, `YYYY.MM.DD.V` — the release date plus a same-day
+  revision counter starting at 1 (e.g. the first release on August 23,
+  2026 is `2026.08.23.1`; a second release that same day would be
+  `2026.08.23.2`). Matches the HA SOC integration's own version scheme so
+  the add-on and the integration it reports to always carry a directly
+  comparable, unambiguous release identifier — no more guessing whether
+  `0.1.1` is newer or older than whatever the integration itself is on.
+
 ## 0.1.1
 
 - Fixed: a rejected report (commonly a few seconds/minutes of HTTP 400
