@@ -1,5 +1,21 @@
 # Changelog
 
+## 2026.08.23.4
+
+- Security: both add-on services now send a per-install secret (generated
+  once and stored in the add-on's own `/data`) on every call into Home
+  Assistant. HA SOC pins the first secret it sees and rejects any later
+  ingest/poll call that can't present it, so a forged local service call
+  can no longer spoof a port report or a firewall test outcome. No key
+  management for you — the secret is created and shared between the two
+  services automatically.
+- Firewall: a rule that fails to apply now aborts the whole apply and
+  restores the pre-test ruleset immediately (rather than leaving a
+  partially-applied set live), and the failure is reported back to HA SOC.
+- Hardening notes added to the port-scanner service documenting the
+  recommended non-root privilege drop (left un-applied pending validation
+  against a real Supervisor) and a base-image digest pin.
+
 ## 2026.08.23.3
 
 - Added: optional host firewall read/write, gated behind a new `NET_ADMIN`

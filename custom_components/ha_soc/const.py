@@ -63,7 +63,15 @@ CONF_AUDIT_MAX_BYTES = "audit_max_bytes"
 CONF_SCANNER_ENABLED = "scanner_enabled"
 CONF_SCANNER_NETWORK_CHECKS_ENABLED = "scanner_network_checks_enabled"
 CONF_NVD_API_KEY = "nvd_api_key"
+CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
+
+# Settings keys whose values are secrets — never logged verbatim, never
+# returned raw to the frontend. audit.py redacts these inside async_log()
+# itself, and ws_settings_get returns a boolean "is set" flag for each
+# instead of the value. Add every future credential-shaped setting here.
+SECRET_SETTING_KEYS: frozenset[str] = frozenset({CONF_NVD_API_KEY, CONF_GITHUB_TOKEN})
+REDACTED_PLACEHOLDER = "[redacted]"
 
 # -- Severity vocabulary shared by vulns / misconfig / detections / scanner
 SEVERITY_CRITICAL = "critical"
@@ -163,3 +171,30 @@ FIREWALL_TEST_EXPIRED = "expired"
 # feature exists for. The user asked for "30-60 seconds"; 45s is the
 # midpoint, not independently user-configurable yet (see firewall.py).
 DEFAULT_FIREWALL_TEST_WINDOW_SECONDS = 45
+
+# -- Integration Security (provenance) -----------------------------------
+# A PROVENANCE score, not a SAFETY score. HA integrations are arbitrary
+# Python running in-process with no sandbox — nothing measured here proves
+# code is safe to run. It measures how much is known about where the code
+# came from and how it's maintained. Every surface that shows this MUST
+# say so; never "Safe"/"Verified"/"Trusted"/a bare shield. See
+# integration_security.py's docstring for the full rationale.
+
+# Tier — how vetted the SOURCE of an installed integration is. This is the
+# generalization of HACS's own default-store-vs-custom concept to cover
+# every install path, not only HACS content.
+INTEGRATION_TIER_CORE = "core"  # ships inside HA Core; hassfest-validated
+INTEGRATION_TIER_HACS = "hacs"  # tracked by HACS from a GitHub repo
+INTEGRATION_TIER_CUSTOM = "custom"  # hand-copied / unmanaged custom_components
+
+# Per variance from the feature request: only the two lowest-provenance
+# HACS source origins are flagged, not default-store HACS content.
+INTEGRATION_FLAG_CUSTOM_REPO = "custom_repo"
+INTEGRATION_FLAG_CUSTOM_SOURCE_LIST = "custom_source_list"
+
+# GitHub REST base — a hardcoded literal, never built from user input.
+GITHUB_API_BASE = "https://api.github.com"
+
+# Cache TTL for a repo's GitHub-derived provenance signals, so a refresh
+# doesn't re-hit the API for repos already looked up recently.
+INTEGRATION_SECURITY_CACHE_TTL_HOURS = 24

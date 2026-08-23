@@ -1,4 +1,15 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-dockerfile
+# `3.23` is a MOVING tag — its contents change as the base image is
+# rebuilt, so a build today and a build next month can differ. For
+# reproducible builds, also pin the image by its immutable digest:
+#
+#     ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23@sha256:<digest>
+#
+# Fill <digest> in from the REAL published image at build time (e.g.
+# `docker buildx imagetools inspect ghcr.io/home-assistant/base:3.23`, or
+# `docker pull ... && docker inspect --format='{{index .RepoDigests 0}}' ...`).
+# Left un-pinned here on purpose: the digest must come from the actual
+# published image, never a guessed/placeholder value.
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
 FROM ${BUILD_FROM}
 

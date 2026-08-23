@@ -401,17 +401,29 @@ async def async_lovelace_missing_resources(hass: HomeAssistant) -> list[dict[str
             # configured but not resolvable through any core API. Not
             # flagged: absence of proof isn't proof of absence here.
             continue
+        base = hass.config.path("www")
         path = hass.config.path("www", url.removeprefix("/local/"))
-        exists = await hass.async_add_executor_job(_path_exists, path)
+        exists = await hass.async_add_executor_job(_path_exists, path, base)
         if not exists:
             found.append({"url": url, "type": item.get("type")})
     return found
 
 
-def _path_exists(path: str) -> bool:
+def _path_exists(path: str, base: str) -> bool:
+    """isfile(), but only inside the www base directory. A resource URL is
+    attacker-influenceable configuration: `/local/../../secrets.yaml` would
+    otherwise join to a real path *outside* www and get stat'd there. Both
+    sides are realpath'd first so `..` segments and any symlink inside www
+    pointing back out are resolved before the containment check; anything
+    that escapes the base is treated as "not found" (returns False), never
+    stat'd outside the intended directory."""
     import os
 
-    return os.path.isfile(path)
+    real_base = os.path.realpath(base)
+    real_path = os.path.realpath(path)
+    if real_path != real_base and not real_path.startswith(real_base + os.sep):
+        return False
+    return os.path.isfile(real_path)
 
 
 # -- Registry tidiness: empty areas/floors, unused labels/blueprints --------

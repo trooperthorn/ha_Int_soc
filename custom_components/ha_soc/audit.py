@@ -87,7 +87,7 @@ from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers.event import async_track_time_interval
 import homeassistant.util.dt as dt_util
 
-from .const import AUDIT_STORAGE_SUBDIR
+from .const import AUDIT_STORAGE_SUBDIR, REDACTED_PLACEHOLDER, SECRET_SETTING_KEYS
 from .store import HaSocData
 
 # The literal event-type strings are what core actually fires; importing the
@@ -131,8 +131,18 @@ _FLUSH_INTERVAL = timedelta(seconds=30)
 _POLL_INTERVAL = timedelta(seconds=30)
 
 _CHAIN_HEAD_FILENAME = "chain_head.json"
-_FILENAME_RE = re.compile(r"^audit-(\d{4}-\d{2}-\d{2})\.jsonl$")
+# A day's records live in audit-YYYY-MM-DD.jsonl, plus numbered segments
+# audit-YYYY-MM-DD.1.jsonl, .2.jsonl, ... once the current file crosses
+# _SEGMENT_MAX_BYTES within a single day. Group 2 is the segment index
+# (absent = 0), used only to keep files in written order when listing.
+_FILENAME_RE = re.compile(r"^audit-(\d{4}-\d{2}-\d{2})(?:\.(\d+))?\.jsonl$")
 _GENESIS_PREV_HASH = ""
+
+# Roll a day's audit file to a new segment once it exceeds this size, so a
+# single very high-volume day can't grow one file past the retention size
+# cap before the next UTC-day rotation. 32 MB keeps individual files small
+# enough to read/verify quickly while staying well under the default cap.
+_SEGMENT_MAX_BYTES = 32 * 1024 * 1024
 
 _DEFAULT_QUERY_LOOKBACK = timedelta(days=7)
 
@@ -172,6 +182,31 @@ def _redact_service_data(domain: str | None, service_data: Any) -> dict[str, Any
         else:
             redacted[key] = value
     return redacted
+
+
+def _redact_secrets_deep(value: Any) -> Any:
+    """Recursively mask any dict value stored under a known secret key.
+
+    Applied to every ``detail`` payload inside ``async_log`` itself — not
+    at individual call sites — so a credential-shaped setting (e.g.
+    ``nvd_api_key``, ``github_token``) can never reach the append-only,
+    long-retention audit files verbatim, no matter which code path logged
+    it or how deeply it's nested (settings changes log under
+    ``detail["changes"][<key>]``). This is the shared enforcement point the
+    red-team review asked for; per-call-site redaction is not relied on.
+    """
+    if isinstance(value, dict):
+        return {
+            key: (
+                REDACTED_PLACEHOLDER
+                if key in SECRET_SETTING_KEYS and val not in (None, "")
+                else _redact_secrets_deep(val)
+            )
+            for key, val in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_secrets_deep(item) for item in value]
+    return value
 
 
 class _FailedLoginLogHandler(logging.Handler):
@@ -475,7 +510,7 @@ class AuditLog:
             "context_parent_id": context_parent_id,
             "ip": ip,
             "attempted_user": attempted_user,
-            "detail": detail if detail is not None else {},
+            "detail": _redact_secrets_deep(detail) if detail is not None else {},
         }
         self._buffer.append(record)
 
@@ -554,7 +589,7 @@ class AuditLog:
                         json.dumps(record, sort_keys=True)
                     )
                 for day, lines in by_day.items():
-                    file_path = os.path.join(self._dir_path, f"audit-{day}.jsonl")
+                    file_path = self._sync_target_day_file(day)
                     with open(file_path, "a", encoding="utf-8") as handle:
                         handle.write("\n".join(lines) + "\n")
                 self._sync_write_chain_head()
@@ -565,7 +600,7 @@ class AuditLog:
     def _sync_list_day_files(self) -> list[tuple[date, str]]:
         if not os.path.isdir(self._dir_path):
             return []
-        found: list[tuple[date, str]] = []
+        found: list[tuple[date, int, str]] = []
         for name in os.listdir(self._dir_path):
             match = _FILENAME_RE.match(name)
             if not match:
@@ -574,9 +609,34 @@ class AuditLog:
                 file_date = date.fromisoformat(match.group(1))
             except ValueError:
                 continue
-            found.append((file_date, os.path.join(self._dir_path, name)))
-        found.sort(key=lambda entry: entry[0])
-        return found
+            segment = int(match.group(2)) if match.group(2) else 0
+            found.append((file_date, segment, os.path.join(self._dir_path, name)))
+        # (date, segment) order == write order, so chain verification walks
+        # records in the same sequence they were appended.
+        found.sort(key=lambda entry: (entry[0], entry[1]))
+        return [(file_date, path) for file_date, _segment, path in found]
+
+    def _sync_target_day_file(self, day: str) -> str:
+        """The file the next append for ``day`` should go to, rolling to a
+        fresh segment when the current one has crossed _SEGMENT_MAX_BYTES.
+        """
+        base = os.path.join(self._dir_path, f"audit-{day}.jsonl")
+        segments: list[tuple[int, str]] = []
+        for name in os.listdir(self._dir_path) if os.path.isdir(self._dir_path) else []:
+            match = _FILENAME_RE.match(name)
+            if not match or match.group(1) != day:
+                continue
+            segments.append((int(match.group(2)) if match.group(2) else 0, name))
+        if not segments:
+            return base
+        highest_seg, highest_name = max(segments, key=lambda entry: entry[0])
+        highest_path = os.path.join(self._dir_path, highest_name)
+        try:
+            if os.path.getsize(highest_path) < _SEGMENT_MAX_BYTES:
+                return highest_path
+        except OSError:
+            return highest_path
+        return os.path.join(self._dir_path, f"audit-{day}.{highest_seg + 1}.jsonl")
 
     def _sync_apply_retention(self) -> None:
         entries = self._sync_list_day_files()
@@ -713,6 +773,7 @@ class AuditLog:
     def _sync_verify_chain(self) -> dict[str, Any]:
         prev_hash = _GENESIS_PREV_HASH
         checked = 0
+        last_seq = 0
 
         for _file_date, path in self._sync_list_day_files():
             for line in self._read_jsonl(path):
@@ -723,6 +784,7 @@ class AuditLog:
                         "ok": False,
                         "records_checked": checked,
                         "first_break_seq": None,
+                        "reason": "corrupt_record",
                     }
 
                 checked += 1
@@ -734,6 +796,7 @@ class AuditLog:
                         "ok": False,
                         "records_checked": checked,
                         "first_break_seq": seq,
+                        "reason": "hash_mismatch",
                     }
 
                 payload = {k: v for k, v in record.items() if k != "hash"}
@@ -746,8 +809,53 @@ class AuditLog:
                         "ok": False,
                         "records_checked": checked,
                         "first_break_seq": seq,
+                        "reason": "hash_mismatch",
                     }
 
                 prev_hash = stored_hash
+                if isinstance(seq, int):
+                    last_seq = seq
 
-        return {"ok": True, "records_checked": checked, "first_break_seq": None}
+        # Completeness check, not just consistency: the internal chain above
+        # can walk to a clean end even if the newest records were deleted
+        # off the tail (nothing on disk points *forward* to an unwritten
+        # record). Cross-check the last record actually seen against the
+        # separately-stored chain-head checkpoint. If the checkpoint is
+        # ahead of what's on disk, the tail was truncated/removed since the
+        # last flush — the cheapest way to hide one's own recent actions,
+        # and invisible to a consistency-only check. This still can't catch
+        # an attacker who rewrites BOTH the log and chain_head.json (that
+        # needs an off-box anchor — see async_verify_chain's docstring), but
+        # it closes the plain-truncation gap.
+        head_seq, head_hash = self._sync_read_chain_head_checkpoint()
+        if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):
+            return {
+                "ok": False,
+                "records_checked": checked,
+                "first_break_seq": None,
+                "reason": "tail_truncated",
+                "checkpoint_seq": head_seq,
+                "last_on_disk_seq": last_seq,
+            }
+
+        return {
+            "ok": True,
+            "records_checked": checked,
+            "first_break_seq": None,
+            "reason": None,
+        }
+
+    def _sync_read_chain_head_checkpoint(self) -> tuple[int | None, str]:
+        """Read the persisted chain head (seq, prev_hash) straight from disk,
+        independent of the in-memory head, for the completeness check above.
+        Returns (None, "") when no checkpoint exists yet (fresh install).
+        """
+        path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
+        if not os.path.exists(path):
+            return (None, "")
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return (int(data.get("seq", 0)), data.get("prev_hash", _GENESIS_PREV_HASH))
+        except (OSError, ValueError, TypeError):
+            return (None, "")

@@ -41,12 +41,32 @@ set -uo pipefail
 CHAIN="HA_SOC_RULES"
 STATE_DIR="/data"
 CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
+# Shared with the port-scanner service (both live in this same container, so
+# /data is shared). Whichever service starts first creates it; the other
+# reads the same value. See ensure_probe_secret.
+SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
 POLL_URL="http://supervisor/core/api/services/ha_soc/poll_firewall_command?return_response"
 INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
 POLL_INTERVAL_SECONDS=5
+PROBE_SECRET=""
 
 backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup_${1}.rules"; }
 resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
+
+# Create the per-install probe secret once (atomically, so the two services
+# racing to create it can't end up with two different values — noclobber
+# makes the redirect fail for the loser, who then reads the winner's file),
+# then load it. Core pins the first secret it sees and rejects any inbound
+# call that can't present it (trust-on-first-use — see firewall.py), so a
+# forged local service call can't spoof a firewall report.
+ensure_probe_secret() {
+    if [ ! -s "${SECRET_FILE}" ]; then
+        ( set -o noclobber
+          head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
+        ) 2>/dev/null || true
+    fi
+    PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
 
 # --- Chain management --------------------------------------------------------
 
@@ -63,6 +83,8 @@ flush_chain() {
 
 # One proposed rule (JSON object: action/proto/port/source) -> one iptables
 # append onto the dedicated chain. "source" absent/null means "any source".
+# Returns iptables' own exit status so the caller can tell a rule silently
+# failed to apply rather than assuming success.
 apply_rule() {
     local action="$1" proto="$2" port="$3" source="$4" target="ACCEPT"
     [ "${action}" = "deny" ] && target="DROP"
@@ -75,7 +97,10 @@ apply_rule() {
 
 # Replaces the chain's entire contents with the proposed ruleset (a JSON
 # array). Flush-then-apply, never incremental — a proposed ruleset is
-# always the FULL desired state, not a diff.
+# always the FULL desired state, not a diff. Returns non-zero if ANY rule
+# failed to apply, so a partially-applied ruleset is treated as a failure
+# (and rolled back by the caller) rather than silently left half-live while
+# the operator believes the whole set is enforced.
 apply_ruleset() {
     local rules_json="$1" count i rule action proto port source
     flush_chain
@@ -86,8 +111,12 @@ apply_ruleset() {
         proto=$(echo "${rule}" | jq -r '.proto')
         port=$(echo "${rule}" | jq -r '.port')
         source=$(echo "${rule}" | jq -r '.source // "null"')
-        apply_rule "${action}" "${proto}" "${port}" "${source}"
+        if ! apply_rule "${action}" "${proto}" "${port}" "${source}"; then
+            bashio::log.error "Firewall: rule ${i} (${action} ${proto}/${port} from ${source}) failed to apply."
+            return 1
+        fi
     done
+    return 0
 }
 
 # The chain's current, real contents, translated back into the same
@@ -127,7 +156,8 @@ report_resolution() {
         --argjson known_rules "$(known_rules_json)" \
         --arg test_id "${test_id}" \
         --arg status "${status}" \
-        '{firewall_known_rules: $known_rules, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status}')
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{firewall_known_rules: $known_rules, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status, probe_secret: $probe_secret}')
     curl -sS -o /dev/null -w '%{http_code}\n' \
         -X POST \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
@@ -185,6 +215,7 @@ arm_revert_timer() {
 # --- Startup ------------------------------------------------------------------
 
 mkdir -p "${STATE_DIR}"
+ensure_probe_secret
 ensure_chain
 
 if [ -s "${CURRENT_TEST_FILE}" ]; then
@@ -204,7 +235,10 @@ bashio::log.info "HA SOC Probe firewall poller starting — checking for pending
 while true; do
     current_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
 
-    payload=$(jq -n --arg current_test_id "${current_test_id}" '{current_test_id: $current_test_id}')
+    payload=$(jq -n \
+        --arg current_test_id "${current_test_id}" \
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{current_test_id: $current_test_id, probe_secret: $probe_secret}')
     response=$(curl -sS -X POST \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
         -H "Content-Type: application/json" \
@@ -222,8 +256,19 @@ while true; do
             bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
             iptables-save > "$(backup_path_for "${test_id}")"
             echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
-            apply_ruleset "${rules_json}"
-            arm_revert_timer "${test_id}" "${window_seconds}"
+            if apply_ruleset "${rules_json}"; then
+                arm_revert_timer "${test_id}" "${window_seconds}"
+            else
+                # A rule failed to apply — don't leave a half-applied ruleset
+                # live. Restore the pre-test backup immediately and report the
+                # test as reverted (its net effect is the pre-test state), so
+                # the operator sees it failed rather than a silent partial.
+                bashio::log.error "Firewall test ${test_id} failed to apply cleanly — restoring the pre-test ruleset."
+                iptables-restore < "$(backup_path_for "${test_id}")" || true
+                touch "$(resolved_marker_for "${test_id}")"
+                report_resolution "${test_id}" "reverted"
+                : > "${CURRENT_TEST_FILE}"
+            fi
             ;;
         confirm)
             test_id=$(echo "${response}" | jq -r '.service_response.test_id')

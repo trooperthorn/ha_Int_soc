@@ -23,6 +23,7 @@ import voluptuous as vol
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
 from .const import (
@@ -33,6 +34,7 @@ from .const import (
     CONF_AUDIT_RETENTION_DAYS,
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
+    CONF_GITHUB_TOKEN,
     CONF_NVD_API_KEY,
     CONF_RISK_LEARNING_PERIOD_DAYS,
     CONF_SCANNER_ENABLED,
@@ -42,6 +44,8 @@ from .const import (
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
     MFA_POLICY_AUTO_DEACTIVATE,
+    REDACTED_PLACEHOLDER,
+    SECRET_SETTING_KEYS,
     SEVERITY_ORDER,
     SIGNAL_UPDATE,
 )
@@ -86,6 +90,25 @@ def require_soc_access(func):
         func(hass, connection, msg)
 
     return with_soc_access
+
+
+def require_owner(func):
+    """Owner-only gate — stricter than require_soc_access, ignoring access_level.
+
+    Settings carry the security-sensitive controls (the access level itself,
+    API credentials), so they are reachable by the account owner ONLY,
+    regardless of whether access_level has been opened up to other admins.
+    A non-owner admin is refused here even under owner_and_admins.
+    """
+
+    @wraps(func)
+    def with_owner(hass: HomeAssistant, connection, msg: dict) -> None:
+        user = connection.user
+        if user is None or not user.is_owner:
+            raise Unauthorized
+        func(hass, connection, msg)
+
+    return with_owner
 
 
 def async_register_websocket_api(hass: HomeAssistant) -> None:
@@ -139,6 +162,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_test,
         ws_firewall_confirm,
         ws_firewall_cancel,
+        ws_firewall_reset_pairing,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -305,9 +329,11 @@ async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.async_response
 async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    ok = await runtime.users.async_delete_user(msg["user_id"])
+    ok, reason = await runtime.users.async_delete_user(
+        msg["user_id"], requesting_user_id=connection.user.id
+    )
     if not ok:
-        connection.send_error(msg["id"], "delete_failed", "Could not delete user")
+        connection.send_error(msg["id"], reason or "delete_failed", "Could not delete user")
         return
     runtime.store.async_purge_user(msg["user_id"])
     runtime.audit.async_log(
@@ -348,13 +374,15 @@ async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    count = await runtime.users.async_revoke_all_sessions(msg["user_id"])
+    revoked = await runtime.users.async_revoke_all_sessions(msg["user_id"])
     runtime.audit.async_log(
         "user_updated",
         user_id=connection.user.id,
-        detail={"target_user_id": msg["user_id"], "action": "revoked_all_sessions", "count": count},
+        detail={"target_user_id": msg["user_id"], "action": "revoked_all_sessions", "revoked": revoked},
     )
-    connection.send_result(msg["id"], {"revoked": count})
+    # revoked = {"sessions": N, "long_lived_tokens": M} so the UI can state
+    # exactly what was cleared, including the long-lived tokens.
+    connection.send_result(msg["id"], {"revoked": revoked})
 
 
 @require_soc_access
@@ -937,8 +965,12 @@ async def ws_entity_remap_find_references(hass: HomeAssistant, connection, msg: 
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/entity_remap/apply",
-        vol.Required("old_entity_id"): str,
-        vol.Required("new_entity_id"): str,
+        # cv.entity_id enforces the domain.object_id shape, so a typo'd or
+        # empty string can't be substituted into an entity_id field and
+        # silently break the automation/script on next reload.
+        vol.Required("old_entity_id"): cv.entity_id,
+        vol.Required("new_entity_id"): cv.entity_id,
+        vol.Required("backup_acknowledged"): bool,
     }
 )
 @websocket_api.async_response
@@ -951,7 +983,16 @@ async def ws_entity_remap_apply(hass: HomeAssistant, connection, msg: dict) -> N
         connection.send_error(msg["id"], "same_entity", "Old and replacement entity are the same.")
         return
 
-    result = await async_apply_remap(hass, old_id, new_id)
+    result = await async_apply_remap(
+        hass, old_id, new_id, backup_acknowledged=msg["backup_acknowledged"]
+    )
+    if result.get("error") == "backup_not_acknowledged":
+        connection.send_error(
+            msg["id"],
+            "backup_not_acknowledged",
+            "Acknowledge the backup before applying an entity remap.",
+        )
+        return
     runtime.audit.async_log(
         "user_updated",
         user_id=connection.user.id,
@@ -1067,6 +1108,27 @@ async def ws_firewall_confirm(hass: HomeAssistant, connection, msg: dict) -> Non
     connection.send_result(msg["id"], {"ok": True})
 
 
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/reset_pairing"})
+@websocket_api.async_response
+async def ws_firewall_reset_pairing(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only recovery: clear the pinned add-on secret so the next
+    non-empty one re-pins (trust-on-first-use). Use if the add-on was
+    reinstalled/rotated its secret, or a bad first-boot pin locked out the
+    real add-on.
+    """
+    from .firewall import async_reset_addon_secret
+
+    runtime = _runtime(hass)
+    async_reset_addon_secret(runtime.store)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "firewall_pairing_reset"},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
 @require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/firewall/cancel", vol.Required("test_id"): str}
@@ -1092,22 +1154,37 @@ async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None
 
 
 # ----------------------------------------------------------------------------
-# Settings — the in-panel Settings tab. Mirrors the native "Configure"
-# options flow (config_flow.py) over the exact same store: HaSocData.settings
-# is the single source of truth, entry.options is kept as a synced copy for
-# pre-load prefill only. See config_flow.py's module docstring.
+# Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
+# carry the security-sensitive controls (access level, API credentials), so
+# they are reachable by the account owner alone, regardless of access_level.
+# HaSocData.settings is the single source of truth; entry.options is kept as
+# a synced copy for pre-load prefill only. See config_flow.py's docstring.
 # ----------------------------------------------------------------------------
 
 
-@require_soc_access
+def _masked_settings(settings: dict) -> dict:
+    """A copy of settings safe to send to the frontend: every secret value
+    is replaced by a redaction placeholder (when set) or "" (when unset),
+    and a companion "<key>_set" boolean says whether one is configured — so
+    the form can show "configured" without ever receiving the raw secret.
+    """
+    out = dict(settings)
+    for key in SECRET_SETTING_KEYS:
+        value = settings.get(key) or ""
+        out[key] = REDACTED_PLACEHOLDER if value else ""
+        out[f"{key}_set"] = bool(value)
+    return out
+
+
+@require_owner
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/settings/get"})
 @websocket_api.async_response
 async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    connection.send_result(msg["id"], dict(runtime.store.settings))
+    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/settings/set",
@@ -1119,6 +1196,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SCANNER_ENABLED): bool,
         vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
+        vol.Optional(CONF_GITHUB_TOKEN): str,
         vol.Optional(CONF_RISK_LEARNING_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=90)),
         vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
         vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
@@ -1129,23 +1207,32 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     changes = {k: v for k, v in msg.items() if k not in ("type", "id")}
+    # A secret field left as the redaction placeholder means "leave it as
+    # it is" — the frontend never round-trips the real value back, so treat
+    # the placeholder as no-change rather than overwriting the stored secret
+    # with the mask string.
+    for key in SECRET_SETTING_KEYS:
+        if changes.get(key) == REDACTED_PLACEHOLDER:
+            del changes[key]
     if changes:
         runtime.store.async_update_settings(**changes)
 
-        # Keep entry.options in sync so the native Configure dialog (and a
-        # pre-runtime prefill) never shows a value this tab already changed.
+        # Keep entry.options in sync so a pre-runtime prefill never shows a
+        # value this tab already changed.
         entries = hass.config_entries.async_entries(DOMAIN)
         if entries:
             hass.config_entries.async_update_entry(
                 entries[0], options=dict(runtime.store.settings)
             )
 
+        # Secret values in `changes` are redacted inside audit.async_log()
+        # itself (see _redact_secrets_deep) before anything is persisted.
         runtime.audit.async_log(
             "user_updated",
             user_id=connection.user.id,
             detail={"action": "settings_changed", "changes": changes},
         )
-    connection.send_result(msg["id"], dict(runtime.store.settings))
+    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
 
 
 # ----------------------------------------------------------------------------

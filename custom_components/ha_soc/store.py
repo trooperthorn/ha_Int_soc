@@ -129,6 +129,11 @@ def default_store_data() -> StoreData:
             "known_rules_reported_at": None,
             "pending": None,
             "history": [],
+            # Trust-on-first-use secret shared with the add-on. Pinned to the
+            # first non-empty probe_secret Core sees; thereafter every
+            # ingest/poll call must present a match or it's rejected. See
+            # firewall.async_verify_or_pin_secret.
+            "addon_secret": None,
         },
     )
 

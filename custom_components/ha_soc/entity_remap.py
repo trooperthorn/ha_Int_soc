@@ -48,15 +48,56 @@ rename, unrelated to and safe to combine with what this module does.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import shutil
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+import homeassistant.util.dt as dt_util
 from homeassistant.util.yaml import dump as yaml_dump, load_yaml
 
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
+
+# Per-file locks so two overlapping remaps (or a remap racing our own
+# re-scan) can't interleave a read-modify-write on the same config file and
+# silently drop one write. This coordinates HA SOC's OWN writers; it cannot
+# share Home Assistant core's config-editor view locks (those are tied to
+# the HTTP view instances and aren't importable), so a simultaneous edit
+# through HA's native UI is still a theoretical race — but that's a much
+# narrower window than the previous no-lock state, and every write here is
+# preceded by a backup (see _backup_file_once).
+_FILE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _lock_for(path: str) -> asyncio.Lock:
+    lock = _FILE_LOCKS.get(path)
+    if lock is None:
+        lock = asyncio.Lock()
+        _FILE_LOCKS[path] = lock
+    return lock
+
+
+def _backup_file_sync(path: str, stamp: str) -> str | None:
+    """Copy a config file aside before the first rewrite of this apply run.
+    Returns the backup path, or None if the source doesn't exist yet."""
+    if not os.path.exists(path):
+        return None
+    backup_path = f"{path}.ha_soc-{stamp}.bak"
+    shutil.copy2(path, backup_path)
+    return backup_path
+
+
+async def _backup_file_once(
+    hass: HomeAssistant, path: str, stamp: str, backed_up: dict[str, str | None]
+) -> None:
+    """Back up ``path`` at most once per apply run (keyed in ``backed_up``)."""
+    if path in backed_up:
+        return
+    backed_up[path] = await hass.async_add_executor_job(_backup_file_sync, path, stamp)
 
 REFERENCE_KIND_AUTOMATION = "automation"
 REFERENCE_KIND_SCRIPT = "script"
@@ -245,11 +286,20 @@ def _ref_item(kind: str, entity: Any, entity_id: str, *, template_only: bool, kn
 
 
 async def _apply_yaml_list_fix(
-    hass: HomeAssistant, path: str, config_id: str, old_id: str, new_id: str, *, key_based: bool
+    hass: HomeAssistant,
+    path: str,
+    config_id: str,
+    old_id: str,
+    new_id: str,
+    *,
+    key_based: bool,
+    stamp: str,
+    backed_up: dict[str, str | None],
 ) -> int:
     """Shared apply path for automations.yaml/scenes.yaml (id-based list) and
     scripts.yaml (key-based dict). Mirrors config.view.BaseEditConfigView's
-    own read -> mutate -> atomic write sequence."""
+    own read -> mutate -> atomic write sequence, under a per-file lock and
+    behind a one-time backup."""
     from homeassistant.const import CONF_ID
     from homeassistant.util.file import write_utf8_file_atomic
 
@@ -262,39 +312,50 @@ async def _apply_yaml_list_fix(
     def _write(data: Any) -> None:
         write_utf8_file_atomic(path, yaml_dump(data))
 
-    data = await hass.async_add_executor_job(_read)
-    if not data:
-        return 0
+    async with _lock_for(path):
+        data = await hass.async_add_executor_job(_read)
+        if not data:
+            return 0
 
-    if key_based:
-        entry = data.get(config_id)
-    else:
-        entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
-    if entry is None:
-        # async_find_references already filters to ids confirmed present
-        # in this exact file, so this should be unreachable in normal
-        # operation — kept as a loud failure (not a silent 0) for the
-        # narrow race where the file changed between find and apply,
-        # rather than reporting a false "nothing to fix".
-        raise LookupError(f"{config_id!r} not found in {path}")
+        if key_based:
+            entry = data.get(config_id)
+        else:
+            entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
+        if entry is None:
+            # async_find_references already filters to ids confirmed present
+            # in this exact file, so this should be unreachable in normal
+            # operation — kept as a loud failure (not a silent 0) for the
+            # narrow race where the file changed between find and apply,
+            # rather than reporting a false "nothing to fix".
+            raise LookupError(f"{config_id!r} not found in {path}")
 
-    new_entry, count = _exact_replace(entry, old_id, new_id)
-    if count == 0:
-        return 0
+        new_entry, count = _exact_replace(entry, old_id, new_id)
+        if count == 0:
+            return 0
 
-    if key_based:
-        data[config_id] = new_entry
-    else:
-        for index, item in enumerate(data):
-            if item.get(CONF_ID) == config_id:
-                data[index] = new_entry
-                break
+        if key_based:
+            data[config_id] = new_entry
+        else:
+            for index, item in enumerate(data):
+                if item.get(CONF_ID) == config_id:
+                    data[index] = new_entry
+                    break
 
-    await hass.async_add_executor_job(_write, data)
-    return count
+        await _backup_file_once(hass, path, stamp, backed_up)
+        await hass.async_add_executor_job(_write, data)
+        return count
 
 
-async def _apply_scene_fix(hass: HomeAssistant, path: str, config_id: str, old_id: str, new_id: str) -> int:
+async def _apply_scene_fix(
+    hass: HomeAssistant,
+    path: str,
+    config_id: str,
+    old_id: str,
+    new_id: str,
+    *,
+    stamp: str,
+    backed_up: dict[str, str | None],
+) -> int:
     """Scenes are id-based like automations, but the entity_id lives as a
     DICT KEY under `entities:` (`{sensor.old: "on"}`), not a value — the
     generic exact-value walker can't rename a key, so this handles that
@@ -311,21 +372,32 @@ async def _apply_scene_fix(hass: HomeAssistant, path: str, config_id: str, old_i
     def _write(data: Any) -> None:
         write_utf8_file_atomic(path, yaml_dump(data))
 
-    data = await hass.async_add_executor_job(_read)
-    if not data:
-        return 0
+    async with _lock_for(path):
+        data = await hass.async_add_executor_job(_read)
+        if not data:
+            return 0
 
-    entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
-    if entry is None:
-        raise LookupError(f"{config_id!r} not found in {path}")
+        entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
+        if entry is None:
+            raise LookupError(f"{config_id!r} not found in {path}")
 
-    entities = entry.get("entities")
-    if not isinstance(entities, dict) or old_id not in entities:
-        return 0
+        entities = entry.get("entities")
+        if not isinstance(entities, dict) or old_id not in entities:
+            return 0
 
-    entities[new_id] = entities.pop(old_id)
-    await hass.async_add_executor_job(_write, data)
-    return 1
+        # Collision: the scene already configures state for new_id too.
+        # Silently overwriting new_id's existing state would be data loss,
+        # so refuse and let the caller surface it rather than clobbering.
+        if new_id in entities:
+            raise ValueError(
+                f"scene {config_id!r} already has state for {new_id!r}; "
+                "remapping would overwrite it"
+            )
+
+        entities[new_id] = entities.pop(old_id)
+        await _backup_file_once(hass, path, stamp, backed_up)
+        await hass.async_add_executor_job(_write, data)
+        return 1
 
 
 # -- Lovelace dashboards ("Views") -------------------------------------------
@@ -525,13 +597,34 @@ async def async_find_references(hass: HomeAssistant, entity_id: str) -> dict[str
     }
 
 
-async def async_apply_remap(hass: HomeAssistant, old_id: str, new_id: str) -> dict[str, Any]:
+async def async_apply_remap(
+    hass: HomeAssistant, old_id: str, new_id: str, *, backup_acknowledged: bool = False
+) -> dict[str, Any]:
     """Re-scans (never trusts a stale prior preview) and rewrites every
     editable reference found. Returns per-kind counts so the caller can
-    audit-log and the frontend can show exactly what changed."""
+    audit-log and the frontend can show exactly what changed.
+
+    This bulk-rewrites production automations, scripts, scenes, dashboards,
+    and helper config in one pass, so — matching the firewall feature's own
+    safety pattern — it refuses to run unless the caller has acknowledged
+    that a backup will be taken, and it copies each YAML config file aside
+    (``<file>.ha_soc-<timestamp>.bak``) before its first rewrite. A
+    server-side gate, not a client-only one.
+    """
+    if not backup_acknowledged:
+        return {
+            "old_entity_id": old_id,
+            "new_entity_id": new_id,
+            "fixed": {"automation": 0, "script": 0, "scene": 0, "dashboard": 0, "helper": 0},
+            "errors": [],
+            "error": "backup_not_acknowledged",
+        }
+
     report = await async_find_references(hass, old_id)
     fixed: dict[str, int] = {"automation": 0, "script": 0, "scene": 0, "dashboard": 0, "helper": 0}
     errors: list[str] = []
+    stamp = dt_util.utcnow().strftime("%Y%m%dT%H%M%S")
+    backed_up: dict[str, str | None] = {}
 
     for item in report["automation"]:
         if not item["editable"]:
@@ -540,7 +633,8 @@ async def async_apply_remap(hass: HomeAssistant, old_id: str, new_id: str) -> di
             from homeassistant.config import AUTOMATION_CONFIG_PATH
 
             count = await _apply_yaml_list_fix(
-                hass, hass.config.path(AUTOMATION_CONFIG_PATH), item["id"], old_id, new_id, key_based=False
+                hass, hass.config.path(AUTOMATION_CONFIG_PATH), item["id"], old_id, new_id,
+                key_based=False, stamp=stamp, backed_up=backed_up,
             )
             if count:
                 await hass.services.async_call("automation", "reload", {"id": item["id"]})
@@ -556,7 +650,8 @@ async def async_apply_remap(hass: HomeAssistant, old_id: str, new_id: str) -> di
             from homeassistant.config import SCRIPT_CONFIG_PATH
 
             count = await _apply_yaml_list_fix(
-                hass, hass.config.path(SCRIPT_CONFIG_PATH), item["id"], old_id, new_id, key_based=True
+                hass, hass.config.path(SCRIPT_CONFIG_PATH), item["id"], old_id, new_id,
+                key_based=True, stamp=stamp, backed_up=backed_up,
             )
             if count:
                 await hass.services.async_call("script", "reload")
@@ -571,7 +666,10 @@ async def async_apply_remap(hass: HomeAssistant, old_id: str, new_id: str) -> di
         try:
             from homeassistant.config import SCENE_CONFIG_PATH
 
-            count = await _apply_scene_fix(hass, hass.config.path(SCENE_CONFIG_PATH), item["id"], old_id, new_id)
+            count = await _apply_scene_fix(
+                hass, hass.config.path(SCENE_CONFIG_PATH), item["id"], old_id, new_id,
+                stamp=stamp, backed_up=backed_up,
+            )
             if count:
                 await hass.services.async_call("scene", "reload")
                 fixed["scene"] += 1

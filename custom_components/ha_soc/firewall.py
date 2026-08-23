@@ -39,6 +39,7 @@ happened.
 from __future__ import annotations
 
 from datetime import timedelta
+import ipaddress
 import logging
 from typing import Any
 from uuid import uuid4
@@ -63,6 +64,26 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAX_HISTORY = 50
 
+def _valid_source(value: Any) -> Any:
+    """None/empty = any source. Otherwise it must be a real IP address or
+    CIDR network — validated here (not just as a free string) so a typo
+    like a missing prefix length can't sail through to the add-on, where a
+    malformed `iptables -s` argument would silently fail to apply and leave
+    the operator believing a restrictive rule is live when it never was.
+    """
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise vol.Invalid("source must be an IP address or CIDR string")
+    try:
+        # strict=False allows host bits set (e.g. 192.168.1.5/24), which
+        # iptables itself accepts and normalizes.
+        ipaddress.ip_network(value, strict=False)
+    except ValueError as err:
+        raise vol.Invalid(f"invalid source (not an IP/CIDR): {value!r}") from err
+    return value
+
+
 RULE_SCHEMA = vol.Schema(
     {
         vol.Required("action"): vol.In(FIREWALL_RULE_ACTIONS),
@@ -70,8 +91,9 @@ RULE_SCHEMA = vol.Schema(
         vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         # None/omitted = applies to traffic from any source. Set to scope
         # a rule to one VLAN/subnet — the natural pairing with the Host
-        # Probe's per-interface bind-address visibility.
-        vol.Optional("source"): vol.Any(None, str),
+        # Probe's per-interface bind-address visibility. Validated as a real
+        # IP/CIDR, not just any string (see _valid_source).
+        vol.Optional("source"): _valid_source,
     }
 )
 
@@ -80,6 +102,50 @@ RULES_SCHEMA = vol.All([RULE_SCHEMA], vol.Length(max=200))
 
 def _iso_now() -> str:
     return dt_util.utcnow().isoformat()
+
+
+def async_verify_or_pin_secret(store: HaSocData, presented: str | None) -> bool:
+    """Trust-on-first-use authentication for the add-on's inbound calls.
+
+    The add-on generates a random secret once, persists it in its own /data,
+    and sends it on every ingest/poll call. Core pins the first non-empty
+    secret it sees, then requires an exact match forever after — so once the
+    real add-on has reported once (seconds after install, and it reuses the
+    same secret across restarts), a forged service call from any other
+    integration/automation on the instance is rejected because it can't
+    produce the secret.
+
+    Returns True if the call is trusted (matches, or pins a fresh secret),
+    False if it should be rejected. A False return is a real signal worth
+    surfacing — either a misconfiguration or an active forgery attempt.
+
+    Known limitation: an attacker who can call the service in the narrow
+    window before the real add-on ever reports could pin their own secret
+    (a first-boot race / denial-of-service). Recover with the owner-only
+    reset (async_reset_addon_secret), which re-opens pinning. This is a
+    large improvement over the previous state (no authentication at all)
+    without a new listening socket or cross-container provisioning channel.
+    """
+    fw = store.data["firewall"]
+    pinned = fw.get("addon_secret")
+    presented = presented or None
+    if pinned is None:
+        if presented is None:
+            # Nothing pinned yet and no secret offered — accept (an older
+            # add-on build, or the very first call), but don't pin an empty.
+            return True
+        fw["addon_secret"] = presented
+        store.async_schedule_save()
+        _LOGGER.info("HA SOC firewall: pinned the add-on's probe secret (trust-on-first-use).")
+        return True
+    return bool(presented) and presented == pinned
+
+
+def async_reset_addon_secret(store: HaSocData) -> None:
+    """Clear the pinned secret so the next non-empty one re-pins. Owner-only
+    recovery for a lost/rotated add-on secret or a bad first-boot pin."""
+    store.data["firewall"]["addon_secret"] = None
+    store.async_schedule_save()
 
 
 async def async_get_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:

@@ -43,7 +43,12 @@ from .const import (
     SERVICE_INGEST_PROBE_RESULT,
     SERVICE_POLL_FIREWALL_COMMAND,
 )
-from .firewall import RULE_SCHEMA, async_next_addon_command, async_report_from_addon
+from .firewall import (
+    RULE_SCHEMA,
+    async_next_addon_command,
+    async_report_from_addon,
+    async_verify_or_pin_secret,
+)
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -88,10 +93,18 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
         vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
         vol.Optional("firewall_resolved_status"): vol.Any(None, str),
+        # Trust-on-first-use secret proving this call really came from the
+        # add-on and not a forged local service call (see firewall.py).
+        vol.Optional("probe_secret"): vol.Any(None, str),
     }
 )
 
-POLL_FIREWALL_SERVICE_SCHEMA = vol.Schema({vol.Optional("current_test_id"): vol.Any(None, str)})
+POLL_FIREWALL_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("current_test_id"): vol.Any(None, str),
+        vol.Optional("probe_secret"): vol.Any(None, str),
+    }
+)
 
 
 def _addon_info(hass: HomeAssistant) -> dict[str, Any] | None:
@@ -151,6 +164,16 @@ def async_register_probe_service(hass: HomeAssistant, store: HaSocData) -> None:
     """
 
     async def _handle_ingest(call: ServiceCall) -> None:
+        # Reject a call that can't prove it came from the add-on — anyone
+        # who can make a service call could otherwise forge a report. On
+        # failure, process NOTHING (not even open_ports): a bad secret means
+        # an untrusted caller, full stop.
+        if not async_verify_or_pin_secret(store, call.data.get("probe_secret")):
+            _LOGGER.warning(
+                "HA SOC: rejected an ingest_probe_result call with a bad/missing "
+                "probe secret — possible forged report, ignoring it."
+            )
+            return
         if call.data.get("open_ports") is not None:
             store.async_set_host_probe_result(
                 {
@@ -168,6 +191,12 @@ def async_register_probe_service(hass: HomeAssistant, store: HaSocData) -> None:
         )
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
+        if not async_verify_or_pin_secret(store, call.data.get("probe_secret")):
+            _LOGGER.warning(
+                "HA SOC: rejected a poll_firewall_command call with a bad/missing "
+                "probe secret — possible forged poll, returning no work."
+            )
+            return {"action": "none"}
         return await async_next_addon_command(
             hass, store, current_test_id=call.data.get("current_test_id")
         )

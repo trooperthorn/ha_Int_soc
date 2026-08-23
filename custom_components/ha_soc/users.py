@@ -174,18 +174,29 @@ class UsersManager:
         self.hass.auth.async_remove_refresh_token(token)
         return True
 
-    async def async_revoke_all_sessions(self, user_id: str) -> int:
+    async def async_revoke_all_sessions(self, user_id: str) -> dict[str, int]:
+        """Revoke this user's sessions AND long-lived access tokens.
+
+        Used as an incident-response "lock this account out now" action, so
+        it must not quietly leave a compromised account's persistent API
+        tokens standing — long-lived access tokens are included here, unlike
+        an earlier version that skipped them. Returns a per-type breakdown so
+        the UI can state exactly what was revoked rather than implying a
+        clean sweep it didn't perform.
+        """
         user = await self.hass.auth.async_get_user(user_id)
         if user is None:
-            return 0
+            return {"sessions": 0, "long_lived_tokens": 0}
 
-        revoked = 0
+        sessions = 0
+        long_lived = 0
         for token in list(user.refresh_tokens.values()):
             if token.token_type == TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN:
-                continue
+                long_lived += 1
+            else:
+                sessions += 1
             self.hass.auth.async_remove_refresh_token(token)
-            revoked += 1
-        return revoked
+        return {"sessions": sessions, "long_lived_tokens": long_lived}
 
     async def async_create_user(
         self,
@@ -225,13 +236,25 @@ class UsersManager:
             return (False, "cannot_deactivate_owner")
         return (True, None)
 
-    async def async_delete_user(self, user_id: str) -> bool:
+    async def async_delete_user(
+        self, user_id: str, *, requesting_user_id: str | None = None
+    ) -> tuple[bool, str | None]:
         user = await self.hass.auth.async_get_user(user_id)
         if user is None:
-            return False
+            return (False, "user_not_found")
+
+        # Guard the owner and self-deletion, matching the protection already
+        # applied to deactivate/set_password. Core's async_remove_user does
+        # NOT block removing the owner (verified), which would leave the
+        # instance with no owner at all — the account this whole tool exists
+        # to protect, erased through the tool itself.
+        if user.is_owner:
+            return (False, "cannot_delete_owner")
+        if requesting_user_id is not None and user.id == requesting_user_id:
+            return (False, "cannot_delete_self")
 
         await self.hass.auth.async_remove_user(user)
-        return True
+        return (True, None)
 
     async def async_set_password(
         self, user_id: str, new_password: str, *, requesting_user_is_owner: bool
