@@ -1,0 +1,46 @@
+# Turns every pushed version tag into a GitHub Release that HACS installs
+# from. Guards that the tag and the integration manifest version agree, so
+# the two can never drift apart again (the drift is what caused HACS to
+# quote a version that matched no release and fail with an unresolved
+# domain). Uses the preinstalled `gh` CLI + the built-in GITHUB_TOKEN — no
+# third-party actions in the release path.
+name: Release
+
+on:
+  push:
+    tags:
+      # YYYY.MM.DD.N (the project's calendar scheme), with or without a
+      # leading v for older tags.
+      - "[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
+      - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout is GitHub's own action; pin to a digest in a
+      # hardened setup (see the add-on Dockerfile for the same note).
+      - uses: actions/checkout@v4
+
+      - name: Verify the tag matches the manifest version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          MANIFEST=$(python3 -c "import json;print(json.load(open('custom_components/ha_soc/manifest.json'))['version'])")
+          echo "tag=$TAG  manifest=$MANIFEST"
+          if [ "$TAG" != "$MANIFEST" ]; then
+            echo "::error::Tag ($TAG) != manifest version ($MANIFEST). Use scripts/release.sh so they always match."
+            exit 1
+          fi
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --generate-notes \
+            --verify-tag

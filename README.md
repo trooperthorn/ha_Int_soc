@@ -147,6 +147,36 @@ development." The current version is shown at the bottom of the panel on
 every tab, and in HACS/Settings → Devices & Services → HA SOC the way any
 integration's version is.
 
+### Cutting a release (and why HACS needs one)
+
+HACS installs an integration from a **GitHub Release**, whose tag points at
+a commit whose tree must contain `custom_components/ha_soc/manifest.json`
+with a matching `version`. Releasing by hand is where things drift — the
+manifest version, the add-on version, and the tags fall out of sync, and
+HACS then quotes a version that matches no release (surfacing as
+`custom_components/None/manifest.json`, an unresolved domain).
+
+One command keeps them in lockstep:
+
+```bash
+scripts/release.sh              # auto: today's date, next same-day revision
+scripts/release.sh 2026.08.24.1 # or an explicit YYYY.MM.DD.N
+```
+
+It bumps the integration manifest, the add-on `config.yaml`, and the
+add-on's `SCANNER_VERSION` together, runs the test suite, commits, and
+pushes a tag **named exactly the version** (no `v`). Pushing that tag runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which
+creates the GitHub Release HACS installs from — after first asserting the
+tag equals the manifest version, so they can never disagree again.
+[`.github/workflows/validate.yml`](.github/workflows/validate.yml) runs the
+HACS validator on every push, catching a manifest/`hacs.json` problem
+before it can ship.
+
+First install after this lands: in HACS remove and re-add the HA SOC
+repository once, to clear any stale cached record. A private repo also
+needs HACS authenticated with a GitHub account that can read it.
+
 ## Development
 
 ```bash

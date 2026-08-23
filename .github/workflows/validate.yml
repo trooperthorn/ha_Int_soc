@@ -1,0 +1,32 @@
+# Catches the class of problem that broke HACS install (a manifest/hacs.json
+# HACS can't parse, a missing required key, a bad domain) BEFORE a release
+# is cut — the HACS validation action checks exactly what HACS itself needs
+# to install this repository.
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1" # weekly, catches drift from HACS requirement changes
+
+jobs:
+  hacs:
+    name: HACS validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # hacs/action is the canonical HACS validator; it tracks HACS's own
+      # requirements, so @main is the standard ref here (pin to a SHA to
+      # freeze it in a hardened setup).
+      - uses: hacs/action@main
+        with:
+          category: integration
+
+  hassfest:
+    name: hassfest (manifest sanity)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: home-assistant/actions/hassfest@master
