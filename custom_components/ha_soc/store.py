@@ -96,6 +96,10 @@ class StoreData(TypedDict):
     # in-flight test (None once resolved); history is a capped log of past
     # applies for the Audit Log-adjacent record of who changed what.
     firewall: dict[str, Any]
+    # Integration Security (provenance). "github" caches per-repo
+    # GitHub-derived signals keyed by "owner/repo" (see github_provenance.py);
+    # refreshed_at is the last time the cache was refreshed.
+    integration_security: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -135,6 +139,7 @@ def default_store_data() -> StoreData:
             # firewall.async_verify_or_pin_secret.
             "addon_secret": None,
         },
+        integration_security={"github": {}, "refreshed_at": None},
     )
 
 

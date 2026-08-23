@@ -163,6 +163,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_confirm,
         ws_firewall_cancel,
         ws_firewall_reset_pairing,
+        ws_integration_security_list,
+        ws_integration_security_refresh,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -1151,6 +1153,42 @@ async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None
         detail={"action": "firewall_test_cancelled", "test_id": msg["test_id"]},
     )
     connection.send_result(msg["id"], {"ok": True})
+
+
+# ----------------------------------------------------------------------------
+# Integration Security — provenance (NOT safety) view of every installed
+# integration. See integration_security.py's docstring for the rule that
+# governs it: nothing here proves code is safe to run.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/integration_security/list"})
+@websocket_api.async_response
+async def ws_integration_security_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .integration_security import async_integration_security_overview
+
+    runtime = _runtime(hass)
+    overview = await async_integration_security_overview(hass, runtime.store)
+    overview["refreshed_at"] = runtime.store.data.get("integration_security", {}).get("refreshed_at")
+    connection.send_result(msg["id"], overview)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/integration_security/refresh"})
+@websocket_api.async_response
+async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Refresh the GitHub-derived signals. Needs the owner-set github_token;
+    returns a clear no-op reason when it's absent rather than erroring."""
+    from .github_provenance import async_refresh_github_signals
+    from .integration_security import async_integration_security_overview
+
+    runtime = _runtime(hass)
+    # Discover the repo URLs to look up from the current local overview.
+    overview = await async_integration_security_overview(hass, runtime.store)
+    repo_urls = [r["repo_url"] for r in overview["integrations"] if r.get("repo_url")]
+    result = await async_refresh_github_signals(hass, runtime.store, repo_urls)
+    connection.send_result(msg["id"], result)
 
 
 # ----------------------------------------------------------------------------

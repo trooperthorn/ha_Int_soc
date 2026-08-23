@@ -257,6 +257,41 @@ realistic `/proc/net/tcp` fixture — but unlike the integration itself
 it has not yet been built and run against a real Supervisor. See
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
 
+## Integration Security (provenance)
+
+The Integration Security tab scores where each installed integration's code
+*came from* — it is a **provenance** signal, not a safety verdict. Home
+Assistant runs integrations in-process with no sandbox, so nothing here
+proves any integration is safe to run; a high-provenance integration can do
+anything a low-provenance one can. Every surface says so, and the tab never
+renders "Safe"/"Verified"/"Trusted" or a bare shield.
+
+Each installed integration is classified into a **tier** — Core (ships in
+HA, hassfest-validated), HACS-managed, or unmanaged Custom — and shown with
+signals gathered two ways:
+
+- **Local, always available** (no network, no privilege): tier, the
+  manifest's `quality_scale`/`integration_type`, whether a license file is
+  present, and any findings from this project's own integration scanner.
+  Where HACS is installed and its per-repo source is introspectable, the
+  two lowest-provenance HACS origins — a custom repository or a custom
+  source-list — are flagged (default-store HACS content is not).
+- **GitHub-derived, optional**: release-vs-branch, commit-signing/identity
+  assurance, maintenance recency, popularity, and archived status. These
+  need an outbound GitHub call and an optional token (set in the owner-only
+  Settings tab, which also raises GitHub's rate limit from 60 to 5,000
+  requests/hour). Without a token every GitHub signal is honestly shown as
+  "not collected" — never guessed.
+
+All HA SOC settings, including that token, live in the **Settings tab,
+which is available to the account owner only** — a non-owner admin sees it
+disabled. The native "Configure" dialog edits nothing (it can't identify
+the requesting user, so it can't enforce owner-only), pointing to the panel
+instead.
+
+See [`custom_components/ha_soc/integration_security.py`](custom_components/ha_soc/integration_security.py)
+and [`github_provenance.py`](custom_components/ha_soc/github_provenance.py).
+
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a

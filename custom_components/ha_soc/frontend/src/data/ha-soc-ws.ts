@@ -244,12 +244,58 @@ export interface HaSocSettings {
   audit_max_bytes: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
+  // Secret fields come back masked ("[redacted]" when set, "" when unset);
+  // the companion *_set booleans say whether one is configured. Send a new
+  // value to change it; send nothing (or the placeholder) to leave it.
   nvd_api_key: string | null;
+  nvd_api_key_set?: boolean;
+  github_token?: string | null;
+  github_token_set?: boolean;
   risk_learning_period_days: number;
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
   security_sources_enabled: Record<string, boolean>;
+}
+
+// Mirrors integration_security.py's async_integration_security_overview().
+// PROVENANCE, not safety — the view must never imply "safe to run".
+export type IntegrationTier = "core" | "hacs" | "custom";
+
+export interface IntegrationGithubSignals {
+  stars: number | null;
+  forks: number | null;
+  archived: boolean;
+  pushed_at: string | null;
+  commit_verified: boolean | null;
+  has_release: boolean | null;
+  latest_release_tag: string | null;
+  collected_at: string;
+  error?: string;
+}
+
+export interface IntegrationSecurityRow {
+  domain: string;
+  name: string;
+  tier: IntegrationTier;
+  is_custom: boolean;
+  quality_scale: string | null;
+  integration_type: string | null;
+  version: string | null;
+  license_present: boolean | null;
+  repo_url: string | null;
+  flags: string[];
+  scanner_findings: number;
+  github: IntegrationGithubSignals | null;
+}
+
+export interface IntegrationSecurityOverview {
+  github_configured: boolean;
+  hacs_installed: boolean;
+  hacs_source_introspectable: boolean;
+  tier_counts: Record<IntegrationTier, number>;
+  integrations: IntegrationSecurityRow[];
+  refreshed_at: string | null;
 }
 
 // Mirrors security_health.py's async_security_overview().
@@ -544,6 +590,14 @@ export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
 
 export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
+
+export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
+  ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
+
+export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
+  ws<{ ok: boolean; reason?: string; refreshed?: number; skipped?: number }>(hass, {
+    type: "ha_soc/integration_security/refresh",
+  });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

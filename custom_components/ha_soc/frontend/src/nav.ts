@@ -10,6 +10,7 @@ export type SocTab =
   | "logs"
   | "peripherals"
   | "entity_remap"
+  | "integration_security"
   | "settings";
 
 export const HA_SOC_NAVIGATE = "ha-soc-navigate";

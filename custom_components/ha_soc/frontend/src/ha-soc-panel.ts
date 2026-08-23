@@ -12,20 +12,26 @@ import "./views/dashboard-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
 import "./views/entity-remap-view";
+import "./views/integration-security-view";
 import "./views/settings-view";
 
 type TabId = SocTab;
 
-const TABS: { id: TabId; label: string }[] = [
+// ownerOnly tabs render disabled (with an "only available to owner"
+// tooltip) for a non-owner admin — matching the owner-only WS gate on
+// their commands, so a non-owner never lands on a tab that would just
+// error underneath.
+const TABS: { id: TabId; label: string; ownerOnly?: boolean }[] = [
   { id: "dashboard", label: "Dashboard" },
   { id: "entity_remap", label: "Entity ReMap" },
+  { id: "integration_security", label: "Integration Security" },
   { id: "users", label: "Users & Access" },
   { id: "permissions", label: "Permissions" },
   { id: "audit", label: "Audit Log" },
   { id: "peripherals", label: "Local Peripherals" },
   { id: "scanner", label: "Scanner" },
   { id: "logs", label: "Logs" },
-  { id: "settings", label: "Settings" },
+  { id: "settings", label: "Settings", ownerOnly: true },
 ];
 
 @customElement("ha-soc-panel")
@@ -56,6 +62,15 @@ export class HaSocPanel extends LitElement {
     .tab.active {
       color: var(--primary-color);
       border-bottom-color: var(--primary-color);
+    }
+    .tab.disabled {
+      color: var(--disabled-text-color, #b0b0b0);
+      cursor: not-allowed;
+    }
+    .tab.disabled .lock {
+      font-size: 11px;
+      margin-left: 4px;
+      opacity: 0.8;
     }
     .header {
       display: flex;
@@ -171,13 +186,21 @@ export class HaSocPanel extends LitElement {
     return html`
       <div class="header">🛡️ HA SOC</div>
       <div class="tabs">
-        ${TABS.map(
-          (t) => html`
+        ${TABS.map((t) => {
+          const locked = !!t.ownerOnly && !this._access?.is_owner;
+          if (locked) {
+            return html`
+              <div class="tab disabled" title="Only available to the account owner">
+                ${t.label}<span class="lock">🔒</span>
+              </div>
+            `;
+          }
+          return html`
             <div class="tab ${this._tab === t.id ? "active" : ""}" @click=${() => (this._tab = t.id)}>
               ${t.label}
             </div>
-          `
-        )}
+          `;
+        })}
       </div>
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
       ${this._renderFooter()}
@@ -204,7 +227,15 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
       case "entity_remap":
         return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
+      case "integration_security":
+        return html`<ha-soc-integration-security-view .hass=${this.hass}></ha-soc-integration-security-view>`;
       case "settings":
+        // Defense in depth: even if a non-owner reached this tab, the
+        // owner-only WS commands would reject them — so never render it.
+        if (!this._access?.is_owner) {
+          return html`<div class="denied"><div class="icon">🔒</div><h2>Owner only</h2>
+            <p>The Settings tab is available to the account owner only.</p></div>`;
+        }
         return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":
       default:
