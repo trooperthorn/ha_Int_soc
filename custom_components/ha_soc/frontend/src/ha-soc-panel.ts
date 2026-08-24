@@ -9,6 +9,7 @@ import "./views/audit-view";
 import "./views/permissions-view";
 import "./views/scanner-view";
 import "./views/dashboard-view";
+import "./views/network-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
 import "./views/entity-remap-view";
@@ -23,6 +24,7 @@ type TabId = SocTab;
 // error underneath.
 const TABS: { id: TabId; label: string; ownerOnly?: boolean }[] = [
   { id: "dashboard", label: "Dashboard" },
+  { id: "network", label: "Network" },
   { id: "entity_remap", label: "Entity ReMap" },
   { id: "integration_security", label: "Integration Security" },
   { id: "users", label: "Users & Access" },
@@ -225,6 +227,8 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;
       case "peripherals":
         return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
+      case "network":
+        return html`<ha-soc-network-view .hass=${this.hass}></ha-soc-network-view>`;
       case "entity_remap":
         return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
       case "integration_security":

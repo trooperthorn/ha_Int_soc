@@ -256,6 +256,16 @@ export interface HaSocSettings {
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
   security_sources_enabled: Record<string, boolean>;
+  // UniFi Network / Protect connections. Hosts + verify_ssl round-trip
+  // plainly; the two API keys are secrets (masked like nvd/github above).
+  unifi_network_host: string | null;
+  unifi_network_api_key?: string | null;
+  unifi_network_api_key_set?: boolean;
+  unifi_network_verify_ssl: boolean;
+  unifi_protect_host: string | null;
+  unifi_protect_api_key?: string | null;
+  unifi_protect_api_key_set?: boolean;
+  unifi_protect_verify_ssl: boolean;
 }
 
 // Mirrors integration_security.py's async_integration_security_overview().
@@ -296,6 +306,79 @@ export interface IntegrationSecurityOverview {
   tier_counts: Record<IntegrationTier, number>;
   integrations: IntegrationSecurityRow[];
   refreshed_at: string | null;
+}
+
+// Mirrors unifi.py's normalized contract. Every per-row field is nullable
+// on purpose: the exact UniFi field names could not be verified against a
+// live controller, so anything the console doesn't return comes through as
+// null and renders "—" rather than a guessed value. See unifi.py's docstring.
+export interface UniFiIntegrationMatch {
+  domain: string;
+  title: string;
+  entry_id: string;
+  state: string;
+  healthy: boolean;
+  failing: boolean;
+}
+
+export interface UniFiBandwidth {
+  rx_bytes: number;
+  tx_bytes: number;
+  total_bytes: number;
+}
+
+export interface NetworkClientRow {
+  name: string;
+  ipv4: string | null;
+  ipv6: string | null;
+  mac: string | null;
+  vlan: number | string | null;
+  ssid: string | null;
+  wired: boolean;
+  uptime: number | null; // seconds
+  bandwidth: UniFiBandwidth | null;
+  last_seen: number | null; // epoch seconds
+  integration_match: UniFiIntegrationMatch | null;
+}
+
+export interface NetworkDeviceRow extends NetworkClientRow {
+  model: string | null;
+  state: string | null;
+}
+
+export interface NetworkWan {
+  port: string | null;
+  up: boolean | null;
+  rx_rate_bps: number | null;
+  tx_rate_bps: number | null;
+  ip: string | null;
+}
+
+export interface ProtectStatus {
+  configured: boolean;
+  reachable: boolean;
+  error: string | null;
+  camera_count: number;
+  cameras_online: number;
+}
+
+export interface NetworkOverview {
+  configured: boolean;
+  reachable: boolean;
+  error: string | null;
+  site_id: string | null;
+  status: string;
+  internet_connected: boolean | null;
+  wan: NetworkWan;
+  wireless_client_count: number;
+  wired_client_count: number;
+  total_client_count: number;
+  clients_per_ssid: { ssid: string; count: number }[];
+  clients: NetworkClientRow[];
+  devices: NetworkDeviceRow[];
+  failing_endpoint_count: number;
+  generated_at: string;
+  protect: ProtectStatus;
 }
 
 // Mirrors security_health.py's async_security_overview().
@@ -622,6 +705,9 @@ export const fetchBrokenEntityReferences = (hass: HomeAssistant) =>
 
 export const fetchSecurityHealth = (hass: HomeAssistant) =>
   ws<SecurityOverview>(hass, { type: "ha_soc/security_health/list" });
+
+export const fetchNetworkOverview = (hass: HomeAssistant) =>
+  ws<NetworkOverview>(hass, { type: "ha_soc/network/overview" });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

@@ -26,6 +26,7 @@ from .const import (
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
     DEFAULT_SECURITY_SOURCES_ENABLED,
+    DEFAULT_UNIFI_VERIFY_SSL,
     STORAGE_KEY,
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION_MAJOR,
@@ -52,6 +53,16 @@ class SettingsData(TypedDict):
     # not opt-in), so a future addition to the known set doesn't silently
     # start dark for an existing install.
     security_sources_enabled: dict[str, bool]
+    # UniFi Network / Protect direct-to-console connections (Network tab).
+    # Host + local API key + SSL-verify per app; the two API keys are
+    # secrets (see const.SECRET_SETTING_KEYS) — never returned raw, never
+    # logged. Empty host means "not configured".
+    unifi_network_host: str | None
+    unifi_network_api_key: str | None
+    unifi_network_verify_ssl: bool
+    unifi_protect_host: str | None
+    unifi_protect_api_key: str | None
+    unifi_protect_verify_ssl: bool
 
 
 class StoreData(TypedDict):
@@ -116,6 +127,12 @@ def default_store_data() -> StoreData:
             mfa_policy=DEFAULT_MFA_POLICY,
             mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
             security_sources_enabled=dict(DEFAULT_SECURITY_SOURCES_ENABLED),
+            unifi_network_host=None,
+            unifi_network_api_key=None,
+            unifi_network_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
+            unifi_protect_host=None,
+            unifi_protect_api_key=None,
+            unifi_protect_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
         ),
         permissions_matrix={},
         vuln_findings={},
