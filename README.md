@@ -330,6 +330,20 @@ instead.
 See [`custom_components/ha_soc/integration_security.py`](custom_components/ha_soc/integration_security.py)
 and [`github_provenance.py`](custom_components/ha_soc/github_provenance.py).
 
+### Container Resource Usage
+
+The same tab also shows **live per-container CPU and memory** — every add-on
+plus Home Assistant Core and the Supervisor — for spotting the container
+that's crashing or starving the host. Each row shows CPU %, memory % with
+used/limit, network, and disk IO; a container near its **memory limit** (the
+OOM-kill precursor) or pinning CPU is flagged and sorted to the top, and a
+stopped add-on is flagged `not running`. Stats are fetched on demand from
+the Supervisor (`get_supervisor_client`), not the hassio integration's cache
+(which is empty unless the per-add-on stats sensors are enabled). This needs
+a Supervisor-based install (HA OS / Supervised); on a Container/Core install
+the section says so rather than erroring. See
+[`custom_components/ha_soc/containers.py`](custom_components/ha_soc/containers.py).
+
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a

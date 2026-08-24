@@ -308,6 +308,34 @@ export interface IntegrationSecurityOverview {
   refreshed_at: string | null;
 }
 
+// Mirrors containers.py's async_container_resources(). Per-container live
+// CPU/memory (add-ons + Core + Supervisor) for spotting a crashing/starving
+// container. Stat fields are null when the Supervisor doesn't report them.
+export interface ContainerResource {
+  slug: string;
+  name: string;
+  kind: "addon" | "core" | "supervisor";
+  state: string | null;
+  version: string | null;
+  update_available: boolean;
+  cpu_percent: number | null;
+  memory_usage: number | null; // bytes
+  memory_limit: number | null; // bytes
+  memory_percent: number | null;
+  network_rx: number | null;
+  network_tx: number | null;
+  blk_read: number | null;
+  blk_write: number | null;
+  flags: string[];
+}
+
+export interface ContainerResourceOverview {
+  available: boolean;
+  reason: string | null;
+  containers: ContainerResource[];
+  generated_at: string;
+}
+
 // Mirrors unifi.py's normalized contract. Every per-row field is nullable
 // on purpose: the exact UniFi field names could not be verified against a
 // live controller, so anything the console doesn't return comes through as
@@ -742,6 +770,9 @@ export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
   ws<{ ok: boolean; reason?: string; refreshed?: number; skipped?: number }>(hass, {
     type: "ha_soc/integration_security/refresh",
   });
+
+export const fetchContainerResources = (hass: HomeAssistant) =>
+  ws<ContainerResourceOverview>(hass, { type: "ha_soc/containers/resources" });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

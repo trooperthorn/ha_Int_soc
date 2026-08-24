@@ -6,8 +6,11 @@ import {
   IntegrationSecurityOverview,
   IntegrationSecurityRow,
   IntegrationTier,
+  ContainerResourceOverview,
+  ContainerResource,
   fetchIntegrationSecurity,
   refreshIntegrationSecurity,
+  fetchContainerResources,
 } from "../data/ha-soc-ws";
 
 const TIER_LABEL: Record<IntegrationTier, string> = {
@@ -41,10 +44,13 @@ export class HaSocIntegrationSecurityView extends LitElement {
   @state() private _search = "";
   @state() private _tierFilter = "all";
   @state() private _limit = PAGE_SIZE;
+  @state() private _containers: ContainerResourceOverview | null = null;
+  @state() private _containersLoading = true;
 
   connectedCallback(): void {
     super.connectedCallback();
     this._load();
+    this._loadContainers();
   }
 
   private async _load() {
@@ -53,6 +59,17 @@ export class HaSocIntegrationSecurityView extends LitElement {
       this._overview = await fetchIntegrationSecurity(this.hass);
     } finally {
       this._loading = false;
+    }
+  }
+
+  private async _loadContainers() {
+    this._containersLoading = true;
+    try {
+      this._containers = await fetchContainerResources(this.hass);
+    } catch {
+      this._containers = null;
+    } finally {
+      this._containersLoading = false;
     }
   }
 
@@ -130,6 +147,8 @@ export class HaSocIntegrationSecurityView extends LitElement {
           : nothing}
       </div>
 
+      ${this._renderContainers()}
+
       <div class="card">
         <div class="toolbar">
           <input
@@ -198,6 +217,123 @@ export class HaSocIntegrationSecurityView extends LitElement {
 
   private _notCollected() {
     return html`<span class="muted" title="No GitHub token, or no repo URL discovered">—</span>`;
+  }
+
+  private _fmtBytes(n: number | null): string {
+    if (n == null) return "—";
+    if (n < 1024) return `${n} B`;
+    const units = ["KB", "MB", "GB", "TB"];
+    let v = n / 1024;
+    let i = 0;
+    while (v >= 1024 && i < units.length - 1) {
+      v /= 1024;
+      i++;
+    }
+    return `${v.toFixed(v >= 100 ? 0 : 1)} ${units[i]}`;
+  }
+
+  private _pctCell(pct: number | null, flagged: boolean) {
+    if (pct == null) return html`<span class="muted">—</span>`;
+    const color = flagged ? "var(--status-critical)" : pct >= 60 ? "var(--status-warning)" : "inherit";
+    return html`<span style="font-weight:600;color:${color};font-variant-numeric:tabular-nums;"
+      >${pct.toFixed(1)}%</span
+    >`;
+  }
+
+  private _renderContainers() {
+    const c = this._containers;
+    return html`
+      <div class="card">
+        <div class="toolbar">
+          <h3 style="margin:0;flex:1;">Container Resource Usage</h3>
+          <button class="ha-btn" ?disabled=${this._containersLoading} @click=${() => this._loadContainers()}>
+            ${this._containersLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+        <p class="muted" style="margin-top:-4px;font-size:12.5px;">
+          Live per-container CPU and memory for every add-on plus Home Assistant Core and
+          the Supervisor. A container sitting near its <strong>memory limit</strong> (or
+          pinning CPU) is the usual signal for the one that's OOM-killing / restart-looping
+          and dragging the host down — those float to the top and are flagged.
+        </p>
+        ${this._containersLoading && !c
+          ? html`<div class="empty">Loading container stats…</div>`
+          : !c || !c.available
+            ? html`<div class="empty">
+                ${c?.reason === "not_supervisor"
+                  ? "Per-container stats need a Supervisor-based install (Home Assistant OS or Supervised). This install doesn't run under Supervisor, so there are no add-on containers to measure."
+                  : "Container stats aren't available right now."}
+              </div>`
+            : !c.containers.length
+              ? html`<div class="empty">No containers reported.</div>`
+              : html`
+                  <div style="overflow-x:auto;">
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Container</th>
+                          <th>State</th>
+                          <th class="num">CPU</th>
+                          <th class="num">Memory</th>
+                          <th>Used / Limit</th>
+                          <th>Net ↓/↑</th>
+                          <th>Disk R/W</th>
+                          <th>Flags</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${c.containers.map((row) => this._renderContainerRow(row))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <p class="muted" style="font-size:11.5px;margin-top:8px;">
+                    Updated ${new Date(c.generated_at).toLocaleTimeString()}. CPU/memory are
+                    an instantaneous sample — click Refresh to re-poll.
+                  </p>
+                `}
+      </div>
+    `;
+  }
+
+  private _renderContainerRow(r: ContainerResource) {
+    const highMem = r.flags.includes("high_memory");
+    const highCpu = r.flags.includes("high_cpu");
+    const kindLabel = r.kind === "addon" ? "Add-on" : r.kind === "core" ? "Core" : "Supervisor";
+    return html`
+      <tr>
+        <td>
+          <div style="font-weight:600;">${r.name}</div>
+          <div class="muted" style="font-size:11.5px;">${kindLabel}${r.slug ? ` · ${r.slug}` : ""}</div>
+        </td>
+        <td>
+          ${r.state === "started" || r.kind !== "addon"
+            ? html`<span class="muted">running</span>`
+            : html`<span class="pill high"><span class="dot"></span>${r.state ?? "stopped"}</span>`}
+        </td>
+        <td class="num">${this._pctCell(r.cpu_percent, highCpu)}</td>
+        <td class="num">${this._pctCell(r.memory_percent, highMem)}</td>
+        <td class="muted" style="font-size:12px;">
+          ${this._fmtBytes(r.memory_usage)} / ${this._fmtBytes(r.memory_limit)}
+        </td>
+        <td class="muted" style="font-size:12px;">
+          ${this._fmtBytes(r.network_rx)} / ${this._fmtBytes(r.network_tx)}
+        </td>
+        <td class="muted" style="font-size:12px;">
+          ${this._fmtBytes(r.blk_read)} / ${this._fmtBytes(r.blk_write)}
+        </td>
+        <td>
+          ${r.flags.length
+            ? html`<div class="chips">
+                ${r.flags.map(
+                  (f) => html`<span class="pill high"><span class="dot"></span>${
+                    f === "high_memory" ? "high memory" : f === "high_cpu" ? "high CPU" : f.replace("_", " ")
+                  }</span>`
+                )}
+              </div>`
+            : html`<span class="muted">—</span>`}
+        </td>
+      </tr>
+    `;
   }
 
   private _renderRow(r: IntegrationSecurityRow) {

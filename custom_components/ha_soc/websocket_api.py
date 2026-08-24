@@ -171,6 +171,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_reset_pairing,
         ws_integration_security_list,
         ws_integration_security_refresh,
+        ws_containers_resources,
         ws_network_overview,
         ws_settings_get,
         ws_settings_set,
@@ -1196,6 +1197,17 @@ async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: 
     repo_urls = [r["repo_url"] for r in overview["integrations"] if r.get("repo_url")]
     result = await async_refresh_github_signals(hass, runtime.store, repo_urls)
     connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/containers/resources"})
+@websocket_api.async_response
+async def ws_containers_resources(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Live per-container CPU/memory (add-ons + Core + Supervisor). Returns
+    available=False on a non-Supervisor install rather than erroring."""
+    from .containers import async_container_resources
+
+    connection.send_result(msg["id"], await async_container_resources(hass))
 
 
 # ----------------------------------------------------------------------------
