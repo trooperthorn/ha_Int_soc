@@ -39,6 +39,9 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
   @state() private _brokenFilter: string | null = null;
+  // Pre-selected: constrain the New/replacement suggestions to the same
+  // entity domain as the Old entity (binary_sensor→binary_sensor, etc.).
+  @state() private _filterSameType = true;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -79,6 +82,33 @@ export class HaSocEntityRemapView extends LitElement {
     this._report = null;
     this._applyResult = null;
     this._onFind();
+  }
+
+  // Selecting a broken entity id enters it into the Old/broken field (without
+  // running the search yet), so the operator can pick a same-type replacement
+  // first. Scrolls the remap card into view.
+  private _selectOld(entityId: string) {
+    this._oldEntityId = entityId;
+    this._newEntityId = "";
+    this._report = null;
+    this._applyResult = null;
+    this.updateComplete.then(() => {
+      this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
+  private _domainOf(entityId: string): string {
+    return entityId.includes(".") ? entityId.split(".", 1)[0] : "";
+  }
+
+  // New/replacement suggestions, optionally constrained to the Old entity's
+  // domain when "Filter by same Entity Type" is on.
+  private _newEntityOptions(): EntityRegistryEntry[] {
+    const domain = this._domainOf(this._oldEntityId);
+    if (this._filterSameType && domain) {
+      return this._entities.filter((e) => this._domainOf(e.entity_id) === domain);
+    }
+    return this._entities;
   }
 
   private _onClearBrokenFilter() {
@@ -140,7 +170,7 @@ export class HaSocEntityRemapView extends LitElement {
       !!report && report.editable_count > 0 && !!this._newEntityId && this._newEntityId !== this._oldEntityId;
 
     return html`
-      <div class="card">
+      <div class="card" id="remap-card">
         <h3>Entity ReMap</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Home Assistant has no built-in way to do this: renaming or replacing an entity
@@ -178,15 +208,30 @@ export class HaSocEntityRemapView extends LitElement {
           <button class="ha-btn" ?disabled=${!this._oldEntityId || this._finding} @click=${() => this._onFind()}>
             ${this._finding ? "Searching…" : "Find references"}
           </button>
+          <label
+            class="muted"
+            style="display:inline-flex;align-items:center;gap:6px;font-size:12.5px;cursor:pointer;"
+            title="Only suggest replacement entities in the same domain (binary_sensor, sensor, weather, …) as the old entity"
+          >
+            <input
+              type="checkbox"
+              .checked=${this._filterSameType}
+              @change=${(e: Event) => (this._filterSameType = (e.target as HTMLInputElement).checked)}
+            />
+            Filter by same Entity Type
+          </label>
           <!-- Old/broken entity only offers entities this page already knows are
                referenced-but-missing — picking from the full entity registry made
                no sense here, since a genuinely broken entity isn't in it. -->
           <datalist id="ha-soc-remap-old-entities">
             ${this._broken.map((b) => html`<option value=${b.entity_id}>${this._labelFor(b.entity_id)}</option>`)}
           </datalist>
-          <!-- New/replacement entity picks from every real, currently-registered entity. -->
+          <!-- New/replacement entity picks from currently-registered entities,
+               constrained to the old entity's domain when the checkbox is on. -->
           <datalist id="ha-soc-remap-new-entities">
-            ${this._entities.map((e) => html`<option value=${e.entity_id}>${e.name ?? e.original_name ?? ""}</option>`)}
+            ${this._newEntityOptions().map(
+              (e) => html`<option value=${e.entity_id}>${e.name ?? e.original_name ?? ""}</option>`
+            )}
           </datalist>
         </div>
 
@@ -274,7 +319,14 @@ export class HaSocEntityRemapView extends LitElement {
                     ${this._filteredBroken().map(
                       (b) => html`
                         <tr>
-                          <td><code>${b.entity_id}</code></td>
+                          <td>
+                            <code
+                              style="cursor:pointer;color:var(--primary-color);"
+                              title="Select as the Old / broken entity"
+                              @click=${() => this._selectOld(b.entity_id)}
+                              >${b.entity_id}</code
+                            >
+                          </td>
                           <td class="muted" style="font-size:12px;">
                             ${b.referenced_by.map((r) => `${r.name} (${r.kind})`).join(", ")}
                           </td>

@@ -384,10 +384,26 @@ default, since consoles ship a self-signed certificate).
 
 The tab shows, close to the Dashboard's layout: network status, WAN-port
 bandwidth, internet-connected, wireless-client count, per-SSID totals, and
-two tables — **Clients** and **Network Devices** — with the same columns
-(Client/Device, IPv4, IPv6, MAC, VLAN, SSID, Uptime, Bandwidth, Last Seen,
-Integration). The Clients table filters by **VLAN** and **SSID**, and
-clicking an SSID in the "Clients per SSID" card filters the table to it.
+two tables:
+
+- **Clients** — Client, IPv4, IPv6, MAC, VLAN, SSID, Uptime, Bandwidth, Last
+  Seen, Integration. Uptime is derived from the client's association
+  timestamp; SSID is joined from the `/wifi/broadcasts` collection. Filters
+  by **VLAN** and **SSID**, and clicking an SSID in the "Clients per SSID"
+  card filters the table to it.
+- **Network Devices** — Device, IPv4, MAC, VLAN, Model, **Firmware
+  Updatable**, Bandwidth, Last Seen, Integration (no IPv6/Uptime — not
+  applicable to infrastructure). Each device is enriched from its
+  `/devices/{id}` detail endpoint for bandwidth / last-seen / firmware
+  status.
+
+There is also an **ACL Rules — Security Audit** report: every ACL / firewall
+rule the controller exposes, **in evaluation order**, with the action, the
+networks each rule applies to, direction, protocol, and enabled state — for
+auditing that a later "deny" isn't shadowed by an earlier "allow". The
+controller's Integration API is probed for the rules at several candidate
+paths; if none respond, the report says so honestly (and lists what it
+tried) rather than showing a fabricated ruleset.
 
 **UniFi Protect** gets two tables of its own:
 
@@ -415,12 +431,15 @@ integration, not the network — and it's surfaced with a banner at the top.
 > list of candidate names spanning the Integration API (camelCase) and the
 > legacy controller API (snake_case), and anything a given controller
 > doesn't return renders as `—` rather than being guessed. Fields most
-> likely to need confirmation against your firmware (VLAN, IPv6, SSID,
-> bandwidth, last-seen, the WAN-port stats, and — on the Protect side —
-> `isRecording`, `channels`, the events path, and the license-plate
-> location) are marked `# VERIFY` in that module. If a column reads `—` for
-> you, that field name is the thing to confirm against your console's API
-> response.
+> likely to need confirmation against your firmware (VLAN, IPv6, the
+> client→SSID reference key, bandwidth, the WAN-port stats, the ACL/firewall
+> endpoint path and rule fields, device `firmwareUpdatable`, and — on the
+> Protect side — `isRecording`, `channels`, the events path, and the
+> license-plate location) are marked `# VERIFY` in that module. If a column
+> reads `—` for you, that field name is the thing to confirm against your
+> console's API response. Protect events in particular are delivered over a
+> websocket subscription on current firmware rather than a REST list, so the
+> Events table degrades to an explanatory note there.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 

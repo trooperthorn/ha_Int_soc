@@ -63,6 +63,20 @@ _TIMEOUT_SECONDS = 15
 # refresh loop forever or return an unbounded payload to the panel.
 _PAGE_LIMIT = 200
 _MAX_PAGES = 15
+# Network Devices are enriched from the per-device detail endpoint
+# (/devices/{id}) for bandwidth / last-seen / firmware-updatable, which the
+# list endpoint doesn't carry. Cap the N+1 fan-out for a huge install.
+_MAX_DEVICE_DETAILS = 50
+# Candidate ACL / firewall endpoints, tried in order (see _fetch_acl_rules).
+# The Integration API surface varies by controller version, so we probe
+# rather than assume. All are relative to /sites/{siteId}/.
+_ACL_ENDPOINT_SUFFIXES = (
+    "acl-rules",
+    "firewall/rules",
+    "firewall-rules",
+    "firewall-policies",
+    "traffic-rules",
+)
 
 # Config-entry keys that commonly hold a device host or IP. Matched against
 # UniFi client/device IPs so a failing integration whose endpoint shows up on
@@ -336,52 +350,112 @@ def _as_epoch(value: Any) -> int | None:
 
 
 def _ipv6_of(raw: dict[str, Any]) -> str | None:
-    # Legacy returns ipv6 as a list; Integration API (if present) as a string.
+    # The Integration client object exposes IPv6 as a list (ipv6Addresses);
+    # older/other shapes use a single string. Prefer a real v6-looking value.
     # VERIFY: IPv6 field name/shape.
-    value = _first(raw, "ipv6", "ipv6Address", "ipAddressV6", "ipv6_address")
+    value = _first(
+        raw, "ipv6", "ipv6Address", "ipAddressV6", "ipv6_address", "ipv6Addresses"
+    )
     if isinstance(value, list):
+        for v in value:
+            if isinstance(v, str) and ":" in v:
+                return v
         return str(value[0]) if value else None
     return str(value) if value else None
 
 
 def _bandwidth_of(raw: dict[str, Any]) -> dict[str, int] | None:
-    """Cumulative rx/tx bytes for a client/device, if the controller reports
-    them. VERIFY: byte-counter field names differ across surfaces."""
-    rx = _first(raw, "rxBytes", "rx_bytes", "wired-rx_bytes", "rx")
-    tx = _first(raw, "txBytes", "tx_bytes", "wired-tx_bytes", "tx")
-    if rx is None and tx is None:
-        return None
-    try:
-        rx_i = int(rx) if rx is not None else 0
-        tx_i = int(tx) if tx is not None else 0
-    except (TypeError, ValueError):
-        return None
-    return {"rx_bytes": rx_i, "tx_bytes": tx_i, "total_bytes": rx_i + tx_i}
+    """Cumulative rx/tx bytes for a client/device. The Integration API nests
+    counters under ``statistics`` (and a device's under statistics.uplink),
+    so we search the top level and those containers. VERIFY: byte-counter
+    field names differ across surfaces."""
+    containers: list[dict[str, Any]] = [raw]
+    for key in ("statistics", "stats", "uplink"):
+        node = raw.get(key)
+        if isinstance(node, dict):
+            containers.append(node)
+            nested_uplink = node.get("uplink")
+            if isinstance(nested_uplink, dict):
+                containers.append(nested_uplink)
+
+    for c in containers:
+        rx = _first(c, "rxBytes", "rx_bytes", "wired-rx_bytes", "rx")
+        tx = _first(c, "txBytes", "tx_bytes", "wired-tx_bytes", "tx")
+        if rx is None and tx is None:
+            continue
+        try:
+            rx_i = int(rx) if rx is not None else 0
+            tx_i = int(tx) if tx is not None else 0
+        except (TypeError, ValueError):
+            continue
+        return {"rx_bytes": rx_i, "tx_bytes": tx_i, "total_bytes": rx_i + tx_i}
+    return None
+
+
+def _client_ssid(raw: dict[str, Any], broadcast_map: dict[str, str]) -> str | None:
+    """Resolve a client's SSID. A wireless client carries either the SSID name
+    directly, or a reference to a WiFi broadcast whose name lives in the
+    /wifi/broadcasts collection — join through broadcast_map for the latter.
+    VERIFY: the client->broadcast reference key."""
+    direct = _first(raw, "ssid", "essid", "wifiNetworkName", "networkName", "network_name")
+    if direct:
+        return str(direct)
+    if broadcast_map:
+        ref = _first(
+            raw,
+            "wifiBroadcastId",
+            "broadcastId",
+            "wlanId",
+            "wifiNetworkId",
+            "wlanConfId",
+            "wlanconf_id",
+        )
+        if ref is not None:
+            name = broadcast_map.get(str(ref))
+            if name:
+                return name
+    return None
 
 
 def _normalize_client(
-    raw: dict[str, Any], endpoints: dict[str, dict[str, Any]]
+    raw: dict[str, Any],
+    endpoints: dict[str, dict[str, Any]],
+    broadcast_map: dict[str, str] | None = None,
+    now_ts: int | None = None,
 ) -> dict[str, Any]:
+    broadcast_map = broadcast_map or {}
     name = _first(raw, "name", "hostname", "displayName", "alias", "note")
     ipv4 = _first(raw, "ipAddress", "ip", "ipv4", "lastIp", "last_ip", "fixed_ip")
     ipv6 = _ipv6_of(raw)
     mac = _first(raw, "macAddress", "mac")
-    # VERIFY: VLAN is the least certain field on the Integration API — it may
-    # only be derivable from the client's network, not a first-class field.
+    # VERIFY: VLAN — a first-class field on some firmwares, nested under
+    # `access` on others; may otherwise only be derivable from the network.
     vlan = _first(raw, "vlan", "vlanId", "networkVlanId", "vlan_id")
-    # VERIFY: SSID naming (essid legacy, ssid/networkName Integration API).
-    ssid = _first(raw, "ssid", "essid", "wifiNetworkName", "networkName", "network_name")
+    if vlan is None:
+        access = raw.get("access")
+        if isinstance(access, dict):
+            vlan = _first(access, "vlanId", "vlan")
+    ssid = _client_ssid(raw, broadcast_map)
     conn_type = str(_first(raw, "type", "connectionType", default="")).upper()
     wired = conn_type == "WIRED" or (
         conn_type != "WIRELESS"
         and not ssid
         and bool(_first(raw, "wired", "isWired", default=False))
     )
+    # Uptime: an explicit seconds field if present, otherwise derived from the
+    # association timestamp (connectedAt), which is what the Integration API
+    # actually returns for a client.
     uptime = _first(raw, "uptime", "uptimeSeconds", "uptime_seconds")
     try:
         uptime = int(uptime) if uptime is not None else None
     except (TypeError, ValueError):
         uptime = None
+    if uptime is None:
+        connected = _as_epoch(
+            _first(raw, "connectedAt", "connected_at", "associationTime", "assocTime")
+        )
+        if connected is not None and now_ts is not None and now_ts >= connected:
+            uptime = now_ts - connected
     last_seen = _as_epoch(
         _first(raw, "lastSeen", "last_seen", "lastConnectionAt", "connectedAt", "connected_at")
     )
@@ -391,7 +465,7 @@ def _normalize_client(
         "ipv6": ipv6,
         "mac": str(mac).lower() if mac else None,
         "vlan": vlan,
-        "ssid": str(ssid) if ssid else None,
+        "ssid": ssid,
         "wired": wired,
         "uptime": uptime,
         "bandwidth": _bandwidth_of(raw),
@@ -416,23 +490,37 @@ def _normalize_device(
     mac = _first(raw, "macAddress", "mac")
     model = _first(raw, "model", "modelName", "shortname")
     state = str(_first(raw, "state", "status", default="")).upper() or None
-    uptime = _first(raw, "uptime", "uptimeSeconds")
-    try:
-        uptime = int(uptime) if uptime is not None else None
-    except (TypeError, ValueError):
-        uptime = None
-    last_seen = _as_epoch(_first(raw, "lastSeen", "last_seen", "startupTimestamp"))
+
+    # Firmware-updatable — a real boolean the device (detail) object carries.
+    # VERIFY: firmwareUpdatable field name / nesting.
+    fw_updatable = _first(raw, "firmwareUpdatable", "updateAvailable", "update_available")
+    if fw_updatable is None:
+        fw = raw.get("firmware")
+        if isinstance(fw, dict):
+            fw_updatable = _first(fw, "updatable", "updateAvailable")
+    firmware_updatable = bool(fw_updatable) if fw_updatable is not None else None
+
+    # last-seen / heartbeat comes from the per-device detail endpoint; look in
+    # the common top-level names and under statistics.
+    last_seen = _as_epoch(
+        _first(raw, "lastSeen", "last_seen", "lastHeartbeatAt", "startupTimestamp")
+    )
+    if last_seen is None:
+        stats = raw.get("statistics")
+        if isinstance(stats, dict):
+            last_seen = _as_epoch(_first(stats, "lastHeartbeatAt", "lastSeen"))
+
     return {
-        # Same column set as a client row (VLAN/SSID are N/A for infra and
-        # come through as None -> "—"), plus model/state for the device table.
+        # IPv6 intentionally dropped from the devices table (not in the API);
+        # Uptime replaced by firmware_updatable per the feature request.
         "name": str(name) if name else (str(mac) if mac else "unknown"),
         "ipv4": str(ipv4) if ipv4 else None,
-        "ipv6": ipv6,
+        "ipv6": ipv6,  # retained in payload; the table no longer renders it
         "mac": str(mac).lower() if mac else None,
         "vlan": _first(raw, "vlan", "vlanId"),
         "ssid": None,
         "wired": True,
-        "uptime": uptime,
+        "firmware_updatable": firmware_updatable,
         "bandwidth": _bandwidth_of(raw),
         "last_seen": last_seen,
         "model": str(model) if model else None,
@@ -443,12 +531,77 @@ def _normalize_device(
     }
 
 
+_GATEWAY_TOKENS = (
+    "gateway",
+    "udm",
+    "uxg",
+    "usg",
+    "ugw",
+    "ucg",
+    "udr",
+    "uxr",
+    "dream",
+    "console",
+)
+
+
 def _is_gateway(raw: dict[str, Any]) -> bool:
+    # A device is the gateway if its role/type says so, or its model/name
+    # contains a known gateway marker. Kept broad because the model line-up
+    # changes often (UDM/UXG/UCG/UDR/…).
+    role = str(_first(raw, "type", "deviceType", "role", default="")).lower()
+    if role in ("gateway", "console", "ugw"):
+        return True
     blob = " ".join(
         str(_first(raw, k, default="")).lower()
-        for k in ("type", "model", "shortname", "name", "deviceType")
+        for k in ("type", "model", "shortname", "name", "deviceType", "role")
     )
-    return any(tok in blob for tok in ("gateway", "udm", "uxg", "usg", "ugw", "dream"))
+    return any(tok in blob for tok in _GATEWAY_TOKENS)
+
+
+def _wan_candidate_nodes(gateway: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every nested object on a gateway device that might carry WAN stats,
+    across the shapes seen in the wild: top-level uplink/wan objects, an
+    `interfaces` object (dict) with wan/ports, port arrays, and statistics."""
+    nodes: list[dict[str, Any]] = []
+
+    def _add_named_dicts(container: dict[str, Any]) -> None:
+        for key in ("uplink", "wan1", "wan", "internet", "wan2"):
+            node = container.get(key)
+            if isinstance(node, dict):
+                nodes.append(node)
+
+    _add_named_dicts(gateway)
+
+    stats = gateway.get("statistics")
+    if isinstance(stats, dict):
+        _add_named_dicts(stats)
+        nodes.append(stats)
+
+    # `interfaces` may be a dict (interfaces.wan / interfaces.ports) or a list.
+    interfaces = gateway.get("interfaces")
+    if isinstance(interfaces, dict):
+        _add_named_dicts(interfaces)
+        for v in interfaces.values():
+            if isinstance(v, list):
+                nodes.extend(_wan_ports(v))
+    for arr_key in ("ports", "interfaces", "portTable"):
+        arr = gateway.get(arr_key)
+        if isinstance(arr, list):
+            nodes.extend(_wan_ports(arr))
+
+    return nodes
+
+
+def _wan_ports(arr: list[Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for port in arr:
+        if not isinstance(port, dict):
+            continue
+        pname = str(_first(port, "name", "ifname", "port_idx", "connector", default="")).lower()
+        if "wan" in pname or bool(_first(port, "is_uplink", "isUplink", "uplink", default=False)):
+            out.append(port)
+    return out
 
 
 def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
@@ -456,9 +609,9 @@ def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
     field degrades to None (UI: "—") when the console doesn't expose it.
 
     VERIFY: the exact WAN-port/uplink shape on the Integration API device
-    object is the single most uncertain mapping in this file. This walks the
-    likely nesting (uplink, wan1, ports[].name==WAN) and stops at the first
-    that yields rate/state values.
+    object is the single most uncertain mapping in this file. This walks every
+    plausible nesting (uplink/wan objects, statistics, interfaces dict/list,
+    port arrays) and takes the first that yields rate/state/ip values.
     """
     wan: dict[str, Any] = {
         "port": None,
@@ -477,28 +630,11 @@ def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
         except (TypeError, ValueError):
             return None
 
-    # Candidate nested objects that may carry WAN stats.
-    candidates: list[dict[str, Any]] = []
-    for key in ("uplink", "wan1", "wan", "internet"):
-        node = gateway.get(key)
-        if isinstance(node, dict):
-            candidates.append(node)
-    # A ports/interfaces array whose entry is named/flagged WAN.
-    for arr_key in ("ports", "interfaces", "portTable"):
-        arr = gateway.get(arr_key)
-        if isinstance(arr, list):
-            for port in arr:
-                if not isinstance(port, dict):
-                    continue
-                pname = str(_first(port, "name", "ifname", "port_idx", default="")).lower()
-                if "wan" in pname or bool(_first(port, "is_uplink", "isUplink", default=False)):
-                    candidates.append(port)
-
-    for node in candidates:
-        rx = _rate(node, "rxRateBps", "rx_bytes-r", "rx_rate", "rxRate", "download")
-        tx = _rate(node, "txRateBps", "tx_bytes-r", "tx_rate", "txRate", "upload")
-        up = _first(node, "up", "enable", "isUp", "plugged")
-        ip = _first(node, "ip", "ipAddress", "wan_ip")
+    for node in _wan_candidate_nodes(gateway):
+        rx = _rate(node, "rxRateBps", "rx_bytes-r", "rx_rate", "rxRate", "rxBps", "download")
+        tx = _rate(node, "txRateBps", "tx_bytes-r", "tx_rate", "txRate", "txBps", "upload")
+        up = _first(node, "up", "enable", "enabled", "isUp", "plugged", "connected")
+        ip = _first(node, "ip", "ipAddress", "wan_ip", "wanIp")
         name = _first(node, "name", "ifname")
         if rx is not None or tx is not None or up is not None or ip is not None:
             wan.update(
@@ -519,11 +655,171 @@ def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+async def _fetch_broadcast_map(
+    hass: HomeAssistant, conn: _Conn, site_id: str
+) -> dict[str, str]:
+    """{broadcast_id: ssid_name} from /wifi/broadcasts, for the client SSID
+    join and the 'Clients per SSID' card. Best-effort — {} on any failure."""
+    try:
+        rows = await _get_paginated(hass, conn, f"/sites/{site_id}/wifi/broadcasts")
+    except (UniFiError, Exception):  # noqa: BLE001
+        return {}
+    out: dict[str, str] = {}
+    for b in rows:
+        bid = _first(b, "id", "_id")
+        name = _first(b, "name", "ssid", "ssidName")
+        if bid and name:
+            out[str(bid)] = str(name)
+    return out
+
+
+async def _fetch_device_details(
+    hass: HomeAssistant, conn: _Conn, site_id: str, devices: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Enrich each device with its /devices/{id} detail (bandwidth, last-seen,
+    firmware-updatable), which the list endpoint doesn't carry. Each detail
+    fetch is independent and non-fatal — a device whose detail fails keeps its
+    list-level data. Bounded by _MAX_DEVICE_DETAILS."""
+
+    async def _one(dev: dict[str, Any]) -> dict[str, Any]:
+        did = _first(dev, "id", "_id", "deviceId")
+        if not did:
+            return dev
+        try:
+            detail = await _get(hass, conn, f"/sites/{site_id}/devices/{did}")
+        except (UniFiError, Exception):  # noqa: BLE001
+            return dev
+        if isinstance(detail, dict):
+            inner = detail.get("data")
+            if isinstance(inner, dict):
+                detail = inner
+            if isinstance(detail, dict):
+                merged = dict(dev)
+                merged.update(detail)  # detail wins
+                return merged
+        return dev
+
+    head = devices[:_MAX_DEVICE_DETAILS]
+    enriched = await asyncio.gather(*[_one(d) for d in head])
+    return list(enriched) + devices[_MAX_DEVICE_DETAILS:]
+
+
+async def _fetch_network_map(
+    hass: HomeAssistant, conn: _Conn, site_id: str
+) -> dict[str, str]:
+    """{network_id: display_name} so an ACL rule that references networks by
+    id can be shown by name. Best-effort — {} if the endpoint is absent."""
+    for suffix in ("networks", "network-confs"):
+        try:
+            rows = await _get_paginated(hass, conn, f"/sites/{site_id}/{suffix}")
+        except (UniFiError, Exception):  # noqa: BLE001
+            continue
+        out: dict[str, str] = {}
+        for n in rows:
+            nid = _first(n, "id", "_id")
+            name = _first(n, "name", "displayName")
+            vlan = _first(n, "vlan", "vlanId")
+            if nid and name:
+                out[str(nid)] = f"{name}" + (f" (VLAN {vlan})" if vlan not in (None, "") else "")
+        if out:
+            return out
+    return {}
+
+
+def _normalize_acl_rule(
+    raw: dict[str, Any], index: int, network_map: dict[str, str]
+) -> dict[str, Any]:
+    """One ACL / firewall rule, order-preserving. VERIFY: field names vary by
+    controller version — this reads the common ones and falls back to the
+    payload position for order."""
+    order = _first(raw, "ruleIndex", "index", "order", "ruleOrder", "sequence")
+    try:
+        order = int(order) if order is not None else index
+    except (TypeError, ValueError):
+        order = index
+
+    # Which networks the rule applies to — resolved to names where possible.
+    net_refs: list[Any] = []
+    for key in (
+        "networkIds",
+        "networks",
+        "targetNetworkIds",
+        "appliesTo",
+        "networkId",
+        "network",
+        "vlanIds",
+        "vlans",
+    ):
+        v = raw.get(key)
+        if isinstance(v, list):
+            net_refs.extend(v)
+        elif v not in (None, ""):
+            net_refs.append(v)
+    networks: list[str] = []
+    for ref in net_refs:
+        if isinstance(ref, dict):
+            rid = _first(ref, "id", "_id")
+            rname = _first(ref, "name", "displayName")
+            networks.append(network_map.get(str(rid), str(rname) if rname else str(rid)))
+        else:
+            networks.append(network_map.get(str(ref), str(ref)))
+    # Dedupe, preserve order.
+    networks = list(dict.fromkeys(networks))
+
+    enabled = _first(raw, "enabled", "isEnabled")
+    return {
+        "order": order,
+        "id": str(_first(raw, "id", "_id", default="")) or None,
+        "name": str(_first(raw, "name", "description", "displayName", default="")) or None,
+        "action": (str(_first(raw, "action", "policy", "ruleAction", default="")) or None),
+        "enabled": bool(enabled) if enabled is not None else None,
+        "direction": str(_first(raw, "direction", "ruleset", "matchDirection", default="")) or None,
+        "protocol": str(_first(raw, "protocol", "protocolMatch", default="")) or None,
+        "source": str(_first(raw, "source", "src", "sourceZone", default="")) or None,
+        "destination": str(_first(raw, "destination", "dst", "destinationZone", default="")) or None,
+        "networks": networks,
+    }
+
+
+async def _fetch_acl_rules(
+    hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
+) -> dict[str, Any]:
+    """Probe the candidate ACL/firewall endpoints and return the first that
+    responds, order-preserved. If none respond, `available` is False with the
+    list of endpoints tried — an honest 'this controller's API doesn't expose
+    it' for the security audit, never a fabricated ruleset."""
+    result: dict[str, Any] = {
+        "available": False,
+        "error": None,
+        "endpoint": None,
+        "endpoints_tried": list(_ACL_ENDPOINT_SUFFIXES),
+        "rules": [],
+    }
+    last_err: str | None = None
+    for suffix in _ACL_ENDPOINT_SUFFIXES:
+        try:
+            rows = await _get_paginated(hass, conn, f"/sites/{site_id}/{suffix}")
+        except UniFiError as err:
+            last_err = str(err)
+            continue
+        except Exception as err:  # noqa: BLE001
+            last_err = f"Unexpected error: {err}"
+            continue
+        result["available"] = True
+        result["endpoint"] = suffix
+        rules = [_normalize_acl_rule(r, i, network_map) for i, r in enumerate(rows)]
+        rules.sort(key=lambda r: r["order"])
+        result["rules"] = rules
+        return result
+    result["error"] = last_err or "No known ACL/firewall endpoint responded."
+    return result
+
+
 async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
     """Everything the Network tab renders in one snapshot: status, WAN, the
-    clients table, and the network-devices table — plus a compact Protect
-    status. Never raises: a connection problem comes back as
-    reachable=False with a human-readable ``error``.
+    clients table, the network-devices table, and the ACL-rules audit report —
+    plus a compact Protect status. Never raises: a connection problem comes
+    back as reachable=False with a human-readable ``error``.
     """
     result: dict[str, Any] = {
         "configured": False,
@@ -539,6 +835,7 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         "clients_per_ssid": [],
         "clients": [],
         "devices": [],
+        "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
         "protect": await async_protect_status(hass, store),
@@ -550,6 +847,7 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     result["configured"] = True
 
     endpoints = _integration_endpoints(hass)
+    now_ts = int(dt_util.utcnow().timestamp())
 
     try:
         site_id = await _resolve_site_id(hass, conn)
@@ -564,7 +862,14 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         result["error"] = f"Unexpected error: {err}"
         return result
 
-    clients = [_normalize_client(r, endpoints) for r in clients_raw]
+    # SSID names live in /wifi/broadcasts; enrich devices from their detail
+    # endpoint; resolve network names for the ACL report. All best-effort.
+    broadcast_map = await _fetch_broadcast_map(hass, conn, site_id)
+    devices_raw = await _fetch_device_details(hass, conn, site_id, devices_raw)
+    network_map = await _fetch_network_map(hass, conn, site_id)
+    result["acl"] = await _fetch_acl_rules(hass, conn, site_id, network_map)
+
+    clients = [_normalize_client(r, endpoints, broadcast_map, now_ts) for r in clients_raw]
     devices = [_normalize_device(r, endpoints) for r in devices_raw]
 
     gateway = next((d for d in devices_raw if _is_gateway(d)), None)
@@ -579,7 +884,14 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     gateway_online = None
     if gateway is not None:
         gstate = str(_first(gateway, "state", "status", default="")).upper()
-        gateway_online = gstate in ("ONLINE", "1", "CONNECTED") if gstate else None
+        if gstate in ("OFFLINE", "DISCONNECTED", "0", "PENDING_ADOPTION"):
+            gateway_online = False
+        else:
+            # A gateway that's present in the devices list and not explicitly
+            # offline is treated as online — so "Internet" resolves to
+            # Connected (best-effort) instead of Unknown when the console
+            # doesn't expose an explicit WAN up/down flag.
+            gateway_online = True
 
     result.update(
         {
@@ -778,24 +1090,51 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
         }
     )
 
-    # Events are a separate, non-fatal call: a Protect firmware that doesn't
-    # expose the integration events endpoint still shows its cameras.
-    try:
-        now = dt_util.utcnow()
-        end_ms = int(now.timestamp() * 1000)
-        start_ms = end_ms - 24 * 3600 * 1000  # last 24h
-        # VERIFY: events path + start/end query param names.
-        events_raw = await _get_paginated(
-            hass, conn, f"/events?start={start_ms}&end={end_ms}"
-        )
-        events = [_normalize_event(e, conn.origin) for e in events_raw]
-        # Newest first.
+    # Events are a separate, non-fatal call. The Protect Integration API
+    # doesn't guarantee a REST events list — on many firmwares events are
+    # delivered over a websocket subscription (/subscribe/events) rather than
+    # a GET, so /events returns 404. Probe the candidate REST paths and, if
+    # none respond, explain that honestly instead of showing a raw error.
+    now = dt_util.utcnow()
+    end_ms = int(now.timestamp() * 1000)
+    start_ms = end_ms - 24 * 3600 * 1000  # last 24h
+    # VERIFY: events REST path + time-window param names.
+    event_paths = (
+        f"/events?start={start_ms}&end={end_ms}",
+        f"/events?startTime={start_ms}&endTime={end_ms}",
+        f"/detections?start={start_ms}&end={end_ms}",
+        f"/alarms?start={start_ms}&end={end_ms}",
+    )
+    tried_bases: list[str] = []
+    got: list[dict[str, Any]] | None = None
+    saw_non_404 = False
+    for path in event_paths:
+        base = path.split("?", 1)[0]
+        if base not in tried_bases:
+            tried_bases.append(base)
+        try:
+            got = await _get_paginated(hass, conn, path)
+            break
+        except UniFiError as err:
+            if "not found" not in str(err).lower():
+                saw_non_404 = True
+                out["events_error"] = str(err)
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Unexpected UniFi Protect events error")
+            saw_non_404 = True
+            out["events_error"] = f"Unexpected error: {err}"
+
+    if got is not None:
+        events = [_normalize_event(e, conn.origin) for e in got]
         events.sort(key=lambda e: e["start"] or 0, reverse=True)
         out["events"] = events
-    except UniFiError as err:
-        out["events_error"] = str(err)
-    except Exception as err:  # noqa: BLE001
-        _LOGGER.exception("Unexpected UniFi Protect events error")
-        out["events_error"] = f"Unexpected error: {err}"
+        out["events_error"] = None
+    elif not saw_non_404:
+        out["events_error"] = (
+            "This Protect Integration API doesn't expose a REST events list "
+            f"(tried: {', '.join(tried_bases)}). On this API version events are "
+            "delivered over a websocket subscription, which a read-only snapshot "
+            "can't consume."
+        )
 
     return out
