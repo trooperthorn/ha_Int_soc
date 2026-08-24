@@ -37,6 +37,7 @@ from custom_components.ha_soc.unifi import (
     _derive_wan,
     _first,
     _hosts_from_value,
+    _normalize_acl_rule,
     _normalize_camera,
     _normalize_client,
     _normalize_device,
@@ -150,22 +151,59 @@ def test_normalize_client_absent_fields_degrade_to_none() -> None:
     assert row["last_seen"] is None
 
 
-def test_normalize_device_shares_client_columns_plus_extras() -> None:
+def test_normalize_device_fields() -> None:
     raw = {
         "name": "USW-24",
         "model": "USW-24-PoE",
         "ipAddress": "10.0.0.2",
         "macAddress": "aa:bb:cc:00:00:10",
         "state": "ONLINE",
-        "uptime": 100000,
+        "firmwareUpdatable": True,
+        "lastHeartbeatAt": 1_690_000_000,
+        "statistics": {"uplink": {"rxBytes": 10, "txBytes": 5}},
     }
     row = _normalize_device(raw, {})
-    # Same column set as a client...
-    assert {"name", "ipv4", "ipv6", "mac", "vlan", "ssid", "uptime", "bandwidth", "last_seen"} <= set(row)
-    # ...plus device extras.
     assert row["model"] == "USW-24-PoE"
     assert row["state"] == "ONLINE"
-    assert row["ssid"] is None  # infra devices have no SSID -> "—" in the UI
+    assert row["ssid"] is None  # infra devices have no SSID
+    # Uptime replaced by firmware_updatable; last-seen + bandwidth from detail.
+    assert "uptime" not in row
+    assert row["firmware_updatable"] is True
+    assert row["last_seen"] == 1_690_000_000
+    assert row["bandwidth"] == {"rx_bytes": 10, "tx_bytes": 5, "total_bytes": 15}
+
+
+def test_normalize_device_firmware_from_nested() -> None:
+    row = _normalize_device({"id": "d", "firmware": {"updatable": False}}, {})
+    assert row["firmware_updatable"] is False
+    assert _normalize_device({"id": "d"}, {})["firmware_updatable"] is None
+
+
+def test_client_ssid_join_via_broadcast_map() -> None:
+    """A wireless client with only a broadcast reference resolves its SSID
+    name through the /wifi/broadcasts map."""
+    bmap = {"bcast-1": "HomeWiFi", "bcast-2": "Guest"}
+    raw = {"name": "phone", "type": "WIRELESS", "wifiBroadcastId": "bcast-2"}
+    row = _normalize_client(raw, {}, bmap)
+    assert row["ssid"] == "Guest"
+    assert row["wired"] is False
+
+
+def test_client_uptime_derived_from_connected_at() -> None:
+    now = 1_690_000_000
+    raw = {"name": "x", "connectedAt": now - 3600}
+    row = _normalize_client(raw, {}, {}, now)
+    assert row["uptime"] == 3600
+
+
+def test_client_vlan_from_nested_access() -> None:
+    row = _normalize_client({"name": "x", "access": {"vlanId": 42}}, {})
+    assert row["vlan"] == 42
+
+
+def test_client_bandwidth_from_statistics() -> None:
+    row = _normalize_client({"name": "x", "statistics": {"rxBytes": 100, "txBytes": 50}}, {})
+    assert row["bandwidth"] == {"rx_bytes": 100, "tx_bytes": 50, "total_bytes": 150}
 
 
 def test_derive_wan_from_gateway_uplink() -> None:
@@ -305,6 +343,94 @@ async def test_overview_full_snapshot_and_endpoint_correlation(
 
 
 # ---------------------------------------------------------------------------
+# SSID join + ACL audit report (end to end through the overview)
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_acl_rule_resolves_networks_and_order() -> None:
+    nm = {"n1": "IoT (VLAN 30)", "n2": "Guest (VLAN 40)"}
+    raw = {
+        "name": "Block IoT to LAN",
+        "action": "DENY",
+        "enabled": True,
+        "ruleIndex": 3,
+        "networkIds": ["n1", "n2"],
+        "direction": "in",
+        "protocol": "tcp",
+    }
+    row = _normalize_acl_rule(raw, 0, nm)
+    assert row["order"] == 3
+    assert row["name"] == "Block IoT to LAN"
+    assert row["action"] == "DENY"
+    assert row["enabled"] is True
+    assert row["networks"] == ["IoT (VLAN 30)", "Guest (VLAN 40)"]
+    assert row["direction"] == "in"
+    assert row["protocol"] == "tcp"
+
+
+async def test_overview_ssid_join_and_acl_report(
+    hass: HomeAssistant, store: HaSocData
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+
+    clients = [{"name": "phone", "type": "WIRELESS", "wifiBroadcastId": "b1"}]
+    broadcasts = [{"id": "b1", "name": "HomeWiFi"}]
+    networks = [{"id": "n1", "name": "LAN", "vlan": 1}]
+    acl = [{"name": "Block IoT", "action": "deny", "networkIds": ["n1"], "enabled": True, "ruleIndex": 0}]
+
+    async def _se(hass, conn, path):
+        base = path.split("?", 1)[0]
+        if base == "/sites":
+            return {"data": [{"id": "default"}]}
+        if base == "/sites/default/clients":
+            return {"data": clients}
+        if base == "/sites/default/devices":
+            return {"data": []}
+        if base == "/sites/default/wifi/broadcasts":
+            return {"data": broadcasts}
+        if base == "/sites/default/networks":
+            return {"data": networks}
+        if base == "/sites/default/acl-rules":
+            return {"data": acl}
+        raise UniFiError("Endpoint not found")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
+        o = await async_network_overview(hass, store)
+
+    # SSID resolved through the broadcast map.
+    assert o["clients"][0]["ssid"] == "HomeWiFi"
+    assert {s["ssid"]: s["count"] for s in o["clients_per_ssid"]} == {"HomeWiFi": 1}
+
+    # ACL report populated, order-preserved, network name resolved.
+    assert o["acl"]["available"] is True
+    assert o["acl"]["endpoint"] == "acl-rules"
+    rule = o["acl"]["rules"][0]
+    assert rule["name"] == "Block IoT"
+    assert rule["action"] == "deny"
+    assert rule["networks"] == ["LAN (VLAN 1)"]
+
+
+async def test_overview_acl_unavailable_when_no_endpoint(
+    hass: HomeAssistant, store: HaSocData
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+
+    async def _se(hass, conn, path):
+        base = path.split("?", 1)[0]
+        if base == "/sites":
+            return {"data": [{"id": "default"}]}
+        if base in ("/sites/default/clients", "/sites/default/devices"):
+            return {"data": []}
+        raise UniFiError("Endpoint not found")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
+        o = await async_network_overview(hass, store)
+
+    assert o["acl"]["available"] is False
+    assert o["acl"]["endpoints_tried"]  # lists what was probed, for the audit
+
+
+# ---------------------------------------------------------------------------
 # Protect
 # ---------------------------------------------------------------------------
 
@@ -424,4 +550,6 @@ async def test_protect_events_error_still_returns_cameras(
     assert out["reachable"] is True
     assert out["camera_count"] == 1
     assert out["events"] == []
-    assert out["events_error"] == "events endpoint not found"
+    # A "not found" on every candidate degrades to the friendly explanation.
+    assert out["events_error"] is not None
+    assert "REST events list" in out["events_error"]

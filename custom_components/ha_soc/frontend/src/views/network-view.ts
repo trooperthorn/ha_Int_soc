@@ -7,6 +7,7 @@ import {
   NetworkOverview,
   NetworkClientRow,
   NetworkDeviceRow,
+  AclReport,
   ProtectCamera,
   ProtectEvent,
   UniFiBandwidth,
@@ -389,7 +390,8 @@ export class HaSocNetworkView extends LitElement {
 
     return html`
       ${this._renderFailingBanner(o)} ${this._renderStats(o)} ${this._renderSsid(o)}
-      ${this._renderClientsTable(o)} ${this._renderDevicesTable(o)} ${this._renderProtectCard(o)}
+      ${this._renderClientsTable(o)} ${this._renderDevicesTable(o)} ${this._renderAcl(o.acl)}
+      ${this._renderProtectCard(o)}
       <div class="footer">
         <span>Last updated ${new Date(o.generated_at).toLocaleTimeString()}</span>
         <button class="ha-btn" style="margin-left:auto;" @click=${() => this._load()}>
@@ -665,10 +667,20 @@ export class HaSocNetworkView extends LitElement {
               <div class="table-wrap">
                 <table>
                   <thead>
-                    ${this._colHeaders({ model: true })}
+                    <tr>
+                      <th>Device</th>
+                      <th>IPv4</th>
+                      <th>MAC</th>
+                      <th class="num">VLAN</th>
+                      <th>Model</th>
+                      <th>Firmware</th>
+                      <th>Bandwidth</th>
+                      <th>Last Seen</th>
+                      <th>Integration</th>
+                    </tr>
                   </thead>
                   <tbody>
-                    ${page.map((r) => this._renderRow(r, { model: true }))}
+                    ${page.map((r) => this._renderDeviceRow(r))}
                   </tbody>
                 </table>
               </div>
@@ -683,6 +695,124 @@ export class HaSocNetworkView extends LitElement {
                 }
               )}
             `}
+      </div>
+    `;
+  }
+
+  private _renderFirmware(u: boolean | null) {
+    if (u == null) return html`<span class="muted">—</span>`;
+    return u
+      ? html`<span style="color:var(--status-warning);font-weight:600;">Update available</span>`
+      : html`<span class="muted">Up to date</span>`;
+  }
+
+  private _renderDeviceRow(d: NetworkDeviceRow) {
+    return html`
+      <tr>
+        <td>
+          <div style="font-weight:600;">${d.name}</div>
+          ${d.state ? html`<div class="muted" style="font-size:11px;">${d.state.toLowerCase()}</div>` : nothing}
+        </td>
+        <td class="mono">${d.ipv4 ?? "—"}</td>
+        <td class="mono">${d.mac ?? "—"}</td>
+        <td class="num">${this._fmtVlan(d.vlan)}</td>
+        <td>${d.model ?? "—"}</td>
+        <td>${this._renderFirmware(d.firmware_updatable)}</td>
+        <td>${this._fmtBandwidth(d.bandwidth)}</td>
+        <td>${this._fmtLastSeen(d.last_seen)}</td>
+        <td>${this._renderMatch(d)}</td>
+      </tr>
+    `;
+  }
+
+  private _aclActionClass(action: string | null): string {
+    const a = (action ?? "").toLowerCase();
+    if (["allow", "accept", "permit"].some((x) => a.includes(x))) return "healthy";
+    if (["deny", "drop", "block", "reject"].some((x) => a.includes(x))) return "failing";
+    return "other";
+  }
+
+  private _renderAcl(acl: AclReport) {
+    return html`
+      <div class="card" id="acl-card">
+        <h3>
+          ACL Rules — Security Audit
+          <span class="muted" style="font-weight:400;font-size:12px;"
+            >— order matters; rules are evaluated top to bottom${
+              acl.endpoint ? ` · source: ${acl.endpoint}` : ""
+            }</span
+          >
+        </h3>
+        ${!acl.available
+          ? html`
+              <div class="note" style="font-size:13px;">
+                This controller's Integration API didn't return ACL / firewall rules.
+                Endpoints tried:
+                <code>${acl.endpoints_tried.join(", ") || "—"}</code>.${
+                  acl.error ? html` Last response: ${acl.error}.` : ""
+                }
+                If your controller exposes them under a different path, tell me and I'll
+                add it — the field mappings here are marked <code>VERIFY</code> in
+                <code>unifi.py</code>.
+              </div>
+            `
+          : !acl.rules.length
+            ? html`<div class="empty">No ACL rules configured (endpoint: ${acl.endpoint}).</div>`
+            : html`
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th class="num">#</th>
+                        <th>Name</th>
+                        <th>Action</th>
+                        <th>Networks</th>
+                        <th>Direction</th>
+                        <th>Protocol</th>
+                        <th>Enabled</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${acl.rules.map(
+                        (r, i) => html`
+                          <tr>
+                            <td class="num">${r.order ?? i + 1}</td>
+                            <td style="font-weight:600;">${r.name ?? "—"}</td>
+                            <td>
+                              ${r.action
+                                ? html`<span class="match ${this._aclActionClass(r.action)}" style="cursor:default;"
+                                    >${r.action}</span
+                                  >`
+                                : html`<span class="muted">—</span>`}
+                            </td>
+                            <td>
+                              ${r.networks.length
+                                ? html`<span class="chips"
+                                    >${r.networks.map((n) => html`<span class="chip">${n}</span>`)}</span
+                                  >`
+                                : html`<span class="muted">any / —</span>`}
+                            </td>
+                            <td>${r.direction ?? "—"}</td>
+                            <td>${r.protocol ?? "—"}</td>
+                            <td>
+                              ${r.enabled == null
+                                ? html`<span class="muted">—</span>`
+                                : r.enabled
+                                  ? "yes"
+                                  : html`<span class="muted">disabled</span>`}
+                            </td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="note">
+                  Order reflects evaluation precedence as returned by the controller. A
+                  later "deny" cannot override an earlier "allow" for the same traffic —
+                  read top-down when auditing.
+                </div>
+              `}
       </div>
     `;
   }
@@ -826,9 +956,7 @@ export class HaSocNetworkView extends LitElement {
       <div class="card">
         <h3>Events &amp; AI Smart Detections <span class="muted" style="font-weight:400;font-size:12px;">— last 24h</span></h3>
         ${p.events_error
-          ? html`<div class="muted" style="font-size:13px;">
-              Couldn't load events — ${p.events_error}
-            </div>`
+          ? html`<div class="note" style="font-size:13px;">${p.events_error}</div>`
           : !p.events.length
             ? html`<div class="empty">No events in the last 24 hours.</div>`
             : html`

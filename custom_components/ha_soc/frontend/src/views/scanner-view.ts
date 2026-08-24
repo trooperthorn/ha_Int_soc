@@ -4,6 +4,7 @@ import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import {
   Finding,
+  OpenPort,
   ProbeOverview,
   FirewallRule,
   FirewallRuleAction,
@@ -30,6 +31,36 @@ const SEVERITY_ORDER = ["critical", "high", "medium", "low", "info"];
 function severityRank(severity: string): number {
   const i = SEVERITY_ORDER.indexOf(severity);
   return i === -1 ? SEVERITY_ORDER.length : i;
+}
+
+// True if an IPv4 dotted-quad is in an RFC 1918 private range
+// (10/8, 172.16/12, 192.168/16). Loopback/link-local are handled separately.
+function isRfc1918(addr: string): boolean {
+  const m = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const [a, b] = [Number(m[1]), Number(m[2])];
+  if (a === 10) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 192 && b === 168) return true;
+  return false;
+}
+
+// Bind-address sort/grouping class for the Host Probe report. Lower priority
+// sorts first: 0.0.0.0 (every interface) → routable/public (NOT RFC1918) →
+// private (RFC1918) → loopback/link-local → unresolved (IPv6 not decoded).
+// A port bound to 0.0.0.0 or a public address is the security-notable case,
+// so those float to the top.
+function bindClass(addr: string | null | undefined): {
+  priority: number;
+  label: string;
+  cls: "high" | "medium" | "low" | "good" | "info";
+} {
+  if (addr === "0.0.0.0") return { priority: 0, label: "all interfaces", cls: "high" };
+  if (!addr) return { priority: 4, label: "unresolved (IPv6)", cls: "info" };
+  if (addr.startsWith("127.") || addr.startsWith("169.254."))
+    return { priority: 3, label: "loopback / link-local", cls: "good" };
+  if (isRfc1918(addr)) return { priority: 2, label: "private (RFC 1918)", cls: "low" };
+  return { priority: 1, label: "public / routable", cls: "high" };
 }
 
 @customElement("ha-soc-scanner-view")
@@ -435,41 +466,76 @@ export class HaSocScannerView extends LitElement {
               </p>
               ${!result.open_ports.length
                 ? html`<div class="empty">No listening ports reported.</div>`
-                : html`
-                    <table>
-                      <thead>
-                        <tr>
-                          <th>Port</th>
-                          <th>Protocol</th>
-                          <th>Bind address</th>
-                          <th>Interface</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        ${result.open_ports
-                          .slice()
-                          .sort((a, b) => a.port - b.port)
-                          .map(
-                            (p) => html`
-                              <tr>
-                                <td>${p.port}</td>
-                                <td>${p.proto}</td>
-                                <td class="muted">${p.address ?? "—"}</td>
-                                <td>
-                                  ${p.interface === "(all interfaces)"
-                                    ? html`<span class="pill high"
-                                        ><span class="dot"></span>all interfaces</span
-                                      >`
-                                    : html`<span class="muted">${p.interface ?? "—"}</span>`}
-                                </td>
-                              </tr>
-                            `
-                          )}
-                      </tbody>
-                    </table>
-                  `}
+                : this._renderPortsByBindAddress(result.open_ports)}
             `}
       </div>
+    `;
+  }
+
+  // Group the host's listening ports by bind address. Group order:
+  // 0.0.0.0 first, then public/routable (non-RFC1918), then private
+  // (RFC1918), then loopback/link-local, then unresolved. Ports within a
+  // group sort ascending.
+  private _renderPortsByBindAddress(ports: OpenPort[]) {
+    const groups = new Map<string, OpenPort[]>();
+    for (const p of ports) {
+      const key = p.address ?? "__unresolved__";
+      const arr = groups.get(key);
+      if (arr) arr.push(p);
+      else groups.set(key, [p]);
+    }
+    const ordered = Array.from(groups.entries()).sort((a, b) => {
+      const ca = bindClass(a[0] === "__unresolved__" ? null : a[0]);
+      const cb = bindClass(b[0] === "__unresolved__" ? null : b[0]);
+      if (ca.priority !== cb.priority) return ca.priority - cb.priority;
+      return a[0].localeCompare(b[0]);
+    });
+
+    return html`
+      <table>
+        <thead>
+          <tr>
+            <th>Port</th>
+            <th>Protocol</th>
+            <th>Interface</th>
+          </tr>
+        </thead>
+        ${ordered.map(([key, groupPorts]) => {
+          const addr = key === "__unresolved__" ? null : key;
+          const info = bindClass(addr);
+          return html`
+            <tbody>
+              <tr>
+                <td colspan="3" style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                  <strong>${addr ?? "unresolved (IPv6)"}</strong>
+                  <span class="pill ${info.cls}" style="margin-left:8px;"
+                    ><span class="dot"></span>${info.label}</span
+                  >
+                  <span class="muted" style="margin-left:8px;font-size:12px;"
+                    >${groupPorts.length} port${groupPorts.length === 1 ? "" : "s"}</span
+                  >
+                </td>
+              </tr>
+              ${groupPorts
+                .slice()
+                .sort((a, b) => a.port - b.port)
+                .map(
+                  (p) => html`
+                    <tr>
+                      <td>${p.port}</td>
+                      <td>${p.proto}</td>
+                      <td>
+                        ${p.interface === "(all interfaces)"
+                          ? html`<span class="pill high"><span class="dot"></span>all interfaces</span>`
+                          : html`<span class="muted">${p.interface ?? "—"}</span>`}
+                      </td>
+                    </tr>
+                  `
+                )}
+            </tbody>
+          `;
+        })}
+      </table>
     `;
   }
 
