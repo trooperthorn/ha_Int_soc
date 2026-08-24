@@ -119,14 +119,21 @@ class _Conn:
     base_path: str
 
     @property
-    def base_url(self) -> str:
-        # host may be "10.0.0.1", "10.0.0.1:443", or "https://10.0.0.1".
-        # Normalize to a scheme+host origin; the api path is a hardcoded
-        # constant appended here, never taken from user input.
+    def origin(self) -> str:
+        # Scheme+authority only (no path) — the base for a browser-facing
+        # console URL like https://192.168.30.2/protect/dashboard/... . host
+        # may be "10.0.0.1", "10.0.0.1:443", or "https://10.0.0.1".
         host = self.host.strip().rstrip("/")
         if "://" not in host:
             host = f"https://{host}"
-        return f"{host}{self.base_path}"
+        parsed = urlparse(host)
+        return f"{parsed.scheme}://{parsed.netloc}"
+
+    @property
+    def base_url(self) -> str:
+        # The API base: origin + the app's hardcoded integration path. The
+        # path is a constant appended here, never taken from user input.
+        return f"{self.origin}{self.base_path}"
 
 
 def _network_conn(store: HaSocData) -> _Conn | None:
@@ -600,23 +607,159 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     return result
 
 
+def _is_online_state(value: Any) -> bool:
+    return str(value).upper() in ("CONNECTED", "ONLINE", "TRUE", "1")
+
+
+def _normalize_camera(raw: dict[str, Any], origin: str) -> dict[str, Any]:
+    """One Protect device row. The ``id`` is deliberately surfaced so the UI
+    can deep-link to the console: {origin}/protect/dashboard/devices/{id}."""
+    cam_id = _first(raw, "id", "_id", "deviceId")
+    name = _first(raw, "name", "displayName", "modelKey", "model")
+    ip = _first(raw, "host", "ip", "ipAddress", "lastSeenIp", "address")
+    mac = _first(raw, "mac", "macAddress")
+
+    # VERIFY: isRecording. Protect exposes a boolean on some firmwares and a
+    # recordingSettings.mode ("always"/"detections"/"never") on others.
+    is_recording: bool | None = None
+    rec = _first(raw, "isRecording", "recording")
+    if rec is not None:
+        is_recording = bool(rec)
+    else:
+        mode = None
+        rs = raw.get("recordingSettings")
+        if isinstance(rs, dict):
+            mode = _first(rs, "mode")
+        if mode is not None:
+            is_recording = str(mode).lower() not in ("never", "off", "disabled")
+
+    last_ring = _as_epoch(_first(raw, "lastRing", "last_ring"))
+
+    # VERIFY: channels shape. Each channel typically carries a name and/or a
+    # width/height; we surface short labels + a count for the table cell.
+    channels: list[str] = []
+    channels_raw = raw.get("channels")
+    if isinstance(channels_raw, list):
+        for ch in channels_raw:
+            if not isinstance(ch, dict):
+                continue
+            label = _first(ch, "name")
+            w, h = _first(ch, "width"), _first(ch, "height")
+            if not label and w and h:
+                label = f"{w}x{h}"
+            channels.append(str(label) if label else "channel")
+
+    state = str(_first(raw, "state", "status", default="")).upper() or None
+    connected = _first(raw, "isConnected", "connected")
+    online = _is_online_state(state) if state else (bool(connected) if connected is not None else None)
+
+    return {
+        "id": str(cam_id) if cam_id else None,
+        "name": str(name) if name else (str(mac) if mac else "unknown"),
+        "ip": str(ip) if ip else None,
+        "mac": str(mac).lower() if mac else None,
+        "is_recording": is_recording,
+        "last_ring": last_ring,
+        "channels": channels,
+        "channel_count": len(channels),
+        "state": state,
+        "online": online,
+        # Browser-facing deep link into the Protect console for this device.
+        "link": f"{origin}/protect/dashboard/devices/{cam_id}" if cam_id else None,
+    }
+
+
+def _normalize_event(raw: dict[str, Any], origin: str) -> dict[str, Any]:
+    """One Protect event / AI smart-detection row."""
+    ev_id = _first(raw, "id", "_id")
+    etype = _first(raw, "type", "eventType")
+
+    sdt = raw.get("smartDetectTypes")
+    if sdt is None:
+        sdt = raw.get("smart_detect_types")
+    if sdt is None:
+        sdt = []
+    elif not isinstance(sdt, list):
+        sdt = [sdt]
+    sdt = [str(s) for s in sdt]
+
+    score = _first(raw, "score", "confidence")
+    try:
+        score = int(score) if score is not None else None
+    except (TypeError, ValueError):
+        score = None
+
+    start = _as_epoch(_first(raw, "start", "startTime", "timestamp"))
+    end = _as_epoch(_first(raw, "end", "endTime"))
+    duration = (end - start) if (start is not None and end is not None and end >= start) else None
+
+    camera_id = _first(raw, "camera", "cameraId", "device", "deviceId")
+
+    # thumbnail may be a full URL, or an id/token that needs an authenticated
+    # fetch (so it can't be embedded cross-origin). When it's just a token we
+    # link to the event's camera page on the console instead of showing a
+    # broken <img>.
+    thumbnail = _first(raw, "thumbnail", "thumbnailId", "heatmap")
+    thumb_link = None
+    if thumbnail:
+        if str(thumbnail).startswith("http"):
+            thumb_link = str(thumbnail)
+        elif camera_id and origin:
+            thumb_link = f"{origin}/protect/dashboard/devices/{camera_id}"
+
+    # licensePlate can be a bare string, or nested under metadata.
+    plate = None
+    meta = raw.get("metadata")
+    if isinstance(meta, dict):
+        lp = meta.get("licensePlate") or meta.get("license_plate")
+        if isinstance(lp, dict):
+            plate = _first(lp, "name", "value", "plate")
+        elif lp:
+            plate = str(lp)
+    if not plate:
+        plate = _first(raw, "licensePlate", "license_plate")
+
+    return {
+        "id": str(ev_id) if ev_id else None,
+        "type": str(etype) if etype else None,
+        "smart_detect_types": sdt,
+        "score": score,
+        "start": start,
+        "end": end,
+        "duration": duration,
+        "thumbnail": bool(thumbnail),
+        "thumbnail_link": thumb_link,
+        "license_plate": str(plate) if plate else None,
+        "camera": str(camera_id) if camera_id else None,
+    }
+
+
 async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
-    """Compact UniFi Protect status for the Network tab's Protect card:
-    reachable + camera counts. Best-effort, never raises."""
+    """UniFi Protect status for the Network tab: reachable + camera counts,
+    the full devices table (with console deep-links), and recent events / AI
+    smart detections. Best-effort, never raises — a failure comes back as
+    reachable=False with a reason, and the events call failing on its own
+    still returns the cameras."""
     out: dict[str, Any] = {
         "configured": False,
         "reachable": False,
         "error": None,
+        "host": None,
         "camera_count": 0,
         "cameras_online": 0,
+        "cameras": [],
+        "events": [],
+        "events_error": None,
     }
     conn = _protect_conn(store)
     if conn is None:
         return out
     out["configured"] = True
+    out["host"] = conn.origin
+
     try:
         # VERIFY: Protect Integration API camera collection path.
-        payload = await _get(hass, conn, "/cameras")
+        payload = await _get_paginated(hass, conn, "/cameras")
     except UniFiError as err:
         out["error"] = str(err)
         return out
@@ -625,13 +768,34 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
         out["error"] = f"Unexpected error: {err}"
         return out
 
-    cameras = _rows(payload)
-    online = 0
-    for cam in cameras:
-        state = str(_first(cam, "state", "status", "isConnected", default="")).upper()
-        if state in ("CONNECTED", "ONLINE", "TRUE", "1"):
-            online += 1
+    cameras = [_normalize_camera(c, conn.origin) for c in payload]
     out.update(
-        {"reachable": True, "camera_count": len(cameras), "cameras_online": online}
+        {
+            "reachable": True,
+            "camera_count": len(cameras),
+            "cameras_online": sum(1 for c in cameras if c["online"]),
+            "cameras": cameras,
+        }
     )
+
+    # Events are a separate, non-fatal call: a Protect firmware that doesn't
+    # expose the integration events endpoint still shows its cameras.
+    try:
+        now = dt_util.utcnow()
+        end_ms = int(now.timestamp() * 1000)
+        start_ms = end_ms - 24 * 3600 * 1000  # last 24h
+        # VERIFY: events path + start/end query param names.
+        events_raw = await _get_paginated(
+            hass, conn, f"/events?start={start_ms}&end={end_ms}"
+        )
+        events = [_normalize_event(e, conn.origin) for e in events_raw]
+        # Newest first.
+        events.sort(key=lambda e: e["start"] or 0, reverse=True)
+        out["events"] = events
+    except UniFiError as err:
+        out["events_error"] = str(err)
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.exception("Unexpected UniFi Protect events error")
+        out["events_error"] = f"Unexpected error: {err}"
+
     return out

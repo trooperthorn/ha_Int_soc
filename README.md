@@ -386,7 +386,20 @@ The tab shows, close to the Dashboard's layout: network status, WAN-port
 bandwidth, internet-connected, wireless-client count, per-SSID totals, and
 two tables — **Clients** and **Network Devices** — with the same columns
 (Client/Device, IPv4, IPv6, MAC, VLAN, SSID, Uptime, Bandwidth, Last Seen,
-Integration). A compact UniFi Protect card reports cameras online.
+Integration). The Clients table filters by **VLAN** and **SSID**, and
+clicking an SSID in the "Clients per SSID" card filters the table to it.
+
+**UniFi Protect** gets two tables of its own:
+
+- **Devices** — name, IP, MAC, recording state, last ring, and channels.
+  Each device name deep-links to that camera on the Protect console
+  (`https://<host>/protect/dashboard/devices/<id>`), built from the device
+  `id` the API returns.
+- **Events & AI Smart Detections** (last 24h) — event type, smart-detection
+  types, score, start, duration, thumbnail, and license plate. A thumbnail
+  that's a direct URL links out; one that needs an authenticated fetch is
+  marked "available" and links to the camera page instead of showing a
+  broken image.
 
 The **Integration column** is the point of the whole tab: every client/
 device IP is matched against every Home Assistant config entry's host, and
@@ -403,9 +416,11 @@ integration, not the network — and it's surfaced with a banner at the top.
 > legacy controller API (snake_case), and anything a given controller
 > doesn't return renders as `—` rather than being guessed. Fields most
 > likely to need confirmation against your firmware (VLAN, IPv6, SSID,
-> bandwidth, last-seen, and the WAN-port stats) are marked `# VERIFY` in
-> that module. If a column reads `—` for you, that field name is the thing
-> to confirm against your console's API response.
+> bandwidth, last-seen, the WAN-port stats, and — on the Protect side —
+> `isRecording`, `channels`, the events path, and the license-plate
+> location) are marked `# VERIFY` in that module. If a column reads `—` for
+> you, that field name is the thing to confirm against your console's API
+> response.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 

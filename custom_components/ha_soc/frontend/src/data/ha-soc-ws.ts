@@ -354,12 +354,46 @@ export interface NetworkWan {
   ip: string | null;
 }
 
+export interface ProtectCamera {
+  id: string | null;
+  name: string;
+  ip: string | null;
+  mac: string | null;
+  is_recording: boolean | null;
+  last_ring: number | null; // epoch seconds
+  channels: string[];
+  channel_count: number;
+  state: string | null;
+  online: boolean | null;
+  // Deep link into the Protect console, e.g.
+  // https://192.168.30.2/protect/dashboard/devices/<id>
+  link: string | null;
+}
+
+export interface ProtectEvent {
+  id: string | null;
+  type: string | null;
+  smart_detect_types: string[];
+  score: number | null;
+  start: number | null; // epoch seconds
+  end: number | null; // epoch seconds
+  duration: number | null; // seconds
+  thumbnail: boolean;
+  thumbnail_link: string | null;
+  license_plate: string | null;
+  camera: string | null;
+}
+
 export interface ProtectStatus {
   configured: boolean;
   reachable: boolean;
   error: string | null;
+  host: string | null;
   camera_count: number;
   cameras_online: number;
+  cameras: ProtectCamera[];
+  events: ProtectEvent[];
+  events_error: string | null;
 }
 
 export interface NetworkOverview {

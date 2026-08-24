@@ -7,6 +7,8 @@ import {
   NetworkOverview,
   NetworkClientRow,
   NetworkDeviceRow,
+  ProtectCamera,
+  ProtectEvent,
   UniFiBandwidth,
   fetchNetworkOverview,
 } from "../data/ha-soc-ws";
@@ -102,6 +104,59 @@ export class HaSocNetworkView extends LitElement {
         font-variant-numeric: tabular-nums;
         font-weight: 700;
       }
+      .ssid-row.clickable {
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 4px 6px;
+        margin: -4px -6px;
+      }
+      .ssid-row.clickable:hover {
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.04);
+      }
+      .ssid-row.active {
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.12);
+      }
+      .ssid-row.active .name {
+        color: var(--primary-color);
+      }
+      .filters {
+        display: flex;
+        gap: 8px;
+        align-items: center;
+        flex-wrap: wrap;
+        margin-bottom: 10px;
+      }
+      .filters label {
+        font-size: 12px;
+        color: var(--secondary-text-color);
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .active-filter {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        background: var(--primary-color);
+        color: #fff;
+        padding: 4px 10px;
+        border-radius: 100px;
+        cursor: pointer;
+      }
+      .thumb-link {
+        color: var(--primary-color);
+        cursor: pointer;
+        text-decoration: none;
+      }
+      .plate {
+        font-family: var(--code-font-family, monospace);
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.06);
+        padding: 2px 6px;
+        border-radius: 4px;
+      }
       .table-wrap {
         overflow-x: auto;
       }
@@ -179,6 +234,8 @@ export class HaSocNetworkView extends LitElement {
   @state() private _clientSearch = "";
   @state() private _clientPage = 0;
   @state() private _clientPageSize: number | "all" = 25;
+  @state() private _clientVlanFilter = "";
+  @state() private _clientSsidFilter = "";
   @state() private _deviceSearch = "";
   @state() private _devicePage = 0;
   @state() private _devicePageSize: number | "all" = 25;
@@ -404,16 +461,32 @@ export class HaSocNetworkView extends LitElement {
     `;
   }
 
+  // Clicking an SSID here drives the Clients table's SSID filter (toggle
+  // off if it's already the active one), then jumps down to the table.
+  private _selectSsid(ssid: string) {
+    this._clientSsidFilter = this._clientSsidFilter === ssid ? "" : ssid;
+    this._clientPage = 0;
+    if (this._clientSsidFilter) {
+      this.updateComplete.then(() => {
+        this.renderRoot?.querySelector("#clients-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    }
+  }
+
   private _renderSsid(o: NetworkOverview) {
     if (!o.clients_per_ssid.length) return nothing;
     const max = Math.max(...o.clients_per_ssid.map((s) => s.count), 1);
     return html`
       <div class="card">
-        <h3>Clients per SSID</h3>
+        <h3>Clients per SSID <span class="muted" style="font-weight:400;font-size:12px;">— click to filter the table</span></h3>
         <div class="ssid-list">
           ${o.clients_per_ssid.map(
             (s) => html`
-              <div class="ssid-row">
+              <div
+                class="ssid-row clickable ${this._clientSsidFilter === s.ssid ? "active" : ""}"
+                @click=${() => this._selectSsid(s.ssid)}
+                title="Filter Clients to ${s.ssid}"
+              >
                 <span class="name">${s.ssid}</span>
                 <span class="bar"><span style="width:${(s.count / max) * 100}%"></span></span>
                 <span class="count">${s.count}</span>
@@ -470,11 +543,61 @@ export class HaSocNetworkView extends LitElement {
   }
 
   private _renderClientsTable(o: NetworkOverview) {
-    const filtered = this._filter(o.clients, this._clientSearch);
+    // Distinct VLAN / SSID option lists, drawn from the live client set.
+    const vlans = Array.from(
+      new Set(o.clients.map((c) => (c.vlan == null || c.vlan === "" ? null : String(c.vlan))).filter(Boolean))
+    ).sort((a, b) => Number(a) - Number(b)) as string[];
+    const ssids = Array.from(
+      new Set(o.clients.map((c) => c.ssid).filter(Boolean))
+    ).sort() as string[];
+
+    let filtered = this._filter(o.clients, this._clientSearch);
+    if (this._clientVlanFilter)
+      filtered = filtered.filter((c) => String(c.vlan ?? "") === this._clientVlanFilter);
+    if (this._clientSsidFilter) filtered = filtered.filter((c) => c.ssid === this._clientSsidFilter);
+
     const page = this._paginate(filtered, this._clientPage, this._clientPageSize);
     return html`
-      <div class="card">
+      <div class="card" id="clients-card">
         <h3>Clients (${filtered.length})</h3>
+        <div class="filters">
+          <label
+            >VLAN
+            <select
+              .value=${this._clientVlanFilter}
+              @change=${(e: Event) => {
+                this._clientVlanFilter = (e.target as HTMLSelectElement).value;
+                this._clientPage = 0;
+              }}
+            >
+              <option value="">All</option>
+              ${vlans.map((v) => html`<option value=${v} ?selected=${v === this._clientVlanFilter}>${v}</option>`)}
+            </select>
+          </label>
+          <label
+            >SSID
+            <select
+              .value=${this._clientSsidFilter}
+              @change=${(e: Event) => {
+                this._clientSsidFilter = (e.target as HTMLSelectElement).value;
+                this._clientPage = 0;
+              }}
+            >
+              <option value="">All</option>
+              ${ssids.map((s) => html`<option value=${s} ?selected=${s === this._clientSsidFilter}>${s}</option>`)}
+            </select>
+          </label>
+          ${this._clientVlanFilter
+            ? html`<span class="active-filter" @click=${() => (this._clientVlanFilter = "")}
+                >VLAN ${this._clientVlanFilter} ✕</span
+              >`
+            : nothing}
+          ${this._clientSsidFilter
+            ? html`<span class="active-filter" @click=${() => (this._clientSsidFilter = "")}
+                >SSID ${this._clientSsidFilter} ✕</span
+              >`
+            : nothing}
+        </div>
         <div class="toolbar">
           <input
             type="text"
@@ -598,25 +721,162 @@ export class HaSocNetworkView extends LitElement {
   private _renderProtectCard(o: NetworkOverview) {
     const p = o.protect;
     if (!p.configured) return nothing;
+    if (!p.reachable)
+      return html`
+        <div class="card">
+          <h3>UniFi Protect</h3>
+          <div class="muted" style="font-size:13px;">
+            Configured but not reachable${p.error ? html` — ${p.error}` : ""}.
+          </div>
+        </div>
+      `;
     return html`
       <div class="card">
-        <h3>UniFi Protect</h3>
-        ${!p.reachable
+        <h3>
+          UniFi Protect
+          <span class="muted" style="font-weight:400;font-size:12px;">
+            —
+            <span class="dot ${p.cameras_online === p.camera_count ? "good" : "bad"}"></span>
+            ${p.cameras_online} / ${p.camera_count} cameras online
+          </span>
+        </h3>
+        ${this._renderProtectDevices(p.cameras)}
+      </div>
+      ${this._renderProtectEvents(p)}
+    `;
+  }
+
+  private _renderProtectDevices(cameras: ProtectCamera[]) {
+    if (!cameras.length) return html`<div class="empty">No Protect devices reported.</div>`;
+    return html`
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>IP</th>
+              <th>MAC</th>
+              <th>Recording</th>
+              <th>Last Ring</th>
+              <th>Channels</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${cameras.map(
+              (c) => html`
+                <tr>
+                  <td>
+                    <div style="font-weight:600;">
+                      ${c.link
+                        ? html`<a class="thumb-link" href=${c.link} target="_blank" rel="noopener"
+                            >${c.name} ↗</a
+                          >`
+                        : c.name}
+                    </div>
+                    ${c.state
+                      ? html`<div class="muted" style="font-size:11px;">${c.state.toLowerCase()}</div>`
+                      : nothing}
+                  </td>
+                  <td class="mono">${c.ip ?? "—"}</td>
+                  <td class="mono">${c.mac ?? "—"}</td>
+                  <td>
+                    ${c.is_recording == null
+                      ? html`<span class="muted">—</span>`
+                      : c.is_recording
+                        ? html`<span class="dot bad"></span>Recording`
+                        : html`<span class="muted">Off</span>`}
+                  </td>
+                  <td>${this._fmtLastSeen(c.last_ring)}</td>
+                  <td title=${c.channels.join(", ")}>
+                    ${c.channel_count
+                      ? `${c.channel_count}${c.channels.length ? ` (${c.channels.join(", ")})` : ""}`
+                      : "—"}
+                  </td>
+                  <td>
+                    ${c.link
+                      ? html`<a class="thumb-link" href=${c.link} target="_blank" rel="noopener">Open ↗</a>`
+                      : nothing}
+                  </td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        Device names link to that camera on the Protect console
+        (<code>https://&lt;host&gt;/protect/dashboard/devices/&lt;id&gt;</code>).
+      </div>
+    `;
+  }
+
+  private _fmtDuration(seconds: number | null): string {
+    if (seconds == null) return "—";
+    if (seconds < 60) return `${seconds}s`;
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    if (m < 60) return `${m}m ${s}s`;
+    const h = Math.floor(m / 60);
+    return `${h}h ${m % 60}m`;
+  }
+
+  private _renderProtectEvents(p: NetworkOverview["protect"]) {
+    return html`
+      <div class="card">
+        <h3>Events &amp; AI Smart Detections <span class="muted" style="font-weight:400;font-size:12px;">— last 24h</span></h3>
+        ${p.events_error
           ? html`<div class="muted" style="font-size:13px;">
-              Configured but not reachable${p.error ? html` — ${p.error}` : ""}.
+              Couldn't load events — ${p.events_error}
             </div>`
-          : html`
-              <div class="stat-row" style="margin-bottom:0;">
-                <div class="stat-tile">
-                  <div class="label">Cameras Online</div>
-                  <div class="value">
-                    <span class="dot ${p.cameras_online === p.camera_count ? "good" : "bad"}"></span>${
-                      p.cameras_online
-                    } / ${p.camera_count}
-                  </div>
+          : !p.events.length
+            ? html`<div class="empty">No events in the last 24 hours.</div>`
+            : html`
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Type</th>
+                        <th>Smart Detections</th>
+                        <th class="num">Score</th>
+                        <th>Start</th>
+                        <th class="num">Duration</th>
+                        <th>Thumbnail</th>
+                        <th>License Plate</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${p.events.map(
+                        (e) => html`
+                          <tr>
+                            <td>${e.type ?? "—"}</td>
+                            <td>
+                              ${e.smart_detect_types.length
+                                ? html`<span class="chips"
+                                    >${e.smart_detect_types.map((t) => html`<span class="chip">${t}</span>`)}</span
+                                  >`
+                                : html`<span class="muted">—</span>`}
+                            </td>
+                            <td class="num">${e.score == null ? "—" : e.score}</td>
+                            <td>${this._fmtLastSeen(e.start)}</td>
+                            <td class="num">${this._fmtDuration(e.duration)}</td>
+                            <td>
+                              ${e.thumbnail_link
+                                ? html`<a class="thumb-link" href=${e.thumbnail_link} target="_blank" rel="noopener"
+                                    >view ↗</a
+                                  >`
+                                : e.thumbnail
+                                  ? html`<span class="muted" title="Thumbnail exists but needs an authenticated fetch">available</span>`
+                                  : html`<span class="muted">—</span>`}
+                            </td>
+                            <td>${e.license_plate ? html`<span class="plate">${e.license_plate}</span>` : html`<span class="muted">—</span>`}</td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
                 </div>
-              </div>
-            `}
+              `}
       </div>
     `;
   }

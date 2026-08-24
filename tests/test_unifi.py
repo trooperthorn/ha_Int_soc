@@ -37,8 +37,10 @@ from custom_components.ha_soc.unifi import (
     _derive_wan,
     _first,
     _hosts_from_value,
+    _normalize_camera,
     _normalize_client,
     _normalize_device,
+    _normalize_event,
     async_network_overview,
     async_protect_status,
 )
@@ -313,20 +315,113 @@ async def test_protect_not_configured(hass: HomeAssistant, store: HaSocData) -> 
     assert out["reachable"] is False
 
 
+def _dispatch_protect(cameras, events):
+    async def _side_effect(hass, conn, path):
+        if path.startswith("/cameras"):
+            return {"data": cameras}
+        if path.startswith("/events"):
+            return {"data": events}
+        raise AssertionError(f"unexpected path {path}")
+
+    return _side_effect
+
+
 async def test_protect_status_counts_online_cameras(
     hass: HomeAssistant, store: HaSocData
 ) -> None:
     store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
-    cameras = {
-        "data": [
-            {"name": "front", "state": "CONNECTED"},
-            {"name": "back", "state": "DISCONNECTED"},
-            {"name": "side", "state": "CONNECTED"},
-        ]
-    }
-    with patch.object(unifi, "_get", new=AsyncMock(return_value=cameras)):
+    cameras = [
+        {"name": "front", "state": "CONNECTED"},
+        {"name": "back", "state": "DISCONNECTED"},
+        {"name": "side", "state": "CONNECTED"},
+    ]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
         out = await async_protect_status(hass, store)
     assert out["configured"] is True
     assert out["reachable"] is True
     assert out["camera_count"] == 3
     assert out["cameras_online"] == 2
+    assert out["host"] == "https://10.0.0.1"
+
+
+async def test_protect_camera_deep_link_and_fields(
+    hass: HomeAssistant, store: HaSocData
+) -> None:
+    store.async_update_settings(unifi_protect_host="192.168.30.2", unifi_protect_api_key="k")
+    cameras = [
+        {
+            "id": "68ebc36300ac5703e40232d0",
+            "name": "Front Door",
+            "ip": "192.168.30.50",
+            "mac": "AA:BB:CC:11:22:33",
+            "isRecording": True,
+            "lastRing": 1_690_000_000,
+            "channels": [{"name": "High", "width": 3840, "height": 2160}, {"name": "Low"}],
+            "state": "CONNECTED",
+        }
+    ]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
+        out = await async_protect_status(hass, store)
+
+    cam = out["cameras"][0]
+    # The exact deep-link format the user asked for.
+    assert cam["link"] == "https://192.168.30.2/protect/dashboard/devices/68ebc36300ac5703e40232d0"
+    assert cam["ip"] == "192.168.30.50"
+    assert cam["mac"] == "aa:bb:cc:11:22:33"
+    assert cam["is_recording"] is True
+    assert cam["last_ring"] == 1_690_000_000
+    assert cam["channel_count"] == 2
+    assert cam["channels"] == ["High", "Low"]
+
+
+def test_normalize_camera_recording_from_mode() -> None:
+    """isRecording derived from recordingSettings.mode when no boolean field."""
+    on = _normalize_camera({"id": "x", "recordingSettings": {"mode": "always"}}, "https://h")
+    off = _normalize_camera({"id": "y", "recordingSettings": {"mode": "never"}}, "https://h")
+    unknown = _normalize_camera({"id": "z"}, "https://h")
+    assert on["is_recording"] is True
+    assert off["is_recording"] is False
+    assert unknown["is_recording"] is None
+
+
+def test_normalize_event_smart_detection_and_plate() -> None:
+    raw = {
+        "id": "ev1",
+        "type": "smartDetectZone",
+        "smartDetectTypes": ["vehicle", "licensePlate"],
+        "score": 92,
+        "start": 1_690_000_000,
+        "end": 1_690_000_012,
+        "camera": "cam1",
+        "thumbnail": "thumbtoken",
+        "metadata": {"licensePlate": {"name": "ABC1234"}},
+    }
+    row = _normalize_event(raw, "https://192.168.30.2")
+    assert row["type"] == "smartDetectZone"
+    assert row["smart_detect_types"] == ["vehicle", "licensePlate"]
+    assert row["score"] == 92
+    assert row["duration"] == 12
+    assert row["license_plate"] == "ABC1234"
+    assert row["thumbnail"] is True
+    # A token (not a URL) links to the camera's console page.
+    assert row["thumbnail_link"] == "https://192.168.30.2/protect/dashboard/devices/cam1"
+
+
+async def test_protect_events_error_still_returns_cameras(
+    hass: HomeAssistant, store: HaSocData
+) -> None:
+    """A failing events call must not wipe out the cameras table."""
+    store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
+
+    async def _side_effect(hass, conn, path):
+        if path.startswith("/cameras"):
+            return {"data": [{"id": "c1", "name": "cam", "state": "CONNECTED"}]}
+        raise UniFiError("events endpoint not found")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
+        out = await async_protect_status(hass, store)
+
+    assert out["reachable"] is True
+    assert out["camera_count"] == 1
+    assert out["events"] == []
+    assert out["events_error"] == "events endpoint not found"
