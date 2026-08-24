@@ -61,6 +61,14 @@ imply otherwise.
   **account owner only**; a setting (Settings tab or the native Configure
   dialog) can open it to every administrator. Enforced server-side on each
   command, not just on sidebar visibility.
+- **Network (UniFi Network / Protect)** — a Dashboard-style tab that talks
+  directly to a UniFi console over the LAN with a local API key (read-only):
+  network/internet status, WAN-port bandwidth, wireless-client and per-SSID
+  counts, and Clients / Network Devices tables. Every client and device IP
+  is correlated against Home Assistant's own config-entry hosts, so an
+  integration whose device is a live client but whose config entry is
+  failing to load is flagged **⚠ failing** — the "an integration IP is
+  failing" signal. See below.
 - **Host Probe (optional add-on)** — real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
@@ -359,6 +367,60 @@ See [`custom_components/ha_soc/firewall.py`](custom_components/ha_soc/firewall.p
 module docstring for the full state machine and
 [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md)'s "Firewall rules" section
 for the add-on side of the same design.
+
+## Network tab (UniFi Network / Protect)
+
+The **Network** tab talks directly to a UniFi console over your LAN with a
+**local API key** (UniFi OS → Settings → Control Plane → Integrations),
+using an `X-API-KEY` header — no cloud round-trip, no second add-on, and
+nothing ever leaves your network. It is entirely **read-only**: it lists
+clients and network devices and derives a WAN/internet status; it never
+changes controller state.
+
+Configure it in **Settings** (owner-only), where UniFi Network and UniFi
+Protect each get a host, a local API key (stored as a secret — masked in
+the API, redacted in the audit log), and a TLS-verify toggle (off by
+default, since consoles ship a self-signed certificate).
+
+The tab shows, close to the Dashboard's layout: network status, WAN-port
+bandwidth, internet-connected, wireless-client count, per-SSID totals, and
+two tables — **Clients** and **Network Devices** — with the same columns
+(Client/Device, IPv4, IPv6, MAC, VLAN, SSID, Uptime, Bandwidth, Last Seen,
+Integration). The Clients table filters by **VLAN** and **SSID**, and
+clicking an SSID in the "Clients per SSID" card filters the table to it.
+
+**UniFi Protect** gets two tables of its own:
+
+- **Devices** — name, IP, MAC, recording state, last ring, and channels.
+  Each device name deep-links to that camera on the Protect console
+  (`https://<host>/protect/dashboard/devices/<id>`), built from the device
+  `id` the API returns.
+- **Events & AI Smart Detections** (last 24h) — event type, smart-detection
+  types, score, start, duration, thumbnail, and license plate. A thumbnail
+  that's a direct URL links out; one that needs an authenticated fetch is
+  marked "available" and links to the camera page instead of showing a
+  broken image.
+
+The **Integration column** is the point of the whole tab: every client/
+device IP is matched against every Home Assistant config entry's host, and
+when a matched integration's config entry is in a setup-error/retry state
+the row is flagged **⚠ failing**. A device that's a live client on the
+network but whose integration won't load is exactly the "an integration IP
+is failing" case — the device is reachable, so the fault is the
+integration, not the network — and it's surfaced with a banner at the top.
+
+> **Field-mapping caveat.** Ubiquiti's local API field names could not be
+> verified against a live controller while building this, so
+> [`unifi.py`](custom_components/ha_soc/unifi.py) resolves every field from a
+> list of candidate names spanning the Integration API (camelCase) and the
+> legacy controller API (snake_case), and anything a given controller
+> doesn't return renders as `—` rather than being guessed. Fields most
+> likely to need confirmation against your firmware (VLAN, IPv6, SSID,
+> bandwidth, last-seen, the WAN-port stats, and — on the Protect side —
+> `isRecording`, `channels`, the events path, and the license-plate
+> location) are marked `# VERIFY` in that module. If a column reads `—` for
+> you, that field name is the thing to confirm against your console's API
+> response.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 

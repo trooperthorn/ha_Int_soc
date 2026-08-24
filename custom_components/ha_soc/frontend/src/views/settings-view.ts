@@ -81,7 +81,11 @@ export class HaSocSettingsView extends LitElement {
   // Secret fields are never pre-filled with their value (the backend only
   // ever sends a mask). An empty, untouched field never fires @change, so
   // it can't accidentally clear a stored secret; typing a value sets it.
-  private _renderSecretField(label: string, key: "nvd_api_key" | "github_token", isSet: boolean) {
+  private _renderSecretField(
+    label: string,
+    key: "nvd_api_key" | "github_token" | "unifi_network_api_key" | "unifi_protect_api_key",
+    isSet: boolean
+  ) {
     return html`
       <label class="settings-row">
         <span>${label}</span>
@@ -236,6 +240,80 @@ export class HaSocSettingsView extends LitElement {
           popularity, and archived-status signals for integrations with a known GitHub repo.
         </p>
         ${this._renderSecretField("GitHub API token (optional)", "github_token", !!s.github_token_set)}
+      </div>
+
+      <div class="card">
+        <h3>UniFi Network</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Connects directly to a UniFi console over your LAN with a
+          <strong>local API key</strong> (UniFi OS → Settings → Control Plane →
+          Integrations) to populate the <strong>Network</strong> tab — status, WAN
+          throughput, clients, and network devices. Read-only; nothing is ever changed
+          on the controller, and no data leaves your network.
+        </p>
+        <label class="settings-row">
+          <span>Controller host or IP</span>
+          <input
+            type="text"
+            placeholder="e.g. 192.168.1.1"
+            .value=${s.unifi_network_host ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("unifi_network_host", v ? v : null);
+            }}
+          />
+        </label>
+        ${this._renderSecretField("Local API key", "unifi_network_api_key", !!s.unifi_network_api_key_set)}
+        <label class="settings-row">
+          <span>
+            Verify TLS certificate
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default — UniFi consoles ship a self-signed certificate.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.unifi_network_verify_ssl}
+            @change=${(e: Event) =>
+              this._update("unifi_network_verify_ssl", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>UniFi Protect</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          A second local API key for a UniFi Protect console, surfaced as a compact
+          camera-status card on the Network tab. Same local-only, read-only posture as
+          Network above.
+        </p>
+        <label class="settings-row">
+          <span>Protect host or IP</span>
+          <input
+            type="text"
+            placeholder="e.g. 192.168.1.1"
+            .value=${s.unifi_protect_host ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("unifi_protect_host", v ? v : null);
+            }}
+          />
+        </label>
+        ${this._renderSecretField("Local API key", "unifi_protect_api_key", !!s.unifi_protect_api_key_set)}
+        <label class="settings-row">
+          <span>
+            Verify TLS certificate
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default — UniFi consoles ship a self-signed certificate.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.unifi_protect_verify_ssl}
+            @change=${(e: Event) =>
+              this._update("unifi_protect_verify_ssl", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
       </div>
 
       <div class="card">

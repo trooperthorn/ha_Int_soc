@@ -996,10 +996,10 @@ export class HaSocDashboardView extends LitElement {
                 >
                   <div class="label">${label}</div>
                   <div class="value" style="color:${problems ? "var(--error-color,#db4437)" : "inherit"}">
-                    ${rows.length}
+                    ${problems}
                   </div>
                   <div class="sub">
-                    ${problems ? `${problems} problem${problems === 1 ? "" : "s"}` : "none reporting a problem"}${lowBattery ? `, ${lowBattery} low battery` : ""}
+                    ${rows.length} total${lowBattery ? `, ${lowBattery} low battery` : ""}
                   </div>
                 </div>
               `;
@@ -1022,14 +1022,10 @@ export class HaSocDashboardView extends LitElement {
       >
         <div class="label">Local Peripherals</div>
         <div class="value" style="color:${p.unassigned_count ? "var(--status-warning)" : "inherit"}">
-          ${p.total_count}
+          ${p.total_count ? p.unassigned_count : 0}
         </div>
         <div class="sub">
-          ${p.total_count
-            ? p.unassigned_count
-              ? `${p.unassigned_count} unassigned`
-              : "none unassigned"
-            : "no USB serial devices detected"}
+          ${p.total_count ? `${p.total_count} total` : "no USB serial devices detected"}
         </div>
       </div>
     `;

@@ -3,6 +3,7 @@
  * boundaries up to <ha-soc-panel>, which owns the actual tab state. */
 export type SocTab =
   | "dashboard"
+  | "network"
   | "users"
   | "audit"
   | "permissions"

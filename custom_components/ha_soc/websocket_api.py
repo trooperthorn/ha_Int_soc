@@ -40,6 +40,12 @@ from .const import (
     CONF_SCANNER_ENABLED,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
+    CONF_UNIFI_NETWORK_API_KEY,
+    CONF_UNIFI_NETWORK_HOST,
+    CONF_UNIFI_NETWORK_VERIFY_SSL,
+    CONF_UNIFI_PROTECT_API_KEY,
+    CONF_UNIFI_PROTECT_HOST,
+    CONF_UNIFI_PROTECT_VERIFY_SSL,
     DEFAULT_ACCESS_LEVEL,
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
@@ -165,6 +171,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_reset_pairing,
         ws_integration_security_list,
         ws_integration_security_refresh,
+        ws_network_overview,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -1192,6 +1199,26 @@ async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: 
 
 
 # ----------------------------------------------------------------------------
+# Network — UniFi Network / Protect direct-to-console read-only overview.
+# One snapshot command backs the whole Network tab (status, WAN, clients,
+# devices, Protect summary). Never mutates controller state; a connection
+# problem comes back as reachable=False with a human-readable reason rather
+# than a WS error, so the tab renders a "not reachable" card, not a failure.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/network/overview"})
+@websocket_api.async_response
+async def ws_network_overview(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .unifi import async_network_overview
+
+    runtime = _runtime(hass)
+    overview = await async_network_overview(hass, runtime.store)
+    connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
 # Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
 # carry the security-sensitive controls (access level, API credentials), so
 # they are reachable by the account owner alone, regardless of access_level.
@@ -1239,6 +1266,15 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
         vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
         vol.Optional(CONF_SECURITY_SOURCES_ENABLED): {str: bool},
+        # UniFi Network / Protect connections. Hosts accept a string or None
+        # (None/"" clears the connection); the API keys are secrets handled
+        # by the placeholder-means-unchanged logic below.
+        vol.Optional(CONF_UNIFI_NETWORK_HOST): vol.Any(str, None),
+        vol.Optional(CONF_UNIFI_NETWORK_API_KEY): str,
+        vol.Optional(CONF_UNIFI_NETWORK_VERIFY_SSL): bool,
+        vol.Optional(CONF_UNIFI_PROTECT_HOST): vol.Any(str, None),
+        vol.Optional(CONF_UNIFI_PROTECT_API_KEY): str,
+        vol.Optional(CONF_UNIFI_PROTECT_VERIFY_SSL): bool,
     }
 )
 @websocket_api.async_response

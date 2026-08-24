@@ -66,11 +66,36 @@ CONF_NVD_API_KEY = "nvd_api_key"
 CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
 
+# -- UniFi Network / Protect (local API keys, direct to the devices) ------
+# The user provides a local controller host and an API key (UniFi OS →
+# Control Plane → Integrations / API), and HA SOC calls the console
+# directly over the LAN with an X-API-KEY header. See unifi.py.
+CONF_UNIFI_NETWORK_HOST = "unifi_network_host"
+CONF_UNIFI_NETWORK_API_KEY = "unifi_network_api_key"
+CONF_UNIFI_NETWORK_VERIFY_SSL = "unifi_network_verify_ssl"
+CONF_UNIFI_PROTECT_HOST = "unifi_protect_host"
+CONF_UNIFI_PROTECT_API_KEY = "unifi_protect_api_key"
+CONF_UNIFI_PROTECT_VERIFY_SSL = "unifi_protect_verify_ssl"
+
+# UniFi consoles ship a self-signed certificate by default, so SSL
+# verification defaults OFF for a direct-to-LAN connection — the same
+# default Home Assistant's own official UniFi integration uses. A user
+# fronting the console with a real cert can turn it back on per connection.
+DEFAULT_UNIFI_VERIFY_SSL = False
+
+# Local UniFi OS reverse-proxy prefixes. The console exposes each app's
+# Integration API under /proxy/<app>/integration/v1 (a hardcoded literal —
+# only the host comes from the user, never this path). See unifi.py.
+UNIFI_NETWORK_API_PATH = "/proxy/network/integration/v1"
+UNIFI_PROTECT_API_PATH = "/proxy/protect/integration/v1"
+
 # Settings keys whose values are secrets — never logged verbatim, never
 # returned raw to the frontend. audit.py redacts these inside async_log()
 # itself, and ws_settings_get returns a boolean "is set" flag for each
 # instead of the value. Add every future credential-shaped setting here.
-SECRET_SETTING_KEYS: frozenset[str] = frozenset({CONF_NVD_API_KEY, CONF_GITHUB_TOKEN})
+SECRET_SETTING_KEYS: frozenset[str] = frozenset(
+    {CONF_NVD_API_KEY, CONF_GITHUB_TOKEN, CONF_UNIFI_NETWORK_API_KEY, CONF_UNIFI_PROTECT_API_KEY}
+)
 REDACTED_PLACEHOLDER = "[redacted]"
 
 # -- Severity vocabulary shared by vulns / misconfig / detections / scanner
