@@ -60,24 +60,35 @@ _LICENSE_NAMES = ("LICENSE", "LICENSE.md", "LICENSE.txt", "COPYING", "COPYING.md
 _GITHUB_REPO_RE = re.compile(r"github\.com/([^/\s]+)/([^/\s#?]+)")
 
 
-def _list_custom_component_domains(hass: HomeAssistant) -> list[str]:
-    """Every directory under custom_components/ that looks like an
-    integration (has a manifest.json). This is the population that most
-    needs a provenance view — the code a user added themselves."""
-    root = hass.config.path("custom_components")
+def _license_present_sync(path: str) -> bool:
+    return any(os.path.isfile(os.path.join(path, name)) for name in _LICENSE_NAMES)
+
+
+def _scan_custom_components_sync(root: str) -> tuple[list[str], dict[str, bool]]:
+    """One pass over custom_components/: every directory that looks like an
+    integration (has a manifest.json) — the population that most needs a
+    provenance view — plus whether each carries a license file (signal 8).
+
+    Synchronous disk I/O, so this must ONLY ever run in the executor (the
+    overview below calls it via async_add_executor_job), never on the event
+    loop: Home Assistant's asyncio protection rightly flags a bare listdir
+    there, and on a slow SD card it would stall the entire loop every time
+    the Integration Security tab is opened. Doing the license check in the
+    same pass also collapses what used to be one executor hop per custom
+    integration into a single scan.
+    """
     if not os.path.isdir(root):
-        return []
+        return [], {}
     domains: list[str] = []
+    licenses: dict[str, bool] = {}
     for name in os.listdir(root):
         if name.startswith((".", "_")):
             continue
-        if os.path.isfile(os.path.join(root, name, "manifest.json")):
+        path = os.path.join(root, name)
+        if os.path.isfile(os.path.join(path, "manifest.json")):
             domains.append(name)
-    return sorted(domains)
-
-
-def _license_present_sync(path: str) -> bool:
-    return any(os.path.isfile(os.path.join(path, name)) for name in _LICENSE_NAMES)
+            licenses[name] = _license_present_sync(path)
+    return sorted(domains), licenses
 
 
 def _repo_url_from_integration(documentation: str | None, issue_tracker: str | None) -> str | None:
@@ -139,7 +150,10 @@ async def async_integration_security_overview(
     hacs_origins = _hacs_domain_origins(hass)
     hacs_installed = hacs_origins is not None or "hacs" in hass.config.components
 
-    custom_domains = _list_custom_component_domains(hass)
+    # Disk I/O off the event loop — see _scan_custom_components_sync.
+    custom_domains, license_map = await hass.async_add_executor_job(
+        _scan_custom_components_sync, hass.config.path("custom_components")
+    )
     # Also include core domains that have an active config entry, so the
     # view isn't custom-only — a user should see their whole surface.
     entry_domains = {entry.domain for entry in hass.config_entries.async_entries()}
@@ -184,8 +198,14 @@ async def async_integration_security_overview(
 
         license_present: bool | None
         if is_custom:
-            path = hass.config.path("custom_components", domain)
-            license_present = await hass.async_add_executor_job(_license_present_sync, path)
+            # Precomputed by the single executor scan above for anything that
+            # actually lives under custom_components/; the fallback covers a
+            # custom domain resolved from elsewhere (shouldn't happen, but a
+            # wrong answer here would be worse than one extra executor hop).
+            license_present = license_map.get(domain)
+            if license_present is None:
+                path = hass.config.path("custom_components", domain)
+                license_present = await hass.async_add_executor_job(_license_present_sync, path)
         else:
             license_present = True  # core inherits HA's own license
 

@@ -14,7 +14,7 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-SCANNER_VERSION="2026.08.24.4"
+SCANNER_VERSION="2026.08.26.1"
 
 SCAN_INTERVAL_HOURS=$(bashio::config 'scan_interval_hours')
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"

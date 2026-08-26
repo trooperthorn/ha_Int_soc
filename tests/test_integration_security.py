@@ -227,3 +227,63 @@ async def test_ws_refresh_without_token_reports_noop(
     assert result["ok"] is False
     assert result["reason"] == "no_github_token"
     mock_fetch.assert_not_called()
+
+
+# -- 7: the custom_components disk scan must never run on the event loop -----
+# Regression for a real deployment log: HA's asyncio protection flagged
+# "Detected blocking call to listdir ... inside the event loop" at
+# integration_security.py's os.listdir. The scan (and the license checks
+# folded into it) must go through async_add_executor_job.
+
+
+async def test_custom_components_scan_runs_in_executor(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    import threading
+
+    from custom_components.ha_soc import integration_security as mod
+
+    loop_thread = threading.get_ident()
+    scan_threads: list[int] = []
+    real_scan = mod._scan_custom_components_sync
+
+    def _spy(root: str):
+        scan_threads.append(threading.get_ident())
+        return real_scan(root)
+
+    # patch with new= (a bare function), NOT side_effect=: the test harness's
+    # async_add_executor_job deliberately runs Mock targets inline on the loop
+    # (pytest_homeassistant_custom_component common.py), which would make this
+    # thread assertion meaningless for a MagicMock.
+    with patch.object(mod, "_scan_custom_components_sync", new=_spy):
+        await async_integration_security_overview(hass, entry.runtime_data.store)
+
+    assert scan_threads, "the custom_components scan was never invoked"
+    assert all(tid != loop_thread for tid in scan_threads), (
+        "disk scan executed on the event-loop thread — must go through "
+        "async_add_executor_job"
+    )
+
+
+def test_scan_custom_components_sync_behavior(tmp_path) -> None:
+    """The scan itself: manifest-bearing dirs only, dot/underscore skipped,
+    license presence computed in the same pass."""
+    from custom_components.ha_soc.integration_security import (
+        _scan_custom_components_sync,
+    )
+
+    root = tmp_path / "custom_components"
+    (root / "with_license").mkdir(parents=True)
+    (root / "with_license" / "manifest.json").write_text("{}")
+    (root / "with_license" / "LICENSE").write_text("MIT")
+    (root / "no_license").mkdir()
+    (root / "no_license" / "manifest.json").write_text("{}")
+    (root / "not_an_integration").mkdir()  # no manifest -> skipped
+    (root / "__pycache__").mkdir()  # underscore prefix -> skipped
+
+    domains, licenses = _scan_custom_components_sync(str(root))
+    assert domains == ["no_license", "with_license"]
+    assert licenses == {"no_license": False, "with_license": True}
+
+    # Missing root: empty result, never an exception.
+    assert _scan_custom_components_sync(str(tmp_path / "nope")) == ([], {})
