@@ -54,6 +54,7 @@ from .const import (
     SECRET_SETTING_KEYS,
     SEVERITY_ORDER,
     SIGNAL_UPDATE,
+    WATCHDOG_ACTIONS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -172,6 +173,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_integration_security_list,
         ws_integration_security_refresh,
         ws_containers_resources,
+        ws_watchdog_status,
+        ws_watchdog_set,
         ws_network_overview,
         ws_settings_get,
         ws_settings_set,
@@ -1208,6 +1211,109 @@ async def ws_containers_resources(hass: HomeAssistant, connection, msg: dict) ->
     from .containers import async_container_resources
 
     connection.send_result(msg["id"], await async_container_resources(hass))
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/watchdog/status"})
+@websocket_api.async_response
+async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Watchdog config + per-container runtime state (breach counters, last
+    outcome, in-memory usage history) + hard-cap applied state."""
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], runtime.watchdog.status())
+
+
+# The watchdog and hard-cap configuration are enforcement controls — a bad
+# threshold auto-restarts add-ons, a hard cap changes host containers — so
+# mutation is OWNER-ONLY like Settings, regardless of access_level.
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/watchdog/set",
+        vol.Optional("enabled"): bool,
+        vol.Optional("default_cpu_percent"): vol.All(vol.Coerce(int), vol.Range(min=10, max=100)),
+        vol.Optional("default_memory_percent"): vol.All(vol.Coerce(int), vol.Range(min=10, max=100)),
+        vol.Optional("default_action"): vol.In(WATCHDOG_ACTIONS),
+        vol.Optional("sustained_samples"): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
+        vol.Optional("interval_seconds"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
+        # Per-container override — slug + any subset of the fields; passing
+        # clear=True removes the override entirely (back to defaults).
+        vol.Optional("override"): vol.Schema(
+            {
+                vol.Required("slug"): str,
+                vol.Optional("cpu_percent"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=10, max=100))),
+                vol.Optional("memory_percent"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=10, max=100))),
+                vol.Optional("action"): vol.In(WATCHDOG_ACTIONS),
+                vol.Optional("enabled"): bool,
+                vol.Optional("clear"): bool,
+            }
+        ),
+        # Docker hard cap for one add-on — memory_mb/cpus of None (or both
+        # missing) clears the cap. Applied by the Probe, not by Core.
+        vol.Optional("hard_limit"): vol.Schema(
+            {
+                vol.Required("slug"): str,
+                vol.Optional("memory_mb"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=64, max=1_048_576))),
+                vol.Optional("cpus"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0.1, max=64.0))),
+            }
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    cfg = runtime.store.data["resource_watchdog"]
+    changes: dict[str, Any] = {}
+
+    for key in (
+        "enabled",
+        "default_cpu_percent",
+        "default_memory_percent",
+        "default_action",
+        "sustained_samples",
+        "interval_seconds",
+    ):
+        if key in msg:
+            cfg[key] = msg[key]
+            changes[key] = msg[key]
+
+    if "override" in msg:
+        ov = dict(msg["override"])
+        slug = ov.pop("slug")
+        if ov.pop("clear", False):
+            cfg.setdefault("overrides", {}).pop(slug, None)
+            changes["override_cleared"] = slug
+        else:
+            entry = cfg.setdefault("overrides", {}).setdefault(slug, {})
+            entry.update(ov)
+            changes["override"] = {"slug": slug, **ov}
+
+    if "hard_limit" in msg:
+        hl = dict(msg["hard_limit"])
+        slug = hl.pop("slug")
+        if not hl.get("memory_mb") and not hl.get("cpus"):
+            cfg.setdefault("hard_limits", {}).pop(slug, None)
+            # Stale applied-state would read as "still capped" — drop it too.
+            cfg.setdefault("hard_limit_state", {}).pop(slug, None)
+            changes["hard_limit_cleared"] = slug
+        else:
+            cfg.setdefault("hard_limits", {})[slug] = {
+                "memory_mb": hl.get("memory_mb"),
+                "cpus": hl.get("cpus"),
+            }
+            changes["hard_limit"] = {"slug": slug, **hl}
+
+    if changes:
+        runtime.store.async_schedule_save()
+        # Re-arm the sampling timer so enabled/interval changes take effect
+        # immediately rather than on the next restart.
+        runtime.watchdog.async_start()
+        runtime.audit.async_log(
+            "user_updated",
+            user_id=connection.user.id,
+            detail={"action": "watchdog_config_changed", "changes": changes},
+        )
+    connection.send_result(msg["id"], runtime.watchdog.status())
 
 
 # ----------------------------------------------------------------------------

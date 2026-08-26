@@ -111,6 +111,13 @@ class StoreData(TypedDict):
     # GitHub-derived signals keyed by "owner/repo" (see github_provenance.py);
     # refreshed_at is the last time the cache was refreshed.
     integration_security: dict[str, Any]
+    # Container Resource Watchdog (see resource_watchdog.py). Config only —
+    # breach counters and usage history are runtime-in-memory, never
+    # persisted (writing a time series into this Store every sample would
+    # churn it for purely diagnostic data). hard_limits is the owner-set
+    # Docker cap per add-on slug ({memory_mb, cpus}); hard_limit_state is
+    # the Probe's last report of what's actually applied on the host.
+    resource_watchdog: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -157,6 +164,24 @@ def default_store_data() -> StoreData:
             "addon_secret": None,
         },
         integration_security={"github": {}, "refreshed_at": None},
+        resource_watchdog={
+            "enabled": False,
+            "default_cpu_percent": 85,
+            "default_memory_percent": 85,
+            "default_action": "restart",
+            "sustained_samples": 3,
+            "interval_seconds": 60,
+            # slug -> {cpu_percent, memory_percent, action, enabled} — every
+            # key optional; a missing key inherits the defaults above.
+            "overrides": {},
+            # slug -> {"memory_mb": int|None, "cpus": float|None} — Docker
+            # hard caps for the Probe to apply (requires its Protection
+            # Mode disabled; see resource_watchdog.py's docstring).
+            "hard_limits": {},
+            # slug -> {"status": applied|failed|denied, "detail", "at"} —
+            # the Probe's last report of the caps actually on the host.
+            "hard_limit_state": {},
+        },
     )
 
 

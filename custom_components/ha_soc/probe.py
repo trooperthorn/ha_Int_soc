@@ -93,6 +93,10 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
         vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
         vol.Optional("firewall_resolved_status"): vol.Any(None, str),
+        # Hard-cap application state from the resource-limit applier:
+        # {slug: {"status": applied|failed|denied, "detail": str|None}}.
+        # Optional so a Probe build predating the feature reports normally.
+        vol.Optional("resource_limit_state"): vol.Any(None, {str: dict}),
         # Trust-on-first-use secret proving this call really came from the
         # add-on and not a forged local service call (see firewall.py).
         vol.Optional("probe_secret"): vol.Any(None, str),
@@ -189,6 +193,10 @@ def async_register_probe_service(hass: HomeAssistant, store: HaSocData) -> None:
             resolved_test_id=call.data.get("firewall_resolved_test_id"),
             resolved_status=call.data.get("firewall_resolved_status"),
         )
+        if call.data.get("resource_limit_state") is not None:
+            from .resource_watchdog import async_store_limit_report
+
+            async_store_limit_report(store, call.data["resource_limit_state"])
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
         if not async_verify_or_pin_secret(store, call.data.get("probe_secret")):
@@ -197,9 +205,18 @@ def async_register_probe_service(hass: HomeAssistant, store: HaSocData) -> None:
                 "probe secret — possible forged poll, returning no work."
             )
             return {"action": "none"}
-        return await async_next_addon_command(
+        command = await async_next_addon_command(
             hass, store, current_test_id=call.data.get("current_test_id")
         )
+        # Piggyback the owner-configured Docker hard caps on the same poll
+        # channel (see resource_watchdog.py) — an older Probe build just
+        # ignores the extra key. Only attached when caps are configured.
+        from .resource_watchdog import async_resource_limits_for_probe
+
+        limits = async_resource_limits_for_probe(store)
+        if limits is not None:
+            command["resource_limits"] = limits
+        return command
 
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_PROBE_RESULT, _handle_ingest, schema=INGEST_SERVICE_SCHEMA

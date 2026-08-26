@@ -197,6 +197,41 @@ FIREWALL_TEST_EXPIRED = "expired"
 # midpoint, not independently user-configurable yet (see firewall.py).
 DEFAULT_FIREWALL_TEST_WINDOW_SECONDS = 45
 
+# -- Container Resource Watchdog ------------------------------------------
+# Supervisor exposes NO API to cap an add-on's CPU/memory (verified against
+# aiohasupervisor's full AddonsClient surface), so "make sure no container
+# runs away" is built from what IS supported plus an explicit opt-in
+# escape hatch:
+#   * the watchdog samples per-container stats, and on a SUSTAINED breach
+#     of its threshold takes a per-container action — alert, restart, or
+#     stop — via the real Supervisor API (restart/stop only ever for
+#     add-ons, never Core or the Supervisor themselves);
+#   * hard caps (real Docker --memory/--cpus) are delivered to the Probe
+#     add-on over the existing poll channel and applied against the Docker
+#     socket — which requires the Probe's Protection Mode to be DISABLED,
+#     a root-equivalent grant the UI spells out before anything is applied,
+#     and which must be re-applied whenever Supervisor recreates a
+#     container (the add-on re-applies on a timer for exactly that reason).
+WATCHDOG_ACTION_ALERT = "alert"
+WATCHDOG_ACTION_RESTART = "restart"
+WATCHDOG_ACTION_STOP = "stop"
+WATCHDOG_ACTIONS = [WATCHDOG_ACTION_ALERT, WATCHDOG_ACTION_RESTART, WATCHDOG_ACTION_STOP]
+
+DEFAULT_WATCHDOG_ENABLED = False  # opt-in: never auto-acts out of the box
+DEFAULT_WATCHDOG_CPU_PERCENT = 85
+DEFAULT_WATCHDOG_MEMORY_PERCENT = 85
+# Per the feature request: once enabled, the default response to a
+# sustained breach is an automatic add-on restart (per-container override
+# to alert/stop in the panel).
+DEFAULT_WATCHDOG_ACTION = WATCHDOG_ACTION_RESTART
+DEFAULT_WATCHDOG_SUSTAINED_SAMPLES = 3
+DEFAULT_WATCHDOG_INTERVAL_SECONDS = 60
+# After this many enforcement actions on one container within an hour the
+# watchdog downgrades that container to alert-only — an add-on that
+# re-breaches immediately after every restart is a restart LOOP, and
+# looping it forever is worse than telling the operator it's broken.
+WATCHDOG_MAX_ACTIONS_PER_HOUR = 3
+
 # -- Integration Security (provenance) -----------------------------------
 # A PROVENANCE score, not a SAFETY score. HA integrations are arbitrary
 # Python running in-process with no sandbox — nothing measured here proves
