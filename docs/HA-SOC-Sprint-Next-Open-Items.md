@@ -32,34 +32,28 @@ it. The next sprint starts from section 2 in order.
   the tested core version (D-16), the upstream proposal drafted for owner
   review (D-22, docs/UPSTREAM-CORE-PROPOSAL.md).
 
-## 2. Blocked on the container half of the verification run (D-21)
+## 2. Unblocked by the completed verification runs (D-21 delivered)
 
-The owner ran the script on 2026-08-30. The platform and add-on level
-facts are recorded in ha_soc_probe/DOCS.md and cleared from the plan's
-section 6.2: the add-on works on the real Supervisor, the rating is 1 as
-documented, the 502 hold-and-retry recovered from a live Core restart,
-and the pre-fix build's world-readable file modes confirmed DATA-1 on
-disk. The container-level section found no container to inspect because
-the add-on was mid-recreate under auto-update; the script now discovers
-the container by name instead of assuming it. What remains is one
-re-run of that last section (SSH add-on Protection Mode off for the
-run, then back on), and these stay parked until it lands:
+The owner ran the script twice on 2026-08-30; every fact is recorded in
+ha_soc_probe/DOCS.md, the plan's section 6.2 is reduced to three
+entries none of which gates code, and item 2.7 is complete. What the
+runs settled for the items below: both the add-on and the host use the
+nf_tables backend (no switch needed), ip6tables works, the LAN and VLAN
+both carry global IPv6, the effective AppArmor profile is
+docker-default, the capability set is the Docker default plus
+NET_ADMIN, and the Docker socket is genuinely unmounted under
+Protection Mode. These are now ordinary next-sprint work, first in
+line:
 
-- 2.4 IPv6 firewall parity (D-3 requires it). Needs: which iptables
-  backend (legacy or nft) the Probe's binaries and the host's Docker use,
-  and whether ip6tables plus the ip6_tables kernel module are present. If
-  the backends differ, the add-on must switch to the host's backend before
-  2.4 ships.
-- 2.5 Hardening the single add-on: the AppArmor profile (needs the live
-  profile state), the unprivileged scanner service (needs the container's
-  readable-paths facts), the base-image digest pin, and the image-signing
-  investigation.
-- 2.7 The verification write-up itself: record every FACT line in
-  ha_soc_probe/DOCS.md and clear the plan's section 6.2.
+- 2.4 IPv6 firewall parity (D-3 requires it): fully unblocked, no
+  backend switch needed; mirror the chain, backups, atomic apply, and
+  revert into ip6tables per the plan's item text.
+- 2.5 Hardening the single add-on: custom AppArmor profile (baseline
+  confirmed docker-default), unprivileged scanner service, base-image
+  digest pin, image-signing investigation.
 - SEC-6 envelope encryption with the key in the Probe's volume: opt-in,
-  depends on the sprint 2 add-on changes; the plan itself sanctions it
-  slipping without blocking anything. Its honesty constraints (what it
-  does and does not defend) are already written into the plan.
+  builds on the sprint 2 add-on changes; its honesty constraints are
+  already written into the plan.
 
 ## 3. Next sprint, in plan order (decisions recorded, ready to implement)
 
@@ -93,11 +87,8 @@ versioning step, with a migration note.
 
 ## 4. Owner actions (no code can substitute)
 
-- Re-run scripts/ha_soc_verify_supervisor.sh (or just its container
-  section) from the SSH add-on with Protection Mode off, at a moment the
-  Probe is not mid-update, and paste the output. The first run settled
-  everything above the container level; this retry is the remaining gate
-  for section 2.
+- (Done 2026-08-30: both verification runs delivered; nothing in
+  section 2 waits on the owner any more.)
 - Mark the CI checks (pytest, bundle-drift) required in branch
   protection; a workflow file cannot set that.
 - Review docs/UPSTREAM-CORE-PROPOSAL.md and decide whether to submit it
@@ -136,6 +127,13 @@ lost:
   survives that now (the retention anchor), but the capture volume
   itself deserves a look alongside the sprint 3 threshold work: what
   category is producing the bulk, and whether it earns its space.
+- The live Core is 2026.8.3 while the pinned test harness brings
+  2026.2.3. The D-16 decision (test latest only) suggests bumping the
+  harness pin, and its frontend companion, to the newest release in the
+  next sprint so "tested on" tracks what actually runs in production.
+- The pairing secret file mode fix (0600 at creation and on startup)
+  shipped with this round after the verification run found 0644; listed
+  here only so the changelog line is traceable to its evidence.
 
 
 - Repository-wide em-dash sweep of pre-existing prose (house style; new

@@ -220,14 +220,39 @@ recorded from that run, each checkable against the pasted output:
   (`9ddefa12_ha_soc_probe` there; yours will differ), which is why the
   integration matches this add-on by its `name`, never by slug.
 
-Still unverified, because the container-level half of that run hit the
-add-on mid-recreate (auto-update) and found no container to inspect:
-the iptables backend in use versus the host's, `ip6tables` and kernel
-`ip6_tables` support, the effective AppArmor profile and capability
-set, the Docker socket path and `/var/run` symlink question, the secret
-file mode, and the absence of listening sockets. The script now
-discovers the container instead of assuming its name; a re-run of just
-that section settles these.
+The container-level facts were settled by a second run the same day
+(Home Assistant OS 18.1, Core 2026.8.3, boot slot B):
+
+- Both the add-on's iptables and the host use the nf_tables backend
+  (iptables v1.8.11 nf_tables inside the container; the kernel's legacy
+  `ip_tables_names` list is empty, so nothing on the host uses legacy
+  xtables). No backend switch is needed before the IPv6 parity work.
+- `ip6tables` v1.8.11 (nf_tables) is present and talks to the kernel;
+  the host's LAN and VLAN interfaces both carry global IPv6 addresses.
+  The dual-stack firewall design is fully unblocked.
+- The live `HA_SOC_RULES` chain exists with its single jump as the
+  first rule of `INPUT`, exactly as documented; no `ip6tables` chain
+  exists yet (that is what the parity work creates).
+- The container runs unprivileged with exactly one added capability
+  (`CapAdd: [NET_ADMIN]`, effective caps `00000000a80435fb`, the Docker
+  default set plus NET_ADMIN/NET_RAW), under the `docker-default`
+  AppArmor profile (the custom profile remains planned work).
+- With Protection Mode on, the Docker socket is absent at both
+  `/run/docker.sock` and `/var/run/docker.sock`, observed live, and
+  `/var/run` is a symlink to `/run`, so the two paths are one question.
+- The container's mounts are minimal: `/dev` read-only, its own
+  `/data` read-write, and a read-only cid file. The Home Assistant
+  config directory is not mapped, so this add-on cannot read
+  `.storage` or `secrets.yaml`.
+- One finding: `/data/ha_soc_probe_secret` sits at mode 0644 inside
+  the add-on's private volume. Exposure is bounded by the volume
+  boundary (only this add-on, the Supervisor, and host root reach it),
+  but 0600 is the right mode and the next add-on release tightens it
+  at creation and on startup.
+- The absence of listening sockets opened by this add-on itself is
+  established by review of its scripts only: with `host_network` the
+  container shares the host's namespace, so a socket listing inside it
+  shows the host's ports and cannot isolate this add-on's.
 
 ## A note on how this was built
 

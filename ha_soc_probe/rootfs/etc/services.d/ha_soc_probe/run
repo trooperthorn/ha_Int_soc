@@ -31,9 +31,14 @@ ensure_probe_secret() {
     mkdir -p /data
     if [ ! -s "${SECRET_FILE}" ]; then
         ( set -o noclobber
+          umask 077
           head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
         ) 2>/dev/null || true
     fi
+    # Tighten a pre-existing file too: the first live verification run
+    # found it at 0644 (exposure bounded by the /data volume, but 0600 is
+    # the right mode for a credential file, matching options.json).
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
     PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
 }
 

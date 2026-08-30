@@ -100,9 +100,13 @@ LIMIT_APPLY_EVERY=12  # x POLL_INTERVAL_SECONDS = ~60s
 ensure_probe_secret() {
     if [ ! -s "${SECRET_FILE}" ]; then
         ( set -o noclobber
+          umask 077
           head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
         ) 2>/dev/null || true
     fi
+    # Tighten a pre-existing file too; the first live verification run
+    # found it at 0644 (see the scanner service's twin comment).
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
     PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
 }
 

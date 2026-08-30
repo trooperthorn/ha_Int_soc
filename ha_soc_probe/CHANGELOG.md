@@ -1,39 +1,57 @@
 # Changelog
 
-## v2026.08.30.2
+## Unreleased
 
-- Security (from the 2026-08-30 security review, work plan sprint 0):
-  Home Assistant now accepts this add-on's two callback services only
-  from the Supervisor's own user context; the shared secret becomes
-  defense in depth behind that check, a call presenting no secret is
-  always rejected, and rejected calls are audited and raised as HIGH
-  detections. On Core and Container installs the services no longer
-  exist at all.
-- Firewall (same review): only one test can exist at a time, end to end.
+Everything from the 2026-08-30 security review's sprints 0, 1, and 2
+(this section becomes the next version when it is cut; the sprints
+landed after v2026.08.30.2 shipped, which is why they are not in that
+entry):
+
+- Security (sprint 0): Home Assistant accepts this add-on's two
+  callback services only from the Supervisor's own user context; the
+  shared secret becomes defense in depth behind that check, a call
+  presenting no secret is always rejected, and rejected calls are
+  audited and raised as HIGH detections. On Core and Container installs
+  the services no longer exist at all.
+- Firewall (sprint 0): only one test can exist at a time, end to end.
   The firewall service refuses to apply a new test while a previous one
   is still armed, clears a timer-resolved test's state file before
   reporting so a reverted test cannot wedge the channel, and Home
   Assistant refuses new proposals until this add-on has reported the
   previous test's fate.
-- Firewall safety (work plan sprint 2): applies now take two checked
-  backups (full table for manual recovery, chain-only snapshot for
-  reverts) and refuse to apply if either fails; reverts flush and
-  replay only the `HA_SOC_RULES` chain, never the whole table; the
-  service's `finish` script reverts an unresolved test on a deliberate
-  stop; and every cap slug from HA SOC is re-validated locally before
-  it can reach a Docker API path.
-- On the Home Assistant side of the same sprint: the firewall is
+- Firewall safety (sprint 2): applies take two checked backups (full
+  table for manual recovery, chain-only snapshot for reverts) and
+  refuse to apply if either fails; reverts flush and replay only the
+  `HA_SOC_RULES` chain, never the whole table; the service's `finish`
+  script reverts an unresolved test on a deliberate stop; and every cap
+  slug from HA SOC is re-validated locally before it can reach a Docker
+  API path.
+- The pairing secret file in `/data` is created 0600 and an existing
+  file is tightened at startup; the first live Supervisor verification
+  run found it at 0644 (exposure bounded by the add-on's private
+  volume, but 0600 matches what a credential file deserves).
+- On the Home Assistant side of the same sprints: the firewall is
   owner-only in its entirety with an owner-only, audited discard for a
   test the add-on never reported; the panel countdown re-anchors to the
   moment this add-on actually applies; admin-account lifecycle actions,
   entity remap applies, and sidebar pushes are owner-only per the
-  recorded D-23 decision; and every HA SOC credential moved into a
+  recorded D-23 decision; every HA SOC credential moved into a
   dedicated private secret store with fetch-at-use callers, extraction
-  pattern detection, and expanded audit capture.
-- Also in this release: audit capture expansion, UniFi in-memory
-  enrichment, app/add-on log viewing, sortable tables, CI test gates,
-  and the privilege ledger in DOCS.md (the add-on's Supervisor security
-  rating is 1 by deliberate choice; see the ledger).
+  pattern detection, and expanded audit capture; and CI now gates every
+  push and release on the test suite and a bundle-drift check.
+- Docs: the privilege ledger in DOCS.md (the add-on's Supervisor
+  security rating is 1 by deliberate choice), and the verified-facts
+  section recording the two live Supervisor verification runs of
+  2026-08-30, including that this add-on and the host both use the
+  nf_tables backend and that the host is IPv6-capable, which unblocks
+  the dual-stack firewall work.
+
+## v2026.08.30.2
+
+- No functional add-on change. Version bump keeping the add-on in
+  lockstep with the HA SOC integration release (audit capture
+  expansion, UniFi in-memory enrichment, app/add-on log viewing,
+  sortable tables).
 - Versioning standardized: `vYYYY.MM.DD.V` is now the canonical form
   everywhere a person reads a version (git tags, GitHub Releases, HACS,
   changelog headers like the ones in this file, the panel footer). The
