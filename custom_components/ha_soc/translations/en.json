@@ -22,8 +22,7 @@
     "sensor": {
       "posture_score": { "name": "Security posture score" },
       "open_detections": { "name": "Open detections" },
-      "users_at_risk": { "name": "Users at risk" },
-      "user_risk": { "name": "Risk" }
+      "users_at_risk": { "name": "Users at risk" }
     },
     "binary_sensor": {
       "suspicious_activity": { "name": "Suspicious activity" }

@@ -274,7 +274,10 @@ async def test_overview_unreachable_reports_error_not_raise(
 
 
 def _dispatch_get(clients, devices):
-    """Build an AsyncMock side_effect for _get(hass, conn, path)."""
+    """Build an AsyncMock side_effect for _get(hass, conn, path). Unknown
+    paths answer with UniFiError exactly like a real console 404 does -
+    the best-effort fetchers (broadcasts, networks, ACL) catch precisely
+    that and nothing broader since work plan item 4.11."""
 
     async def _side_effect(hass, conn, path):
         if path == "/sites":
@@ -283,7 +286,7 @@ def _dispatch_get(clients, devices):
             return {"data": clients}
         if path.startswith("/sites/default/devices"):
             return {"data": devices}
-        raise AssertionError(f"unexpected path {path}")
+        raise UniFiError(f"Endpoint not found ({path}).")
 
     return _side_effect
 
@@ -575,6 +578,128 @@ async def test_protect_events_error_still_returns_cameras(
 # ---------------------------------------------------------------------------
 # SEC-3: the short-lived connection object must never print its key
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 client hardening (work plan item 4.11)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamReader:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def read(self, n: int = -1) -> bytes:
+        return self._body if n < 0 else self._body[:n]
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200, body: bytes = b"{}", content_length=None) -> None:
+        self.status = status
+        self.headers = {}
+        self.content_length = content_length if content_length is not None else len(body)
+        self.content = _FakeStreamReader(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self) -> None:
+        assert self.status < 400
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.calls: list[dict] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return self._response
+
+
+def _conn() -> "unifi._Conn":
+    return unifi._Conn(
+        host="10.0.0.1", api_key="k", verify_ssl=False,
+        base_path="/proxy/network/integration/v1",
+    )
+
+
+async def test_unifi_get_never_follows_redirects(hass: HomeAssistant) -> None:
+    session = _FakeSession(_FakeResponse(status=302))
+    with patch.object(unifi, "async_get_clientsession", return_value=session):
+        with pytest.raises(UniFiError, match="redirect"):
+            await unifi._get(hass, _conn(), "/sites")
+    # The request itself must carry allow_redirects=False, so even a
+    # transport that would auto-follow never gets the chance.
+    assert session.calls[0]["allow_redirects"] is False
+
+
+async def test_unifi_body_cap(hass: HomeAssistant) -> None:
+    # A declared Content-Length above the cap is refused before reading.
+    oversized_declared = _FakeSession(
+        _FakeResponse(status=200, body=b"{}", content_length=unifi._MAX_BODY_BYTES + 1)
+    )
+    with patch.object(unifi, "async_get_clientsession", return_value=oversized_declared):
+        with pytest.raises(UniFiError, match="too large"):
+            await unifi._get(hass, _conn(), "/sites")
+
+    # A lying (absent/short) Content-Length is caught by the capped read.
+    big_body = b"x" * (unifi._MAX_BODY_BYTES + 10)
+    lying = _FakeSession(_FakeResponse(status=200, body=big_body, content_length=10))
+    with patch.object(unifi, "async_get_clientsession", return_value=lying):
+        with pytest.raises(UniFiError, match="too large"):
+            await unifi._get(hass, _conn(), "/sites")
+
+    # A small valid body still parses.
+    ok = _FakeSession(_FakeResponse(status=200, body=b'{"data": []}'))
+    with patch.object(unifi, "async_get_clientsession", return_value=ok):
+        assert await unifi._get(hass, _conn(), "/sites") == {"data": []}
+
+
+async def test_unifi_bad_host_in_other_entry_does_not_raise(hass: HomeAssistant) -> None:
+    """A malformed host value in ANOTHER integration's config entry (an
+    unclosed IPv6 bracket makes urlparse raise ValueError) must degrade
+    to no hosts for that value, never take the endpoint index down."""
+    bad = MockConfigEntry(domain="weird_int", data={"host": "http://[::1"}, title="Weird")
+    bad.add_to_hass(hass)
+    good = MockConfigEntry(domain="fine_int", data={"host": "10.0.0.9"}, title="Fine")
+    good.add_to_hass(hass)
+
+    assert _hosts_from_value("http://[::1") == []
+    index = unifi._integration_endpoints(hass)
+    assert "10.0.0.9" in index
+
+
+async def test_unifi_invalid_configured_host_reports_error(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    """Only http/https schemes are allowed and userinfo is rejected; the
+    overview reports a configuration error rather than connecting."""
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    store.async_update_settings(unifi_network_host="ftp://10.0.0.1")
+    overview = await async_network_overview(hass, store, secrets)
+    assert overview["configured"] is True
+    assert "scheme" in overview["error"]
+
+    store.async_update_settings(unifi_network_host="https://root:pw@10.0.0.1")
+    overview = await async_network_overview(hass, store, secrets)
+    assert "username/password" in overview["error"]
+
+
+def test_gateway_selected_by_role_before_name_tokens() -> None:
+    """A device whose role field declares gateway wins over any number of
+    name-token lookalikes; tokens are only consulted when nothing
+    declares the role."""
+    lookalike = {"name": "gateway closet switch", "model": "USW-24"}
+    real = {"name": "core router", "type": "gateway"}
+    assert unifi._select_gateway([lookalike, real]) is real
+    # With no declared role anywhere, the token fallback still finds one.
+    assert unifi._select_gateway([lookalike]) is lookalike
+    assert unifi._select_gateway([{"name": "plain switch"}]) is None
 
 
 def test_unifi_conn_repr_masks_key() -> None:

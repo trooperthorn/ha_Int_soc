@@ -19,6 +19,19 @@ Two independent checks feed the same "vuln_findings" table:
   a curated manufacturer->CPE table first and a noisier keyword search as
   fallback — network, best-effort, independently fails per device.
 
+Data disclosure (decision D-12, work plan item 4.9): the CVE correlation
+pass sends device manufacturer and model strings from the device registry
+to NIST's National Vulnerability Database (services.nvd.nist.gov) over
+HTTPS, together with the optional NVD API key when one is configured.
+Nothing else about the install leaves the instance. The pass is on by
+default, disclosed here and in the Settings tab, and controlled by the
+``nvd_lookups_enabled`` setting: when the owner turns it off, no request
+is made to NVD at all and only the network-free firmware-currency check
+runs. Severity honesty: a match produced through a vendor-only curated
+CPE wildcard says nothing about the specific model, so those findings are
+reported as INFO regardless of the CVE's CVSS (the score itself is still
+recorded on the finding for the analyst).
+
 The optional NVD API key lives in the private secret store
 (secrets_store.py) and is fetched immediately before each HTTP request,
 then dropped when the request completes (work item SEC-3): no parameter,
@@ -68,6 +81,13 @@ CONFIDENCE_HEURISTIC = "heuristic"
 
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_RESULTS_PER_PAGE = 20
+# Page through NVD's offset pagination before ranking (work plan item
+# 4.9), bounded so a whole-vendor wildcard with thousands of CVEs cannot
+# make one device's lookup run for minutes under the no-key rate delay.
+# The bound is honest, not exhaustive: at most NVD_MAX_PAGES pages are
+# ranked, and a vendor with more CVEs than that has its oldest tail
+# unexamined this pass.
+NVD_MAX_PAGES = 5
 NVD_TIMEOUT_SECONDS = 15
 # Without a key NVD allows ~5 req/30s; with a key, ~50/30s. These sleeps are
 # applied after every real HTTP call (not on cache hits) and are chosen with
@@ -154,7 +174,12 @@ def _device_name(device: dr.DeviceEntry) -> str:
     return device.name_by_user or device.name or device.id
 
 
-def _match_curated_cpe(manufacturer: str, model: str) -> str | None:
+def _match_curated_cpe(manufacturer: str, model: str) -> tuple[str, bool] | None:
+    """The curated CPE match plus whether it was VENDOR-ONLY (an empty
+    model substring in the table, so the wildcard covers the vendor's
+    whole product line). A vendor-only match says nothing about the
+    specific device model, and its findings are therefore reported as
+    INFO (work plan item 4.9)."""
     manufacturer_lower = manufacturer.lower()
     model_lower = model.lower()
     for (mfr_substr, model_substr), cpe_prefix in CURATED_CPE_MAP.items():
@@ -162,7 +187,7 @@ def _match_curated_cpe(manufacturer: str, model: str) -> str | None:
             continue
         if model_substr and model_substr not in model_lower:
             continue
-        return cpe_prefix
+        return cpe_prefix, not model_substr
     return None
 
 
@@ -234,8 +259,16 @@ class DeviceVulnerabilityTracker:
         # match_string -> last time it was actually sent to NVD (see
         # MATCH_STRING_CACHE_TTL). In-memory only; see module docstring.
         self._last_fetched: dict[str, datetime] = {}
+        # Serializes async_run_scan (work plan item 4.9): the periodic
+        # loop and a panel "scan now" overlapping would double NVD
+        # traffic and interleave finding upserts for no benefit.
+        self._scan_lock = asyncio.Lock()
 
     async def async_run_scan(self) -> list[dict]:
+        async with self._scan_lock:
+            return await self._async_run_scan_locked()
+
+    async def _async_run_scan_locked(self) -> list[dict]:
         registry = dr.async_get(self.hass)
         physical_devices = [
             device
@@ -246,6 +279,17 @@ class DeviceVulnerabilityTracker:
 
         findings: list[dict] = []
         findings.extend(self._check_firmware_currency(devices_by_id))
+
+        # D-12 (work plan item 4.9): the owner's toggle governs the whole
+        # outbound pass. Read at scan time through settings.get with the
+        # on-by-default fallback, so this works whether or not the
+        # Settings side has persisted the key yet.
+        if not self.store.settings.get("nvd_lookups_enabled", True):
+            _LOGGER.debug(
+                "HA SOC: NVD lookups are disabled; only the network-free "
+                "firmware-currency check ran"
+            )
+            return findings
 
         try:
             findings.extend(await self._async_correlate_cves(physical_devices))
@@ -441,8 +485,10 @@ class DeviceVulnerabilityTracker:
                 continue
             model = device.model or ""
 
-            cpe_prefix = _match_curated_cpe(manufacturer, model)
-            if cpe_prefix is not None:
+            curated = _match_curated_cpe(manufacturer, model)
+            vendor_only = False
+            if curated is not None:
+                cpe_prefix, vendor_only = curated
                 confidence = CONFIDENCE_CURATED_MAP
                 query_param = "virtualMatchString"
                 match_string = cpe_prefix
@@ -484,7 +530,8 @@ class DeviceVulnerabilityTracker:
                 continue
 
             for finding in self._build_findings_for_device(
-                device, vulnerabilities, confidence, match_string, now_iso
+                device, vulnerabilities, confidence, match_string, now_iso,
+                vendor_only=vendor_only,
             ):
                 self.store.async_upsert_finding(
                     FINDINGS_TABLE, finding["id"], finding
@@ -500,28 +547,52 @@ class DeviceVulnerabilityTracker:
     async def _async_query_nvd(
         self, query_param: str, match_string: str
     ) -> list[dict[str, Any]] | None:
+        """All pages (bounded by NVD_MAX_PAGES) for one match string, so
+        ranking sees more than the first page's arbitrary slice (work
+        plan item 4.9). A failure on a later page returns the pages
+        already fetched rather than discarding them: partial data ranked
+        honestly beats none."""
         session = async_get_clientsession(self.hass)
-        params = {query_param: match_string, "resultsPerPage": str(NVD_RESULTS_PER_PAGE)}
         # Fetched immediately before the request and dropped with this
         # frame when it returns (SEC-3); no attribute holds it between
         # requests.
         api_key = await self._secrets.async_get(CONF_NVD_API_KEY)
         headers = {"apiKey": api_key} if api_key else None
+        page_delay = NVD_DELAY_WITH_KEY if api_key else NVD_DELAY_NO_KEY
 
-        try:
-            async with asyncio.timeout(NVD_TIMEOUT_SECONDS):
-                async with session.get(
-                    NVD_API_URL, params=params, headers=headers
-                ) as response:
-                    response.raise_for_status()
-                    data = await response.json()
-        except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-            _LOGGER.warning(
-                "NVD query failed for %s=%s: %s", query_param, match_string, err
-            )
-            return None
+        collected: list[dict[str, Any]] = []
+        start_index = 0
+        for page in range(NVD_MAX_PAGES):
+            params = {
+                query_param: match_string,
+                "resultsPerPage": str(NVD_RESULTS_PER_PAGE),
+                "startIndex": str(start_index),
+            }
+            try:
+                async with asyncio.timeout(NVD_TIMEOUT_SECONDS):
+                    async with session.get(
+                        NVD_API_URL, params=params, headers=headers
+                    ) as response:
+                        response.raise_for_status()
+                        data = await response.json()
+            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                _LOGGER.warning(
+                    "NVD query failed for %s=%s: %s", query_param, match_string, err
+                )
+                return collected if collected else None
 
-        return data.get("vulnerabilities", [])
+            batch = data.get("vulnerabilities", [])
+            collected.extend(batch)
+            total = data.get("totalResults")
+            start_index += len(batch)
+            if not batch or total is None or start_index >= int(total):
+                break
+            if page < NVD_MAX_PAGES - 1:
+                # Every page is a real HTTP call, so the same rate-limit
+                # pacing applies between pages as between devices.
+                await asyncio.sleep(page_delay)
+
+        return collected
 
     def _build_findings_for_device(
         self,
@@ -530,6 +601,8 @@ class DeviceVulnerabilityTracker:
         confidence: str,
         match_string: str,
         now_iso: str,
+        *,
+        vendor_only: bool = False,
     ) -> list[dict]:
         device_name = _device_name(device)
 
@@ -540,8 +613,17 @@ class DeviceVulnerabilityTracker:
             if not cve_id:
                 continue
             cvss = _extract_cvss(cve)
-            severity = _severity_for_score(cvss)
+            # A vendor-only wildcard match carries no model information,
+            # so whatever the CVE scores, the FINDING is informational
+            # (work plan item 4.9); the CVSS still rides along for the
+            # analyst.
+            severity = SEVERITY_INFO if vendor_only else _severity_for_score(cvss)
             summary = _cve_summary(cve, cvss)
+            if vendor_only:
+                summary = (
+                    "Vendor-wide match only (no model-specific CPE): "
+                    "confirm the model is affected before acting. " + summary
+                )
             # Sort key only: unscored CVEs sort after every scored one
             # rather than being dropped, since they're still real findings.
             sort_key = cvss if cvss is not None else -1.0

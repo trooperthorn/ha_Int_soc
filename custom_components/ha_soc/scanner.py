@@ -25,6 +25,18 @@ Explicitly out of scope for this version: any network call (PyPI staleness
 checks, typosquat detection against a package index). That is a
 `scanner_network_checks_enabled` feature for a future version and is not
 stubbed here — half-implementing it would be worse than omitting it.
+
+Coverage honesty (work plan item 4.8): every rule here matches unobfuscated
+instances only - string-built calls, computed names, and encoded literals
+are invisible by design, and the Scanner tab must say so. Each completed
+scan stores a per-domain coverage record ({scanned_files, skipped_oversize,
+skipped_over_cap, parse_failures, scanned_at}) alongside the findings, and
+`listing_payload` exposes it so a domain with no record renders as "not
+scanned", never as an implied-clean zero findings. After each rescan,
+findings absent from the new scan are reconciled to resolved with
+resolved_reason "not_found_on_rescan" - but only when their file was
+actually evaluated this pass (or deleted outright), never when it was
+skipped for size, the file cap, or a parse failure.
 """
 from __future__ import annotations
 
@@ -125,12 +137,19 @@ def _hit(
 
 
 def _dotted_name(node: ast.AST | None) -> str | None:
+    """Dotted name of a Name/Attribute chain, walked iteratively: a
+    crafted file can nest attribute access thousands of levels deep, and
+    a recursive walk would hit RecursionError inside a rule, aborting the
+    file's scan (work plan item 4.8)."""
+    parts: list[str] = []
+    while isinstance(node, ast.Attribute):
+        parts.append(node.attr)
+        node = node.value
     if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        base = _dotted_name(node.value)
-        return f"{base}.{node.attr}" if base else node.attr
-    return None
+        parts.append(node.id)
+    elif not parts:
+        return None
+    return ".".join(reversed(parts))
 
 
 def _assign_target_name(target: ast.AST) -> str | None:
@@ -183,6 +202,12 @@ def _is_interpolated(node: ast.AST) -> bool:
     return False
 
 
+# os.system / os.popen always hand their argument to a shell, so they join
+# the shell rule with no shell=True co-condition needed (work plan item
+# 4.8); the interpolated-argument co-condition still applies.
+_ALWAYS_SHELL_CALLS = {"os.system", "os.popen"}
+
+
 # -- Rule 2: command injection risk -----------------------------------------
 def _rule_shell_injection_risk(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
     """`shell=True` alone is not the signal — a hardcoded literal command run
@@ -190,17 +215,24 @@ def _rule_shell_injection_risk(tree: ast.AST, lines: list[str]) -> list[dict[str
     argument built from an f-string, concatenation/%-format, or `.format()`:
     that co-condition is what makes an external value's path into the shell
     plausible, and it's the reason this rule needs two things to be true at
-    once rather than firing on `shell=True` by itself.
+    once rather than firing on `shell=True` by itself. ``os.system`` and
+    ``os.popen`` always run a shell, so for them the interpolation
+    co-condition alone triggers the rule (work plan item 4.8). Obvious
+    false negative either way: a command assembled into a variable before
+    the call carries no interpolation at the call site and is invisible.
     """
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or not _is_subprocess_call(node):
+        if not isinstance(node, ast.Call):
             continue
-        shell_true = any(
-            kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
-            for kw in node.keywords
-        )
-        if not shell_true:
+        if _is_subprocess_call(node):
+            shell_true = any(
+                kw.arg == "shell" and isinstance(kw.value, ast.Constant) and kw.value.value is True
+                for kw in node.keywords
+            )
+            if not shell_true:
+                continue
+        elif _dotted_name(node.func) not in _ALWAYS_SHELL_CALLS:
             continue
         candidate_args = list(node.args) + [kw.value for kw in node.keywords if kw.arg != "shell"]
         if any(_is_interpolated(arg) for arg in candidate_args):
@@ -274,7 +306,14 @@ def _rule_hardcoded_credential(tree: ast.AST, lines: list[str]) -> list[dict[str
     """
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Assign):
+        # AnnAssign joins the rule (work plan item 4.8): an annotated
+        # ``token: str = "..."`` is the same hardcoded credential with a
+        # type hint in front of it.
+        if isinstance(node, ast.Assign):
+            targets: list[ast.AST] = list(node.targets)
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        else:
             continue
         value = node.value
         if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
@@ -282,7 +321,7 @@ def _rule_hardcoded_credential(tree: ast.AST, lines: list[str]) -> list[dict[str
         literal = value.value
         if len(literal) < 6 or _PLACEHOLDER_RE.search(literal):
             continue
-        for target in node.targets:
+        for target in targets:
             name = _assign_target_name(target)
             if not name or _CONF_CONSTANT_NAME_RE.match(name):
                 continue
@@ -950,11 +989,24 @@ def _finding_from_hit(hit: dict[str, Any], rel_path: str, domain: str, now: str)
     return finding
 
 
-def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
-    """Run every rule against one directory tree. Blocking (file I/O and
-    ``ast.parse``): production callers go through IntegrationScanner, which
-    runs this in an executor job. Module-level so the self-scan test can
-    point it at ``custom_components/ha_soc`` without a running hass."""
+def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
+    """Run every rule against one directory tree and report both the
+    findings and the coverage actually achieved (work plan item 4.8).
+    Blocking (file I/O and ``ast.parse``): production callers go through
+    IntegrationScanner, which runs this in an executor job.
+
+    The returned dict carries:
+
+    - ``findings``: the finding dicts, exactly as before.
+    - ``coverage``: {scanned_files, skipped_oversize, skipped_over_cap,
+      parse_failures, scanned_at} - what this pass really looked at, so a
+      domain that was never scanned (or only partially scanned) is never
+      rendered as a clean "0 findings".
+    - ``scanned_paths``: relative paths of the files whose rules actually
+      ran, the only files findings reconciliation may treat as evaluated.
+    - ``candidate_paths``: every .py file that exists in the tree, so a
+      finding whose file has been deleted outright can also be resolved.
+    """
     all_files = sorted(directory.rglob("*.py"))
 
     sized_files: list[Path] = []
@@ -967,12 +1019,20 @@ def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
         if size > MAX_FILE_SIZE_BYTES:
             skipped_too_large += 1
             continue
-        sized_files.append(path)
+        sized_files.append((size, path))
 
     skipped_over_cap = 0
     if len(sized_files) > MAX_FILES_PER_SCAN:
+        # Deterministic cap selection by size DESCENDING with the path as
+        # the tie-break (work plan item 4.8): under the old
+        # first-N-by-path selection, the large modules that most need
+        # scanning were exactly the ones a padded directory could push
+        # past the cap. The selected set is then scanned in path order so
+        # output stays stable and diffable.
         skipped_over_cap = len(sized_files) - MAX_FILES_PER_SCAN
+        sized_files.sort(key=lambda item: (-item[0], item[1]))
         sized_files = sized_files[:MAX_FILES_PER_SCAN]
+    selected_files = sorted(path for _size, path in sized_files)
 
     # Coverage must never be silently under-reported: any file this scan
     # did not look at is logged, not just dropped.
@@ -993,10 +1053,27 @@ def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
 
     now = dt_util.utcnow().isoformat()
     findings: list[dict[str, Any]] = []
-    for path in sized_files:
+    scanned_paths: list[str] = []
+    parse_failures = 0
+    for path in selected_files:
+        rel_path = str(path.relative_to(directory))
         try:
+            # The rule loop lives INSIDE the per-file try (work plan item
+            # 4.8): a rule blowing up on one pathological file (a
+            # recursion bomb that parses but breaks an AST walk, a
+            # MemoryError from a giant expression) must cost only that
+            # file's coverage, never the rest of the integration's scan.
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
+            lines = source.splitlines()
+            file_findings: list[dict[str, Any]] = []
+            for rule in _RULES:
+                for hit in rule(tree, lines):
+                    file_findings.append(_finding_from_hit(hit, rel_path, domain, now))
+            for domain_rule in _DOMAIN_RULES:
+                for hit in domain_rule(tree, lines, domain):
+                    _apply_allow_marker(hit, lines)
+                    file_findings.append(_finding_from_hit(hit, rel_path, domain, now))
         except (
             OSError,
             SyntaxError,
@@ -1009,7 +1086,9 @@ def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
             # error in code that HA itself may never load, or a crafted
             # file whose deeply-nested-but-trivial expressions drive
             # CPython's parser into RecursionError/MemoryError) must not
-            # abort the rest of this integration's scan.
+            # abort the rest of this integration's scan; it is counted as
+            # a parse failure so coverage stays honest.
+            parse_failures += 1
             _LOGGER.debug(
                 "HA SOC scanner: skipping %s in domain %s (%s)",
                 path,
@@ -1017,17 +1096,28 @@ def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
                 err.__class__.__name__,
             )
             continue
+        findings.extend(file_findings)
+        scanned_paths.append(rel_path)
 
-        lines = source.splitlines()
-        rel_path = str(path.relative_to(directory))
-        for rule in _RULES:
-            for hit in rule(tree, lines):
-                findings.append(_finding_from_hit(hit, rel_path, domain, now))
-        for domain_rule in _DOMAIN_RULES:
-            for hit in domain_rule(tree, lines, domain):
-                _apply_allow_marker(hit, lines)
-                findings.append(_finding_from_hit(hit, rel_path, domain, now))
-    return findings
+    return {
+        "findings": findings,
+        "coverage": {
+            "scanned_files": len(scanned_paths),
+            "skipped_oversize": skipped_too_large,
+            "skipped_over_cap": skipped_over_cap,
+            "parse_failures": parse_failures,
+            "scanned_at": now,
+        },
+        "scanned_paths": set(scanned_paths),
+        "candidate_paths": {str(path.relative_to(directory)) for path in all_files},
+    }
+
+
+def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
+    """Findings-only wrapper over scan_directory_report. Module-level so
+    the self-scan test can point it at ``custom_components/ha_soc``
+    without a running hass."""
+    return scan_directory_report(directory, domain)["findings"]
 
 
 class IntegrationScanner:
@@ -1056,6 +1146,11 @@ class IntegrationScanner:
     def _on_config_entry_changed(self, change: ConfigEntryChange, entry: ConfigEntry) -> None:
         if change != ConfigEntryChange.ADDED:
             return
+        # The operator's scanner toggle governs EVERY scan path, the
+        # on-install one included (work plan item 4.8) - the weekly sweep
+        # already honored it and this trigger silently did not.
+        if not self._store.settings.get("scanner_enabled", True):
+            return
         # Newly added integration: scan it once, off the event loop, rather
         # than waiting for the next weekly sweep.
         self.hass.async_create_task(self._async_scan_on_install(entry.domain))
@@ -1069,19 +1164,42 @@ class IntegrationScanner:
         except Exception:  # noqa: BLE001 - a failed on-install scan must not go unlogged
             _LOGGER.exception("HA SOC scanner: on-install scan of domain %s failed", domain)
 
-    def _scan_dir(self, directory: Path, domain: str) -> list[dict[str, Any]]:
+    def _scan_dir(self, directory: Path, domain: str) -> dict[str, Any]:
         """Blocking: file I/O and `ast.parse`. Always run via an executor job."""
-        return scan_directory(directory, domain)
+        return scan_directory_report(directory, domain)
+
+    def _coverage_table(self) -> dict[str, dict[str, Any]]:
+        """domain -> coverage record for the domain's latest completed
+        scan (work plan item 4.8). setdefault rather than a store.py
+        schema change: unknown top-level keys survive the store's
+        load-time merge, and the sibling-owned StoreData TypedDict can
+        pick the key up in its own pass."""
+        return self._store.data.setdefault("scanner_coverage", {})  # type: ignore[typeddict-item]
+
+    def listing_payload(self) -> dict[str, Any]:
+        """The Scanner tab's listing: findings plus per-domain coverage,
+        so the frontend can render "not scanned" for a domain with no
+        coverage record instead of an implied clean zero (work plan item
+        4.8). The WS handler is the intended caller."""
+        return {
+            "findings": list(self._store.data["scanner_findings"].values()),
+            "coverage": dict(self._coverage_table()),
+        }
 
     async def async_scan_integration(self, domain: str) -> list[dict[str, Any]]:
         integration = await async_get_integration(self.hass, domain)
-        findings = await self.hass.async_add_executor_job(self._scan_dir, integration.file_path, domain)
+        report = await self.hass.async_add_executor_job(self._scan_dir, integration.file_path, domain)
+        findings = report["findings"]
 
         table = self._store.data["scanner_findings"]
         previously_known_ids = {fid for fid, existing in table.items() if existing.get("domain") == domain}
 
         for finding in findings:
             self._store.async_upsert_finding("scanner_findings", finding["id"], dict(finding))
+
+        self._reconcile_domain_findings(domain, report)
+        self._coverage_table()[domain] = report["coverage"]
+        self._store.async_schedule_save()
 
         # An acknowledged extraction finding is a deliberate, documented
         # read (see _apply_allow_marker); it stays visible in the findings
@@ -1110,6 +1228,36 @@ class IntegrationScanner:
             ir.async_delete_issue(self.hass, DOMAIN, f"scanner_{domain}")
 
         return findings
+
+    def _reconcile_domain_findings(self, domain: str, report: dict[str, Any]) -> None:
+        """Move findings absent from this rescan to resolved with
+        resolved_reason "not_found_on_rescan" (work plan item 4.8).
+
+        Fail-open guard: only a finding whose file was actually scanned
+        this pass (or no longer exists at all) may be resolved - a file
+        skipped for size, the file cap, or a parse failure was NOT
+        evaluated, and absence from an unevaluated file is not evidence
+        the pattern is gone. A dismissed finding whose pattern is gone
+        from a fully scanned file also moves to resolved: "the code no
+        longer contains this" is the more accurate closed state than "an
+        analyst chose to ignore it".
+        """
+        current_ids = {f["id"] for f in report["findings"]}
+        scanned_paths: set[str] = report["scanned_paths"]
+        candidate_paths: set[str] = report["candidate_paths"]
+        now = dt_util.utcnow().isoformat()
+        for finding_id, finding in list(self._store.data["scanner_findings"].items()):
+            if finding.get("domain") != domain or finding_id in current_ids:
+                continue
+            if finding.get("status") == "resolved":
+                continue
+            file_path = finding.get("file")
+            if file_path in scanned_paths or file_path not in candidate_paths:
+                self._store.async_set_finding_status(
+                    "scanner_findings", finding_id, "resolved",
+                    by_user_id=None, note=None, at=now,
+                )
+                finding["resolved_reason"] = "not_found_on_rescan"
 
     async def async_scan_all(self) -> dict[str, list[dict[str, Any]]]:
         domains = {entry.domain for entry in self.hass.config_entries.async_entries()}

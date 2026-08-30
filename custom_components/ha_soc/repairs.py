@@ -17,6 +17,18 @@ import homeassistant.helpers.issue_registry as ir
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
+# The same layered import users.py uses (work plan item 4.14): the
+# constant's home has differed across core layouts, and the literal
+# fallback keeps the comparison honest on any of them rather than
+# hardcoding the string inline at the comparison site.
+try:
+    from homeassistant.auth.const import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    try:
+        from homeassistant.auth.models import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
+    except ImportError:
+        TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN = "long_lived_access_token"
+
 from .const import DOMAIN
 
 _ADMIN_MFA_PREFIX = "admin_without_mfa_"
@@ -121,7 +133,7 @@ async def async_sync_stale_token_issues(hass: HomeAssistant) -> None:
         if user.system_generated:
             continue
         for token in user.refresh_tokens.values():
-            if token.token_type != "long_lived_access_token":
+            if token.token_type != TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN:
                 continue
             last_used = token.last_used_at or token.created_at
             if last_used is None or last_used >= cutoff:

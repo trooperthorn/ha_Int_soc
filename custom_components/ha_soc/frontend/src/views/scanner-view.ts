@@ -10,6 +10,7 @@ import {
   FirewallRule,
   FirewallRuleAction,
   FirewallRuleProto,
+  FirewallRuleFamily,
   FirewallStatus,
   FirewallPendingTest,
   fetchScannerFindings,
@@ -50,6 +51,24 @@ function confidenceRank(order: readonly string[], confidence: unknown): number |
 
 const SCANNER_CONFIDENCE_ORDER = ["high", "medium", "advisory"] as const;
 const VULN_CONFIDENCE_ORDER = ["exact_cpe", "curated_map", "keyword", "heuristic"] as const;
+
+// Human labels for a rule's address family. Records persisted before the
+// dual-stack change carry no family; the server treats absence as "both",
+// so the display does the same.
+function familyLabel(family?: FirewallRuleFamily): string {
+  if (family === "4") return "IPv4";
+  if (family === "6") return "IPv6";
+  return "IPv4+IPv6";
+}
+
+// The family a source address pins a rule to, mirroring the server's own
+// derivation (an IPv6 address always contains a colon, an IPv4 address
+// never does). null means "no source, no pin" and the family stays the
+// operator's choice (default both).
+function familyForSource(source: string): FirewallRuleFamily | null {
+  if (!source) return null;
+  return source.includes(":") ? "6" : "4";
+}
 
 // True if an IPv4 dotted-quad is in an RFC 1918 private range
 // (10/8, 172.16/12, 192.168/16). Loopback/link-local are handled separately.
@@ -96,7 +115,9 @@ export class HaSocScannerView extends LitElement {
   @state() private _exportNotice: string | null = null;
 
   @state() private _firewall: FirewallStatus | null = null;
-  @state() private _fwDraftRules: FirewallRule[] = [{ action: "allow", proto: "tcp", port: 0, source: "" }];
+  @state() private _fwDraftRules: FirewallRule[] = [
+    { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
+  ];
   @state() private _fwBackupAck = false;
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
@@ -155,6 +176,9 @@ export class HaSocScannerView extends LitElement {
     // null source displays as "any"; sort it as that word rather than
     // sinking it as unknown, since "any" is a definite value here.
     source: (r) => r.source ?? "any",
+    // Sorted by display label so IPv4 < IPv4+IPv6 < IPv6 groups cleanly;
+    // an absent family displays (and sorts) as the dual-stack default.
+    family: (r) => familyLabel(r.family),
   };
 
   connectedCallback(): void {
@@ -230,12 +254,19 @@ export class HaSocScannerView extends LitElement {
   }
 
   private _fwRuleValid(r: FirewallRule): boolean {
+    const family = r.family ?? "both";
+    // A sourced rule's family must be the one its source pins; the
+    // builder derives and locks it, so this only catches a state bug,
+    // matching the server's own rejection.
+    const pinned = familyForSource(r.source ?? "");
     return (
       Number.isInteger(r.port) &&
       r.port >= 1 &&
       r.port <= 65535 &&
       (r.action === "allow" || r.action === "deny") &&
-      (r.proto === "tcp" || r.proto === "udp")
+      (r.proto === "tcp" || r.proto === "udp") &&
+      (family === "4" || family === "6" || family === "both") &&
+      (pinned === null || pinned === family)
     );
   }
 
@@ -244,7 +275,10 @@ export class HaSocScannerView extends LitElement {
   }
 
   private _fwAddRule() {
-    this._fwDraftRules = [...this._fwDraftRules, { action: "allow", proto: "tcp", port: 0, source: "" }];
+    this._fwDraftRules = [
+      ...this._fwDraftRules,
+      { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
+    ];
   }
 
   private _fwRemoveRule(index: number) {
@@ -260,6 +294,10 @@ export class HaSocScannerView extends LitElement {
         proto: r.proto,
         port: r.port,
         source: r.source ? r.source : null,
+        // The server re-derives a sourced rule's family itself; sending
+        // the builder's value (already pinned to the same derivation)
+        // keeps the payload explicit without ever contradicting it.
+        family: r.family ?? "both",
       }));
       await proposeFirewallTest(this.hass, rules, this._fwBackupAck);
       this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
@@ -653,11 +691,66 @@ export class HaSocScannerView extends LitElement {
     `;
   }
 
+  // The firewall rule (if any) covering one listening port, computed per
+  // address family (work item 2.4's port-scan correlation): a row with a
+  // decoded dotted-quad bind address came from /proc/net/tcp and is an
+  // IPv4 listener, while the add-on reports IPv6 bind addresses as null
+  // (deliberately not decoded, see the run script), so a null-address row
+  // is an IPv6-table listener that can only be correlated by port and
+  // protocol. A "both" (or pre-family) rule covers either family; a "4"
+  // or "6" rule covers only its own.
+  private _fwRuleCoveringPort(p: OpenPort): FirewallRule | null {
+    const rules = this._firewall?.known_rules;
+    if (!rules?.length) return null;
+    const rowFamily: FirewallRuleFamily = p.address ? "4" : "6";
+    const matches = rules.filter((r) => {
+      const fam = r.family ?? "both";
+      return r.port === p.port && r.proto === p.proto && (fam === "both" || fam === rowFamily);
+    });
+    if (!matches.length) return null;
+    // A deny is the security-notable coverage, so it wins over an allow;
+    // among equals an any-source rule wins over a source-scoped one, so
+    // the pill shows the broadest effect on this listener.
+    matches.sort((a, b) => {
+      if (a.action !== b.action) return a.action === "deny" ? -1 : 1;
+      return (a.source ? 1 : 0) - (b.source ? 1 : 0);
+    });
+    return matches[0];
+  }
+
+  private _renderPortRuleCell(p: OpenPort) {
+    const rule = this._fwRuleCoveringPort(p);
+    // Honesty about the correlation basis: an IPv6 listener's bind
+    // address is reported as null by the add-on, so its match (or
+    // non-match) rests on port and protocol alone.
+    const ipv6Caveat = !p.address
+      ? " IPv6 bind addresses are not decoded by the add-on, so this correlation is by port and protocol only."
+      : "";
+    if (!rule) {
+      return html`<td class="muted"><span title=${"No HA_SOC_RULES entry matches this port and protocol for this listener's address family." + ipv6Caveat}>no rule</span></td>`;
+    }
+    const scope = rule.source ? `from ${rule.source}` : "any source";
+    return html`
+      <td>
+        <span
+          class="pill ${rule.action === "allow" ? "good" : "critical"}"
+          title=${`Covered by the ${rule.action} ${rule.proto}/${rule.port} rule (${familyLabel(rule.family)}, ${scope}).` +
+          (rule.source ? " Source-scoped: traffic from other sources is not affected by it." : "") +
+          ipv6Caveat}
+          ><span class="dot"></span>${rule.action}${!p.address ? " (by port)" : ""}</span
+        >
+      </td>
+    `;
+  }
+
   // Group the host's listening ports by bind address. Group order is fixed
   // by security notability: 0.0.0.0 first, then public/routable
   // (non-RFC1918), then private (RFC1918), then loopback/link-local, then
   // unresolved. Column sorting never reorders the groups themselves; it
   // only reorders ports within each group (default: port ascending).
+  // When the owner's firewall status carries known rules, each row also
+  // gets a per-family "covered by rule" cell, so a dual-stack deny on a
+  // port visibly covers both its 0.0.0.0 and :: listeners.
   private _renderPortsByBindAddress(ports: OpenPort[]) {
     const groups = new Map<string, OpenPort[]>();
     for (const p of ports) {
@@ -673,6 +766,13 @@ export class HaSocScannerView extends LitElement {
       return a[0].localeCompare(b[0]);
     });
 
+    // The coverage column only renders when there are known rules to
+    // correlate against (owner-only status, add-on has reported): an
+    // always-empty column would read as "nothing is covered", which is
+    // not what "no data" means.
+    const showRuleCol = !!this._firewall?.known_rules?.length;
+    const colCount = showRuleCol ? 4 : 3;
+
     return html`
       <table>
         <thead>
@@ -680,6 +780,7 @@ export class HaSocScannerView extends LitElement {
             ${sortableTh("Port", "port", this._portSort, (n) => (this._portSort = n))}
             ${sortableTh("Protocol", "proto", this._portSort, (n) => (this._portSort = n))}
             ${sortableTh("Interface", "interface", this._portSort, (n) => (this._portSort = n))}
+            ${showRuleCol ? html`<th>Covered by rule</th>` : nothing}
           </tr>
         </thead>
         ${ordered.map(([key, groupPorts]) => {
@@ -688,7 +789,7 @@ export class HaSocScannerView extends LitElement {
           return html`
             <tbody>
               <tr>
-                <td colspan="3" style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                <td colspan=${colCount} style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
                   <strong>${addr ?? "unresolved (IPv6)"}</strong>
                   <span class="pill ${info.cls}" style="margin-left:8px;"
                     ><span class="dot"></span>${info.label}</span
@@ -711,6 +812,7 @@ export class HaSocScannerView extends LitElement {
                           ? html`<span class="pill high"><span class="dot"></span>all interfaces</span>`
                           : html`<span class="muted">${p.interface ?? "—"}</span>`}
                       </td>
+                      ${showRuleCol ? this._renderPortRuleCell(p) : nothing}
                     </tr>
                   `
                 )}
@@ -718,6 +820,41 @@ export class HaSocScannerView extends LitElement {
           `;
         })}
       </table>
+    `;
+  }
+
+  // One family cell shared by the active-rules and proposed-rules tables:
+  // the family label, plus the honest partial marker the server sets on
+  // every "6"/"both" rule while the host reports no ip6tables support.
+  private _renderFamilyCell(r: FirewallRule) {
+    return html`
+      <td>
+        ${familyLabel(r.family)}
+        ${r.partially_applied
+          ? html`<span
+              class="pill high"
+              style="margin-left:6px;"
+              title="The host kernel does not support ip6tables, so the IPv6 half of this rule is not applied. Only its IPv4 half (if any) is live."
+              ><span class="dot"></span>IPv6 not applied</span
+            >`
+          : nothing}
+      </td>
+    `;
+  }
+
+  // The most recent archived test's failure reason (carried protocol
+  // item): backup_failed and per-family apply failures used to live only
+  // in the add-on's log; now the add-on reports them and the card shows
+  // the latest one where the operator is already looking. Rendered only
+  // when the newest history entry actually carries a reason, so a normal
+  // confirm/revert leaves no residue here.
+  private _renderLastOutcomeReason(fw: FirewallStatus) {
+    const latest = fw.history.length ? fw.history[fw.history.length - 1] : null;
+    if (!latest?.reason) return nothing;
+    return html`
+      <p style="color:var(--error-color,#db4437);font-size:12.5px;margin:8px 0 0;">
+        Last test (${latest.test_id.slice(0, 8)}) ended ${latest.status}: ${latest.reason}
+      </p>
     `;
   }
 
@@ -752,8 +889,21 @@ export class HaSocScannerView extends LitElement {
           SOC Probe add-on's <code>NET_ADMIN</code> capability. Every proposed change is
           backed up first and applied to a dedicated chain this project owns outright,
           never the host's raw INPUT chain. An unconfirmed change reverts itself
-          automatically once its test window closes.
+          automatically once its test window closes. Rules are dual-stack by default:
+          a rule with no source applies to IPv4 and IPv6 alike, and a source address
+          pins the rule to that address's own family.
         </p>
+        ${fw.ipv6_supported === false
+          ? html`
+              <p
+                style="color:var(--error-color,#db4437);font-size:12.5px;border:1px solid var(--error-color,#db4437);border-radius:4px;padding:8px 10px;"
+              >
+                IPv6 rules not applied: the host kernel does not support ip6tables.
+                Rules with family IPv6 are not live at all, and dual-stack rules are
+                live for IPv4 only.
+              </p>
+            `
+          : nothing}
 
         <h4 class="fw-subhead">Active rules</h4>
         ${!fw.known_rules || !fw.known_rules.length
@@ -768,6 +918,7 @@ export class HaSocScannerView extends LitElement {
                     ${sortableTh("Protocol", "proto", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Port", "port", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Source", "source", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Family", "family", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                   </tr>
                 </thead>
                 <tbody>
@@ -782,6 +933,7 @@ export class HaSocScannerView extends LitElement {
                         <td>${r.proto}</td>
                         <td>${r.port}</td>
                         <td class="muted">${r.source ?? "any"}</td>
+                        ${this._renderFamilyCell(r)}
                       </tr>
                     `
                   )}
@@ -793,6 +945,7 @@ export class HaSocScannerView extends LitElement {
               Last reported ${new Date(fw.known_rules_reported_at).toLocaleString()}
             </p>`
           : nothing}
+        ${this._renderLastOutcomeReason(fw)}
         ${fw.pending
           ? html`
               ${this._renderFirewallPending(fw.pending)}
@@ -838,6 +991,7 @@ export class HaSocScannerView extends LitElement {
             <th>Protocol</th>
             <th>Port</th>
             <th>Source</th>
+            <th>Family</th>
           </tr>
         </thead>
         <tbody>
@@ -852,6 +1006,7 @@ export class HaSocScannerView extends LitElement {
                 <td>${r.proto}</td>
                 <td>${r.port}</td>
                 <td class="muted">${r.source ?? "any"}</td>
+                ${this._renderFamilyCell(r)}
               </tr>
             `
           )}
@@ -909,12 +1064,19 @@ export class HaSocScannerView extends LitElement {
             <th>Protocol</th>
             <th>Port</th>
             <th>Source (optional)</th>
+            <th>Family</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          ${this._fwDraftRules.map(
-            (r, i) => html`
+          ${this._fwDraftRules.map((r, i) => {
+            // A source address pins the family (the server derives and
+            // enforces exactly this), so the selector locks to the
+            // derived value while a source is present and is free
+            // (default both) otherwise.
+            const pinned = familyForSource(r.source ?? "");
+            const family = pinned ?? r.family ?? "both";
+            return html`
               <tr>
                 <td>
                   <select
@@ -948,16 +1110,39 @@ export class HaSocScannerView extends LitElement {
                 <td>
                   <input
                     type="text"
-                    placeholder="e.g. 192.168.10.0/24"
+                    placeholder="e.g. 192.168.10.0/24 or fd00::/8"
                     .value=${r.source ?? ""}
                     style="width:170px;"
-                    @input=${(e: Event) => this._fwUpdateRule(i, { source: (e.target as HTMLInputElement).value })}
+                    @input=${(e: Event) => {
+                      const source = (e.target as HTMLInputElement).value;
+                      const derived = familyForSource(source);
+                      // Entering a source pins the family to it; clearing
+                      // the source returns to the dual-stack default
+                      // rather than silently keeping the pin.
+                      this._fwUpdateRule(i, { source, family: derived ?? "both" });
+                    }}
                   />
+                </td>
+                <td>
+                  <select
+                    ?disabled=${pinned !== null}
+                    title=${pinned !== null
+                      ? "Locked: the source address pins this rule to its own address family."
+                      : "IPv4+IPv6 writes the rule into both tables; pick one family to scope it."}
+                    @change=${(e: Event) =>
+                      this._fwUpdateRule(i, {
+                        family: (e.target as HTMLSelectElement).value as FirewallRuleFamily,
+                      })}
+                  >
+                    <option value="both" ?selected=${family === "both"}>IPv4+IPv6</option>
+                    <option value="4" ?selected=${family === "4"}>IPv4</option>
+                    <option value="6" ?selected=${family === "6"}>IPv6</option>
+                  </select>
                 </td>
                 <td><button class="ha-btn danger" @click=${() => this._fwRemoveRule(i)}>Remove</button></td>
               </tr>
-            `
-          )}
+            `;
+          })}
         </tbody>
       </table>
       <div class="toolbar" style="margin-top:8px;">

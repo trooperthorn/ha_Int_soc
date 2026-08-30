@@ -23,9 +23,30 @@ Two independent scoring passes live here:
   aggregate user risk with vulnerability, misconfiguration, integration
   health, and open-detection posture terms tracked elsewhere in the store.
 
+Factor arithmetic (work item 3.5): every factor carries both `points`
+(its pre-clamp contribution) and `applied_points` (its share of the final
+0-100 score after clamping), so the factor list always sums exactly to
+the score the user sees - no hidden truncation. Every named factor is
+capped; the caps for `disabled_user_activity` and `privilege_escalation`
+are the tunable `risk_cap_points` thresholds from detections.py's
+THRESHOLD_SPECS (work items 3.0/3.2), applied here with `min`. The
+long-lived-token bonus for a very old token is applied BEFORE that
+factor's cap, so the cap is a real ceiling.
+
+Provisional posture (work item 3.4, decision D-10, option (a) with
+"computed once ever"): `async_compute_posture` always returns a score and
+grade, but marks the result `provisional: True` with a `missing_terms`
+list until every one of the five posture terms has computed from real
+data at least once ever (persisted across restarts in the store's
+posture_terms map). What counts as "computed" per term is spelled out at
+_POSTURE_TERM_* below; where a source that ran clean is indistinguishable
+from one that never ran, the term stays missing - erring toward showing
+the provisional badge longer, never toward hiding it.
+
 Every threshold, weight, half-life, and cap is a named module-level
-constant, specifically so a future tuning pass never has to go hunting
-for a bare number buried in a conditional.
+constant (or a tunable read through detections.thresholds), specifically
+so a future tuning pass never has to go hunting for a bare number buried
+in a conditional.
 """
 from __future__ import annotations
 
@@ -52,6 +73,7 @@ from .detections import (
     RULE_PRIVILEGE_ESCALATION,
     RULE_SUCCESS_AFTER_FAILURES,
     RULE_TOKEN_MINTING_ANOMALY,
+    thresholds,
 )
 from .store import HaSocData
 
@@ -72,6 +94,17 @@ BAND_HIGH_MAX = 79
 ADMIN_WITHOUT_MFA_POINTS = 25
 NON_ADMIN_WITHOUT_MFA_POINTS = 8
 
+# never_logged_in (work item 3.5): an ACTIVE account holding at least one
+# credential but zero refresh tokens has a working way in that nobody has
+# ever used - standing attack surface with no behavioral history to
+# anchor any other rule on. The account-age gate applies only where an
+# age is actually known: with no refresh tokens the only age signal core
+# offers would be a credential creation time, and the installed core's
+# Credentials model carries no created_at field (verified against
+# homeassistant/auth/models.py), so the factor honestly reports "unknown
+# age" instead of inventing one. users.py probes for the field with
+# getattr so the "where available" branch comes alive if a future core
+# adds it.
 NEVER_LOGGED_IN_POINTS = 10
 NEVER_LOGGED_IN_MIN_ACCOUNT_AGE_DAYS = 14
 
@@ -80,6 +113,9 @@ STALE_ACCOUNT_90D_POINTS = 8
 STALE_ACCOUNT_180D_DAYS = 180
 STALE_ACCOUNT_180D_POINTS = 12
 
+# The old-token bonus is added BEFORE the cap is applied (work item 3.5),
+# so LLAT_POINTS_CAP is the factor's true ceiling; the previous build
+# added the bonus after min(), letting the factor reach cap + bonus.
 LLAT_POINTS_PER_TOKEN = 3
 LLAT_POINTS_CAP = 12
 LLAT_OLD_TOKEN_DAYS = 365
@@ -107,6 +143,9 @@ OFF_HOURS_CAP = 10
 # Flat, not exponential: a hard cutoff at PRIVILEGE_ESCALATION_WINDOW_DAYS,
 # because "you were just promoted" is either still recent context worth
 # surfacing or it isn't - there's no meaningful partial-credit shape here.
+# The factor total is capped by the rule's tunable risk_cap_points
+# threshold (secure default 24, work items 3.0/3.2), read live from
+# detections.thresholds() where the factor is computed.
 PRIVILEGE_ESCALATION_POINTS = 8
 PRIVILEGE_ESCALATION_WINDOW_DAYS = 30
 
@@ -116,6 +155,10 @@ TOKEN_MINTING_CAP = 10
 
 # Flat while open (no decay - an unresolved disabled-account hit is a
 # live concern), then decays once acked/resolved so it fades once handled.
+# The factor total is capped by the rule's tunable risk_cap_points
+# threshold (secure default 40, work items 3.0/3.2) - previously this
+# factor was uncapped, so a burst of retries from one dead tablet could
+# saturate the whole score on its own.
 DISABLED_USER_ACTIVITY_OPEN_POINTS = 20
 DISABLED_USER_ACTIVITY_HALF_LIFE_DAYS = 7
 
@@ -187,6 +230,35 @@ GRADE_C_MIN = 70
 GRADE_D_MIN = 60
 
 POSTURE_HISTORY_MAX_DAYS = 90
+
+# -- Provisional posture (work item 3.4, decision D-10) --------------------
+# The five posture terms, and what counts as evidence each has computed
+# from real data at least once ever:
+# - p_user: computed live from the auth store on every posture pass, so
+#   it is stamped the first time posture computes at all.
+# - p_detection: the detection engine has completed at least one pass
+#   (detections.py writes detections_meta.last_pass_completed_at).
+# - p_vuln / p_misconfig / p_integration: the backing store table has held
+#   at least one record while posture computed, OR (for p_vuln) a manual
+#   scan completed (websocket_api stamps it directly). HONESTY CAVEAT: a
+#   source that ran and found literally nothing is indistinguishable from
+#   one that never ran using only the store, so such a term stays listed
+#   as missing and the badge stays up - the conservative direction. In
+#   practice health.py writes one integration_health record per config
+#   entry on its first sweep and an inventory INFO finding for any cloud
+#   integration, so on a real install these terms stamp within minutes.
+POSTURE_TERM_USER = "p_user"
+POSTURE_TERM_VULN = "p_vuln"
+POSTURE_TERM_MISCONFIG = "p_misconfig"
+POSTURE_TERM_INTEGRATION = "p_integration"
+POSTURE_TERM_DETECTION = "p_detection"
+POSTURE_TERMS = (
+    POSTURE_TERM_USER,
+    POSTURE_TERM_VULN,
+    POSTURE_TERM_MISCONFIG,
+    POSTURE_TERM_INTEGRATION,
+    POSTURE_TERM_DETECTION,
+)
 
 
 def _band_for_score(score: int) -> str:
@@ -300,19 +372,41 @@ class RiskEngine:
         last_login_at = user.get("last_login_at")
         account_age_days = user.get("account_age_days")
 
-        if (
-            is_active
-            and last_login_at is None
-            and account_age_days is not None
-            and account_age_days >= NEVER_LOGGED_IN_MIN_ACCOUNT_AGE_DAYS
-        ):
-            factors.append(
-                {
-                    "name": "never_logged_in",
-                    "points": NEVER_LOGGED_IN_POINTS,
-                    "detail": f"Enabled {account_age_days}d-old account has never logged in",
-                }
-            )
+        # Work item 3.5: a credentialed account with zero refresh tokens
+        # has never logged in at all, and with no tokens there is no
+        # account_age_days (users.py derives it from the oldest token) -
+        # the old age-gated condition could therefore never fire for
+        # exactly the accounts it described. The age gate now applies only
+        # when an age is actually known (credential_age_days, present only
+        # on a core whose Credentials model records creation time); with
+        # no age signal the factor fires with an honest "unknown age".
+        credentials_count = user.get("credentials_count") or 0
+        refresh_token_count = user.get("refresh_token_count") or 0
+        credential_age_days = user.get("credential_age_days")
+        if is_active and credentials_count >= 1 and refresh_token_count == 0:
+            if credential_age_days is not None:
+                if credential_age_days >= NEVER_LOGGED_IN_MIN_ACCOUNT_AGE_DAYS:
+                    factors.append(
+                        {
+                            "name": "never_logged_in",
+                            "points": NEVER_LOGGED_IN_POINTS,
+                            "detail": (
+                                f"Enabled {credential_age_days}d-old account "
+                                "has never logged in"
+                            ),
+                        }
+                    )
+            else:
+                factors.append(
+                    {
+                        "name": "never_logged_in",
+                        "points": NEVER_LOGGED_IN_POINTS,
+                        "detail": (
+                            "Enabled account with a credential has never "
+                            "logged in (unknown age, never logged in)"
+                        ),
+                    }
+                )
 
         if is_active and last_login_at:
             last_login_dt = dt_util.parse_datetime(last_login_at)
@@ -337,12 +431,15 @@ class RiskEngine:
 
         llat_count = user.get("llat_count") or 0
         if llat_count:
-            llat_points = min(llat_count * LLAT_POINTS_PER_TOKEN, LLAT_POINTS_CAP)
+            raw_llat = llat_count * LLAT_POINTS_PER_TOKEN
             detail_msg = f"{llat_count} long-lived access token(s)"
             llat_oldest_days = user.get("llat_oldest_days")
             if llat_oldest_days is not None and llat_oldest_days > LLAT_OLD_TOKEN_DAYS:
-                llat_points += LLAT_OLD_TOKEN_BONUS_POINTS
+                # Bonus BEFORE the cap (work item 3.5): the cap is the
+                # factor's ceiling, not a waypoint the bonus rides past.
+                raw_llat += LLAT_OLD_TOKEN_BONUS_POINTS
                 detail_msg += f", oldest {llat_oldest_days}d"
+            llat_points = min(raw_llat, LLAT_POINTS_CAP)
             factors.append(
                 {"name": "long_lived_token_load", "points": llat_points, "detail": detail_msg}
             )
@@ -367,6 +464,7 @@ class RiskEngine:
         factors.sort(key=lambda f: f["points"], reverse=True)
         raw_score = sum(f["points"] for f in factors)
         score = int(round(min(max(raw_score, USER_SCORE_MIN), USER_SCORE_MAX)))
+        self._reconcile_applied_points(factors, raw_score, score)
 
         return {
             "user_id": user["id"],
@@ -374,6 +472,33 @@ class RiskEngine:
             "band": _band_for_score(score),
             "factors": factors,
         }
+
+    @staticmethod
+    def _reconcile_applied_points(
+        factors: list[dict[str, Any]], raw_score: float, score: int
+    ) -> None:
+        """Give every factor an `applied_points` that sums exactly to `score`.
+
+        Work item 3.5: `points` is a factor's pre-clamp contribution and
+        stays untouched, but the displayed list must add up to the number
+        on the card. Each factor's applied share is its proportional slice
+        of the clamped score, rounded to one decimal, and the rounding
+        residue is folded into the largest factor so the sum is exact
+        rather than off by a few tenths.
+        """
+        if not factors:
+            return
+        if raw_score <= 0:
+            for factor in factors:
+                factor["applied_points"] = 0.0
+            return
+        scale = score / raw_score
+        for factor in factors:
+            factor["applied_points"] = round(factor["points"] * scale, 1)
+        residue = round(score - sum(f["applied_points"] for f in factors), 1)
+        if residue:
+            largest = max(factors, key=lambda f: f["applied_points"])
+            largest["applied_points"] = round(largest["applied_points"] + residue, 1)
 
     @staticmethod
     def _add_success_after_failures_factor(factors, detections, now) -> None:
@@ -436,8 +561,7 @@ class RiskEngine:
                 }
             )
 
-    @staticmethod
-    def _add_privilege_escalation_factor(factors, detections, now) -> None:
+    def _add_privilege_escalation_factor(self, factors, detections, now) -> None:
         matches = [d for d in detections if d.get("rule_id") == RULE_PRIVILEGE_ESCALATION]
         if not matches:
             return
@@ -448,6 +572,12 @@ class RiskEngine:
                 continue
             days_since = (now - ts).days
             total += PRIVILEGE_ESCALATION_POINTS if days_since <= PRIVILEGE_ESCALATION_WINDOW_DAYS else 0
+        # Tunable cap (work items 3.0/3.2): previously uncapped, so many
+        # near-simultaneous promotions could dominate the score alone.
+        total = min(
+            total,
+            thresholds(self.store, RULE_PRIVILEGE_ESCALATION)["risk_cap_points"],
+        )
         if total >= 1:
             factors.append(
                 {
@@ -482,8 +612,7 @@ class RiskEngine:
                 }
             )
 
-    @staticmethod
-    def _add_disabled_user_activity_factor(factors, detections, now) -> None:
+    def _add_disabled_user_activity_factor(self, factors, detections, now) -> None:
         matches = [d for d in detections if d.get("rule_id") == RULE_DISABLED_USER_ACTIVITY]
         if not matches:
             return
@@ -495,6 +624,13 @@ class RiskEngine:
                 total += _decayed_points(
                     d.get("ts"), now, DISABLED_USER_ACTIVITY_OPEN_POINTS, DISABLED_USER_ACTIVITY_HALF_LIFE_DAYS
                 )
+        # Tunable cap via min (work items 3.0/3.2, secure default 40):
+        # previously uncapped, so one stuck retry loop could saturate the
+        # whole 0-100 score by itself.
+        total = min(
+            total,
+            thresholds(self.store, RULE_DISABLED_USER_ACTIVITY)["risk_cap_points"],
+        )
         if total >= 1:
             factors.append(
                 {
@@ -547,9 +683,19 @@ class RiskEngine:
         posture_score = int(min(max(raw_score, POSTURE_SCORE_MIN), POSTURE_SCORE_MAX))
         grade = _grade_for_score(posture_score)
 
+        term_computed_at = self._update_posture_terms()
+        missing_terms = [t for t in POSTURE_TERMS if term_computed_at.get(t) is None]
+
         result = {
             "score": posture_score,
             "grade": grade,
+            # D-10 option (a): the grade always shows, labeled provisional
+            # until every term has computed once ever - a hidden grade
+            # reads as a broken tile; a labeled one is honest and useful
+            # on day one.
+            "provisional": bool(missing_terms),
+            "missing_terms": missing_terms,
+            "term_computed_at": term_computed_at,
             "breakdown": {
                 "p_user": round(p_user, 1),
                 "p_vuln": p_vuln,
@@ -563,6 +709,31 @@ class RiskEngine:
 
         self.last_posture_result = result
         return result
+
+    def _update_posture_terms(self) -> dict[str, str | None]:
+        """Stamp newly-computable terms and return term -> first computed_at.
+
+        The per-term evidence rules are documented at POSTURE_TERMS above.
+        Stamps persist in the store ("computed once ever", D-10), so a
+        restart or a source table that later empties never resurrects the
+        provisional badge for a term that has genuinely computed.
+        """
+        now_iso = dt_util.utcnow().isoformat()
+        data = self.store.data
+        evidence = {
+            POSTURE_TERM_USER: True,
+            POSTURE_TERM_VULN: bool(data.get("vuln_findings")),
+            POSTURE_TERM_MISCONFIG: bool(data.get("misconfig_findings")),
+            POSTURE_TERM_INTEGRATION: bool(data.get("integration_health")),
+            POSTURE_TERM_DETECTION: bool(
+                data.get("detections_meta", {}).get("last_pass_completed_at")
+            ),
+        }
+        for term, ready in evidence.items():
+            if ready:
+                self.store.async_mark_posture_term_computed(term, now_iso)
+        stamped = data.get("posture_terms", {})
+        return {term: stamped.get(term) for term in POSTURE_TERMS}
 
     @staticmethod
     def _compute_p_user(users: list[dict[str, Any]], risk_results: dict[str, dict[str, Any]]) -> float:

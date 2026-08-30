@@ -3,7 +3,15 @@ import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import { SortState, sortRows, sortableTh } from "../sortable";
-import { AuditEvent, HaSocUser, fetchUsers, queryAudit, verifyAuditChain } from "../data/ha-soc-ws";
+import {
+  AuditCategoryStats,
+  AuditEvent,
+  HaSocUser,
+  fetchAuditCategoryStats,
+  fetchUsers,
+  queryAudit,
+  verifyAuditChain,
+} from "../data/ha-soc-ws";
 
 // [category value, display label]. Must track every category audit.py can
 // write, or records become reachable only through "All categories".
@@ -49,6 +57,7 @@ export class HaSocAuditView extends LitElement {
     expired_through?: string | null;
   } | null = null;
   @state() private _sort: SortState | null = null;
+  @state() private _stats: AuditCategoryStats | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -83,6 +92,12 @@ export class HaSocAuditView extends LitElement {
 
   private async _onVerify() {
     this._verifyResult = await verifyAuditChain(this.hass);
+  }
+
+  private async _onCategoryStats() {
+    // On demand rather than on every load: the server scans the newest
+    // day's file(s) each call, which is cheap but not free.
+    this._stats = await fetchAuditCategoryStats(this.hass);
   }
 
   private _onCategoryChange(e: Event) {
@@ -137,8 +152,24 @@ export class HaSocAuditView extends LitElement {
           </select>
           <span class="spacer"></span>
           <button class="ha-btn" @click=${this._onVerify}>Verify chain integrity</button>
+          <button class="ha-btn" @click=${this._onCategoryStats}>Volume by category</button>
           <button class="ha-btn" @click=${this._load}>Refresh</button>
         </div>
+        ${this._stats
+          ? html`<p class="muted" style="font-size:12px;">
+              ${this._stats.day
+                ? html`${this._stats.day}: ${this._stats.total_records.toLocaleString()} records,
+                  ${(this._stats.total_bytes / 1024).toFixed(0)} KB.
+                  ${this._stats.categories
+                    .slice(0, 6)
+                    .map(
+                      (c) =>
+                        `${c.category} ${c.records.toLocaleString()} (${Math.round(c.byte_share * 100)}%)`
+                    )
+                    .join(" · ")}${this._stats.categories.length > 6 ? " · …" : ""}`
+                : "No audit day files yet."}
+            </p>`
+          : null}
         ${this._verifyResult
           ? html`<p class="${this._verifyResult.ok ? "muted" : ""}" style="font-size:12.5px;">
               ${!this._verifyResult.ok

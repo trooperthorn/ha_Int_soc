@@ -52,12 +52,12 @@ async def test_set_updates_store_and_leaves_entry_options_empty(
     ws_settings_set(
         hass,
         connection,
-        {"id": 1, "type": "ha_soc/settings/set", "scanner_enabled": False, "risk_learning_period_days": 21},
+        {"id": 1, "type": "ha_soc/settings/set", "scanner_enabled": False, "evidence_retention_days": 400},
     )
     await hass.async_block_till_done()
 
     assert entry.runtime_data.store.settings["scanner_enabled"] is False
-    assert entry.runtime_data.store.settings["risk_learning_period_days"] == 21
+    assert entry.runtime_data.store.settings["evidence_retention_days"] == 400
     assert entry.options == {}
 
     result = connection.send_result.call_args[0][1]

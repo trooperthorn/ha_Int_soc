@@ -539,6 +539,47 @@ export class HaSocDashboardView extends LitElement {
     return sortRows(filtered, this._integrationSort, HaSocDashboardView.INTEGRATION_SORT);
   }
 
+  // Human labels for the posture terms named by missing_terms (work item
+  // 3.4, D-10). An unknown term falls back to its raw id.
+  private static readonly POSTURE_TERM_LABELS: Record<string, string> = {
+    p_user: "user risk",
+    p_vuln: "device vulnerabilities",
+    p_misconfig: "misconfigurations",
+    p_integration: "integration health",
+    p_detection: "detections",
+  };
+
+  private _renderPostureCard() {
+    const posture = this._summary?.posture;
+    if (!posture) return nothing;
+    const missing = (posture.missing_terms ?? []).map(
+      (t) => HaSocDashboardView.POSTURE_TERM_LABELS[t] ?? t
+    );
+    return html`
+      <h2 class="section-title">Security Posture</h2>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="font-size:36px;font-weight:700;line-height:1;">${posture.grade}</div>
+          <div>
+            <div style="font-size:15px;font-weight:600;">Score ${posture.score} / 100</div>
+            ${posture.provisional
+              ? html`
+                  <span
+                    class="tag cosmetic"
+                    title="Not every posture term has computed from real data yet; the grade may move once they have."
+                    >provisional</span
+                  >
+                  <span class="muted" style="font-size:12px;">
+                    waiting on first data for: ${missing.join(", ")}
+                  </span>
+                `
+              : nothing}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private _statusDotColor(status: string): string {
     switch (status) {
       case "unavailable":
@@ -649,7 +690,7 @@ export class HaSocDashboardView extends LitElement {
     ];
 
     return html`
-      ${this._renderSecurityCard()}
+      ${this._renderPostureCard()} ${this._renderSecurityCard()}
 
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">

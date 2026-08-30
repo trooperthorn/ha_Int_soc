@@ -91,8 +91,15 @@ class PostureScoreSensor(_BaseSocSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
+        # Grade ONLY (work item 3.10, decision D-19 option (a)). Entity
+        # attributes have no per-user ACL in Home Assistant core, so the
+        # per-term breakdown - which maps exactly where the install is
+        # weakest - must stay behind the access-gated ha_soc/risk/posture
+        # command, not sit on a globally-readable entity. Any automation
+        # that read the old breakdown attributes must move to the grade or
+        # the WS data.
         posture = self._runtime.risk.last_posture_result or {}
-        return {"grade": posture.get("grade"), "breakdown": posture.get("breakdown")}
+        return {"grade": posture.get("grade")}
 
 
 class OpenDetectionsSensor(_BaseSocSensor):
@@ -125,7 +132,6 @@ class UsersAtRiskSensor(_BaseSocSensor):
 
 
 class UserRiskSensor(_BaseSocSensor):
-    _attr_translation_key = "user_risk"
     _attr_icon = "mdi:account-lock"
     _attr_state_class = SensorStateClass.MEASUREMENT
 
@@ -133,6 +139,13 @@ class UserRiskSensor(_BaseSocSensor):
         super().__init__(runtime)
         self.user_id = user_id
         self._attr_unique_id = f"{DOMAIN}_risk_{user_id}"
+        # Name (and therefore entity id) derives from the USER ID, not the
+        # display name (work item 3.10, D-19): user ids are immutable while
+        # names change freely, and a shared translated name ("Risk") gave
+        # every user's sensor the same base entity id, leaving collision
+        # suffixes to decide which account was which. Eight id characters
+        # keep it readable while still unique for any realistic user count.
+        self._attr_name = f"Risk {user_id[:8]}"
 
     @property
     def native_value(self) -> int | None:

@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+import homeassistant.helpers.issue_registry as ir
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
@@ -41,9 +42,12 @@ async def test_addon_checks_are_empty_off_supervisor(hass: HomeAssistant, health
 
 
 async def test_unprotected_addon_flagged(hass: HomeAssistant, health: IntegrationHealth) -> None:
+    """D-11 (work plan item 4.4): addon_unprotected is HIGH, and CRITICAL
+    when the add-on also has host_network."""
     fake_addons = {
-        "local_some_addon": {"name": "Some Addon", "protected": False},
-        "core_mosquitto": {"name": "Mosquitto broker", "protected": True},
+        "local_some_addon": {"name": "Some Addon", "protected": False, "host_network": False},
+        "local_host_addon": {"name": "Hosty Addon", "protected": False, "host_network": True},
+        "core_mosquitto": {"name": "Mosquitto broker", "protected": True, "host_network": False},
     }
     with (
         patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
@@ -51,9 +55,12 @@ async def test_unprotected_addon_flagged(hass: HomeAssistant, health: Integratio
     ):
         findings = await health._check_addon_protection_mode()
 
-    assert len(findings) == 1
-    assert findings[0]["check"] == "addon_unprotected"
-    assert "Some Addon" in findings[0]["title"]
+    by_slug = {f["detail"]["slug"]: f for f in findings}
+    assert set(by_slug) == {"local_some_addon", "local_host_addon"}
+    assert by_slug["local_some_addon"]["check"] == "addon_unprotected"
+    assert by_slug["local_some_addon"]["severity"] == "high"
+    assert by_slug["local_host_addon"]["severity"] == "critical"
+    assert "Some Addon" in by_slug["local_some_addon"]["title"]
 
 
 async def test_protected_addons_produce_no_finding(hass: HomeAssistant, health: IntegrationHealth) -> None:
@@ -64,6 +71,117 @@ async def test_protected_addons_produce_no_finding(hass: HomeAssistant, health: 
     ):
         findings = await health._check_addon_protection_mode()
     assert findings == []
+
+
+async def test_supervisor_checks_fail_closed(hass: HomeAssistant, health: IntegrationHealth) -> None:
+    """Work plan item 4.3: a missing key in cached add-on info yields an
+    INFO could_not_evaluate finding naming the key, never silence."""
+    fake_addons = {
+        # Missing "protected" entirely: the whole judgment is impossible.
+        "local_mystery": {"name": "Mystery Addon", "host_network": False},
+        # Protection off but host_network unknown: the HIGH/CRITICAL split
+        # is impossible, and guessing either would be dishonest.
+        "local_hostless": {"name": "Hostless Addon", "protected": False},
+    }
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=fake_addons),
+    ):
+        findings = await health._check_addon_protection_mode()
+
+    by_slug = {f["detail"]["slug"]: f for f in findings}
+    assert set(by_slug) == {"local_mystery", "local_hostless"}
+    for finding in findings:
+        assert finding["severity"] == "info"
+        assert finding["detail"]["could_not_evaluate"] is True
+    assert by_slug["local_mystery"]["detail"]["missing_keys"] == ["protected"]
+    assert "protected" in by_slug["local_mystery"]["summary"]
+    assert by_slug["local_hostless"]["detail"]["missing_keys"] == ["host_network"]
+
+    # INFO could_not_evaluate findings never open a Repairs issue.
+    registry = ir.async_get(hass)
+    issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
+    assert not (issue_ids & {f["id"] for f in findings})
+
+
+async def test_ssh_exposed_check_fails_closed_on_missing_keys(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    fake_addons = {
+        "core_ssh": {"name": "Terminal & SSH", "state": "started"},
+    }
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=fake_addons),
+    ):
+        findings = await health._check_ssh_addon_exposed()
+    assert len(findings) == 1
+    assert findings[0]["severity"] == "info"
+    assert set(findings[0]["detail"]["missing_keys"]) == {"host_network", "network"}
+
+
+async def test_probe_acknowledged_by_design(hass: HomeAssistant, health: IntegrationHealth) -> None:
+    """D-20 variant (c) (work plan item 4.4): when hard caps are the
+    reason the Probe's Protection Mode is off, its finding renders as
+    acknowledged-by-design - stored and visible, never a Repairs issue -
+    while every other add-on still gets the real finding."""
+    health._store.data["resource_watchdog"]["hard_limits"] = {
+        "some_addon": {"memory_mb": 512, "cpus": None}
+    }
+    fake_addons = {
+        "local_ha_soc_probe": {
+            "name": "HA SOC Probe", "protected": False, "host_network": True,
+        },
+        "local_other": {"name": "Other Addon", "protected": False, "host_network": True},
+    }
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=fake_addons),
+    ):
+        findings = await health._check_addon_protection_mode()
+
+    by_slug = {f["detail"]["slug"]: f for f in findings}
+    probe = by_slug["local_ha_soc_probe"]
+    other = by_slug["local_other"]
+
+    # The Probe's row is visible and labeled, never silently suppressed.
+    assert probe["acknowledged_by_design"] is True
+    assert "D-20" in probe["acknowledged_reason"]
+    assert "Acknowledged by design" in probe["summary"]
+    # Every other add-on keeps the real finding at the D-11 severity.
+    assert other.get("acknowledged_by_design") is None
+    assert other["severity"] == "critical"
+
+    registry = ir.async_get(hass)
+    issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
+    assert probe["id"] not in issue_ids
+    assert other["id"] in issue_ids
+
+
+async def test_probe_without_hard_caps_gets_real_finding(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    """The D-20 exception is narrow: with no hard caps configured there is
+    no by-design reason for Protection Mode to be off, so the Probe gets
+    the same real finding as anyone else."""
+    assert not health._store.data["resource_watchdog"]["hard_limits"]
+    fake_addons = {
+        "local_ha_soc_probe": {
+            "name": "HA SOC Probe", "protected": False, "host_network": True,
+        },
+    }
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=fake_addons),
+    ):
+        findings = await health._check_addon_protection_mode()
+
+    assert len(findings) == 1
+    assert findings[0].get("acknowledged_by_design") is None
+    assert findings[0]["severity"] == "critical"
+    registry = ir.async_get(hass)
+    issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
+    assert findings[0]["id"] in issue_ids
 
 
 async def test_ssh_addon_inventory_matches_by_slug_and_name(

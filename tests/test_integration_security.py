@@ -288,6 +288,139 @@ async def test_custom_components_scan_runs_in_executor(
     )
 
 
+# -- 8: sprint 4 hardening (work plan item 4.10) ------------------------------
+
+
+def test_repo_slug_validation() -> None:
+    from custom_components.ha_soc.github_provenance import _valid_repo_slug
+
+    assert _valid_repo_slug("trooperthorn/ha_Int_soc") is True
+    assert _valid_repo_slug("owner-1/repo.name_2") is True
+    # Dot segments are the token-redirection vector (yarl collapses them
+    # before sending), so they are rejected even though the character
+    # class alone would admit them.
+    assert _valid_repo_slug("../../user/repos") is False
+    assert _valid_repo_slug("../repo") is False
+    assert _valid_repo_slug("owner/..") is False
+    assert _valid_repo_slug("owner/.") is False
+    # Extra path components, spaces, and empty parts never pass.
+    assert _valid_repo_slug("a/b/c") is False
+    assert _valid_repo_slug("a b/c") is False
+    assert _valid_repo_slug("/repo") is False
+    assert _valid_repo_slug("owner/") is False
+    assert _valid_repo_slug("") is False
+    assert _valid_repo_slug(None) is False  # type: ignore[arg-type]
+
+
+async def test_refresh_skips_invalid_slugs(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    await secrets.async_set(CONF_GITHUB_TOKEN, "ghp_fake_token")
+    with patch(
+        "custom_components.ha_soc.github_provenance._fetch_repo_signals",
+        new=AsyncMock(return_value=dict(FAKE_SIGNALS)),
+    ) as mock_fetch:
+        result = await async_refresh_github_signals(
+            hass, store, ["../../user/repos", "good/repo"], secrets
+        )
+    mock_fetch.assert_awaited_once()
+    assert mock_fetch.call_args[0][1] == "good/repo"
+    assert result["refreshed"] == 1
+    assert result["invalid_slugs"] == 1
+    assert "../../user/repos" not in store.data["integration_security"]["github"]
+
+
+async def test_github_refresh_survives_bad_json(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore, aioclient_mock
+) -> None:
+    """One repository answering garbage instead of JSON leaves that repo
+    "not collected" and the rest of the refresh completes."""
+    await secrets.async_set(CONF_GITHUB_TOKEN, "ghp_fake_token")
+    aioclient_mock.get(
+        "https://api.github.com/repos/bad/repo",
+        text="<html>not json</html>",
+    )
+    aioclient_mock.get(
+        "https://api.github.com/repos/good/repo",
+        json={"default_branch": "main", "stargazers_count": 1, "forks_count": 0,
+              "archived": False, "pushed_at": "2026-01-01T00:00:00Z"},
+    )
+    aioclient_mock.get(
+        "https://api.github.com/repos/good/repo/commits/main",
+        json={"commit": {"verification": {"verified": True}}},
+    )
+    aioclient_mock.get(
+        "https://api.github.com/repos/good/repo/releases/latest",
+        json={"tag_name": "v1.0.0"},
+    )
+
+    result = await async_refresh_github_signals(
+        hass, store, ["bad/repo", "good/repo"], secrets
+    )
+
+    assert result["ok"] is True
+    assert result["refreshed"] == 1
+    cache = store.data["integration_security"]["github"]
+    assert "bad/repo" not in cache
+    assert cache["good/repo"]["stars"] == 1
+    assert cache["good/repo"]["commit_verified"] is True
+
+
+async def test_github_cache_ttl_honored(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    import homeassistant.util.dt as dt_util
+    from datetime import timedelta
+
+    await secrets.async_set(CONF_GITHUB_TOKEN, "ghp_fake_token")
+    fresh_at = (dt_util.utcnow() - timedelta(hours=1)).isoformat()
+    store.data["integration_security"]["github"]["cached/repo"] = {
+        **FAKE_SIGNALS, "collected_at": fresh_at,
+    }
+
+    with patch(
+        "custom_components.ha_soc.github_provenance._fetch_repo_signals",
+        new=AsyncMock(return_value=dict(FAKE_SIGNALS)),
+    ) as mock_fetch:
+        result = await async_refresh_github_signals(hass, store, ["cached/repo"], secrets)
+    mock_fetch.assert_not_called()
+    assert result["refreshed"] == 0
+    assert result["cache_fresh"] == 1
+
+    # Past the TTL the same repo is re-fetched.
+    stale_at = (dt_util.utcnow() - timedelta(hours=25)).isoformat()
+    store.data["integration_security"]["github"]["cached/repo"]["collected_at"] = stale_at
+    with patch(
+        "custom_components.ha_soc.github_provenance._fetch_repo_signals",
+        new=AsyncMock(return_value=dict(FAKE_SIGNALS)),
+    ) as mock_fetch:
+        result = await async_refresh_github_signals(hass, store, ["cached/repo"], secrets)
+    mock_fetch.assert_awaited_once()
+    assert result["refreshed"] == 1
+
+
+async def test_github_refresh_stops_on_rate_limit(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore, aioclient_mock
+) -> None:
+    await secrets.async_set(CONF_GITHUB_TOKEN, "ghp_fake_token")
+    aioclient_mock.get(
+        "https://api.github.com/repos/first/repo",
+        status=403,
+        headers={"X-RateLimit-Remaining": "0"},
+        json={"message": "rate limited"},
+    )
+
+    result = await async_refresh_github_signals(
+        hass, store, ["first/repo", "second/repo"], secrets
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "rate_limited"
+    assert result["refreshed"] == 0
+    # The loop stopped instead of burning the quota on second/repo.
+    assert aioclient_mock.call_count == 1
+
+
 def test_scan_custom_components_sync_behavior(tmp_path) -> None:
     """The scan itself: manifest-bearing dirs only, dot/underscore skipped,
     license presence computed in the same pass."""

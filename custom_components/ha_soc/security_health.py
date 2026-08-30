@@ -8,7 +8,16 @@ SECURITY_ENTITY_DOMAINS for the known set):
 - **Entity domains** (``lock``, ``siren``, ``valve``) — every entity in
   these domains, regardless of which integration owns it. These are the
   entity types where "is it actually working" is a physical-security
-  question, not just a convenience one.
+  question, not just a convenience one. Enumeration covers BOTH the live
+  state machine and the entity registry (work plan item 4.5): a lock
+  whose integration failed to load has no state object at all, which is
+  the worst possible state for a physical-security entity and must
+  render as ``problem: True`` with reason "no state (integration not
+  loaded)", never silently vanish from the card. Registry entries that
+  are themselves disabled are skipped (a deliberately disabled entity
+  having no state is expected, not a fault). Obvious false positive of
+  the no-state row: an integration that is merely still starting up
+  shows its entities as problems for the first moments after a restart.
 - **Integration domains** — a curated allowlist
   (kidde_homesafe/elkm1/emporia_vue/unifiprotect/keymaster) reported the
   same honest three-way way probe.py/peripherals.py already establish for
@@ -64,6 +73,28 @@ def _find_battery_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
     return fallback
 
 
+def _no_state_row(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
+    """The honest row for a registry entity with no state object (work
+    plan item 4.5): its integration never loaded it, so nothing can be
+    said about it except that it is not working."""
+    ent_reg = er.async_get(hass)
+    entry = ent_reg.async_get(entity_id)
+    return {
+        "entity_id": entity_id,
+        "name": (entry.name or entry.original_name) if entry is not None else None,
+        "domain": entity_id.split(".", 1)[0],
+        "state": None,
+        "device_class": None,
+        "problem": True,
+        "reason": "no state (integration not loaded)",
+        "battery_entity_id": None,
+        "battery_level": None,
+        "low_battery": False,
+        "config_entry_id": entry.config_entry_id if entry is not None else None,
+        "platform": entry.platform if entry is not None else None,
+    }
+
+
 def _entity_row(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
     state = hass.states.get(entity_id)
     if state is None:
@@ -89,6 +120,7 @@ def _entity_row(hass: HomeAssistant, entity_id: str) -> dict[str, Any] | None:
         "state": state.state,
         "device_class": state.attributes.get("device_class"),
         "problem": state.state in _PROBLEM_STATES,
+        "reason": state.state if state.state in _PROBLEM_STATES else None,
         "battery_entity_id": battery_entity_id,
         "battery_level": battery_level,
         "low_battery": battery_level is not None and battery_level <= LOW_BATTERY_THRESHOLD,
@@ -101,14 +133,28 @@ async def async_security_overview(hass: HomeAssistant, store: HaSocData) -> dict
     """Everything the always-present Dashboard security card needs."""
     enabled = store.settings.get("security_sources_enabled") or {}
 
+    ent_reg = er.async_get(hass)
     entities: list[dict[str, Any]] = []
     for domain in SECURITY_ENTITY_DOMAINS:
         if not enabled.get(domain, True):
             continue
-        for entity_id in hass.states.async_entity_ids(domain):
+        # Union of the live state machine and the entity registry (work
+        # plan item 4.5): states-only enumeration silently drops exactly
+        # the entities in the worst condition - registered but never
+        # loaded, so no state object exists. Disabled registry entries
+        # are skipped: an intentionally disabled lock having no state is
+        # expected, not a fault worth alarming on.
+        state_ids = set(hass.states.async_entity_ids(domain))
+        registry_ids = {
+            entry.entity_id
+            for entry in ent_reg.entities.values()
+            if entry.domain == domain and entry.disabled_by is None
+        }
+        for entity_id in state_ids | registry_ids:
             row = _entity_row(hass, entity_id)
-            if row is not None:
-                entities.append(row)
+            if row is None:
+                row = _no_state_row(hass, entity_id)
+            entities.append(row)
     entities.sort(key=lambda e: e["entity_id"])
 
     integrations: list[dict[str, Any]] = []

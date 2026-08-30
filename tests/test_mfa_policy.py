@@ -107,6 +107,58 @@ async def test_auto_deactivate_fires_once_grace_period_expires(
     )
 
 
+async def test_external_auth_admin_is_not_assessable(
+    hass: HomeAssistant, store: HaSocData, users_manager: UsersManager, audit: AuditLog, hass_admin_user: MockUser
+) -> None:
+    """Work item 3.11 (D-18 option (a)): an admin whose only credentials
+    come from a non-homeassistant provider is reported as not assessable
+    and exempt from auto_deactivate - their second factor may live
+    upstream where HA cannot see it."""
+    from homeassistant.auth.models import Credentials
+
+    hass_admin_user.credentials.append(
+        Credentials(
+            auth_provider_type="trusted_networks", auth_provider_id=None, data={}
+        )
+    )
+    record = await _user_record(users_manager, hass_admin_user.id)
+    assert record["mfa_assessable"] is False
+    assert record["auth_provider_types"] == ["trusted_networks"]
+
+    store.async_update_settings(mfa_policy=MFA_POLICY_AUTO_DEACTIVATE, mfa_grace_period_days=14)
+    long_ago = (dt_util.utcnow() - timedelta(days=15)).isoformat()
+    store.data["mfa_grace_started"][hass_admin_user.id] = long_ago
+
+    deactivated = await async_enforce_mfa_policy(store, users_manager, audit, [record])
+
+    assert deactivated == []
+    # An exempt user is not compliant-with-MFA but also not noncompliant:
+    # the stale grace clock clears rather than counting down to a lockout.
+    assert hass_admin_user.id not in store.data["mfa_grace_started"]
+    refreshed = await hass.auth.async_get_user(hass_admin_user.id)
+    assert refreshed.is_active is True
+
+
+async def test_ha_credential_admin_stays_assessable(
+    users_manager: UsersManager, hass_admin_user: MockUser
+) -> None:
+    """A user with a homeassistant credential (even alongside external
+    ones) stays assessable, as does one with no credentials at all."""
+    from homeassistant.auth.models import Credentials
+
+    record = await _user_record(users_manager, hass_admin_user.id)
+    assert record["mfa_assessable"] is True  # no credentials: nothing external to defer to
+
+    hass_admin_user.credentials.append(
+        Credentials(auth_provider_type="homeassistant", auth_provider_id=None, data={"username": "a"})
+    )
+    hass_admin_user.credentials.append(
+        Credentials(auth_provider_type="trusted_networks", auth_provider_id=None, data={})
+    )
+    record = await _user_record(users_manager, hass_admin_user.id)
+    assert record["mfa_assessable"] is True
+
+
 async def test_restored_compliance_clears_the_grace_clock(
     hass: HomeAssistant, store: HaSocData, users_manager: UsersManager, audit: AuditLog, hass_admin_user: MockUser
 ) -> None:

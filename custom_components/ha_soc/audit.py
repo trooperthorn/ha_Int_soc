@@ -111,7 +111,11 @@ the installed core source - so they are reconstructed indirectly):
   token, or an existing token whose ``last_used_at`` advanced, is logged as
   ``login_ok``. A token refresh looks identical to a fresh interactive
   login through this API, so this is best read as "this user's session was
-  active", not "this user just typed a password".
+  active", not "this user just typed a password". Each record's
+  ``detail.new_token`` says which branch produced it (True: a token that
+  did not exist on the previous poll; False: an existing token's activity
+  advanced) - the closest available signal to "a new session began", and
+  the one the success_after_failures detection rule keys on.
 - ``token_created`` - same poll loop; a brand-new
   ``long_lived_access_token`` id. For long-lived tokens this is the ONLY
   signal the poll will ever produce: core updates ``last_used_at`` and
@@ -1109,7 +1113,7 @@ class AuditLog:
             return
 
         new_snapshot: dict[str, tuple[datetime | None, str | None]] = {}
-        events: list[tuple[str, str | None, str | None]] = []
+        events: list[tuple[str, str | None, str | None, dict[str, Any] | None]] = []
 
         for user in users:
             for token in user.refresh_tokens.values():
@@ -1123,24 +1127,35 @@ class AuditLog:
                     # for every already-existing session at HA restart.
                     continue
 
+                # login_ok records carry detail.new_token so consumers can
+                # tell a brand-new refresh token (this previous-is-None
+                # branch) from an existing token whose last_used_at merely
+                # advanced. detections.py's success_after_failures rule
+                # depends on that distinction (work item 3.8): a token
+                # refresh is not a login, and treating it as one is what
+                # made the rule fire on background activity.
                 if previous is None:
                     if token.token_type == TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN:
-                        events.append(("token_created", user.id, token.last_used_ip))
+                        events.append(("token_created", user.id, token.last_used_ip, None))
                     else:
-                        events.append(("login_ok", user.id, token.last_used_ip))
+                        events.append(
+                            ("login_ok", user.id, token.last_used_ip, {"new_token": True})
+                        )
                 else:
                     prev_last_used_at, _prev_ip = previous
                     if (
                         token.last_used_at is not None
                         and token.last_used_at != prev_last_used_at
                     ):
-                        events.append(("login_ok", user.id, token.last_used_ip))
+                        events.append(
+                            ("login_ok", user.id, token.last_used_ip, {"new_token": False})
+                        )
 
         self._token_snapshot = new_snapshot
         self._first_poll_done = True
 
-        for category, user_id, ip in events:
-            self.async_log(category, user_id=user_id, ip=ip)
+        for category, user_id, ip, detail in events:
+            self.async_log(category, user_id=user_id, ip=ip, detail=detail)
 
     # -- Public logging API ---------------------------------------------
 
@@ -1698,6 +1713,85 @@ class AuditLog:
 
         results.sort(key=lambda record: record.get("seq", 0), reverse=True)
         return results[:limit]
+
+    # -- Category volume stats -------------------------------------------
+
+    async def async_category_stats(self) -> dict[str, Any]:
+        """Per-category record counts and byte shares for the newest day.
+
+        Answers the open-items report's volume observation (a busy install
+        writes on the order of 10 MB of audit records per day) by showing
+        the owner WHAT produces the bulk, so retention and size-cap tuning
+        stops being guesswork. Deliberately cheap: only the newest day's
+        file(s) are scanned - a day is normally one file, plus rollover
+        segments only past 32 MB - in one pass each, with no new storage
+        and nothing indexed. Flushes first so the current day's buffered
+        records are counted.
+        """
+        await self._async_flush()
+        return await self.hass.async_add_executor_job(self._sync_category_stats)
+
+    def _sync_category_stats(self) -> dict[str, Any]:
+        entries = self._sync_list_day_files()
+        if not entries:
+            return {
+                "day": None,
+                "files": 0,
+                "total_records": 0,
+                "total_bytes": 0,
+                "categories": [],
+            }
+        newest_day = entries[-1][0]
+        paths = [path for file_date, path in entries if file_date == newest_day]
+
+        records: dict[str, int] = {}
+        sizes: dict[str, int] = {}
+        total_records = 0
+        total_bytes = 0
+        for path in paths:
+            # Read as bytes so byte shares reflect what is actually on
+            # disk, not a post-decode character count.
+            try:
+                with open(path, "rb") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except (ValueError, TypeError):
+                            category = "unparseable"
+                        else:
+                            category = (
+                                record.get("category") if isinstance(record, dict) else None
+                            ) or "unknown"
+                        size = len(raw_line)
+                        records[category] = records.get(category, 0) + 1
+                        sizes[category] = sizes.get(category, 0) + size
+                        total_records += 1
+                        total_bytes += size
+            except OSError:
+                continue
+
+        categories = [
+            {
+                "category": category,
+                "records": records[category],
+                "bytes": sizes[category],
+                "byte_share": round(sizes[category] / total_bytes, 4)
+                if total_bytes
+                else 0.0,
+            }
+            for category in records
+        ]
+        categories.sort(key=lambda entry: entry["bytes"], reverse=True)
+        return {
+            "day": newest_day.isoformat(),
+            "files": len(paths),
+            "total_records": total_records,
+            "total_bytes": total_bytes,
+            "categories": categories,
+        }
 
     # -- Chain verification ---------------------------------------------
 

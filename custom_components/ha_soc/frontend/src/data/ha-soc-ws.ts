@@ -21,7 +21,12 @@ export interface HaSocUser {
 
 export interface RiskFactor {
   name: string;
+  // Pre-clamp contribution. applied_points is this factor's share of the
+  // final 0-100 score after clamping; the applied_points of a result's
+  // factors sum exactly to its score (work item 3.5). Optional so a
+  // result computed by an older backend still renders.
   points: number;
+  applied_points?: number;
   detail: string;
 }
 
@@ -35,6 +40,13 @@ export interface RiskResult {
 export interface PostureResult {
   score: number;
   grade: "A" | "B" | "C" | "D" | "F";
+  // Provisional posture (work item 3.4, D-10): true until every posture
+  // term has computed from real data at least once ever; missing_terms
+  // lists the ones still waiting, and term_computed_at carries each
+  // term's first-computed timestamp (null while missing).
+  provisional: boolean;
+  missing_terms: string[];
+  term_computed_at?: Record<string, string | null>;
   breakdown: Record<string, number>;
 }
 
@@ -173,12 +185,26 @@ export interface ProbeOverview {
 // word on what's really active.
 export type FirewallRuleAction = "allow" | "deny";
 export type FirewallRuleProto = "tcp" | "udp";
+// Address family a rule targets (work item 2.4): "4" is written with
+// iptables, "6" with ip6tables, "both" mirrored into both tables. The
+// server derives the family from a rule's source address (an IPv4 source
+// pins "4", an IPv6 source pins "6") and rejects a contradicting explicit
+// value; a rule with no source defaults to "both".
+export type FirewallRuleFamily = "4" | "6" | "both";
 
 export interface FirewallRule {
   action: FirewallRuleAction;
   proto: FirewallRuleProto;
   port: number;
   source?: string | null;
+  // Optional because records persisted before the dual-stack change carry
+  // no family; the server treats an absent value as "both".
+  family?: FirewallRuleFamily;
+  // Set by the server, at read time, on every "6"/"both" rule while the
+  // add-on reports ipv6_supported=false: the IPv6 half of this rule is
+  // not on the host, and the card must say so rather than showing a
+  // silent IPv4-only success.
+  partially_applied?: boolean;
 }
 
 // "expired_unreported" is the display-only status a timed-out pending test
@@ -215,11 +241,22 @@ export interface FirewallPendingTest {
   window_seconds: number;
   resolved_at?: string;
   resolved_by?: string;
+  // The add-on's bounded explanation of a resolution (carried protocol
+  // item): "backup_failed", or the failing rule and family when an apply
+  // failed in either table. Only ever present on archived history
+  // records, because it arrives with the resolution report that archives
+  // them.
+  reason?: string | null;
 }
 
 export interface FirewallStatus {
   known_rules: FirewallRule[] | null;
   known_rules_reported_at: string | null;
+  // Whether ip6tables works on the host, as last reported by the add-on
+  // (from `ip6tables -S` succeeding); null/absent until any report has
+  // carried the field. When false, the server flags every "6"/"both"
+  // rule partially_applied and the card shows the honest banner.
+  ipv6_supported?: boolean | null;
   pending: FirewallPendingTest | null;
   history: FirewallPendingTest[];
 }
@@ -261,8 +298,14 @@ export type MfaPolicy = "audit_only" | "auto_deactivate";
 export interface HaSocSettings {
   audit_retention_days: number;
   audit_max_bytes: number;
+  // Work item 3.3 (D-6): retention for resolved/dismissed detections and
+  // findings, distinct from the audit log's own retention above.
+  evidence_retention_days: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
+  // D-12: device manufacturer and model strings are sent to NIST's NVD
+  // only while this is on.
+  nvd_lookups_enabled: boolean;
   // Secret fields come back masked ("[redacted]" when set, "" when unset);
   // the companion *_set booleans say whether one is configured. Send a new
   // value to change it; send nothing (or the placeholder) to leave it.
@@ -270,7 +313,12 @@ export interface HaSocSettings {
   nvd_api_key_set?: boolean;
   github_token?: string | null;
   github_token_set?: boolean;
-  risk_learning_period_days: number;
+  // Work item 3.0 (D-9): sparse per-rule threshold overrides; send only
+  // the fields being changed and the server merges per field. Effective
+  // values, secure defaults, and ranges come from fetchDetectionThresholds.
+  // The old risk_learning_period_days setting was replaced by the two
+  // per-rule learning_days parameters in here.
+  detection_thresholds: Record<string, Record<string, number | boolean>>;
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
@@ -721,6 +769,26 @@ export const verifyAuditChain = (hass: HomeAssistant) =>
     type: "ha_soc/audit/verify_chain",
   });
 
+// Per-category record counts and byte shares for the newest audit day,
+// so the owner can see what produces the log's bulk. Newest day only.
+export interface AuditCategoryStat {
+  category: string;
+  records: number;
+  bytes: number;
+  byte_share: number;
+}
+
+export interface AuditCategoryStats {
+  day: string | null;
+  files: number;
+  total_records: number;
+  total_bytes: number;
+  categories: AuditCategoryStat[];
+}
+
+export const fetchAuditCategoryStats = (hass: HomeAssistant) =>
+  ws<AuditCategoryStats>(hass, { type: "ha_soc/audit/category_stats" });
+
 export const fetchDashboards = (hass: HomeAssistant) =>
   ws<{ dashboards: Record<string, unknown>[] }>(hass, { type: "ha_soc/permissions/dashboards/list" }).then(
     (r) => r.dashboards
@@ -776,6 +844,38 @@ export const fetchDetections = (hass: HomeAssistant, status?: string) =>
 
 export const setDetectionStatus = (hass: HomeAssistant, detectionId: string, status: string) =>
   ws(hass, { type: "ha_soc/detections/set_status", detection_id: detectionId, status });
+
+// Work item 3.3: one action, one audit record carrying the id list.
+export const bulkSetDetectionStatus = (hass: HomeAssistant, detectionIds: string[], status: string) =>
+  ws<{ updated: number; missing: string[] }>(hass, {
+    type: "ha_soc/detections/bulk_set_status",
+    detection_ids: detectionIds,
+    status,
+  });
+
+// Work item 3.0 (D-9): the tunable-threshold table. Per rule and
+// parameter: the effective value, the secure default, the inclusive
+// min/max (null for booleans), and the type the input should render as.
+export interface DetectionThresholdParam {
+  value: number | boolean;
+  default: number | boolean;
+  min: number | null;
+  max: number | null;
+  type: "int" | "float" | "bool";
+}
+
+export type DetectionThresholdTable = Record<string, Record<string, DetectionThresholdParam>>;
+
+export const fetchDetectionThresholds = (hass: HomeAssistant) =>
+  ws<{ rules: DetectionThresholdTable }>(hass, { type: "ha_soc/detections/thresholds" }).then(
+    (r) => r.rules
+  );
+
+// Owner-only, audited with a per-field diff server-side.
+export const resetDetectionThresholds = (hass: HomeAssistant) =>
+  ws<{ rules: DetectionThresholdTable }>(hass, { type: "ha_soc/detections/thresholds_reset" }).then(
+    (r) => r.rules
+  );
 
 export const fetchVulns = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/list" }).then((r) => r.findings);

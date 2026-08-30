@@ -76,6 +76,45 @@ async def test_unknown_service_found_inside_nested_choose_block(hass: HomeAssist
     assert any(f["service"] == "ghost_domain.ghost_service" for f in found)
 
 
+def test_action_key_in_data_is_not_a_service() -> None:
+    """Work plan item 4.6: an ``action:`` key inside a data/data_template/
+    variables subtree is service-call PAYLOAD (e.g. a mobile_app
+    actionable-notification button), never a service reference."""
+    tree = {
+        "service": "notify.mobile_app_test",
+        "data": {
+            "action": "ghost.service",
+            "actions": [{"action": "other.ghost"}],
+        },
+        "data_template": {"service": "template.ghost"},
+        "variables": {"action": "var.ghost"},
+    }
+    refs = list(ch._walk_service_refs(tree))
+    assert refs == [("notify", "mobile_app_test")]
+
+
+async def test_action_in_notify_data_not_reported_as_unknown_service(hass: HomeAssistant) -> None:
+    assert await async_setup_component(hass, "persistent_notification", {})
+    config = [
+        {
+            "id": "auto_actionable",
+            "alias": "Actionable notification",
+            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "action": [
+                {
+                    "service": "persistent_notification.create",
+                    "data": {"message": "hi", "action": "open.door"},
+                }
+            ],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    found = await ch.async_unknown_service_references(hass)
+    assert not any(f["service"] == "open.door" for f in found)
+
+
 async def test_templated_service_call_is_not_flagged(hass: HomeAssistant) -> None:
     config = [
         {
