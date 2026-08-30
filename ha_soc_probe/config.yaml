@@ -8,7 +8,7 @@ description: >-
   firewall rules on HA SOC's behalf. Both are things a Python integration
   structurally cannot do from inside its own container, even on Home
   Assistant OS.
-url: https://github.com/trooperthorn/ha_int_soc
+url: https://github.com/trooperthorn/ha_Int_soc
 arch:
   - aarch64
   - amd64
