@@ -50,12 +50,32 @@ taken first.
 **Why this needed a new privilege.** Running `iptables` against the
 host's real netfilter tables needs a real `CAP_NET_ADMIN`, which Docker
 strips from every container by default — `host_network: true` alone
-isn't enough. This add-on's `config.yaml` now declares
-`privileged: [NET_ADMIN]`, which lowers the Supervisor security rating by
-one point. See the HA SOC integration's own README for the full breakdown
-of what that rating means and why every other elevated privilege this
-project could ask for was deliberately avoided (no `host_pid`, no
-`full_access`, no `docker_api`, no elevated `hassio_role`).
+isn't enough. This add-on's `config.yaml` declares
+`privileged: [NET_ADMIN]` for it.
+
+**This add-on's Supervisor security rating is 1, and that is deliberate.**
+The Supervisor's rating algorithm (`rating_security`, verified against
+Supervisor commit `c5a5477`) sets the rating to 1 unconditionally for any
+add-on declaring `docker_api`, which this add-on does for the optional
+resource hard caps. No arrangement of the other grants changes that
+number while the feature exists. The project's recorded decision (work
+plan D-2) is one companion add-on carrying every host-level capability
+the SOC needs, each grant documented, rather than several partially
+privileged add-ons chasing a higher score. What this add-on still avoids:
+`host_pid`, `host_uts`, `full_access`, and any elevated `hassio_role`.
+
+### Privilege ledger
+
+Every grant in `config.yaml`, why it exists, and how its use is limited.
+Each row is checkable against the shipped scripts.
+
+| Grant | Needed by | What the add-on does with it | Without it | How its use is limited |
+| --- | --- | --- | --- | --- |
+| `host_network` | Port report | Shares the host's network namespace so `/proc/net/*` shows the host's real listeners and bind addresses | The report would show the container's own (empty) namespace | Read-only use of `/proc/net`; the add-on opens no listening socket of its own |
+| `privileged: [NET_ADMIN]` | Firewall read/test/confirm | Runs `iptables` against the host's real netfilter tables | The firewall card cannot read or write anything; the port report still works | Writes stay in the dedicated `HA_SOC_RULES` chain plus exactly one jump rule at the top of `INPUT` into that chain; full ruleset backup before every apply; local self-contained revert timer |
+| `docker_api` | Resource hard caps | Applies per-container `--cpus`/`--memory` limits through the Docker socket | Hard caps report `denied`/unavailable; the watchdog's Supervisor-API restart and stop actions still work | With Protection Mode on (the default) the Supervisor does not mount the socket at all; slugs are validated against the installed add-on list; only container update calls are issued |
+| `homeassistant_api` | Everything | Delivers port reports and firewall/cap poll results into Core through the Supervisor proxy | The add-on cannot report anything | Calls only the two `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
+| Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
 
 **How the safety mechanism works.** Every rule this add-on ever applies
 lives in one dedicated chain, `HA_SOC_RULES`, which it owns outright —
@@ -91,7 +111,8 @@ applies them against the Docker socket (`config.yaml`'s `docker_api`).
 Two things to know before using it:
 
 - **It only works with this add-on's Protection Mode DISABLED.** With
-  protection on (the default), the Docker socket is read-only and every
+  protection on (the default), the Supervisor does not mount the Docker
+  socket into this container at all, so every
   application honestly reports *denied* back to the panel. Disabling
   Protection Mode is a root-equivalent grant to this add-on — the panel
   says so before anything is applied, and users who don't use hard caps

@@ -164,14 +164,17 @@ DEFAULT_SECURITY_SOURCES_ENABLED: dict[str, bool] = dict.fromkeys(
 CONF_SECURITY_SOURCES_ENABLED = "security_sources_enabled"
 
 # -- Firewall rules (Host Probe add-on, NET_ADMIN) ------------------------
-# Read AND write host iptables state — the one thing in this project that
+# Read AND write host iptables state, the one thing in this project that
 # actually mutates a host security control instead of just observing one.
-# Requires the add-on to declare `privileged: [NET_ADMIN]` (a real -1 on
-# the Supervisor security rating, see security_health.py/README) on top of
-# the `host_network: true` it already has. Every rule this project ever
-# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN below)
-# that this project owns outright — never touched: the raw INPUT chain,
-# anything Docker itself manages, or any pre-existing host firewall rule.
+# Requires the add-on to declare `privileged: [NET_ADMIN]` on top of the
+# `host_network: true` it already has. The add-on's overall Supervisor
+# security rating is 1, set unconditionally by its `docker_api` grant, a
+# deliberate documented choice; the full privilege ledger lives in
+# ha_soc_probe/DOCS.md and the README. Every rule this project ever
+# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN
+# below) that this project owns outright, plus exactly one jump rule at
+# the top of INPUT into that chain; nothing Docker manages and no
+# pre-existing host firewall rule is ever touched.
 HA_SOC_RULES_CHAIN = "HA_SOC_RULES"
 
 # Service the add-on calls on a fast (~5s) interval to pick up a pending
@@ -189,7 +192,13 @@ FIREWALL_RULE_PROTOS = ["tcp", "udp"]
 FIREWALL_TEST_TESTING = "testing"
 FIREWALL_TEST_CONFIRMED = "confirmed"
 FIREWALL_TEST_REVERTED = "reverted"
-FIREWALL_TEST_EXPIRED = "expired"
+# Display-only status for a pending test whose window has passed with no
+# report from the add-on yet. "Unreported" is the load-bearing half: the
+# add-on's own timer has (or should have) reverted the rules, but until its
+# report arrives Core does not know that for a fact, so the slot stays
+# occupied and no new test may be proposed. Replaces the old bare
+# "expired" string so the panel can say exactly that.
+FIREWALL_TEST_EXPIRED_UNREPORTED = "expired_unreported"
 
 # Window a proposed ruleset stays live before the add-on reverts it
 # automatically if nobody confirms — the whole safety mechanism this

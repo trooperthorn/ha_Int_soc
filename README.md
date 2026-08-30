@@ -420,8 +420,27 @@ host security control. The Firewall Rules card, on the Scanner tab, is
 the one deliberate exception — reading, and optionally writing, the host's
 iptables rules through the HA SOC Probe add-on. It needs the add-on to
 declare a real `CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its
-`config.yaml`), which lowers the add-on's Supervisor security rating by
-one point — a documented, deliberate trade-off, not an accident.
+`config.yaml`).
+
+**The add-on's Supervisor security rating is 1, the lowest, and that is a
+deliberate choice.** The Supervisor's rating algorithm sets the rating to
+1 unconditionally for any add-on declaring `docker_api` (verified against
+the Supervisor source, `rating_security`, commit `c5a5477`), so no
+arrangement of the other grants changes the number while hard caps exist.
+The project decided (work plan decision D-2) to ship one companion add-on
+carrying every host-level capability the SOC needs, rather than several
+partially privileged ones, and to document each grant instead of chasing
+the score. The privilege ledger below states every grant, the feature
+that needs it, what breaks without it, and how its use is limited; the
+same ledger lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
+
+| Grant | Needed by | What the add-on does with it | Without it | How its use is limited |
+| --- | --- | --- | --- | --- |
+| `host_network` | Port report | Shares the host's network namespace so `/proc/net/*` shows the host's real listeners and bind addresses | The report would show the container's own (empty) namespace | Read-only use of `/proc/net`; the add-on opens no listening socket of its own |
+| `privileged: [NET_ADMIN]` | Firewall read/test/confirm | Runs `iptables` against the host's real netfilter tables | The firewall card cannot read or write anything; the port report still works | Writes stay in the dedicated `HA_SOC_RULES` chain plus exactly one jump rule at the top of `INPUT` into that chain; full ruleset backup before every apply; local self-contained revert timer |
+| `docker_api` | Resource hard caps | Applies per-container `--cpus`/`--memory` limits through the Docker socket | Hard caps report `denied`/unavailable; the watchdog's Supervisor-API restart and stop actions still work | With Protection Mode on (the default) the Supervisor does not mount the socket at all; slugs are validated against the installed add-on list; only container update calls are issued |
+| `homeassistant_api` | Everything | Delivers port reports and firewall/cap poll results into Core through the Supervisor proxy | The add-on cannot report anything | Calls only the two `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
+| Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
 
 The design exists to answer one question safely: change which ports are
 reachable from where without risking a lockout.

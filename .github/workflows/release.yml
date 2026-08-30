@@ -2,8 +2,8 @@
 # from. Guards that the tag and the integration manifest version agree, so
 # the two can never drift apart again (the drift is what caused HACS to
 # quote a version that matched no release and fail with an unresolved
-# domain). Uses the preinstalled `gh` CLI + the built-in GITHUB_TOKEN — no
-# third-party actions in the release path.
+# domain). Uses the preinstalled `gh` CLI with the built-in GITHUB_TOKEN, so
+# the only third-party action in the release path is the pinned checkout.
 name: Release
 
 on:
@@ -15,16 +15,30 @@ on:
       # by tag name, so one version must never exist as two tags.
       - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
 
+# Creating a GitHub Release requires contents: write. The called test
+# workflow narrows its own jobs to contents: read below, so only the release
+# job itself holds the write scope.
 permissions:
   contents: write
 
 jobs:
+  # The pytest suite and the bundle drift check must pass before a Release
+  # is created, so a tag pushed from a broken tree cannot ship (work plan
+  # item 0.6, CI-1). Calling test.yml reuses the exact jobs that gate every
+  # push and pull request instead of keeping a copy that could drift.
+  tests:
+    uses: ./.github/workflows/test.yml
+    permissions:
+      contents: read
+
   release:
+    needs: tests
     runs-on: ubuntu-latest
     steps:
-      # actions/checkout is GitHub's own action; pin to a digest in a
-      # hardened setup (see the add-on Dockerfile for the same note).
-      - uses: actions/checkout@v4
+      # Pinned by commit SHA so a moved or compromised tag cannot change the
+      # code this workflow runs; the digest was resolved from github.com on
+      # 2026-08-30 and matched the tag in the trailing comment at that time.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
 
       - name: Verify the tag matches the manifest version
         run: |
