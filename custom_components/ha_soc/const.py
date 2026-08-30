@@ -98,6 +98,30 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
 )
 REDACTED_PLACEHOLDER = "[redacted]"
 
+# The only keys HA SOC ever reads out of ANOTHER integration's config entry
+# (work plan item SEC-4). Peripherals matching and Entity ReMap's helper
+# fallback need to know where a device or entity lives, never what its
+# credentials are; stringifying whole entries would sweep passwords into a
+# search haystack, the exact pattern the scanner flags in other
+# integrations. Nested dicts are descended only under these keys.
+INTEGRATION_LOCATOR_KEYS: tuple[str, ...] = (
+    "host",
+    "hosts",
+    "ip",
+    "ip_address",
+    "address",
+    "url",
+    "base_url",
+    "device",
+    "port",
+    "serial_port",
+    "path",
+    "usb_path",
+    "entity_id",
+    "source",
+    "source_entity_id",
+)
+
 # -- Severity vocabulary shared by vulns / misconfig / detections / scanner
 SEVERITY_CRITICAL = "critical"
 SEVERITY_HIGH = "high"
