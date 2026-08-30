@@ -9,6 +9,19 @@ Network tab.
 Everything here is READ-ONLY: it lists clients, network devices, and derives
 a WAN/internet status. It never mutates controller state.
 
+The two API keys live in the private secret store (secrets_store.py) and
+are fetched at use time only: each overview/status call builds a
+short-lived ``_Conn`` whose repr masks the key, uses it for that one
+snapshot, and drops it (work item SEC-3). Nothing at module level or on
+a long-lived object ever holds a key between snapshots.
+
+Client hardening (work plan item 4.11): redirects are never followed (a
+3xx is reported as an error, so the X-API-KEY header can never be carried
+to a redirect target), response bodies are capped at 8 MB by both the
+declared Content-Length and the actual read, the whole Network overview
+runs under one 60-second wall-clock budget, and the configured host must
+be a plain http/https address with no userinfo part.
+
 ## Why the field mapping is defensive
 
 Ubiquiti ships two overlapping local surfaces and their field names differ:
@@ -31,6 +44,7 @@ one that shows a confidently wrong VLAN or IP.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any
@@ -55,15 +69,25 @@ from .const import (
     UNIFI_NETWORK_API_PATH,
     UNIFI_PROTECT_API_PATH,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
+# One wall-clock budget for the whole Network overview snapshot (work plan
+# item 4.11): the per-request timeout bounds each call, but a controller
+# that answers slowly across dozens of paginated/detail calls could still
+# hold the snapshot open for minutes without this outer ceiling.
+_OVERVIEW_TIMEOUT_SECONDS = 60
 # Safety bounds on pagination so a hostile or huge controller can't make one
 # refresh loop forever or return an unbounded payload to the panel.
 _PAGE_LIMIT = 200
 _MAX_PAGES = 15
+# Largest response body ever read from a console (work plan item 4.11).
+# The declared Content-Length is checked first, and the actual read is
+# capped regardless, so a lying header cannot buffer more than this.
+_MAX_BODY_BYTES = 8 * 1024 * 1024
 # Network Devices are enriched from the per-device detail endpoint
 # (/devices/{id}) for bandwidth / last-seen / firmware-updatable, which the
 # list endpoint doesn't carry. Cap the N+1 fan-out for a huge install.
@@ -124,14 +148,30 @@ def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class _Conn:
-    """A resolved connection to one UniFi app (Network or Protect)."""
+    """A resolved connection to one UniFi app (Network or Protect).
+
+    Short-lived by design (work item SEC-3): built inside
+    async_network_overview / async_protect_status from the secret store's
+    value at that moment, used for that one snapshot, and dropped, so no
+    module-level or long-lived attribute ever holds the API key. The
+    dataclass repr is disabled and replaced below because the generated one
+    would print api_key verbatim into any log or debugger line.
+    """
 
     host: str
     api_key: str
     verify_ssl: bool
     base_path: str
+
+    def __repr__(self) -> str:
+        # Mask the key, keep the rest: host and path are what debugging a
+        # connection problem actually needs.
+        return (
+            f"_Conn(host={self.host!r}, api_key='[redacted]', "
+            f"verify_ssl={self.verify_ssl!r}, base_path={self.base_path!r})"
+        )
 
     @property
     def origin(self) -> str:
@@ -151,12 +191,46 @@ class _Conn:
         return f"{self.origin}{self.base_path}"
 
 
-def _network_conn(store: HaSocData) -> _Conn | None:
+def _validate_host(host: str) -> None:
+    """Reject a configured host whose URL form smuggles anything beyond a
+    scheme, address, and port (work plan item 4.11): only http/https are
+    ever spoken to a console, and userinfo in the authority
+    (``user:pass@host``) is a classic way to disguise the real target
+    while the API key rides along. Raises UniFiError so the panel shows a
+    human-readable configuration error instead of quietly connecting
+    somewhere unexpected. A bare host or host:port passes untouched."""
+    if "://" not in host:
+        candidate = f"https://{host}"
+    else:
+        candidate = host
+    try:
+        parsed = urlparse(candidate)
+    except ValueError as err:
+        raise UniFiError(f"The configured UniFi host is not a valid URL: {err}") from err
+    if "://" in host and parsed.scheme not in ("http", "https"):
+        raise UniFiError(
+            f"The configured UniFi host uses the unsupported scheme "
+            f"{parsed.scheme!r}; only http and https are allowed."
+        )
+    if parsed.username is not None or parsed.password is not None:
+        raise UniFiError(
+            "The configured UniFi host contains a username/password part; "
+            "remove it and configure the API key instead."
+        )
+    if not parsed.hostname:
+        raise UniFiError("The configured UniFi host has no host name.")
+
+
+async def _network_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
+    """Build a short-lived Network connection, fetching the API key from the
+    private secret store at use time (SEC-3). None when unconfigured;
+    raises UniFiError for a configured but invalid host."""
     s = store.settings
     host = (s.get(CONF_UNIFI_NETWORK_HOST) or "").strip()
-    key = (s.get(CONF_UNIFI_NETWORK_API_KEY) or "").strip()
+    key = (await secrets.async_get(CONF_UNIFI_NETWORK_API_KEY) or "").strip()
     if not host or not key:
         return None
+    _validate_host(host)
     return _Conn(
         host=host,
         api_key=key,
@@ -165,12 +239,16 @@ def _network_conn(store: HaSocData) -> _Conn | None:
     )
 
 
-def _protect_conn(store: HaSocData) -> _Conn | None:
+async def _protect_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
+    """Build a short-lived Protect connection, fetching the API key from the
+    private secret store at use time (SEC-3). None when unconfigured;
+    raises UniFiError for a configured but invalid host."""
     s = store.settings
     host = (s.get(CONF_UNIFI_PROTECT_HOST) or "").strip()
-    key = (s.get(CONF_UNIFI_PROTECT_API_KEY) or "").strip()
+    key = (await secrets.async_get(CONF_UNIFI_PROTECT_API_KEY) or "").strip()
     if not host or not key:
         return None
+    _validate_host(host)
     return _Conn(
         host=host,
         api_key=key,
@@ -181,19 +259,38 @@ def _protect_conn(store: HaSocData) -> _Conn | None:
 
 async def _get(hass: HomeAssistant, conn: _Conn, path: str) -> Any:
     """One authenticated GET. Raises UniFiError with a friendly reason on any
-    transport/HTTP/decode failure — the caller turns that into reachable=False."""
+    transport/HTTP/decode failure - the caller turns that into reachable=False.
+
+    Hardened per work plan item 4.11: redirects are never followed (a
+    redirecting console would otherwise carry the X-API-KEY header to
+    wherever it points, and aiohttp only strips Authorization-family
+    headers on cross-origin redirects, not custom ones), and the body is
+    bounded to _MAX_BODY_BYTES by both the declared Content-Length and
+    the actual read."""
     session = async_get_clientsession(hass, verify_ssl=conn.verify_ssl)
     url = f"{conn.base_url}{path}"
     headers = {"X-API-KEY": conn.api_key, "Accept": "application/json"}
     try:
         async with asyncio.timeout(_TIMEOUT_SECONDS):
-            async with session.get(url, headers=headers) as resp:
+            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+                if 300 <= resp.status < 400:
+                    raise UniFiError(
+                        "The console returned an unexpected redirect; refusing to follow it."
+                    )
                 if resp.status in (401, 403):
                     raise UniFiError("Authentication failed — check the API key.")
                 if resp.status == 404:
                     raise UniFiError(f"Endpoint not found ({path}).")
                 resp.raise_for_status()
-                return await resp.json(content_type=None)
+                if (
+                    resp.content_length is not None
+                    and resp.content_length > _MAX_BODY_BYTES
+                ):
+                    raise UniFiError("The console response is too large to process.")
+                raw = await resp.content.read(_MAX_BODY_BYTES + 1)
+                if len(raw) > _MAX_BODY_BYTES:
+                    raise UniFiError("The console response is too large to process.")
+                return json.loads(raw)
     except UniFiError:
         raise
     except asyncio.TimeoutError as err:
@@ -256,19 +353,28 @@ async def _resolve_site_id(hass: HomeAssistant, conn: _Conn) -> str:
 
 def _hosts_from_value(value: Any) -> list[str]:
     """Bare host/IP strings out of one config-entry value (a plain host, a
-    host:port, or a full URL)."""
+    host:port, or a full URL). Never raises: the values come from OTHER
+    integrations' config entries, and urlparse/hostname raise ValueError
+    on malformed authorities (an unclosed IPv6 bracket, a junk port), so
+    one integration's garbage host field must degrade to "no hosts" for
+    that value rather than take the whole endpoint index down (work plan
+    item 4.11)."""
     if not isinstance(value, str) or not value.strip():
         return []
     v = value.strip()
-    if "://" in v:
-        parsed = urlparse(v)
-        return [parsed.hostname.lower()] if parsed.hostname else []
-    # Strip a trailing :port if present (but keep bare IPv6 out of scope —
-    # matched separately below on the client's own ipv6 field).
-    host = v.split("/", 1)[0]
-    if host.count(":") == 1:  # host:port, not IPv6
-        host = host.split(":", 1)[0]
-    return [host.lower()] if host else []
+    try:
+        if "://" in v:
+            parsed = urlparse(v)
+            hostname = parsed.hostname
+            return [hostname.lower()] if hostname else []
+        # Strip a trailing :port if present (but keep bare IPv6 out of scope -
+        # matched separately below on the client's own ipv6 field).
+        host = v.split("/", 1)[0]
+        if host.count(":") == 1:  # host:port, not IPv6
+            host = host.split(":", 1)[0]
+        return [host.lower()] if host else []
+    except ValueError:
+        return []
 
 
 def _integration_endpoints(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
@@ -546,18 +652,40 @@ _GATEWAY_TOKENS = (
 )
 
 
-def _is_gateway(raw: dict[str, Any]) -> bool:
-    # A device is the gateway if its role/type says so, or its model/name
-    # contains a known gateway marker. Kept broad because the model line-up
-    # changes often (UDM/UXG/UCG/UDR/…).
+def _gateway_by_role(raw: dict[str, Any]) -> bool:
+    """The strong signal: the device's own role/type field says gateway."""
     role = str(_first(raw, "type", "deviceType", "role", default="")).lower()
-    if role in ("gateway", "console", "ugw"):
-        return True
+    return role in ("gateway", "console", "ugw")
+
+
+def _gateway_by_name_tokens(raw: dict[str, Any]) -> bool:
+    """The weak fallback: a known gateway marker in the model/name blob.
+    Kept broad because the model line-up changes often (UDM/UXG/UCG/
+    UDR/…). Obvious false positive: a user-renamed switch called
+    "gateway closet" matches, which is why this only ever runs when no
+    device declared the role (work plan item 4.11)."""
     blob = " ".join(
         str(_first(raw, k, default="")).lower()
         for k in ("type", "model", "shortname", "name", "deviceType", "role")
     )
     return any(tok in blob for tok in _GATEWAY_TOKENS)
+
+
+def _is_gateway(raw: dict[str, Any]) -> bool:
+    return _gateway_by_role(raw) or _gateway_by_name_tokens(raw)
+
+
+def _select_gateway(devices_raw: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """Choose THE gateway: a device whose role field declares it wins over
+    any number of name-token lookalikes; name tokens are consulted only
+    when no device declares the role (work plan item 4.11)."""
+    for raw in devices_raw:
+        if _gateway_by_role(raw):
+            return raw
+    for raw in devices_raw:
+        if _gateway_by_name_tokens(raw):
+            return raw
+    return None
 
 
 def _wan_candidate_nodes(gateway: dict[str, Any]) -> list[dict[str, Any]]:
@@ -660,10 +788,15 @@ async def _fetch_broadcast_map(
     hass: HomeAssistant, conn: _Conn, site_id: str
 ) -> dict[str, str]:
     """{broadcast_id: ssid_name} from /wifi/broadcasts, for the client SSID
-    join and the 'Clients per SSID' card. Best-effort — {} on any failure."""
+    join and the 'Clients per SSID' card. Best-effort - {} when the
+    console cannot serve it. Only UniFiError is swallowed (work plan item
+    4.11): _get wraps every transport/HTTP/decode failure in it, so
+    anything else escaping here is a programming error that the overview's
+    outer handler should log loudly rather than have masked as a missing
+    SSID map."""
     try:
         rows = await _get_paginated(hass, conn, f"/sites/{site_id}/wifi/broadcasts")
-    except (UniFiError, Exception):  # noqa: BLE001
+    except UniFiError:
         return {}
     out: dict[str, str] = {}
     for b in rows:
@@ -688,7 +821,11 @@ async def _fetch_device_details(
             return dev
         try:
             detail = await _get(hass, conn, f"/sites/{site_id}/devices/{did}")
-        except (UniFiError, Exception):  # noqa: BLE001
+        except UniFiError:
+            # The intended narrow handling (work plan item 4.11): a failed
+            # detail fetch keeps the device's list-level row; a
+            # programming error propagates through asyncio.gather to the
+            # overview's outer handler instead of being silently eaten.
             return dev
         if isinstance(detail, dict):
             inner = detail.get("data")
@@ -713,7 +850,10 @@ async def _fetch_network_map(
     for suffix in ("networks", "network-confs"):
         try:
             rows = await _get_paginated(hass, conn, f"/sites/{site_id}/{suffix}")
-        except (UniFiError, Exception):  # noqa: BLE001
+        except UniFiError:
+            # Narrow on purpose (work plan item 4.11): an absent endpoint
+            # is expected across controller versions, but anything beyond
+            # a UniFiError is a bug that must surface upstream.
             continue
         out: dict[str, str] = {}
         for n in rows:
@@ -816,7 +956,9 @@ async def _fetch_acl_rules(
     return result
 
 
-async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
+async def async_network_overview(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> dict[str, Any]:
     """Everything the Network tab renders in one snapshot: status, WAN, the
     clients table, the network-devices table, and the ACL-rules audit report,
     plus a compact Protect status. Never raises: a connection problem comes
@@ -827,6 +969,12 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     the core ``unifi`` integration's in-memory state (when the user runs it)
     fills whatever the API left blank, and stands in entirely when the API is
     unconfigured or down.
+
+    The whole snapshot runs under one wall-clock budget
+    (_OVERVIEW_TIMEOUT_SECONDS, work plan item 4.11): the per-request
+    timeout bounds each call, but the snapshot fans out across many calls
+    and must not hold the panel open indefinitely against a slow console.
+    Hitting the budget reports an error on the payload, never raises.
     """
     result: dict[str, Any] = {
         "configured": False,
@@ -845,23 +993,42 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
-        "protect": await async_protect_status(hass, store),
+        "protect": {"configured": False, "reachable": False, "error": None},
     }
 
-    endpoints = _integration_endpoints(hass)
-    now_ts = int(dt_util.utcnow().timestamp())
+    try:
+        async with asyncio.timeout(_OVERVIEW_TIMEOUT_SECONDS):
+            result["protect"] = await async_protect_status(hass, store, secrets)
 
-    # The core snapshot is taken up front so the API path can borrow its WLAN
-    # and network name maps as endpoint fallbacks, and the rows it produced
-    # can be enriched afterwards.
-    core_snap = _core_network_snapshot(hass)
+            endpoints = _integration_endpoints(hass)
+            now_ts = int(dt_util.utcnow().timestamp())
 
-    conn = _network_conn(store)
-    if conn is not None:
-        result["configured"] = True
-        await _fill_network_from_api(hass, conn, result, endpoints, now_ts, core_snap)
+            # The core snapshot is taken up front so the API path can
+            # borrow its WLAN and network name maps as endpoint fallbacks,
+            # and the rows it produced can be enriched afterwards.
+            core_snap = _core_network_snapshot(hass)
 
-    _apply_core_network_data(result, core_snap, endpoints, now_ts)
+            # The connection object (and with it the API key) lives only
+            # for this snapshot; it goes out of scope when this function
+            # returns (SEC-3). A configured-but-invalid host raises
+            # UniFiError, shown as a configuration error rather than
+            # rendering the tab "not configured".
+            try:
+                conn = await _network_conn(store, secrets)
+            except UniFiError as err:
+                result["configured"] = True
+                result["error"] = str(err)
+                conn = None
+            if conn is not None:
+                result["configured"] = True
+                await _fill_network_from_api(hass, conn, result, endpoints, now_ts, core_snap)
+
+            _apply_core_network_data(result, core_snap, endpoints, now_ts)
+    except asyncio.TimeoutError:
+        result["error"] = (
+            f"The network snapshot did not complete within "
+            f"{_OVERVIEW_TIMEOUT_SECONDS} seconds; partial data shown."
+        )
     return result
 
 
@@ -905,7 +1072,7 @@ async def _fill_network_from_api(
     clients = [_normalize_client(r, endpoints, broadcast_map, now_ts) for r in clients_raw]
     devices = [_normalize_device(r, endpoints) for r in devices_raw]
 
-    gateway = next((d for d in devices_raw if _is_gateway(d)), None)
+    gateway = _select_gateway(devices_raw)
     wan = _derive_wan(gateway)
 
     gateway_online = None
@@ -1291,7 +1458,9 @@ def _normalize_event(raw: dict[str, Any], origin: str) -> dict[str, Any]:
     }
 
 
-async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
+async def async_protect_status(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> dict[str, Any]:
     """UniFi Protect status for the Network tab: reachable + camera counts,
     the full devices table (with console deep-links), and recent events / AI
     smart detections. Best-effort, never raises; a failure comes back as
@@ -1313,7 +1482,15 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
         "events": [],
         "events_error": None,
     }
-    conn = _protect_conn(store)
+    # Short-lived connection, same as the Network path (SEC-3). A
+    # configured-but-invalid host is a configuration error on the
+    # payload, not an unconfigured tab (work plan item 4.11).
+    try:
+        conn = await _protect_conn(store, secrets)
+    except UniFiError as err:
+        out["configured"] = True
+        out["error"] = str(err)
+        conn = None
     if conn is not None:
         out["configured"] = True
         out["host"] = conn.origin

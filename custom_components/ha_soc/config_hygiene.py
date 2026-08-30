@@ -27,6 +27,15 @@ on similarly-named entities). Entity ReMap's per-entity interactive
 search already flags "mentioned in a template" on a single, targeted
 entity_id — good enough for the one-at-a-time case this project actually
 needs; a blind proactive sweep of every template in the install isn't.
+
+Tri-state outcomes (work plan item 4.1): every list-returning helper here
+returns a HygieneResult, a plain list of found items that also carries a
+``status`` of ``evaluated`` (ran, found something), ``empty`` (ran, found
+nothing, so a prior finding may honestly resolve), or
+``could_not_evaluate`` (the data source failed, so the caller must leave
+existing findings exactly as they are - an unreadable YAML tree is not
+evidence that a broken alert got fixed). health.py branches on that
+status; callers that only iterate the items keep working unchanged.
 """
 from __future__ import annotations
 
@@ -39,21 +48,65 @@ from .const import SECURITY_ENTITY_DOMAINS, SECURITY_INTEGRATION_DOMAINS
 
 _SERVICE_CALL_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
+# Tri-state evaluation outcomes (work plan item 4.1).
+HYGIENE_EVALUATED = "evaluated"
+HYGIENE_EMPTY = "empty"
+HYGIENE_COULD_NOT_EVALUATE = "could_not_evaluate"
+
+# Sentinel distinguishing "the caller passed no config, load it here" from
+# "the caller tried to load the config for this sweep and the load failed"
+# (which must become could_not_evaluate, never an empty pass).
+_UNSET: Any = object()
+
+
+class HygieneResult(list):
+    """Found items plus the tri-state outcome of one hygiene evaluation.
+
+    Subclasses list so every existing caller that only iterates or
+    len()s the items keeps working; ``status`` is the extra channel
+    health.py reads to decide whether an empty result is allowed to
+    resolve prior findings (``empty``) or must leave them untouched
+    (``could_not_evaluate``).
+    """
+
+    def __init__(self, items: Any = (), status: str | None = None) -> None:
+        super().__init__(items)
+        if status is None:
+            status = HYGIENE_EVALUATED if self else HYGIENE_EMPTY
+        self.status = status
+
+
+def _could_not_evaluate() -> HygieneResult:
+    return HygieneResult(status=HYGIENE_COULD_NOT_EVALUATE)
+
 
 # -- Shared helpers -----------------------------------------------------------
 
 
-async def _merged_yaml_config(hass: HomeAssistant) -> dict[str, Any]:
+async def _merged_yaml_config(hass: HomeAssistant) -> dict[str, Any] | None:
     """The one thing alert:/legacy notify groups/customize: all need: the
     merged (but not domain-schema-validated) configuration.yaml tree,
     !include/packages/secrets already resolved. Safe to await from the
-    event loop — it offloads file I/O internally."""
+    event loop - it offloads file I/O internally. Returns None when the
+    load fails, so the caller reports could_not_evaluate instead of
+    mistaking a broken config for an empty one (work plan item 4.1).
+    During a health.py sweep this is not called at all - the sweep loads
+    the YAML once and passes it into every check that needs it (work plan
+    item 4.7); the load here only serves direct/standalone callers."""
     from homeassistant.config import async_hass_config_yaml
 
     try:
         return await async_hass_config_yaml(hass)
-    except Exception:  # noqa: BLE001 - a broken config shouldn't take this sweep down
-        return {}
+    except Exception:  # noqa: BLE001 - a broken config must not take the sweep down
+        return None
+
+
+# Subtrees whose keys are service-call PAYLOAD, not service-call targets: an
+# ``action:`` key inside a notify payload (mobile_app actionable
+# notifications) or a ``variables:`` value is data, and treating it as a
+# service reference produced false "unknown service" findings (work plan
+# item 4.6).
+_SERVICE_REF_OPAQUE_KEYS = frozenset({"data", "data_template", "variables"})
 
 
 def _walk_service_refs(node: Any):
@@ -62,14 +115,20 @@ def _walk_service_refs(node: Any):
     covers nested choose/if/parallel/repeat blocks since those are just
     more dicts/lists in the same tree, no per-shape dispatch needed. Skips
     templated targets (dynamic_template) since those aren't strings
-    matching "domain.service" and can't be resolved statically.
+    matching "domain.service" and can't be resolved statically, and never
+    descends into ``data``/``data_template``/``variables`` subtrees, whose
+    contents are payload rather than actions (work plan item 4.6). Obvious
+    false negative accepted with that skip: a service name stored in a
+    variable and called via a template is invisible here anyway.
     """
     if isinstance(node, dict):
         for key in ("service", "action"):
             value = node.get(key)
             if isinstance(value, str) and _SERVICE_CALL_RE.match(value):
                 yield tuple(value.split(".", 1))
-        for value in node.values():
+        for key, value in node.items():
+            if key in _SERVICE_REF_OPAQUE_KEYS:
+                continue
             yield from _walk_service_refs(value)
     elif isinstance(node, list):
         for item in node:
@@ -118,7 +177,7 @@ def _trigger_entity_ids(raw_config: dict[str, Any]) -> set[str]:
 # -- notify automations depending on an untracked/disabled security source --
 
 
-async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> list[dict[str, Any]]:
+async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> HygieneResult:
     """Automations that call notify.* when triggered by an entity Security
     Integrations Health doesn't currently watch — the "my phone tells me
     when the fire alarm goes off, make sure I'd actually notice if that
@@ -190,13 +249,13 @@ async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> list[di
                         "tracked_as": tracked_as,
                     }
                 )
-    return found
+    return HygieneResult(found)
 
 
 # -- Unknown service / device / area / floor / label references -------------
 
 
-async def async_unknown_service_references(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_unknown_service_references(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for kind, entity in _iter_automation_and_script_entities(hass):
         if not entity.raw_config:
@@ -211,10 +270,10 @@ async def async_unknown_service_references(hass: HomeAssistant) -> list[dict[str
                     {"kind": kind, "entity_id": entity.entity_id, "name": entity.name or entity.entity_id,
                      "service": f"{domain}.{service}"}
                 )
-    return found
+    return HygieneResult(found)
 
 
-async def async_unknown_device_references(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_unknown_device_references(hass: HomeAssistant) -> HygieneResult:
     """Narrower in practice than it sounds, confirmed via a real dynamic
     test: Home Assistant already validates every device trigger/condition/
     action against the device registry at automation/script SETUP time —
@@ -236,10 +295,10 @@ async def async_unknown_device_references(hass: HomeAssistant) -> list[dict[str,
             for device_id in lookup(hass, entity_id):
                 if registry.async_get(device_id) is None:
                     found.append({"kind": kind, "entity_id": entity_id, "device_id": device_id})
-    return found
+    return HygieneResult(found)
 
 
-async def async_unknown_area_floor_label_references(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_unknown_area_floor_label_references(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.automation import (
         areas_in_automation, floors_in_automation, labels_in_automation,
     )
@@ -264,14 +323,23 @@ async def async_unknown_area_floor_label_references(hass: HomeAssistant) -> list
             for ref_id in lookup(hass, entity_id):
                 if ref_id not in registry_items:
                     found.append({"kind": kind, "entity_id": entity_id, "ref_type": ref_type, "ref_id": ref_id})
-    return found
+    return HygieneResult(found)
 
 
 # -- alert: unknown entity/notifier references -------------------------------
 
 
-async def async_alert_unknown_references(hass: HomeAssistant) -> list[dict[str, Any]]:
-    config = await _merged_yaml_config(hass)
+async def async_alert_unknown_references(
+    hass: HomeAssistant, config: dict[str, Any] | None = _UNSET
+) -> HygieneResult:
+    """``config`` is the sweep-shared merged YAML tree (work plan item 4.7):
+    health.py loads it once per sweep and passes it in; a standalone call
+    loads it here. A failed load (None) is could_not_evaluate, never an
+    empty pass."""
+    if config is _UNSET:
+        config = await _merged_yaml_config(hass)
+    if config is None:
+        return _could_not_evaluate()
     alerts = config.get("alert") or {}
     found: list[dict[str, Any]] = []
     for object_id, cfg in alerts.items():
@@ -282,13 +350,19 @@ async def async_alert_unknown_references(hass: HomeAssistant) -> list[dict[str, 
         for notifier in cfg.get("notifiers", []) or []:
             if not hass.services.has_service("notify", notifier):
                 found.append({"alert_id": object_id, "kind": "notifier", "ref": notifier})
-    return found
+    return HygieneResult(found)
 
 
 # -- notify groups: unknown member -------------------------------------------
 
 
-async def async_notify_group_unknown_members(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_notify_group_unknown_members(hass: HomeAssistant) -> HygieneResult:
+    """Best-effort by declared label: the legacy-YAML half degrades to
+    nothing when the internal notify API moves (see below), while the
+    config-entry half always evaluates, so the result stays ``evaluated``
+    rather than could_not_evaluate. The accepted false negative is a
+    broken LEGACY group going unreported on a core version where that
+    internal moved."""
     found: list[dict[str, Any]] = []
 
     # (a) Legacy YAML `notify: - platform: group` — internal module, real
@@ -326,37 +400,37 @@ async def async_notify_group_unknown_members(hass: HomeAssistant) -> list[dict[s
                 if hass.states.get(member) is None:
                     found.append({"kind": "notify_group_helper", "group": entry.title, "ref": member})
 
-    return found
+    return HygieneResult(found)
 
 
 # -- person: unknown device_tracker ------------------------------------------
 
 
-async def async_person_unknown_trackers(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_person_unknown_trackers(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for state in hass.states.async_all("person"):
         for tracker_id in state.attributes.get("device_trackers", []) or []:
             if hass.states.get(tracker_id) is None:
                 found.append({"person": state.entity_id, "ref": tracker_id})
-    return found
+    return HygieneResult(found)
 
 
 # -- group: unknown member ----------------------------------------------------
 
 
-async def async_group_unknown_members(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_group_unknown_members(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for state in hass.states.async_all("group"):
         for member in state.attributes.get("entity_id", []) or []:
             if hass.states.get(member) is None:
                 found.append({"group": state.entity_id, "ref": member})
-    return found
+    return HygieneResult(found)
 
 
 # -- proximity: unknown zone/tracked entity/ignored zone ---------------------
 
 
-async def async_proximity_unknown_references(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_proximity_unknown_references(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.proximity.const import CONF_IGNORED_ZONES, CONF_TRACKED_ENTITIES
     from homeassistant.const import CONF_ZONE
 
@@ -371,26 +445,37 @@ async def async_proximity_unknown_references(hass: HomeAssistant) -> list[dict[s
         for ref in entry.data.get(CONF_IGNORED_ZONES, []) or []:
             if hass.states.get(ref) is None:
                 found.append({"proximity": entry.title, "kind": "ignored_zone", "ref": ref})
-    return found
+    return HygieneResult(found)
 
 
 # -- Lovelace: missing resources ---------------------------------------------
 
 
-async def async_lovelace_missing_resources(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_lovelace_missing_resources(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.lovelace.const import LOVELACE_DATA
 
     ll_data = hass.data.get(LOVELACE_DATA)
     if ll_data is None:
-        return []
+        # Lovelace not loaded at all: nothing can be evaluated, and prior
+        # findings must not be resolved on that basis.
+        return _could_not_evaluate()
 
     resources = ll_data.resources
     if hasattr(resources, "loaded") and not resources.loaded:
+        # The read-only sweep must not flip core's own bookkeeping flag
+        # (work plan item 4.7). Verified against the installed core
+        # 2026.2.3 (components/lovelace/resources.py): async_load() never
+        # sets ``loaded`` itself; each of core's own call sites
+        # (async_get_info, _update_data, the resources WS command) calls
+        # async_load() and then sets the flag. So the sweep goes through
+        # async_get_info(), core's public read path, which performs the
+        # load-once-and-mark entirely inside core's code - the flag stays
+        # core's, and repeated sweeps never re-load or re-fire the
+        # collection's change notifications.
         try:
-            await resources.async_load()
-            resources.loaded = True
+            await resources.async_get_info()
         except Exception:  # noqa: BLE001
-            return []
+            return _could_not_evaluate()
 
     found: list[dict[str, Any]] = []
     for item in resources.async_items():
@@ -406,7 +491,7 @@ async def async_lovelace_missing_resources(hass: HomeAssistant) -> list[dict[str
         exists = await hass.async_add_executor_job(_path_exists, path, base)
         if not exists:
             found.append({"url": url, "type": item.get("type")})
-    return found
+    return HygieneResult(found)
 
 
 def _path_exists(path: str, base: str) -> bool:
@@ -495,44 +580,58 @@ async def async_unused_labels_and_blueprints(hass: HomeAssistant) -> dict[str, l
 # -- customize: blocks for entities that no longer exist ---------------------
 
 
-async def async_unknown_customize_entities(hass: HomeAssistant) -> list[str]:
-    config = await _merged_yaml_config(hass)
+async def async_unknown_customize_entities(
+    hass: HomeAssistant, config: dict[str, Any] | None = _UNSET
+) -> HygieneResult:
+    """``config`` is the sweep-shared merged YAML tree (work plan item 4.7),
+    same contract as async_alert_unknown_references."""
+    if config is _UNSET:
+        config = await _merged_yaml_config(hass)
+    if config is None:
+        return _could_not_evaluate()
     customize = ((config.get("homeassistant") or {}).get("customize")) or {}
-    return [entity_id for entity_id in customize if hass.states.get(entity_id) is None]
+    return HygieneResult(
+        entity_id for entity_id in customize if hass.states.get(entity_id) is None
+    )
 
 
 # -- recorder: orphaned statistics -------------------------------------------
 
 
-async def async_orphaned_statistics(hass: HomeAssistant) -> list[str]:
+async def async_orphaned_statistics(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.recorder.statistics import async_list_statistic_ids
 
     try:
         rows = await async_list_statistic_ids(hass)
     except Exception:  # noqa: BLE001 - recorder not loaded/configured
-        return []
+        # No recorder means no statistics data to judge; leave any prior
+        # findings alone rather than resolving them on missing data.
+        return _could_not_evaluate()
 
     orphaned = []
     for row in rows:
         statistic_id = row.get("statistic_id", "")
         if statistic_id.count(".") == 1 and hass.states.get(statistic_id) is None:
             orphaned.append(statistic_id)
-    return orphaned
+    return HygieneResult(orphaned)
 
 
 # -- energy dashboard: unknown references ------------------------------------
 
 
-async def async_energy_unknown_references(hass: HomeAssistant) -> list[dict[str, Any]]:
+async def async_energy_unknown_references(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.energy.data import async_get_manager
 
     try:
         manager = await async_get_manager(hass)
     except Exception:  # noqa: BLE001
-        return []
+        # The energy component is absent or failed to serve its manager:
+        # nothing can be evaluated this pass.
+        return _could_not_evaluate()
     prefs = manager.data
     if prefs is None:
-        return []
+        # Energy was never configured; genuinely nothing to check.
+        return HygieneResult()
 
     found: list[dict[str, Any]] = []
 
@@ -558,4 +657,4 @@ async def async_energy_unknown_references(hass: HomeAssistant) -> list[dict[str,
     for device in prefs.get("device_consumption", []):
         _check(device.get("stat_consumption"), "device_consumption.stat_consumption")
 
-    return found
+    return HygieneResult(found)

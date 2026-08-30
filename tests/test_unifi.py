@@ -30,6 +30,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 
 from custom_components.ha_soc import unifi
+from custom_components.ha_soc.secrets_store import HaSocSecretStore
 from custom_components.ha_soc.store import HaSocData
 from custom_components.ha_soc.unifi import (
     UniFiError,
@@ -50,6 +51,15 @@ from custom_components.ha_soc.unifi import (
 @pytest.fixture
 async def store(hass: HomeAssistant) -> HaSocData:
     data = HaSocData(hass)
+    await data.async_load()
+    return data
+
+
+@pytest.fixture
+async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
+    # The UniFi API keys live in the private secret store since SEC-1;
+    # the overview/status functions fetch them from it at use time.
+    data = HaSocSecretStore(hass)
     await data.async_load()
     return data
 
@@ -241,8 +251,8 @@ def test_derive_wan_no_gateway_is_all_none() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def test_overview_not_configured(hass: HomeAssistant, store: HaSocData) -> None:
-    overview = await async_network_overview(hass, store)
+async def test_overview_not_configured(hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore) -> None:
+    overview = await async_network_overview(hass, store, secrets)
     assert overview["configured"] is False
     assert overview["reachable"] is False
     assert overview["clients"] == []
@@ -250,20 +260,24 @@ async def test_overview_not_configured(hass: HomeAssistant, store: HaSocData) ->
 
 
 async def test_overview_unreachable_reports_error_not_raise(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
     with patch.object(
         unifi, "_get", new=AsyncMock(side_effect=UniFiError("boom"))
     ):
-        overview = await async_network_overview(hass, store)
+        overview = await async_network_overview(hass, store, secrets)
     assert overview["configured"] is True
     assert overview["reachable"] is False
     assert overview["error"] == "boom"
 
 
 def _dispatch_get(clients, devices):
-    """Build an AsyncMock side_effect for _get(hass, conn, path)."""
+    """Build an AsyncMock side_effect for _get(hass, conn, path). Unknown
+    paths answer with UniFiError exactly like a real console 404 does -
+    the best-effort fetchers (broadcasts, networks, ACL) catch precisely
+    that and nothing broader since work plan item 4.11."""
 
     async def _side_effect(hass, conn, path):
         if path == "/sites":
@@ -272,15 +286,16 @@ def _dispatch_get(clients, devices):
             return {"data": clients}
         if path.startswith("/sites/default/devices"):
             return {"data": devices}
-        raise AssertionError(f"unexpected path {path}")
+        raise UniFiError(f"Endpoint not found ({path}).")
 
     return _side_effect
 
 
 async def test_overview_full_snapshot_and_endpoint_correlation(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
 
     # Register two fake integrations that load/unload cleanly, so marking an
     # entry LOADED doesn't drag a real (uninstalled) component into teardown.
@@ -314,7 +329,7 @@ async def test_overview_full_snapshot_and_endpoint_correlation(
     ]
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_get(clients, devices))):
-        o = await async_network_overview(hass, store)
+        o = await async_network_overview(hass, store, secrets)
 
     assert o["configured"] is True
     assert o["reachable"] is True
@@ -369,9 +384,10 @@ def test_normalize_acl_rule_resolves_networks_and_order() -> None:
 
 
 async def test_overview_ssid_join_and_acl_report(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
 
     clients = [{"name": "phone", "type": "WIRELESS", "wifiBroadcastId": "b1"}]
     broadcasts = [{"id": "b1", "name": "HomeWiFi"}]
@@ -395,7 +411,7 @@ async def test_overview_ssid_join_and_acl_report(
         raise UniFiError("Endpoint not found")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
-        o = await async_network_overview(hass, store)
+        o = await async_network_overview(hass, store, secrets)
 
     # SSID resolved through the broadcast map.
     assert o["clients"][0]["ssid"] == "HomeWiFi"
@@ -411,9 +427,10 @@ async def test_overview_ssid_join_and_acl_report(
 
 
 async def test_overview_acl_unavailable_when_no_endpoint(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
 
     async def _se(hass, conn, path):
         base = path.split("?", 1)[0]
@@ -424,7 +441,7 @@ async def test_overview_acl_unavailable_when_no_endpoint(
         raise UniFiError("Endpoint not found")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
-        o = await async_network_overview(hass, store)
+        o = await async_network_overview(hass, store, secrets)
 
     assert o["acl"]["available"] is False
     assert o["acl"]["endpoints_tried"]  # lists what was probed, for the audit
@@ -435,8 +452,8 @@ async def test_overview_acl_unavailable_when_no_endpoint(
 # ---------------------------------------------------------------------------
 
 
-async def test_protect_not_configured(hass: HomeAssistant, store: HaSocData) -> None:
-    out = await async_protect_status(hass, store)
+async def test_protect_not_configured(hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore) -> None:
+    out = await async_protect_status(hass, store, secrets)
     assert out["configured"] is False
     assert out["reachable"] is False
 
@@ -453,16 +470,17 @@ def _dispatch_protect(cameras, events):
 
 
 async def test_protect_status_counts_online_cameras(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
+    store.async_update_settings(unifi_protect_host="10.0.0.1")
+    await secrets.async_set("unifi_protect_api_key", "k")
     cameras = [
         {"name": "front", "state": "CONNECTED"},
         {"name": "back", "state": "DISCONNECTED"},
         {"name": "side", "state": "CONNECTED"},
     ]
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
-        out = await async_protect_status(hass, store)
+        out = await async_protect_status(hass, store, secrets)
     assert out["configured"] is True
     assert out["reachable"] is True
     assert out["camera_count"] == 3
@@ -471,9 +489,10 @@ async def test_protect_status_counts_online_cameras(
 
 
 async def test_protect_camera_deep_link_and_fields(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_protect_host="192.168.30.2", unifi_protect_api_key="k")
+    store.async_update_settings(unifi_protect_host="192.168.30.2")
+    await secrets.async_set("unifi_protect_api_key", "k")
     cameras = [
         {
             "id": "68ebc36300ac5703e40232d0",
@@ -487,7 +506,7 @@ async def test_protect_camera_deep_link_and_fields(
         }
     ]
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
-        out = await async_protect_status(hass, store)
+        out = await async_protect_status(hass, store, secrets)
 
     cam = out["cameras"][0]
     # The exact deep-link format the user asked for.
@@ -534,10 +553,11 @@ def test_normalize_event_smart_detection_and_plate() -> None:
 
 
 async def test_protect_events_error_still_returns_cameras(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     """A failing events call must not wipe out the cameras table."""
-    store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
+    store.async_update_settings(unifi_protect_host="10.0.0.1")
+    await secrets.async_set("unifi_protect_api_key", "k")
 
     async def _side_effect(hass, conn, path):
         if path.startswith("/cameras"):
@@ -545,7 +565,7 @@ async def test_protect_events_error_still_returns_cameras(
         raise UniFiError("events endpoint not found")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
-        out = await async_protect_status(hass, store)
+        out = await async_protect_status(hass, store, secrets)
 
     assert out["reachable"] is True
     assert out["camera_count"] == 1
@@ -553,3 +573,149 @@ async def test_protect_events_error_still_returns_cameras(
     # A "not found" on every candidate degrades to the friendly explanation.
     assert out["events_error"] is not None
     assert "REST events list" in out["events_error"]
+
+
+# ---------------------------------------------------------------------------
+# SEC-3: the short-lived connection object must never print its key
+# ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 client hardening (work plan item 4.11)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStreamReader:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    async def read(self, n: int = -1) -> bytes:
+        return self._body if n < 0 else self._body[:n]
+
+
+class _FakeResponse:
+    def __init__(self, status: int = 200, body: bytes = b"{}", content_length=None) -> None:
+        self.status = status
+        self.headers = {}
+        self.content_length = content_length if content_length is not None else len(body)
+        self.content = _FakeStreamReader(body)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    def raise_for_status(self) -> None:
+        assert self.status < 400
+
+
+class _FakeSession:
+    def __init__(self, response: _FakeResponse) -> None:
+        self._response = response
+        self.calls: list[dict] = []
+
+    def get(self, url, **kwargs):
+        self.calls.append({"url": url, **kwargs})
+        return self._response
+
+
+def _conn() -> "unifi._Conn":
+    return unifi._Conn(
+        host="10.0.0.1", api_key="k", verify_ssl=False,
+        base_path="/proxy/network/integration/v1",
+    )
+
+
+async def test_unifi_get_never_follows_redirects(hass: HomeAssistant) -> None:
+    session = _FakeSession(_FakeResponse(status=302))
+    with patch.object(unifi, "async_get_clientsession", return_value=session):
+        with pytest.raises(UniFiError, match="redirect"):
+            await unifi._get(hass, _conn(), "/sites")
+    # The request itself must carry allow_redirects=False, so even a
+    # transport that would auto-follow never gets the chance.
+    assert session.calls[0]["allow_redirects"] is False
+
+
+async def test_unifi_body_cap(hass: HomeAssistant) -> None:
+    # A declared Content-Length above the cap is refused before reading.
+    oversized_declared = _FakeSession(
+        _FakeResponse(status=200, body=b"{}", content_length=unifi._MAX_BODY_BYTES + 1)
+    )
+    with patch.object(unifi, "async_get_clientsession", return_value=oversized_declared):
+        with pytest.raises(UniFiError, match="too large"):
+            await unifi._get(hass, _conn(), "/sites")
+
+    # A lying (absent/short) Content-Length is caught by the capped read.
+    big_body = b"x" * (unifi._MAX_BODY_BYTES + 10)
+    lying = _FakeSession(_FakeResponse(status=200, body=big_body, content_length=10))
+    with patch.object(unifi, "async_get_clientsession", return_value=lying):
+        with pytest.raises(UniFiError, match="too large"):
+            await unifi._get(hass, _conn(), "/sites")
+
+    # A small valid body still parses.
+    ok = _FakeSession(_FakeResponse(status=200, body=b'{"data": []}'))
+    with patch.object(unifi, "async_get_clientsession", return_value=ok):
+        assert await unifi._get(hass, _conn(), "/sites") == {"data": []}
+
+
+async def test_unifi_bad_host_in_other_entry_does_not_raise(hass: HomeAssistant) -> None:
+    """A malformed host value in ANOTHER integration's config entry (an
+    unclosed IPv6 bracket makes urlparse raise ValueError) must degrade
+    to no hosts for that value, never take the endpoint index down."""
+    bad = MockConfigEntry(domain="weird_int", data={"host": "http://[::1"}, title="Weird")
+    bad.add_to_hass(hass)
+    good = MockConfigEntry(domain="fine_int", data={"host": "10.0.0.9"}, title="Fine")
+    good.add_to_hass(hass)
+
+    assert _hosts_from_value("http://[::1") == []
+    index = unifi._integration_endpoints(hass)
+    assert "10.0.0.9" in index
+
+
+async def test_unifi_invalid_configured_host_reports_error(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    """Only http/https schemes are allowed and userinfo is rejected; the
+    overview reports a configuration error rather than connecting."""
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    store.async_update_settings(unifi_network_host="ftp://10.0.0.1")
+    overview = await async_network_overview(hass, store, secrets)
+    assert overview["configured"] is True
+    assert "scheme" in overview["error"]
+
+    store.async_update_settings(unifi_network_host="https://root:pw@10.0.0.1")
+    overview = await async_network_overview(hass, store, secrets)
+    assert "username/password" in overview["error"]
+
+
+def test_gateway_selected_by_role_before_name_tokens() -> None:
+    """A device whose role field declares gateway wins over any number of
+    name-token lookalikes; tokens are only consulted when nothing
+    declares the role."""
+    lookalike = {"name": "gateway closet switch", "model": "USW-24"}
+    real = {"name": "core router", "type": "gateway"}
+    assert unifi._select_gateway([lookalike, real]) is real
+    # With no declared role anywhere, the token fallback still finds one.
+    assert unifi._select_gateway([lookalike]) is lookalike
+    assert unifi._select_gateway([{"name": "plain switch"}]) is None
+
+
+def test_unifi_conn_repr_masks_key() -> None:
+    """_Conn is built fresh per snapshot and dropped after it, but while it
+    exists a stray repr()/str() (log line, debugger, traceback locals) must
+    not print the API key."""
+    from custom_components.ha_soc.unifi import _Conn
+
+    conn = _Conn(
+        host="10.0.0.1",
+        api_key="SUPERSECRETKEY",
+        verify_ssl=False,
+        base_path="/proxy/network/integration/v1",
+    )
+    for rendered in (repr(conn), str(conn), f"{conn}"):
+        assert "SUPERSECRETKEY" not in rendered
+        assert "[redacted]" in rendered
+    # The useful debugging fields are still there.
+    assert "10.0.0.1" in repr(conn)

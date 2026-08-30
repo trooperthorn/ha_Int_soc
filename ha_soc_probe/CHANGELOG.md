@@ -1,10 +1,75 @@
 # Changelog
 
+## Unreleased
+
+Everything from the 2026-08-30 security review's sprints 0, 1, and 2
+(this section becomes the next version when it is cut; the sprints
+landed after v2026.08.30.2 shipped, which is why they are not in that
+entry):
+
+- Security (sprint 0): Home Assistant accepts this add-on's two
+  callback services only from the Supervisor's own user context; the
+  shared secret becomes defense in depth behind that check, a call
+  presenting no secret is always rejected, and rejected calls are
+  audited and raised as HIGH detections. On Core and Container installs
+  the services no longer exist at all.
+- Firewall (sprint 0): only one test can exist at a time, end to end.
+  The firewall service refuses to apply a new test while a previous one
+  is still armed, clears a timer-resolved test's state file before
+  reporting so a reverted test cannot wedge the channel, and Home
+  Assistant refuses new proposals until this add-on has reported the
+  previous test's fate.
+- Firewall safety (sprint 2): applies take two checked backups (full
+  table for manual recovery, chain-only snapshot for reverts) and
+  refuse to apply if either fails; reverts flush and replay only the
+  `HA_SOC_RULES` chain, never the whole table; the service's `finish`
+  script reverts an unresolved test on a deliberate stop; and every cap
+  slug from HA SOC is re-validated locally before it can reach a Docker
+  API path.
+- The pairing secret file in `/data` is created 0600 and an existing
+  file is tightened at startup; the first live Supervisor verification
+  run found it at 0644 (exposure bounded by the add-on's private
+  volume, but 0600 matches what a credential file deserves).
+- On the Home Assistant side of the same sprints: the firewall is
+  owner-only in its entirety with an owner-only, audited discard for a
+  test the add-on never reported; the panel countdown re-anchors to the
+  moment this add-on actually applies; admin-account lifecycle actions,
+  entity remap applies, and sidebar pushes are owner-only per the
+  recorded D-23 decision; every HA SOC credential moved into a
+  dedicated private secret store with fetch-at-use callers, extraction
+  pattern detection, and expanded audit capture; and CI now gates every
+  push and release on the test suite and a bundle-drift check.
+- Docs: the privilege ledger in DOCS.md (the add-on's Supervisor
+  security rating is 1 by deliberate choice), and the verified-facts
+  section recording the two live Supervisor verification runs of
+  2026-08-30, including that this add-on and the host both use the
+  nf_tables backend and that the host is IPv6-capable, which unblocks
+  the dual-stack firewall work.
+- Dual-stack firewall (work plan 2.4, decision D-3): rules carry a
+  family (4, 6, or both; a source address pins it), the HA_SOC_RULES
+  chain and its INPUT jump exist in iptables and ip6tables alike,
+  backups and chain snapshots are taken and checked per family, applies
+  are atomic across families with both tables restored on any failure,
+  and a host without ip6tables is reported honestly instead of
+  succeeding IPv4-only in silence.
+- Hardening (work plan 2.5): a custom AppArmor profile in enforce mode
+  (pending live-load verification, stated in its header); the
+  port-scanner service runs as the unprivileged nobody account; the
+  base image is pinned by digest; every rule field, window bound, and
+  test id from Home Assistant is re-validated locally before any
+  iptables or Docker call; failure reasons now reach Home Assistant in
+  the report instead of living only in this log; and a deliberate stop
+  or update exits cleanly instead of logging a spurious restart
+  warning. Recorded answer on image signing: Cosign via the official
+  builder applies only to pre-built published images, so signed: false
+  remains structurally accurate for this locally built add-on.
+
 ## v2026.08.30.2
 
-- No functional add-on change. Version bump only, keeping the add-on in
-  lockstep with the HA SOC integration release (audit capture expansion,
-  UniFi in-memory enrichment, app/add-on log viewing, sortable tables).
+- No functional add-on change. Version bump keeping the add-on in
+  lockstep with the HA SOC integration release (audit capture
+  expansion, UniFi in-memory enrichment, app/add-on log viewing,
+  sortable tables).
 - Versioning standardized: `vYYYY.MM.DD.V` is now the canonical form
   everywhere a person reads a version (git tags, GitHub Releases, HACS,
   changelog headers like the ones in this file, the panel footer). The

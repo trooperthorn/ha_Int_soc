@@ -100,9 +100,34 @@ class UsersManager:
             oldest_token = min(t.created_at for t in user.refresh_tokens.values())
             account_age_days = (dt.utcnow() - oldest_token).days
 
+        # Credential creation age, for the never_logged_in risk factor
+        # (work item 3.5): a user with credentials but no refresh tokens
+        # has no account_age_days at all. The installed core's Credentials
+        # model carries NO created_at field (verified against
+        # homeassistant/auth/models.py), so this getattr probe yields None
+        # today and only starts reporting an age if a future core adds
+        # the field - risk.py's factor says "unknown age" until then.
+        credential_age_days: int | None = None
+        credential_created = [
+            created
+            for cred in user.credentials
+            if (created := getattr(cred, "created_at", None)) is not None
+        ]
+        if credential_created:
+            credential_age_days = (dt.utcnow() - min(credential_created)).days
+
         auth_provider_types = sorted(
             {cred.auth_provider_type for cred in user.credentials}
         )
+        # Decision D-18 option (a): MFA compliance is only assessable for
+        # users Home Assistant's own auth provider authenticates. A user
+        # whose ONLY credentials come from a non-homeassistant provider
+        # (an SSO/header-auth proxy, trusted_networks, a command-line
+        # provider) may well satisfy MFA upstream where HA cannot see it,
+        # so mfa_policy.py exempts them from auto_deactivate and the UI
+        # reports "MFA not assessable". A user with no credentials at all
+        # stays assessable - there is no external provider to defer to.
+        mfa_assessable = not auth_provider_types or "homeassistant" in auth_provider_types
 
         mfa_modules = await self.hass.auth.async_get_enabled_mfa(user)
 
@@ -120,7 +145,11 @@ class UsersManager:
             "llat_count": llat_count,
             "llat_oldest_days": llat_oldest_days,
             "account_age_days": account_age_days,
+            "credential_age_days": credential_age_days,
+            "credentials_count": len(user.credentials),
+            "refresh_token_count": len(session_tokens),
             "auth_provider_types": auth_provider_types,
+            "mfa_assessable": mfa_assessable,
         }
 
     async def async_list_users(self) -> list[dict[str, Any]]:
@@ -197,6 +226,30 @@ class UsersManager:
                 sessions += 1
             self.hass.auth.async_remove_refresh_token(token)
         return {"sessions": sessions, "long_lived_tokens": long_lived}
+
+    async def async_revoke_interactive_sessions(self, user_id: str) -> int:
+        """Revoke this user's interactive sessions, keeping long-lived tokens.
+
+        The post-password-reset revocation (work item 4.12): a password
+        reset says "whoever held the old password must be signed out", so
+        every normal/webhook refresh token goes. Long-lived access tokens
+        are deliberately spared here - they are not password-derived, and
+        silently killing a user's automations on a routine reset would
+        punish the wrong thing; revoke_all_sessions remains the
+        incident-response hammer that takes those too. Returns the number
+        of sessions revoked.
+        """
+        user = await self.hass.auth.async_get_user(user_id)
+        if user is None:
+            return 0
+
+        revoked = 0
+        for token in list(user.refresh_tokens.values()):
+            if token.token_type in (TOKEN_TYPE_SYSTEM, TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN):
+                continue
+            self.hass.auth.async_remove_refresh_token(token)
+            revoked += 1
+        return revoked
 
     async def async_create_user(
         self,

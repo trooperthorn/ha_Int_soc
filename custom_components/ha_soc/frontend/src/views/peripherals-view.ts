@@ -18,6 +18,11 @@ export class HaSocPeripheralsView extends LitElement {
 
   @state() private _overview: PeripheralOverview | null = null;
   @state() private _loading = true;
+  // Non-null when the load itself failed. Without this, a failed fetch
+  // left _overview null and rendered as "USB discovery isn't available",
+  // which is a real backend state (overview.available === false), not
+  // what a rejected WebSocket call means (work plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _busyKey: string | null = null;
   @state() private _showIgnored = false;
   // Independent sort state for the active and the ignored table (see
@@ -46,8 +51,11 @@ export class HaSocPeripheralsView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._overview = await fetchPeripherals(this.hass);
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -65,6 +73,15 @@ export class HaSocPeripheralsView extends LitElement {
 
   render() {
     if (this._loading) return html`<div class="empty">Loading peripherals…</div>`;
+    if (this._error) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load Local Peripherals</h3>
+          <p style="font-size:13px;">${this._error}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
+    }
     const overview = this._overview;
 
     if (!overview || !overview.available) {

@@ -169,6 +169,93 @@ async def test_resolved_device_field_used_when_present(hass: HomeAssistant, stor
     assert row["key"] == "0403:6001:ABC123"
 
 
+async def test_peripherals_reads_only_locator_keys(hass: HomeAssistant, store: HaSocData) -> None:
+    # SEC-4: the device path appearing inside credential values must never
+    # produce a match; only INTEGRATION_LOCATOR_KEYS values are read out
+    # of another integration's config entry.
+    secret_entry = MockConfigEntry(
+        domain="evil_cloud",
+        title="Cloudy",
+        data={"password": "x-/dev/ttyUSB0-x"},
+        options={"token": "/dev/ttyUSB0"},
+    )
+    secret_entry.add_to_hass(hass)
+
+    device = _usb_device("/dev/ttyUSB0")
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"] is None
+    assert overview["unassigned_count"] == 1
+
+    # A locator-key value still matches (behavior parity), including one
+    # nested under another locator key.
+    owner = MockConfigEntry(domain="zwave_js", title="Z-Wave", data={"device": {"path": "/dev/ttyUSB0"}})
+    owner.add_to_hass(hass)
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"] == {
+        "entry_id": owner.entry_id,
+        "domain": "zwave_js",
+        "title": "Z-Wave",
+    }
+
+
+async def test_peripheral_path_prefix_collision(hass: HomeAssistant, store: HaSocData) -> None:
+    """Work plan item 4.13: /dev/ttyUSB1 must never match an entry that
+    stores /dev/ttyUSB10 - the match is anchored on a path-token boundary
+    rather than a raw substring."""
+    ten = MockConfigEntry(domain="rflink", title="RFLink", data={"device": "/dev/ttyUSB10"})
+    ten.add_to_hass(hass)
+
+    device = _usb_device("/dev/ttyUSB1")
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"] is None
+
+    # The genuinely matching entry still wins, including when the path is
+    # embedded in a larger locator string with a following separator.
+    one = MockConfigEntry(
+        domain="zwave_js", title="Z-Wave",
+        data={"url": "socket://relay.local:20108//dev/ttyUSB1:115200"},
+    )
+    one.add_to_hass(hass)
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"]["domain"] == "zwave_js"
+
+
+async def test_realpath_runs_in_executor(hass: HomeAssistant, store: HaSocData, tmp_path) -> None:
+    """Work plan item 4.13: the realpath fallback is filesystem I/O and
+    must run inside the executor job, never on the event-loop thread."""
+    import threading
+
+    from custom_components.ha_soc import peripherals as mod
+
+    tty_node = tmp_path / "ttyUSB0"
+    tty_node.write_text("")
+    link = tmp_path / "by-id-link"
+    link.symlink_to(tty_node)
+    device = _usb_device(str(link))
+
+    loop_thread = threading.get_ident()
+    realpath_threads: list[int] = []
+    real_realpath = mod.os.path.realpath
+
+    def _spy(path, **kwargs):
+        realpath_threads.append(threading.get_ident())
+        return real_realpath(path, **kwargs)
+
+    with (
+        patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]),
+        patch.object(mod.os.path, "realpath", new=_spy),
+    ):
+        overview = await async_peripheral_overview(hass, store)
+
+    assert overview["devices"][0]["tty_path"] == str(tty_node)
+    assert realpath_threads, "the realpath fallback was never exercised"
+    assert all(tid != loop_thread for tid in realpath_threads)
+
+
 async def test_usb_component_unavailable_degrades_honestly(hass: HomeAssistant, store: HaSocData) -> None:
     # Simulate the `usb` component genuinely not being importable (e.g. its
     # aiousbwatcher/pyserial requirements missing) by blanking the module

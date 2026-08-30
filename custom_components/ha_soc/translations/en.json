@@ -22,8 +22,7 @@
     "sensor": {
       "posture_score": { "name": "Security posture score" },
       "open_detections": { "name": "Open detections" },
-      "users_at_risk": { "name": "Users at risk" },
-      "user_risk": { "name": "Risk" }
+      "users_at_risk": { "name": "Users at risk" }
     },
     "binary_sensor": {
       "suspicious_activity": { "name": "Suspicious activity" }
@@ -57,6 +56,10 @@
     "misconfig_finding": {
       "title": "{title}",
       "description": "{summary} Review this finding in the HA SOC misconfiguration report."
+    },
+    "audit_chain_reset": {
+      "title": "The HA SOC audit chain was wiped or rolled back",
+      "description": "At startup, the on-disk audit chain head (sequence {disk_seq}) was behind the last flushed head recorded in HA SOC's store (sequence {store_seq}). The audit directory was deleted, replaced, or rolled back, and the records between those points are gone. HA SOC has continued the chain from the recorded head so the break itself is chained and auditable, but the missing history cannot be restored. Investigate what has filesystem access to .storage (SSH, Samba, or file-editor add-ons, or the host itself), then dismiss this issue."
     },
     "stale_access_token": {
       "title": "Long-lived access token unused for a long time",

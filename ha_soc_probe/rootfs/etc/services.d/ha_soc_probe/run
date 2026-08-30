@@ -10,13 +10,23 @@
 # listening socket back to the process that owns it needs host_pid: true
 # (walking every process's /proc/<pid>/fd on the host), a privilege this
 # add-on does not request. That's a documented limitation, not a bug.
+#
+# Privilege posture (work item 2.5): this service runs its scan loop as
+# the unprivileged `nobody` user. Everything the loop needs works without
+# root: /proc/net/tcp[6] is world-readable, `ip -4 -o addr show` needs no
+# privilege, and the Supervisor call authenticates with SUPERVISOR_TOKEN
+# from the environment. The only root-required steps, creating the shared
+# probe secret at 0600 and reading /data/options.json through bashio, run
+# once in the root block below, which then hands their results to the
+# unprivileged half through exported environment variables and re-execs
+# itself under s6-setuidgid. Only the firewall sibling service keeps root,
+# because iptables genuinely needs it (plus CAP_NET_ADMIN).
 # ==============================================================================
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
 SCANNER_VERSION="2026.08.30.2"
 
-SCAN_INTERVAL_HOURS=$(bashio::config 'scan_interval_hours')
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
 
 # Shared per-install secret proving this report really came from the add-on
@@ -31,10 +41,87 @@ ensure_probe_secret() {
     mkdir -p /data
     if [ ! -s "${SECRET_FILE}" ]; then
         ( set -o noclobber
+          umask 077
           head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
         ) 2>/dev/null || true
     fi
+    # Tighten a pre-existing file too: the first live verification run
+    # found it at 0644 (exposure bounded by the /data volume, but 0600 is
+    # the right mode for a credential file, matching options.json).
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
     PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
+
+# --- Privilege drop (work item 2.5, applied) ----------------------------------
+# On first entry this script runs as root (s6 starts every service as
+# root). This block does the two things that genuinely need root, then
+# re-execs the same script as `nobody` and never reaches the scan loop as
+# root:
+#
+#   * The secret file stays root-owned at 0600 ON PURPOSE, unreadable by
+#     the dropped user: its VALUE is read here, once, as root, and handed
+#     to the unprivileged half in an exported environment variable (the
+#     same channel SUPERVISOR_TOKEN already travels in), so the strictest
+#     file ownership survives the drop and no chown juggling with the
+#     root firewall service is needed.
+#   * bashio::config reads /data/options.json, whose read mode for other
+#     users is not among the verified platform facts, so the option value
+#     is resolved here as root and passed down the same way; the dropped
+#     half never touches bashio::config.
+#
+# The re-exec goes through `bashio "$0"` directly instead of "$0" itself:
+# the shebang's with-contenv half re-reads /run/s6/container_environment/*,
+# whose readability as nobody is also not a verified fact, and the current
+# environment already carries everything with-contenv provided on the
+# first pass, so skipping it avoids depending on an unverified read while
+# changing nothing else (the shebang itself documents that `bashio <path>`
+# is exactly how this script is normally interpreted). If s6-setuidgid is
+# ever missing, the scan runs as root with a logged warning rather than
+# crash-looping the service; a degraded scanner that says so beats no
+# scanner.
+if [ "$(id -u)" -eq 0 ]; then
+    ensure_probe_secret
+    HA_SOC_SCAN_INTERVAL_HOURS="$(bashio::config 'scan_interval_hours')"
+    export HA_SOC_SCAN_INTERVAL_HOURS
+    export HA_SOC_PROBE_SECRET="${PROBE_SECRET}"
+    # A response file left behind by an earlier root run would be
+    # unwritable for nobody; clear it while still allowed to.
+    rm -f /tmp/ha_soc_probe_response.json 2>/dev/null || true
+    if command -v s6-setuidgid >/dev/null 2>&1; then
+        exec s6-setuidgid nobody bashio "$0"
+    fi
+    bashio::log.warning "s6-setuidgid not found; the port scanner is running as root this session instead of dropping to nobody."
+fi
+
+SCAN_INTERVAL_HOURS="${HA_SOC_SCAN_INTERVAL_HOURS:-6}"
+PROBE_SECRET="${HA_SOC_PROBE_SECRET:-}"
+
+# --- Graceful stop (carried item, open-items report section 5) ----------------
+# s6 stops this service with SIGTERM on every add-on stop, restart, and
+# update. Without a trap, bash dies from the signal mid-sleep (a sleep
+# that can be hours long here) and the finish script logs the stop as a
+# crash, so a routine add-on update reads as a crash loop. The trap sets a
+# flag; every sleep is interruptible (backgrounded sleep plus `wait`,
+# which a trapped signal interrupts immediately where a foreground sleep
+# would not); and the loop exits 0 at the next checkpoint. This service
+# arms nothing on the host, so there is nothing to recover on stop; the
+# firewall sibling's finish script owns that side.
+STOP_REQUESTED=0
+on_stop_signal() {
+    STOP_REQUESTED=1
+}
+trap on_stop_signal TERM INT
+
+interruptible_sleep() {
+    sleep "$1" &
+    wait $! 2>/dev/null || true
+}
+
+exit_if_stop_requested() {
+    if [ "${STOP_REQUESTED}" -eq 1 ]; then
+        bashio::log.info "HA SOC Probe received a stop signal; exiting cleanly."
+        exit 0
+    fi
 }
 
 # When a report is rejected (e.g. HTTP 400 — the HA SOC integration isn't
@@ -148,38 +235,12 @@ PORTS
     echo "${json}"
 }
 
-# --- Privilege posture (recommended hardening — NOT yet applied) --------------
-# Everything below currently runs as root: s6 starts every service in this
-# add-on as root, and the container carries CAP_NET_ADMIN (config.yaml's
-# `privileged: [NET_ADMIN]`). This SCANNER service, unlike its firewall
-# sibling, needs neither. It only: reads the world-readable /proc/net/tcp[6]
-# (fine unprivileged), runs `ip -4 -o addr show` (works unprivileged), and
-# curls the Supervisor API with $SUPERVISOR_TOKEN (an env var — unprivileged).
-# NET_ADMIN is never exercised here; only ha_soc_probe_firewall's iptables
-# calls genuinely require root + NET_ADMIN, and that service MUST keep them.
-#
-# Recommended: drop THIS service to an unprivileged user by re-execing the
-# whole run script under `nobody` before the scan loop starts, e.g. as the
-# first runtime line above:
-#
-#     if [ "$(id -u)" -eq 0 ]; then
-#         exec s6-setuidgid nobody "$0" "$@"
-#     fi
-#
-# Left un-applied deliberately, because it must be validated against a real
-# Supervisor first and cannot be tested here: re-execing through the
-# `with-contenv` shebang re-reads /run/s6/container_environment/* (including
-# SUPERVISOR_TOKEN), and bashio::config re-reads /data/options.json — both
-# must be readable by `nobody` or the token auth / `scan_interval_hours`
-# lookup fail silently and the add-on stalls in the "Holding" retry loop
-# below. Confirm those read modes (and that /proc/net/tcp stays readable as
-# nobody) on a real HA OS install before enabling the exec above.
-ensure_probe_secret
-bashio::log.info "HA SOC Probe starting — scanning every ${SCAN_INTERVAL_HOURS}h."
+bashio::log.info "HA SOC Probe starting, scanning every ${SCAN_INTERVAL_HOURS}h as $(id -un)."
 
 retry_seconds="${RETRY_INTERVAL_SECONDS}"
 
 while true; do
+    exit_if_stop_requested
     open_ports_json=$(build_open_ports_json)
     port_count=$(echo "${open_ports_json}" | jq 'length')
     bashio::log.info "Found ${port_count} listening TCP port(s) on the host."
@@ -200,7 +261,7 @@ while true; do
     if [ "${http_code}" = "200" ]; then
         bashio::log.info "Reported to HA SOC."
         retry_seconds="${RETRY_INTERVAL_SECONDS}"
-        sleep "$(( SCAN_INTERVAL_HOURS * 3600 ))"
+        interruptible_sleep "$(( SCAN_INTERVAL_HOURS * 3600 ))"
         continue
     fi
 
@@ -210,8 +271,9 @@ while true; do
     # Retry soon instead of waiting out the full scan interval, and say so
     # plainly and repeatedly — this line is the "half setup" flag the user
     # sees in the add-on's own log until the integration side catches up.
+    exit_if_stop_requested
     bashio::log.warning "Holding — HA SOC did not accept the report (HTTP ${http_code}). Is the HA SOC integration installed and loaded? Retrying in ${retry_seconds}s."
-    sleep "${retry_seconds}"
+    interruptible_sleep "${retry_seconds}"
     retry_seconds=$(( retry_seconds * 2 ))
     if [ "${retry_seconds}" -gt "${MAX_RETRY_INTERVAL_SECONDS}" ]; then
         retry_seconds="${MAX_RETRY_INTERVAL_SECONDS}"

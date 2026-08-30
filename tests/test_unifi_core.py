@@ -38,6 +38,7 @@ from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
 from custom_components.ha_soc import unifi, unifi_core
+from custom_components.ha_soc.secrets_store import HaSocSecretStore
 from custom_components.ha_soc.store import HaSocData
 from custom_components.ha_soc.unifi import (
     UniFiError,
@@ -49,6 +50,15 @@ from custom_components.ha_soc.unifi import (
 @pytest.fixture
 async def store(hass: HomeAssistant) -> HaSocData:
     data = HaSocData(hass)
+    await data.async_load()
+    return data
+
+
+@pytest.fixture
+async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
+    # The UniFi API keys live in the private secret store since SEC-1;
+    # the overview/status functions fetch them from it at use time.
+    data = HaSocSecretStore(hass)
     await data.async_load()
     return data
 
@@ -491,9 +501,10 @@ def _dispatch_get(clients, devices):
 
 
 async def test_client_enrichment_fills_blanks_and_api_wins(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
 
     api_clients = [
         # This row already has API values for ssid/vlan/uptime; core memory
@@ -532,7 +543,7 @@ async def test_client_enrichment_fills_blanks_and_api_wins(
     _install_core_entry(hass, "unifi", hub)
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_get(api_clients, []))):
-        o = await async_network_overview(hass, store)
+        o = await async_network_overview(hass, store, secrets)
 
     by_mac = {c["mac"]: c for c in o["clients"]}
     row1 = by_mac["aa:bb:cc:00:00:01"]
@@ -564,7 +575,7 @@ async def test_client_enrichment_fills_blanks_and_api_wins(
 
 
 async def test_overview_built_entirely_from_core_when_unconfigured(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     now_ts = int(dt_util.utcnow().timestamp())
     core_clients = [
@@ -600,7 +611,7 @@ async def test_overview_built_entirely_from_core_when_unconfigured(
     )
     _install_core_entry(hass, "unifi", hub)
 
-    o = await async_network_overview(hass, store)
+    o = await async_network_overview(hass, store, secrets)
 
     # Core memory is real data, so the panel is told it can render it even
     # though the direct API was never configured.
@@ -645,9 +656,10 @@ async def test_overview_built_entirely_from_core_when_unconfigured(
 
 
 async def test_broadcast_map_falls_back_to_core_wlans(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    store.async_update_settings(unifi_network_host="10.0.0.1", unifi_network_api_key="k")
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
     # The API client references its WLAN by id only, and /wifi/broadcasts is
     # one of the endpoints the dispatcher 404s, so the SSID name can only
     # come from the core WLAN inventory.
@@ -656,14 +668,14 @@ async def test_broadcast_map_falls_back_to_core_wlans(
     _install_core_entry(hass, "unifi", hub)
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_get(api_clients, []))):
-        o = await async_network_overview(hass, store)
+        o = await async_network_overview(hass, store, secrets)
 
     assert o["clients"][0]["ssid"] == "HomeWiFi"
     assert "WLAN-SECRET-PASSPHRASE" not in repr(o)
 
 
 async def test_overview_unloaded_core_entry_changes_nothing(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     # A core entry that exists but is not loaded (and one loaded without
     # runtime_data) must leave the overview exactly as it is today.
@@ -675,7 +687,7 @@ async def test_overview_unloaded_core_entry_changes_nothing(
     loaded_no_runtime.add_to_hass(hass)
     loaded_no_runtime.mock_state(hass, ConfigEntryState.LOADED)
 
-    o = await async_network_overview(hass, store)
+    o = await async_network_overview(hass, store, secrets)
     assert o["configured"] is False
     assert o["reachable"] is False
     assert o["clients"] == []
@@ -729,11 +741,11 @@ def _protect_runtime(now: datetime) -> FakeProtectData:
 
 
 async def test_protect_status_from_core_only(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     _install_core_entry(hass, "unifiprotect", _protect_runtime(dt_util.utcnow()))
 
-    out = await async_protect_status(hass, store)
+    out = await async_protect_status(hass, store, secrets)
 
     assert out["configured"] is True
     assert out["reachable"] is True
@@ -764,12 +776,13 @@ async def test_protect_status_from_core_only(
 
 
 async def test_protect_events_from_core_when_rest_events_missing(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     """The reported failure mode: cameras load over REST but /events 404s.
     Core bootstrap events must fill the card and clear the error, and the
     REST camera row must gain the detail fields it was missing."""
-    store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
+    store.async_update_settings(unifi_protect_host="10.0.0.1")
+    await secrets.async_set("unifi_protect_api_key", "k")
     _install_core_entry(hass, "unifiprotect", _protect_runtime(dt_util.utcnow()))
 
     async def _side_effect(hass_, conn, path):
@@ -779,7 +792,7 @@ async def test_protect_events_from_core_when_rest_events_missing(
         raise UniFiError("Endpoint not found (/events?...)")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
-        out = await async_protect_status(hass, store)
+        out = await async_protect_status(hass, store, secrets)
 
     assert out["reachable"] is True
     assert out["camera_count"] == 1
@@ -796,11 +809,12 @@ async def test_protect_events_from_core_when_rest_events_missing(
 
 
 async def test_protect_absent_core_keeps_rest_error(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
     """Without core unifiprotect the pre-existing behavior is untouched: the
     events probe failure is still reported honestly."""
-    store.async_update_settings(unifi_protect_host="10.0.0.1", unifi_protect_api_key="k")
+    store.async_update_settings(unifi_protect_host="10.0.0.1")
+    await secrets.async_set("unifi_protect_api_key", "k")
 
     async def _side_effect(hass_, conn, path):
         if path.startswith("/cameras"):
@@ -808,7 +822,7 @@ async def test_protect_absent_core_keeps_rest_error(
         raise UniFiError("events endpoint not found")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
-        out = await async_protect_status(hass, store)
+        out = await async_protect_status(hass, store, secrets)
 
     assert out["camera_count"] == 1
     assert out["events"] == []

@@ -16,6 +16,19 @@ The account owner is never evaluated here, deliberately: HA's own auth
 store refuses to deactivate the owner (`async_deactivate_user` raises
 ValueError), and locking out the one account that manages the whole
 install would be a self-inflicted outage, not a security improvement.
+
+Scope of assessment (work item 3.11, decision D-18 option (a)): this
+policy assesses Home Assistant's OWN MFA modules only - it cannot see a
+second factor enforced upstream by an SSO/header-auth proxy, an identity
+provider, or anything else outside hass.auth. A user whose only
+credentials come from a non-`homeassistant` auth provider is therefore
+exempt from `auto_deactivate` and reported as "MFA not assessable"
+(users.py sets `mfa_assessable` on the user payload; the Users view
+renders the marker from that field): deactivating an externally-MFA'd
+admin for "missing" a factor HA cannot observe would punish a compliant
+account. An instance that authenticates entirely through such an external
+proxy should keep the default `audit_only` policy - auto_deactivate has
+nothing it can honestly judge there.
 """
 from __future__ import annotations
 
@@ -33,11 +46,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _is_noncompliant(user: dict[str, Any]) -> bool:
+    # mfa_assessable defaults True for a record that predates the field:
+    # failing open here would mean "cannot assess, so exempt", quietly
+    # widening the exemption to every stale payload - the D-18 exemption
+    # applies only when users.py positively established that the user's
+    # credentials all come from a non-homeassistant provider.
     return bool(
         user.get("is_admin")
         and not user.get("is_owner")
         and user.get("is_active")
         and not user.get("mfa_enabled")
+        and user.get("mfa_assessable", True)
     )
 
 

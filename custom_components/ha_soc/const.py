@@ -98,6 +98,30 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
 )
 REDACTED_PLACEHOLDER = "[redacted]"
 
+# The only keys HA SOC ever reads out of ANOTHER integration's config entry
+# (work plan item SEC-4). Peripherals matching and Entity ReMap's helper
+# fallback need to know where a device or entity lives, never what its
+# credentials are; stringifying whole entries would sweep passwords into a
+# search haystack, the exact pattern the scanner flags in other
+# integrations. Nested dicts are descended only under these keys.
+INTEGRATION_LOCATOR_KEYS: tuple[str, ...] = (
+    "host",
+    "hosts",
+    "ip",
+    "ip_address",
+    "address",
+    "url",
+    "base_url",
+    "device",
+    "port",
+    "serial_port",
+    "path",
+    "usb_path",
+    "entity_id",
+    "source",
+    "source_entity_id",
+)
+
 # -- Severity vocabulary shared by vulns / misconfig / detections / scanner
 SEVERITY_CRITICAL = "critical"
 SEVERITY_HIGH = "high"
@@ -164,14 +188,17 @@ DEFAULT_SECURITY_SOURCES_ENABLED: dict[str, bool] = dict.fromkeys(
 CONF_SECURITY_SOURCES_ENABLED = "security_sources_enabled"
 
 # -- Firewall rules (Host Probe add-on, NET_ADMIN) ------------------------
-# Read AND write host iptables state — the one thing in this project that
+# Read AND write host iptables state, the one thing in this project that
 # actually mutates a host security control instead of just observing one.
-# Requires the add-on to declare `privileged: [NET_ADMIN]` (a real -1 on
-# the Supervisor security rating, see security_health.py/README) on top of
-# the `host_network: true` it already has. Every rule this project ever
-# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN below)
-# that this project owns outright — never touched: the raw INPUT chain,
-# anything Docker itself manages, or any pre-existing host firewall rule.
+# Requires the add-on to declare `privileged: [NET_ADMIN]` on top of the
+# `host_network: true` it already has. The add-on's overall Supervisor
+# security rating is 1, set unconditionally by its `docker_api` grant, a
+# deliberate documented choice; the full privilege ledger lives in
+# ha_soc_probe/DOCS.md and the README. Every rule this project ever
+# applies lives in one dedicated iptables chain (HA_SOC_RULES_CHAIN
+# below) that this project owns outright, plus exactly one jump rule at
+# the top of INPUT into that chain; nothing Docker manages and no
+# pre-existing host firewall rule is ever touched.
 HA_SOC_RULES_CHAIN = "HA_SOC_RULES"
 
 # Service the add-on calls on a fast (~5s) interval to pick up a pending
@@ -185,11 +212,51 @@ SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
 FIREWALL_RULE_ACTIONS = ["allow", "deny"]
 FIREWALL_RULE_PROTOS = ["tcp", "udp"]
 
+# Address families a rule can target (work item 2.4, decision D-3). "4" is
+# written with iptables, "6" with ip6tables, "both" with both, always into
+# a chain named HA_SOC_RULES in each table. A rule with a source address is
+# pinned to that address's own family (firewall.RULE_SCHEMA derives it and
+# rejects a mismatching explicit value); a rule with no source defaults to
+# "both", because the verified host carries global IPv6 on its LAN and
+# VLAN, and an IPv4-only deny on such a host is not a deny.
+FIREWALL_RULE_FAMILY_V4 = "4"
+FIREWALL_RULE_FAMILY_V6 = "6"
+FIREWALL_RULE_FAMILY_BOTH = "both"
+FIREWALL_RULE_FAMILIES = [
+    FIREWALL_RULE_FAMILY_V4,
+    FIREWALL_RULE_FAMILY_V6,
+    FIREWALL_RULE_FAMILY_BOTH,
+]
+
+# Upper bound on the optional free-text reason the add-on may attach to a
+# resolution report (carried protocol item, open-items report section 5),
+# so failure reasons like backup_failed or a per-family apply failure reach
+# Home Assistant instead of living only in the add-on log. Bounded because
+# it is add-on-supplied text that gets stored and rendered; the add-on
+# truncates to this same length before sending (head -c in the run script)
+# so an honest long reason is cut short rather than rejected wholesale.
+FIREWALL_REPORT_REASON_MAX = 200
+
 # Pending-test state machine (HaSocData.data["firewall"]["pending"]).
 FIREWALL_TEST_TESTING = "testing"
 FIREWALL_TEST_CONFIRMED = "confirmed"
 FIREWALL_TEST_REVERTED = "reverted"
-FIREWALL_TEST_EXPIRED = "expired"
+# Display-only status for a pending test whose window has passed with no
+# report from the add-on yet. "Unreported" is the load-bearing half: the
+# add-on's own timer has (or should have) reverted the rules, but until its
+# report arrives Core does not know that for a fact, so the slot stays
+# occupied and no new test may be proposed. Replaces the old bare
+# "expired" string so the panel can say exactly that.
+FIREWALL_TEST_EXPIRED_UNREPORTED = "expired_unreported"
+# Terminal status for a pending test the account owner explicitly discarded
+# (decision D-5): the add-on went silent mid-test (stopped, reinstalled, or
+# crashed without recovering) and never reported the outcome, so the owner
+# cleared the slot by hand. "Unreported" is again the honest half: Core
+# never learned from the add-on what actually happened on the host, and the
+# archived record says exactly that. Nothing ever clears the slot
+# automatically; this owner action and the add-on's own report are the only
+# two ways out (see firewall.async_discard_pending).
+FIREWALL_TEST_DISCARDED_UNREPORTED = "discarded_unreported"
 
 # Window a proposed ruleset stays live before the add-on reverts it
 # automatically if nobody confirms — the whole safety mechanism this

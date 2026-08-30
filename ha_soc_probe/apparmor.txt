@@ -1,0 +1,117 @@
+# AppArmor profile for the HA SOC Probe add-on (work item 2.5, decision D-2).
+#
+# Contract and syntax are grounded in the official Home Assistant add-on
+# documentation (developers.home-assistant, docs/apps/presentation.md,
+# "AppArmor" section, read from the documentation source repository at
+# commit 186ad06 on 2026-08-30): a file named apparmor.txt next to
+# config.yaml is loaded by the Supervisor as the container's primary
+# profile in place of docker-default, the profile is named after the slug
+# from config.yaml, and the s6-overlay/bashio access block below follows
+# the documented example. VERIFICATION STATUS: the syntax follows that
+# documented example, but this profile has not yet been loaded on a live
+# Supervisor (the D-21 verification runs predate it and recorded
+# "apparmor: docker-default, custom profile planned"); the next
+# verification pass should confirm `ha addons info` reports the custom
+# profile and review `journalctl _TRANSPORT="audit"` for denials, per the
+# documentation's own tuning guidance.
+#
+# What this profile is FOR, given that the add-on legitimately holds
+# CAP_NET_ADMIN and (optionally, protection off) the Docker socket: it
+# turns "this container can write anywhere a root process can" into an
+# enumerated surface. There is deliberately no bare `file,` rule (the
+# documented example's broadest grant), so AppArmor's default-deny applies
+# to everything not listed; in particular, every WRITE the two services
+# perform lands in /data or /tmp (state files, backups, response bodies),
+# plus the /run and s6 service-tree paths the documented s6 block
+# requires, and any other write is denied by omission. Reads and
+# executions are granted broadly across the system directories because
+# the services are shell scripts that legitimately execute the base
+# image's utilities; narrowing those further is tuning work for a live
+# install's audit log, not something to guess at.
+
+#include <tunables/global>
+
+profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # Capabilities: NET_ADMIN and NET_RAW are the firewall feature
+  # (iptables/ip6tables against the host's netfilter; the verified
+  # container capability set is the Docker default plus these two).
+  # SETUID/SETGID are for s6-setuidgid dropping the port-scanner service
+  # to `nobody` (work item 2.5); nothing here needs to regain privilege
+  # afterwards.
+  capability net_admin,
+  capability net_raw,
+  capability setuid,
+  capability setgid,
+
+  # s6 sends the services TERM on stop; the run scripts' timers signal
+  # their own children. The receive rule carries no peer condition because
+  # the runtime profile name the Supervisor assigns (with or without the
+  # repository-hash slug prefix) is not a verified fact, and a stop signal
+  # that cannot be delivered would turn every add-on stop into a SIGKILL.
+  signal (send) set=(kill,term,int,hup,cont),
+  signal (receive),
+
+  # Network: curl to http://supervisor (TCP, plus UDP for DNS), and the
+  # netlink sockets iptables' nf_tables backend uses to program the
+  # kernel (the verified backend on both the add-on and the host).
+  network inet tcp,
+  network inet6 tcp,
+  network inet udp,
+  network inet6 udp,
+  network netlink raw,
+  # The Docker socket for the opt-in resource hard-cap feature is a unix
+  # socket; the socket FILE lives under /run (covered by the s6 block
+  # below, and /var/run is a symlink to /run on the verified host).
+  unix,
+
+  # S6-Overlay tree, per the documented example ("generally don't remove
+  # anything" from this block).
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+
+  # Bashio, per the documented example.
+  /usr/lib/bashio/** ix,
+  /tmp/** rwk,
+
+  # iptables, ip6tables, iptables-save/ip6tables-save, and iproute2's
+  # `ip` live in the sbin directories on the Alpine base image; the
+  # firewall service is the reason this add-on exists, so these are
+  # execute-allowed alongside the bin directories above.
+  /sbin/** ix,
+  /usr/sbin/** ix,
+  /usr/lib/** rm,
+  /lib/** rm,
+
+  # System configuration reads: resolv.conf/hosts for reaching
+  # http://supervisor by name, passwd/group for s6-setuidgid and id, and
+  # the rest of /etc read-only for bashio. Read-only: the only /etc
+  # writes allowed in this profile are the s6 service-tree lines above.
+  /etc/** r,
+
+  # The host's connection tables and interface state: /proc/net is the
+  # entire data source of the port scanner (host_network makes it the
+  # host's real table), and iptables reads its own bookkeeping there too.
+  @{PROC}/net/ r,
+  @{PROC}/net/** r,
+  # Own-process lookups (busybox id/ps-style helpers and bashio read
+  # /proc/self and per-pid entries of this container's own processes).
+  @{PROC}/@{pid}/** r,
+  @{PROC}/sys/kernel/** r,
+
+  # The add-on's own persistent volume: state files, the pinned probe
+  # secret, per-test rule backups, options.json. This and /tmp (plus the
+  # documented s6 paths) are the ONLY writable locations in this profile.
+  /data/ r,
+  /data/** rwk,
+}

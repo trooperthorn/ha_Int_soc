@@ -9,10 +9,8 @@ its own contract.
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import timedelta
-from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -34,8 +32,9 @@ from .repairs import (
 )
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
+from .secrets_store import HaSocSecretStore, async_migrate_legacy_secrets
 from .resource_watchdog import ResourceWatchdog
-from .store import HaSocData, SettingsData
+from .store import HaSocData
 from .users import LiveSessionRegistry, UsersManager
 from .vulns import DeviceVulnerabilityTracker
 from .websocket_api import async_register_websocket_api
@@ -50,9 +49,15 @@ CONFIG_CHECK_INTERVAL = timedelta(hours=6)
 
 @dataclass
 class HaSocRuntimeData:
-    """Everything a WebSocket command or entity platform needs to reach."""
+    """Everything a WebSocket command or entity platform needs to reach.
+
+    ``secrets`` is the ONLY home of the secret store object: it is never
+    placed in hass.data under its own key, and its repr prints key names
+    only, so this dataclass stays safe to repr in a debugger or log line.
+    """
 
     store: HaSocData
+    secrets: HaSocSecretStore
     users: UsersManager
     live_sessions: LiveSessionRegistry
     audit: AuditLog
@@ -78,40 +83,46 @@ def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
     return entries[0].runtime_data
 
 
-def _seed_settings_from_options_once(
-    store: HaSocData, options: Mapping[str, Any], *, had_stored_data: bool
-) -> None:
-    """Seed store.settings from entry.options, but only on the very first run.
+def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
+    """Empty a legacy entry.options mirror, once (work item SEC-2).
 
-    The options flow can be reached before the integration has ever
-    finished setup, and `entry.options` is written on every save
-    regardless — so on a genuinely fresh install, a save made before first
-    load still needs to take effect. After that first load, store.settings
-    is the sole source of truth: every writer (options flow, in-panel
-    Settings tab) updates it live, and entry.options becomes a snapshot
-    copy for pre-load prefill only, never read again — re-seeding on every
-    restart would let a stale entry.options value clobber a setting the
-    user only ever changed from the panel.
+    Older builds mirrored every settings save (secret values included) into
+    entry.options, which lands in .storage/core.config_entries, a file core
+    writes world-readable. Nothing reads that mirror anymore: the seed path
+    was removed together with the mirror itself, and the options flow is
+    informational only (config_flow.py). An install upgrading from a
+    mirroring build still carries the old copy, so it is rewritten to {}
+    here. Key names only are logged, never values.
     """
-    if had_stored_data or not options:
+    if not entry.options:
         return
-    known_keys = SettingsData.__annotations__.keys()
-    seed = {k: v for k, v in options.items() if k in known_keys}
-    if seed:
-        store.async_update_settings(**seed)
+    _LOGGER.info(
+        "HA SOC: clearing the legacy entry.options settings mirror "
+        "(keys removed: %s). Settings live in the HA SOC store; secrets "
+        "live in the private secret store.",
+        ", ".join(sorted(entry.options)),
+    )
+    hass.config_entries.async_update_entry(entry, options={})
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     store = HaSocData(hass)
-    had_stored_data = await store.async_load()
-    _seed_settings_from_options_once(store, entry.options, had_stored_data=had_stored_data)
+    await store.async_load()
+
+    # The dedicated private secret store (SEC-1). Loaded before anything
+    # else can want a credential, and legacy plaintext copies in the
+    # general store are drained into it exactly once.
+    secrets = HaSocSecretStore(hass)
+    await secrets.async_load()
+    await async_migrate_legacy_secrets(secrets, store)
+    _scrub_entry_options_once(hass, entry)
 
     users = UsersManager(hass)
     live_sessions = LiveSessionRegistry()
     audit = AuditLog(hass, store)
     permissions = PermissionsMatrix(hass, store)
     health = IntegrationHealth(hass, store)
-    vulns = DeviceVulnerabilityTracker(hass, store)
+    vulns = DeviceVulnerabilityTracker(hass, store, secrets)
     scanner = IntegrationScanner(hass, store)
     risk = RiskEngine(hass, store, users=users)
     detections = DetectionEngine(hass, store, audit=audit, users=users)
@@ -119,6 +130,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     entry.runtime_data = HaSocRuntimeData(
         store=store,
+        secrets=secrets,
         users=users,
         live_sessions=live_sessions,
         audit=audit,
@@ -138,7 +150,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
 
     async_register_websocket_api(hass)
-    async_register_probe_service(hass, store)
+    # The audit log is handed over so a rejected Probe callback can be
+    # recorded as probe_auth_rejected, and the secret store because the
+    # pairing secret is pinned and verified there; on non-Supervisor
+    # installs the call registers nothing (see probe.py).
+    async_register_probe_service(hass, store, audit, secrets)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -162,7 +178,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     async def _async_vuln_scan(_now=None) -> None:
         try:
-            findings = await vulns.async_run_scan(api_key=store.settings.get("nvd_api_key") or None)
+            # The tracker fetches the NVD API key from the secret store
+            # right before each request (SEC-3); nothing is passed here.
+            findings = await vulns.async_run_scan()
             await async_sync_vuln_issues(hass, findings)
         except Exception:  # noqa: BLE001
             _LOGGER.exception("HA SOC vulnerability scan failed")

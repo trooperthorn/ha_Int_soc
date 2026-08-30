@@ -10,6 +10,7 @@ import {
   EntityRemapReferenceItem,
   EntityRemapReport,
   applyEntityRemap,
+  fetchAccessInfo,
   fetchBrokenEntityReferences,
   fetchEntityRegistry,
   findEntityRemapReferences,
@@ -24,6 +25,11 @@ const KIND_LABELS: Record<string, string> = {
   other: "Other (review manually)",
 };
 
+// Work item 1.9 added backup-path reporting to the apply result. The shared
+// EntityRemapApplyResult in ha-soc-ws.ts now carries the optional backups
+// list itself; the alias remains only so existing references keep reading.
+type ApplyResultWithBackups = EntityRemapApplyResult;
+
 @customElement("ha-soc-entity-remap-view")
 export class HaSocEntityRemapView extends LitElement {
   static styles = sharedStyles;
@@ -36,13 +42,30 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _report: EntityRemapReport | null = null;
   @state() private _finding = false;
   @state() private _applying = false;
-  @state() private _applyResult: EntityRemapApplyResult | null = null;
+  @state() private _applyResult: ApplyResultWithBackups | null = null;
+  // Same acknowledgement pattern as the firewall card's _fwBackupAck: the
+  // server refuses an apply without backup_acknowledged, so the button stays
+  // disabled until the operator has confirmed they read the consequences.
+  @state() private _backupAck = false;
+  // A rejected apply (invalid_format, backup_not_acknowledged, ...) renders
+  // here instead of being swallowed by an unhandled promise rejection.
+  @state() private _applyError: string | null = null;
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
+  // Non-null when _load itself failed. Without this a rejected registry
+  // or broken-references fetch left _brokenLoading stuck true forever,
+  // an unbounded "Loading..." with no way to tell a failure from a slow
+  // sweep (work plan item 4.12).
+  @state() private _brokenError: string | null = null;
   @state() private _brokenFilter: string | null = null;
   // Column sort for the "referenced but not found" table (see sortable.ts);
   // null keeps the sweep's reported order.
   @state() private _brokenSort: SortState | null = null;
+  // Applying a remap is owner-only server-side (D-23: it rewrites
+  // configuration), while finding references stays open to admins. False
+  // by default and on a failed lookup, so the apply controls fail closed
+  // like the WS gate underneath.
+  @state() private _isOwner = false;
 
   private static readonly BROKEN_SORT: Record<string, (b: BrokenEntityReference) => unknown> = {
     entity_id: (b) => b.entity_id,
@@ -60,13 +83,24 @@ export class HaSocEntityRemapView extends LitElement {
   }
 
   private async _load() {
-    const [entities, broken] = await Promise.all([
-      fetchEntityRegistry(this.hass),
-      fetchBrokenEntityReferences(this.hass),
-    ]);
-    this._entities = entities;
-    this._broken = broken;
-    this._brokenLoading = false;
+    this._brokenLoading = true;
+    this._brokenError = null;
+    try {
+      const [entities, broken, access] = await Promise.all([
+        fetchEntityRegistry(this.hass),
+        fetchBrokenEntityReferences(this.hass),
+        fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
+      ]);
+      this._entities = entities;
+      this._broken = broken;
+      this._isOwner = !!access.is_owner;
+    } catch (err: any) {
+      // A failed fetch must not leave the sweep reading "Loading..."
+      // forever; store the server's message and show it distinctly.
+      this._brokenError = err?.message ?? String(err);
+    } finally {
+      this._brokenLoading = false;
+    }
   }
 
   private _labelFor(entityId: string): string {
@@ -79,6 +113,7 @@ export class HaSocEntityRemapView extends LitElement {
     if (!this._oldEntityId) return;
     this._finding = true;
     this._applyResult = null;
+    this._applyError = null;
     try {
       this._report = await findEntityRemapReferences(this.hass, this._oldEntityId);
       this._brokenFilter = this._oldEntityId;
@@ -92,6 +127,7 @@ export class HaSocEntityRemapView extends LitElement {
     this._newEntityId = "";
     this._report = null;
     this._applyResult = null;
+    this._applyError = null;
     this._onFind();
   }
 
@@ -103,6 +139,7 @@ export class HaSocEntityRemapView extends LitElement {
     this._newEntityId = "";
     this._report = null;
     this._applyResult = null;
+    this._applyError = null;
     this.updateComplete.then(() => {
       this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -134,14 +171,27 @@ export class HaSocEntityRemapView extends LitElement {
   private async _onApply() {
     if (!this._oldEntityId || !this._newEntityId) return;
     this._applying = true;
+    this._applyError = null;
     try {
-      const result = await applyEntityRemap(this.hass, this._oldEntityId, this._newEntityId);
-      // _onFind() clears _applyResult as part of a fresh search — refresh
+      const result = await applyEntityRemap(
+        this.hass,
+        this._oldEntityId,
+        this._newEntityId,
+        this._backupAck
+      );
+      // The acknowledgment covered THIS apply only; require a fresh one for
+      // the next run (the firewall card resets _fwBackupAck the same way).
+      this._backupAck = false;
+      // _onFind() clears _applyResult as part of a fresh search, so refresh
       // the report/broken list first, then set the result last so it isn't
       // wiped out before it ever gets a chance to render.
       await this._onFind();
       this._broken = await fetchBrokenEntityReferences(this.hass);
       this._applyResult = result;
+    } catch (err: any) {
+      // Surface the server's own rejection (invalid_format on a malformed
+      // entity_id, backup_not_acknowledged, ...) instead of swallowing it.
+      this._applyError = err?.message ?? err?.code ?? "Applying the remap failed.";
     } finally {
       this._applying = false;
     }
@@ -178,7 +228,11 @@ export class HaSocEntityRemapView extends LitElement {
   render() {
     const report = this._report;
     const canApply =
-      !!report && report.editable_count > 0 && !!this._newEntityId && this._newEntityId !== this._oldEntityId;
+      !!report &&
+      report.editable_count > 0 &&
+      !!this._newEntityId &&
+      this._newEntityId !== this._oldEntityId &&
+      this._backupAck;
 
     return html`
       <div class="card" id="remap-card">
@@ -263,13 +317,66 @@ export class HaSocEntityRemapView extends LitElement {
                       ${this._renderKind("helper", report.helper)}
                       ${this._renderKind("other", report.other)}
                     `}
-                <button class="ha-btn" ?disabled=${!canApply || this._applying} @click=${() => this._onApply()}>
-                  ${this._applying
-                    ? "Applying…"
-                    : `Apply remap (${report.editable_count} reference${report.editable_count === 1 ? "" : "s"})`}
-                </button>
+                ${!this._isOwner
+                  ? html`
+                      <!-- Applying is owner-only server-side (D-23), so a non-owner
+                           admin gets the Settings tab's one-line note instead of an
+                           apply button that could only ever bounce off the gate. -->
+                      <p class="muted" style="font-size:12.5px;margin-top:12px;">
+                        Applying a remap is available to the account owner only.
+                      </p>
+                    `
+                  : html`
+                      ${report.editable_count > 0
+                        ? html`
+                            <!-- The server refuses the apply without backup_acknowledged, so this
+                                 checkbox is the same required gate the firewall card's backup
+                                 acknowledgment is, with the consequences spelled out honestly. -->
+                            <label
+                              style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer;"
+                            >
+                              <input
+                                type="checkbox"
+                                style="margin-top:2px;"
+                                .checked=${this._backupAck}
+                                @change=${(e: Event) => (this._backupAck = (e.target as HTMLInputElement).checked)}
+                              />
+                              <span>
+                                I understand that before their first rewrite,
+                                <code>automations.yaml</code>, <code>scripts.yaml</code>, and
+                                <code>scenes.yaml</code> are each copied aside as
+                                <code>&lt;file&gt;.ha_soc-&lt;timestamp&gt;.bak</code>; that
+                                storage-mode dashboards and helper entries get a JSON snapshot of
+                                their previous state under <code>.storage/ha_soc_remap/</code>
+                                (kept for 30 days) before being rewritten in place; that a YAML
+                                file containing <code>!secret</code> or <code>!include</code> is
+                                refused entirely and reported as "manual edit required"; that
+                                comments and formatting in the YAML files do not survive the
+                                rewrite; and that automations, scripts, and scenes reload right
+                                after the write.
+                              </span>
+                            </label>
+                          `
+                        : nothing}
+                      <button
+                        class="ha-btn"
+                        style="margin-top:12px;"
+                        ?disabled=${!canApply || this._applying}
+                        @click=${() => this._onApply()}
+                      >
+                        ${this._applying
+                          ? "Applying…"
+                          : `Apply remap (${report.editable_count} reference${report.editable_count === 1 ? "" : "s"})`}
+                      </button>
+                    `}
               </div>
             `
+          : nothing}
+
+        ${this._applyError
+          ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">
+              Apply failed: ${this._applyError}
+            </p>`
           : nothing}
 
         ${this._applyResult
@@ -282,6 +389,12 @@ export class HaSocEntityRemapView extends LitElement {
                 ${this._applyResult.errors.length
                   ? html`<div style="color:var(--error-color);margin-top:6px;">
                       ${this._applyResult.errors.length} error(s): ${this._applyResult.errors.join("; ")}
+                    </div>`
+                  : nothing}
+                ${this._applyResult.backups?.length
+                  ? html`<div class="muted" style="font-size:12px;margin-top:6px;">
+                      Backups written before the rewrite:
+                      ${this._applyResult.backups.map((path) => html`<div><code>${path}</code></div>`)}
                     </div>`
                   : nothing}
               </div>
@@ -313,6 +426,13 @@ export class HaSocEntityRemapView extends LitElement {
           : nothing}
         ${this._brokenLoading
           ? html`<div class="empty">Loading…</div>`
+          : this._brokenError
+            ? html`
+                <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+                  <p style="font-size:13px;margin:0 0 8px;">${this._brokenError}</p>
+                  <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+                </div>
+              `
           : !this._broken.length
             ? html`<div class="empty">Nothing found — no dangling entity references detected.</div>`
             : !this._filteredBroken().length

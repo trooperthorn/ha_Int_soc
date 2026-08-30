@@ -17,11 +17,21 @@ export interface HaSocUser {
   llat_oldest_days: number | null;
   account_age_days: number | null;
   auth_provider_types: string[];
+  // False when every credential comes from a non-homeassistant auth
+  // provider (SSO/header proxy, trusted_networks, command line): HA
+  // cannot observe a second factor enforced upstream, so the Users view
+  // renders "MFA not assessable" instead of a red "none" (D-18).
+  mfa_assessable: boolean;
 }
 
 export interface RiskFactor {
   name: string;
+  // Pre-clamp contribution. applied_points is this factor's share of the
+  // final 0-100 score after clamping; the applied_points of a result's
+  // factors sum exactly to its score (work item 3.5). Optional so a
+  // result computed by an older backend still renders.
   points: number;
+  applied_points?: number;
   detail: string;
 }
 
@@ -35,6 +45,13 @@ export interface RiskResult {
 export interface PostureResult {
   score: number;
   grade: "A" | "B" | "C" | "D" | "F";
+  // Provisional posture (work item 3.4, D-10): true until every posture
+  // term has computed from real data at least once ever; missing_terms
+  // lists the ones still waiting, and term_computed_at carries each
+  // term's first-computed timestamp (null while missing).
+  provisional: boolean;
+  missing_terms: string[];
+  term_computed_at?: Record<string, string | null>;
   breakdown: Record<string, number>;
 }
 
@@ -173,15 +190,42 @@ export interface ProbeOverview {
 // word on what's really active.
 export type FirewallRuleAction = "allow" | "deny";
 export type FirewallRuleProto = "tcp" | "udp";
+// Address family a rule targets (work item 2.4): "4" is written with
+// iptables, "6" with ip6tables, "both" mirrored into both tables. The
+// server derives the family from a rule's source address (an IPv4 source
+// pins "4", an IPv6 source pins "6") and rejects a contradicting explicit
+// value; a rule with no source defaults to "both".
+export type FirewallRuleFamily = "4" | "6" | "both";
 
 export interface FirewallRule {
   action: FirewallRuleAction;
   proto: FirewallRuleProto;
   port: number;
   source?: string | null;
+  // Optional because records persisted before the dual-stack change carry
+  // no family; the server treats an absent value as "both".
+  family?: FirewallRuleFamily;
+  // Set by the server, at read time, on every "6"/"both" rule while the
+  // add-on reports ipv6_supported=false: the IPv6 half of this rule is
+  // not on the host, and the card must say so rather than showing a
+  // silent IPv4-only success.
+  partially_applied?: boolean;
 }
 
-export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired";
+// "expired_unreported" is the display-only status a timed-out pending test
+// carries until the add-on's own report archives it; "expired" is the same
+// state's pre-rename spelling, kept so a record persisted by an older
+// version still type-checks. "discarded_unreported" is the terminal status
+// of a history entry the owner discarded after the add-on went silent
+// mid-test (ha_soc/firewall/discard_pending); it never appears on a live
+// pending record.
+export type FirewallTestStatus =
+  | "testing"
+  | "confirmed"
+  | "reverted"
+  | "expired"
+  | "expired_unreported"
+  | "discarded_unreported";
 
 export interface FirewallPendingTest {
   test_id: string;
@@ -192,15 +236,32 @@ export interface FirewallPendingTest {
   // null until the add-on's poll actually picks this up and applies it —
   // still "testing" but not live on the host yet.
   applied_at: string | null;
+  // Until the apply is handed to the add-on this is propose time plus the
+  // window (the staleness bound for a proposal never picked up); the
+  // moment applied_at is set the server re-anchors it to applied_at plus
+  // window_seconds, so the countdown rendered from it tracks the add-on's
+  // real local revert timer instead of running up to one poll interval
+  // ahead of it.
   expires_at: string;
   window_seconds: number;
   resolved_at?: string;
   resolved_by?: string;
+  // The add-on's bounded explanation of a resolution (carried protocol
+  // item): "backup_failed", or the failing rule and family when an apply
+  // failed in either table. Only ever present on archived history
+  // records, because it arrives with the resolution report that archives
+  // them.
+  reason?: string | null;
 }
 
 export interface FirewallStatus {
   known_rules: FirewallRule[] | null;
   known_rules_reported_at: string | null;
+  // Whether ip6tables works on the host, as last reported by the add-on
+  // (from `ip6tables -S` succeeding); null/absent until any report has
+  // carried the field. When false, the server flags every "6"/"both"
+  // rule partially_applied and the card shows the honest banner.
+  ipv6_supported?: boolean | null;
   pending: FirewallPendingTest | null;
   history: FirewallPendingTest[];
 }
@@ -242,8 +303,14 @@ export type MfaPolicy = "audit_only" | "auto_deactivate";
 export interface HaSocSettings {
   audit_retention_days: number;
   audit_max_bytes: number;
+  // Work item 3.3 (D-6): retention for resolved/dismissed detections and
+  // findings, distinct from the audit log's own retention above.
+  evidence_retention_days: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
+  // D-12: device manufacturer and model strings are sent to NIST's NVD
+  // only while this is on.
+  nvd_lookups_enabled: boolean;
   // Secret fields come back masked ("[redacted]" when set, "" when unset);
   // the companion *_set booleans say whether one is configured. Send a new
   // value to change it; send nothing (or the placeholder) to leave it.
@@ -251,7 +318,12 @@ export interface HaSocSettings {
   nvd_api_key_set?: boolean;
   github_token?: string | null;
   github_token_set?: boolean;
-  risk_learning_period_days: number;
+  // Work item 3.0 (D-9): sparse per-rule threshold overrides; send only
+  // the fields being changed and the server merges per field. Effective
+  // values, secure defaults, and ranges come from fetchDetectionThresholds.
+  // The old risk_learning_period_days setting was replaced by the two
+  // per-rule learning_days parameters in here.
+  detection_thresholds: Record<string, Record<string, number | boolean>>;
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
@@ -548,9 +620,16 @@ export interface SecurityEntityRow {
   entity_id: string;
   name: string | null;
   domain: string;
-  state: string;
+  // Null on a registry entity with no state object at all (work plan
+  // item 4.5): its integration never loaded it. Such a row always has
+  // problem true and reason "no state (integration not loaded)".
+  state: string | null;
   device_class: string | null;
   problem: boolean;
+  // Why problem is true: the problem state itself ("unavailable",
+  // "unknown", "jammed") or the no-state explanation above; null on a
+  // healthy row.
+  reason: string | null;
   battery_entity_id: string | null;
   battery_level: number | null;
   low_battery: boolean;
@@ -626,6 +705,9 @@ export interface EntityRemapApplyResult {
   new_entity_id: string;
   fixed: Record<EntityRemapKind, number>;
   errors: string[];
+  // Pre-rewrite snapshot paths under .storage/ha_soc_remap/ (kept 30 days).
+  // Optional so a response from an older backend still renders.
+  backups?: string[];
 }
 
 export interface BrokenEntityReference {
@@ -673,8 +755,23 @@ export const revokeToken = (hass: HomeAssistant, userId: string, tokenId: string
 export const revokeAllSessions = (hass: HomeAssistant, userId: string) =>
   ws<{ revoked: number }>(hass, { type: "ha_soc/users/revoke_all_sessions", user_id: userId });
 
-export const setPassword = (hass: HomeAssistant, userId: string, password: string) =>
-  ws(hass, { type: "ha_soc/users/set_password", user_id: userId, password });
+// revoke_sessions defaults true server-side (work plan item 4.12):
+// whoever held the old password must be signed out, or the reset changes
+// nothing for an attacker with a live session. Long-lived tokens are
+// spared either way. The client always sends the flag explicitly so the
+// audit record reflects a deliberate choice, never a schema default.
+export const setPassword = (
+  hass: HomeAssistant,
+  userId: string,
+  password: string,
+  revokeSessions: boolean
+) =>
+  ws<{ ok: boolean; sessions_revoked: number }>(hass, {
+    type: "ha_soc/users/set_password",
+    user_id: userId,
+    password,
+    revoke_sessions: revokeSessions,
+  });
 
 export const fetchLiveSessions = (hass: HomeAssistant) =>
   ws<{ sessions: Record<string, unknown>[] }>(hass, { type: "ha_soc/sessions/list" }).then(
@@ -687,9 +784,37 @@ export const queryAudit = (
 ) => ws<{ events: AuditEvent[] }>(hass, { type: "ha_soc/audit/query", ...params }).then((r) => r.events);
 
 export const verifyAuditChain = (hass: HomeAssistant) =>
-  ws<{ ok: boolean; records_checked: number; first_break_seq: number | null }>(hass, {
+  ws<{
+    ok: boolean;
+    records_checked: number;
+    first_break_seq: number | null;
+    // 1 when the whole chain was re-checked; greater when retention has
+    // expired the prefix and verification restarted at the stored anchor.
+    verified_from_seq: number;
+    expired_through: string | null;
+  }>(hass, {
     type: "ha_soc/audit/verify_chain",
   });
+
+// Per-category record counts and byte shares for the newest audit day,
+// so the owner can see what produces the log's bulk. Newest day only.
+export interface AuditCategoryStat {
+  category: string;
+  records: number;
+  bytes: number;
+  byte_share: number;
+}
+
+export interface AuditCategoryStats {
+  day: string | null;
+  files: number;
+  total_records: number;
+  total_bytes: number;
+  categories: AuditCategoryStat[];
+}
+
+export const fetchAuditCategoryStats = (hass: HomeAssistant) =>
+  ws<AuditCategoryStats>(hass, { type: "ha_soc/audit/category_stats" });
 
 export const fetchDashboards = (hass: HomeAssistant) =>
   ws<{ dashboards: Record<string, unknown>[] }>(hass, { type: "ha_soc/permissions/dashboards/list" }).then(
@@ -746,6 +871,38 @@ export const fetchDetections = (hass: HomeAssistant, status?: string) =>
 
 export const setDetectionStatus = (hass: HomeAssistant, detectionId: string, status: string) =>
   ws(hass, { type: "ha_soc/detections/set_status", detection_id: detectionId, status });
+
+// Work item 3.3: one action, one audit record carrying the id list.
+export const bulkSetDetectionStatus = (hass: HomeAssistant, detectionIds: string[], status: string) =>
+  ws<{ updated: number; missing: string[] }>(hass, {
+    type: "ha_soc/detections/bulk_set_status",
+    detection_ids: detectionIds,
+    status,
+  });
+
+// Work item 3.0 (D-9): the tunable-threshold table. Per rule and
+// parameter: the effective value, the secure default, the inclusive
+// min/max (null for booleans), and the type the input should render as.
+export interface DetectionThresholdParam {
+  value: number | boolean;
+  default: number | boolean;
+  min: number | null;
+  max: number | null;
+  type: "int" | "float" | "bool";
+}
+
+export type DetectionThresholdTable = Record<string, Record<string, DetectionThresholdParam>>;
+
+export const fetchDetectionThresholds = (hass: HomeAssistant) =>
+  ws<{ rules: DetectionThresholdTable }>(hass, { type: "ha_soc/detections/thresholds" }).then(
+    (r) => r.rules
+  );
+
+// Owner-only, audited with a per-field diff server-side.
+export const resetDetectionThresholds = (hass: HomeAssistant) =>
+  ws<{ rules: DetectionThresholdTable }>(hass, { type: "ha_soc/detections/thresholds_reset" }).then(
+    (r) => r.rules
+  );
 
 export const fetchVulns = (hass: HomeAssistant) =>
   ws<{ findings: Finding[] }>(hass, { type: "ha_soc/vulns/list" }).then((r) => r.findings);
@@ -814,8 +971,28 @@ export const scanVulnsNow = (hass: HomeAssistant) =>
 export const setVulnStatus = (hass: HomeAssistant, findingId: string, status: string, note?: string) =>
   ws(hass, { type: "ha_soc/vulns/set_status", finding_id: findingId, status, note });
 
-export const fetchScannerFindings = (hass: HomeAssistant) =>
-  ws<{ findings: Finding[] }>(hass, { type: "ha_soc/scanner/list" }).then((r) => r.findings);
+// Mirrors scanner.py's scan_directory_report coverage record: what one
+// completed pass over a domain really looked at (work plan item 4.8). A
+// domain with no record has never been scanned and must render as "not
+// scanned", never as an implied-clean zero findings.
+export interface ScannerDomainCoverage {
+  scanned_files: number;
+  skipped_oversize: number;
+  skipped_over_cap: number;
+  parse_failures: number;
+  scanned_at: string;
+}
+
+// Mirrors IntegrationScanner.listing_payload. coverage is optional so a
+// backend still serving the pre-coverage findings-only payload parses;
+// its absence renders the same way as an empty table: nothing scanned.
+export interface ScannerListing {
+  findings: Finding[];
+  coverage?: Record<string, ScannerDomainCoverage>;
+}
+
+export const fetchScannerListing = (hass: HomeAssistant) =>
+  ws<ScannerListing>(hass, { type: "ha_soc/scanner/list" });
 
 export const scanIntegrationNow = (hass: HomeAssistant, domain?: string) =>
   ws(hass, { type: "ha_soc/scanner/scan_now", domain });
@@ -864,11 +1041,32 @@ export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
 export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
 
+// Owner-only escape hatch for an add-on gone silent mid-test: archives the
+// pending record as discarded_unreported and clears the slot. The server
+// refuses it while the countdown is still running, so the panel only
+// offers the button once the countdown has lapsed.
+export const discardFirewallPending = (hass: HomeAssistant) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/discard_pending" });
+
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
 
+// Mirrors github_provenance.py's async_refresh_github_signals summary.
+// reason is "no_github_token" (nothing ran) or "rate_limited" (the loop
+// stopped early, keeping what it had fetched). invalid_slugs is a COUNT
+// of malformed owner/repo slugs refused a request, not a list; the slug
+// strings themselves go to the server log only. cache_fresh counts repos
+// skipped because their cached signals are younger than the TTL. The
+// three count fields are absent on the no_github_token early return.
 export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
-  ws<{ ok: boolean; reason?: string; refreshed?: number; skipped?: number }>(hass, {
+  ws<{
+    ok: boolean;
+    reason?: string;
+    refreshed?: number;
+    skipped?: number;
+    cache_fresh?: number;
+    invalid_slugs?: number;
+  }>(hass, {
     type: "ha_soc/integration_security/refresh",
   });
 
@@ -890,11 +1088,21 @@ export const setPeripheralIgnored = (hass: HomeAssistant, key: string, ignored: 
 export const findEntityRemapReferences = (hass: HomeAssistant, entityId: string) =>
   ws<EntityRemapReport>(hass, { type: "ha_soc/entity_remap/find_references", entity_id: entityId });
 
-export const applyEntityRemap = (hass: HomeAssistant, oldEntityId: string, newEntityId: string) =>
+// backup_acknowledged is vol.Required server-side; omitting it made every
+// apply fail schema validation, so the whole feature was unreachable from
+// the panel (work plan item 0.4, UI-1). tests/test_ws_contract.py now
+// guards this whole class of missing-required-key bug.
+export const applyEntityRemap = (
+  hass: HomeAssistant,
+  oldEntityId: string,
+  newEntityId: string,
+  backupAcknowledged: boolean
+) =>
   ws<EntityRemapApplyResult>(hass, {
     type: "ha_soc/entity_remap/apply",
     old_entity_id: oldEntityId,
     new_entity_id: newEntityId,
+    backup_acknowledged: backupAcknowledged,
   });
 
 export const fetchBrokenEntityReferences = (hass: HomeAssistant) =>

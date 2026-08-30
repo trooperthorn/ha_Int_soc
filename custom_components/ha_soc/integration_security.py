@@ -15,10 +15,16 @@ privilege (signals 1/4/8/9 of the design):
   validated) vs. custom (anything under custom_components/). Where HACS is
   installed we make a best-effort attempt to tell HACS-managed content
   apart from truly unmanaged custom code, and — per the feature request's
-  variance on signal 4 — flag only the two lowest-provenance HACS origins
-  (a custom repository, or a custom source-list), never default-store HACS
-  content. When HACS internals aren't introspectable we say so (source
-  "unverified") rather than guessing.
+  variance on signal 4 - flag only the lowest-provenance HACS origin the
+  runtime data can actually distinguish: a custom (user-added) repository,
+  never default-store HACS content. The design also named a
+  "custom_source_list" flag, but HACS's introspectable runtime data
+  carries only the default/custom repository split, so that flag is not
+  produced anywhere and this module no longer pretends it might be (work
+  plan item 4.10: produce it from HACS data or remove it; removed,
+  because there is no honest data source for it). When HACS internals
+  aren't introspectable we say so (source "unverified") rather than
+  guessing.
 - **quality_scale / integration_type** — read straight from the manifest
   (core integrations carry a real quality_scale today).
 - **License present** (signal 8) — a local file check in the integration's
@@ -46,11 +52,11 @@ from homeassistant.loader import async_get_integration
 from .const import (
     CONF_GITHUB_TOKEN,
     INTEGRATION_FLAG_CUSTOM_REPO,
-    INTEGRATION_FLAG_CUSTOM_SOURCE_LIST,
     INTEGRATION_TIER_CORE,
     INTEGRATION_TIER_CUSTOM,
     INTEGRATION_TIER_HACS,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -141,12 +147,17 @@ def _hacs_domain_origins(hass: HomeAssistant) -> dict[str, str] | None:
 
 
 async def async_integration_security_overview(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
     """Everything the Integration Security view needs. Local signals only;
     GitHub-derived signals are merged from the store cache (populated
-    out-of-band by github_provenance.py) and are None when not collected."""
-    github_configured = bool(store.settings.get(CONF_GITHUB_TOKEN))
+    out-of-band by github_provenance.py) and are None when not collected.
+
+    The token itself lives in the private secret store (SEC-1); only its
+    presence is asked for here, to drive the "configured" flag and the
+    cache merge, and the value never enters this function.
+    """
+    github_configured = bool(await secrets.async_get(CONF_GITHUB_TOKEN))
     hacs_origins = _hacs_domain_origins(hass)
     hacs_installed = hacs_origins is not None or "hacs" in hass.config.components
 
@@ -183,13 +194,16 @@ async def async_integration_security_overview(
         else:
             tier = INTEGRATION_TIER_CUSTOM
 
-        # Variance on signal 4: flag ONLY custom-repo / custom-source-list
-        # HACS origins. Default-store HACS content is not flagged, and an
-        # unmanaged custom_components/ drop is its own tier (not a "flag").
+        # Variance on signal 4: flag ONLY the custom-repo HACS origin.
+        # Default-store HACS content is not flagged, an unmanaged
+        # custom_components/ drop is its own tier (not a "flag"), and the
+        # once-planned custom_source_list flag is not produced because
+        # HACS runtime data exposes no such origin (see module docstring,
+        # work plan item 4.10).
         flags: list[str] = []
         if hacs_origins is not None and domain in hacs_origins:
             origin = hacs_origins[domain]
-            if origin in (INTEGRATION_FLAG_CUSTOM_REPO, INTEGRATION_FLAG_CUSTOM_SOURCE_LIST):
+            if origin == INTEGRATION_FLAG_CUSTOM_REPO:
                 flags.append(origin)
 
         repo_url = _repo_url_from_integration(

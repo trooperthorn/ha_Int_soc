@@ -1,10 +1,11 @@
 """Tests for ha_soc/settings/get and ha_soc/settings/set.
 
 Calls the sync wrappers directly against a fake connection (same approach
-as test_access_control.py) rather than a full websocket_api HTTP roundtrip
-— what needs proving here is that /set actually mutates the live store and
-mirrors into entry.options, not the generic auth plumbing already covered
-by test_access_control.py.
+as test_access_control.py) rather than a full websocket_api HTTP
+roundtrip. What needs proving here is that /set actually mutates the live
+store, routes secret values into the private secret store (SEC-1), and
+leaves entry.options alone (SEC-2), not the generic auth plumbing already
+covered by test_access_control.py.
 """
 from unittest.mock import MagicMock
 
@@ -42,21 +43,22 @@ async def test_get_returns_live_settings(hass: HomeAssistant, entry: MockConfigE
     assert result["access_level"] == "owner_only"
 
 
-async def test_set_updates_store_and_mirrors_entry_options(
+async def test_set_updates_store_and_leaves_entry_options_empty(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
+    """The pre-SEC-2 build mirrored every save into entry.options; the
+    mirror is gone, so a save changes the live store and nothing else."""
     connection = _connection()
     ws_settings_set(
         hass,
         connection,
-        {"id": 1, "type": "ha_soc/settings/set", "scanner_enabled": False, "risk_learning_period_days": 21},
+        {"id": 1, "type": "ha_soc/settings/set", "scanner_enabled": False, "evidence_retention_days": 400},
     )
     await hass.async_block_till_done()
 
     assert entry.runtime_data.store.settings["scanner_enabled"] is False
-    assert entry.runtime_data.store.settings["risk_learning_period_days"] == 21
-    assert entry.options["scanner_enabled"] is False
-    assert entry.options["risk_learning_period_days"] == 21
+    assert entry.runtime_data.store.settings["evidence_retention_days"] == 400
+    assert entry.options == {}
 
     result = connection.send_result.call_args[0][1]
     assert result["scanner_enabled"] is False
@@ -92,12 +94,14 @@ async def test_get_and_set_are_owner_only(hass: HomeAssistant, entry: MockConfig
 
 async def test_secret_masking_and_passthrough(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     connection = _connection()
-    # Set a real secret value.
+    # Set a real secret value: it lands in the private secret store, never
+    # in the settings dict (SEC-1).
     ws_settings_set(
         hass, connection, {"id": 1, "type": "ha_soc/settings/set", "nvd_api_key": "SECRET123"}
     )
     await hass.async_block_till_done()
-    assert entry.runtime_data.store.settings["nvd_api_key"] == "SECRET123"
+    assert await entry.runtime_data.secrets.async_get("nvd_api_key") == "SECRET123"
+    assert "nvd_api_key" not in entry.runtime_data.store.settings
 
     # Reading back never returns the raw value.
     ws_settings_get(hass, connection, {"id": 2})
@@ -111,4 +115,14 @@ async def test_secret_masking_and_passthrough(hass: HomeAssistant, entry: MockCo
         hass, connection, {"id": 3, "type": "ha_soc/settings/set", "nvd_api_key": "[redacted]"}
     )
     await hass.async_block_till_done()
-    assert entry.runtime_data.store.settings["nvd_api_key"] == "SECRET123"
+    assert await entry.runtime_data.secrets.async_get("nvd_api_key") == "SECRET123"
+
+    # An empty string clears the secret, and the flag reads false again.
+    ws_settings_set(
+        hass, connection, {"id": 4, "type": "ha_soc/settings/set", "nvd_api_key": ""}
+    )
+    await hass.async_block_till_done()
+    assert await entry.runtime_data.secrets.async_get("nvd_api_key") is None
+    got = connection.send_result.call_args[0][1]
+    assert got["nvd_api_key"] == ""
+    assert got["nvd_api_key_set"] is False

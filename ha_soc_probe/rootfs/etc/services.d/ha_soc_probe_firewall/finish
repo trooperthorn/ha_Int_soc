@@ -1,7 +1,200 @@
 #!/usr/bin/with-contenv bashio
-# The poll loop should never exit on its own — this only fires if it
-# crashed. s6 restarts the service automatically after this script
-# returns; the next run's startup check (see run's "Startup" section)
-# is what actually protects an in-flight test across that restart.
+# ==============================================================================
+# HA SOC Probe firewall poller stop/crash recovery (work item 2.6).
+#
+# s6 runs this after the run script's process dies, for BOTH a crash and a
+# deliberate stop of the add-on. The run script's backgrounded revert
+# timer dies with that process, so an unresolved test would otherwise stay
+# live until the next start's recovery block runs, and for a deliberate
+# stop that next start never comes. This script therefore performs the same
+# recovery the run script performs at startup: if a test is still armed
+# and unresolved, revert it NOW, so stopping the add-on mid-test restores
+# the pre-test chains immediately instead of leaving unconfirmed rules
+# live on a host with no watchdog for them. The run script's TERM trap
+# (carried item: graceful stop) deliberately leaves this recovery to this
+# script; the per-test resolved marker keeps the revert exactly-once no
+# matter which recovery path runs first.
+#
+# The recovery block below mirrors the run script's revert machinery
+# (chain backup paths / resolved_marker_for / replay_chain_backup /
+# revert_test / report_resolution, both address families) and MUST change
+# in lockstep with it; the two scripts stay self-contained because s6
+# executes each on its own. The revert is chain-scoped exactly like the
+# run script's (work items 2.3 and 2.4): flush HA_SOC_RULES and replay the
+# pre-test chain snapshot, per family, never iptables-restore or
+# ip6tables-restore over a whole table. Reporting the revert to Core is
+# best-effort here: on a deliberate add-on stop the Supervisor proxy may
+# already be tearing this container down, and Core's own expired-
+# unreported archival handles a report that never arrives.
+#
+# The exit-code line at the bottom distinguishes a clean stop (the run
+# script's TERM trap exiting 0) from a crash, so a routine add-on stop or
+# update no longer reads as a crash loop in the add-on log.
+# ==============================================================================
+set -uo pipefail
+
+CHAIN="HA_SOC_RULES"
+STATE_DIR="/data"
+CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
+SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+IPV6_SUPPORTED=0
+
+chain_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain_${1}.rules"; }
+chain6_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain6_${1}.rules"; }
+resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
+
+ipt_bin_for() {
+    if [ "$1" = "6" ]; then echo "ip6tables"; else echo "iptables"; fi
+}
+
+probe_ipv6_supported() {
+    if ip6tables -S >/dev/null 2>&1; then
+        IPV6_SUPPORTED=1
+    else
+        IPV6_SUPPORTED=0
+    fi
+}
+
+ipv6_supported_json() {
+    if [ "${IPV6_SUPPORTED}" -eq 1 ]; then echo "true"; else echo "false"; fi
+}
+
+# Same shape as the run script's known_rules_json: the chains' real
+# contents across both families, so the resolution report also refreshes
+# Core's known_rules with each entry carrying the family of the chain it
+# was read from.
+chain_rules_lines() {
+    local family="$1" bin
+    bin=$(ipt_bin_for "${family}")
+    "${bin}" -S "${CHAIN}" 2>/dev/null | awk -v chain="${CHAIN}" -v family="${family}" '
+        $1 == "-A" && $2 == chain {
+            proto = ""; port = ""; source = ""; target = "ACCEPT"
+            for (i = 3; i <= NF; i++) {
+                if ($i == "-p") { proto = $(i + 1) }
+                else if ($i == "-s") { source = $(i + 1) }
+                else if ($i == "--dport") { port = $(i + 1) }
+                else if ($i == "-j") { target = $(i + 1) }
+            }
+            action = (target == "ACCEPT") ? "allow" : "deny"
+            src_json = (source == "") ? "null" : "\"" source "\""
+            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"port\":%s,\"source\":%s,\"family\":\"%s\"}\n", action, proto, port, src_json, family
+        }
+    '
+}
+
+known_rules_json() {
+    local lines
+    lines=$(chain_rules_lines 4)
+    if [ "${IPV6_SUPPORTED}" -eq 1 ]; then
+        lines=$(printf '%s\n%s' "${lines}" "$(chain_rules_lines 6)")
+    fi
+    lines=$(printf '%s' "${lines}" | grep -v '^$' || true)
+    if [ -z "${lines}" ]; then
+        echo "[]"
+    else
+        echo "${lines}" | jq -s -c '.'
+    fi
+}
+
+report_resolution() {
+    local test_id="$1" status="$2" reason="${3:-}" payload
+    probe_ipv6_supported
+    # Same bound as the run script and the integration's schema
+    # (FIREWALL_REPORT_REASON_MAX): truncate rather than have Core reject
+    # the whole report over an overlong reason.
+    reason="$(printf '%s' "${reason}" | head -c 200)"
+    payload=$(jq -n \
+        --argjson known_rules "$(known_rules_json)" \
+        --argjson ipv6_supported "$(ipv6_supported_json)" \
+        --arg test_id "${test_id}" \
+        --arg status "${status}" \
+        --arg reason "${reason}" \
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{firewall_known_rules: $known_rules, firewall_ipv6_supported: $ipv6_supported, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status, firewall_resolved_reason: (if $reason == "" then null else $reason end), probe_secret: $probe_secret}')
+    curl -sS -o /dev/null \
+        -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${INGEST_URL}" 2>/dev/null || true
+}
+
+replay_chain_backup() {
+    local family="$1" chain_backup_path="$2" line bin
+    bin=$(ipt_bin_for "${family}")
+    "${bin}" -F "${CHAIN}" || true
+    while IFS= read -r line; do
+        case "${line}" in
+            "-A ${CHAIN} "*)
+                # Unquoted expansion is deliberate, for the run script's
+                # reason: the line is the binary's own -S output for a
+                # rule this add-on wrote, and none of its arguments can
+                # contain whitespace.
+                # shellcheck disable=SC2086
+                if ! "${bin}" ${line}; then
+                    bashio::log.error "Firewall (finish): could not replay snapshot line '${line}' via ${bin}."
+                fi
+                ;;
+            *)
+                :
+                ;;
+        esac
+    done < "${chain_backup_path}"
+}
+
+revert_test() {
+    local test_id="$1" chain_backup_path chain6_backup_path resolved_marker reverted_any=0
+    chain_backup_path=$(chain_backup_path_for "${test_id}")
+    chain6_backup_path=$(chain6_backup_path_for "${test_id}")
+    resolved_marker=$(resolved_marker_for "${test_id}")
+
+    if [ -e "${resolved_marker}" ]; then
+        return 0
+    fi
+    touch "${resolved_marker}"
+    probe_ipv6_supported
+
+    if [ -r "${chain_backup_path}" ]; then
+        replay_chain_backup 4 "${chain_backup_path}"
+        reverted_any=1
+    else
+        bashio::log.error "Firewall test ${test_id} needs reverting but its IPv4 chain snapshot (${chain_backup_path}) is missing; leaving that chain as-is rather than guessing."
+    fi
+    if [ "${IPV6_SUPPORTED}" -eq 1 ]; then
+        if [ -r "${chain6_backup_path}" ]; then
+            replay_chain_backup 6 "${chain6_backup_path}"
+            reverted_any=1
+        else
+            bashio::log.error "Firewall test ${test_id}: no IPv6 chain snapshot (${chain6_backup_path}); leaving the ip6tables chain as-is rather than guessing."
+        fi
+    fi
+    if [ "${reverted_any}" -eq 1 ]; then
+        bashio::log.warning "Firewall test ${test_id} was still armed when the poller stopped; reverted the ${CHAIN} chain(s) to their pre-test contents."
+    fi
+    report_resolution "${test_id}" "reverted"
+}
+
 EXIT_CODE="${1:-0}"
-bashio::log.warning "HA SOC Probe firewall poller exited with code ${EXIT_CODE} — restarting."
+
+if [ -s "${CURRENT_TEST_FILE}" ]; then
+    stale_test_id=$(cat "${CURRENT_TEST_FILE}")
+    if [ ! -e "$(resolved_marker_for "${stale_test_id}")" ]; then
+        bashio::log.warning "Firewall poller stopping with test ${stale_test_id} unresolved; reverting it now instead of leaving it to a timer that just died."
+        revert_test "${stale_test_id}"
+        : > "${CURRENT_TEST_FILE}"
+    fi
+fi
+
+# The run script's TERM/INT trap exits 0 on a deliberate stop (carried
+# item), so a zero here is the routine stop it looks like and is logged as
+# such. A non-zero code is a genuine crash; s6 restarts the service after
+# this script returns, and the next run's own startup check is a second,
+# redundant net behind the recovery above (the resolved marker makes both
+# idempotent).
+if [ "${EXIT_CODE}" -eq 0 ] 2>/dev/null; then
+    bashio::log.info "HA SOC Probe firewall poller stopped cleanly."
+else
+    bashio::log.warning "HA SOC Probe firewall poller exited with code ${EXIT_CODE}; s6 will restart it."
+fi

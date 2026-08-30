@@ -23,9 +23,16 @@ imply otherwise.
   activity, since Home Assistant fires no login event), MFA status, and
   session/token management including revocation.
 - **Audit Log** — a tamper-evident (hash-chained), rotating record of
-  service calls, user/dashboard changes, and best-effort login signals.
-  Failed logins are IP-only: Home Assistant never logs an attempted
-  username anywhere.
+  service calls, user/dashboard changes, registry and config-entry
+  changes, best-effort login signals, and HA SOC's own actions,
+  including privileged reads (host and add-on logs, the crash log, a
+  user's token list). Failed logins are IP-only: Home Assistant never
+  logs an attempted username anywhere. High-value records (user
+  changes, firewall actions, rejected probe calls, privileged reads)
+  flush to disk immediately rather than waiting for the periodic timer,
+  and deleting or rolling back the on-disk chain is detected against a
+  head mirrored in the main store, raising a Repairs issue and chaining
+  the discontinuity itself.
 - **Permissions Matrix** — one grid for per-user dashboard/view visibility
   across every dashboard, labeled `enforced` or `cosmetic` on every toggle —
   because `lovelace/config` has no permission check at all; visibility
@@ -36,17 +43,48 @@ imply otherwise.
   `eval`/`exec`, insecure deserialization, hardcoded credentials, sensitive
   logging) — the exact gap `hassfest` structurally can't fill, since it only
   validates manifests/docs and never touches `custom_components` at all.
+  Four rules target the cross-integration extraction patterns no design
+  can prevent in Home Assistant's shared process: indiscriminate or
+  foreign config-entry reads consumed wholesale, `.storage` and
+  `secrets.yaml` file access, foreign `hass.data` reads, and storage
+  keys outside the integration's own namespace. A matched credential
+  literal is never stored or exported, only a masked placeholder with
+  its length. Legitimate uses are acknowledged visibly in source with a
+  reasoned `# ha-soc-allow` marker, never silently skipped, and a test
+  holds HA SOC's own code to zero open findings from these rules.
+  Coverage is honest: the scanner records per domain what it scanned,
+  skipped, and failed to parse, a domain it never scanned reads "not
+  scanned" rather than "0 findings", findings absent on a rescan of
+  their file resolve themselves, and the rules are stated plainly to
+  detect unobfuscated instances only.
   Every finding is advisory, for the local instance owner only.
 - **Device Vulnerabilities** — device-registry inventory, firmware-currency
   via `update` entities, and best-effort CVE correlation (curated CPE table
   + NVD API 2.0 keyword fallback), with a confirm/dismiss workflow.
+  Disclosure: while `nvd_lookups_enabled` is on (the default, toggle in
+  Settings), device manufacturer and model strings are sent to NIST's
+  NVD service over HTTPS; nothing else leaves the instance for this
+  feature, and vendor-wide matches are reported as informational only.
 - **Integration Health & Misconfiguration** — config-entry error/retry/
   availability tracking, plus concrete hardening checks (cleartext HTTP,
-  `trusted_networks` permissiveness, disabled IP-ban, cleartext device admin
-  URLs, cloud-egress inventory), mirrored into HA's own Repairs UI.
+  `trusted_networks` permissiveness, reverse-proxy trust breadth,
+  disabled IP-ban, cleartext device admin URLs, cloud-egress inventory,
+  config-directory-mapping add-ons, backup protection), mirrored into
+  HA's own Repairs UI. The sweep waits out startup so half-loaded state
+  is never misread as misconfiguration, findings you confirmed survive a
+  pass that could not see their evidence, and a check that could not
+  evaluate says so instead of going quiet.
 - **Risk Scoring & Security Posture** — an explainable, additive per-user
   risk score (0–100) and an install-wide posture score/grade, both shown
-  with their contributing factors, never as an opaque number.
+  with their contributing factors, never as an opaque number. Every
+  factor carries its applied points so the list sums exactly to the
+  score, the posture grade is labeled provisional (with the missing
+  terms listed) until every term has computed from real data at least
+  once, and every detection threshold is owner-tunable in Settings with
+  the most-sensitive value as its default and a one-click reset. The
+  posture sensor's attributes expose the grade only; the full breakdown
+  stays behind the access-controlled API, since entity attributes are
+  readable by every authenticated user.
 - **SOC Dashboard** — the NOC/SOC end state: posture score, open detections,
   device status, issues-by-integration, risk/detection breakdowns, and a
   live suspicious-activity feed — every tile and row links straight to the
@@ -93,7 +131,12 @@ imply otherwise.
   exact string and silently breaks. Every reference found is labeled
   honestly editable or not — a reference living only inside a Jinja
   template is detected but never auto-rewritten, since a text edit there
-  risks corrupting the template or missing a dynamic reference. A
+  risks corrupting the template or missing a dynamic reference. Applying
+  a remap backs everything up first: YAML files are copied aside and
+  storage dashboards and helpers get JSON snapshots under
+  `.storage/ha_soc_remap/` (kept 30 days), and a YAML file containing
+  `!secret` or `!include` is refused as "manual edit required" because a
+  rewrite would inline the include destructively. A
   Spook-inspired proactive sweep also surfaces broken references as a
   dashboard donut and a Repairs issue without anyone needing to search
   for a specific entity first — see below for the full sweep, which now
@@ -265,21 +308,65 @@ Every backend module is independently documented with what it captures,
 what's enforced vs. cosmetic vs. best-effort, and its known coverage gaps —
 read the module docstrings, they're written for exactly that.
 
+## Secrets at rest
+
+Every credential HA SOC holds (the NVD and GitHub keys, the UniFi API
+keys, the Probe pairing secret) lives in one dedicated private store,
+`.storage/ha_soc.secrets`, written 0o600 and atomically, the same
+primitive Home Assistant core uses for its own password hashes and
+refresh tokens. Nothing else carries a value: settings hold only
+"configured" booleans, `entry.options` is scrubbed and never reseeded,
+audit records and diagnostics redact at their chokepoints, and callers
+fetch a key immediately before the request that needs it and drop it
+with the response. Existing installs migrate automatically on first
+load, logged with key names only.
+
+Two honest limits, stated because pretending otherwise would be the real
+defect. First, Home Assistant runs every integration in one Python
+process: any integration can reach this store's contents in memory, and
+no arrangement inside Core changes that. What HA SOC does instead is
+shrink the number of places a secret exists, read only location-shaped
+keys (`INTEGRATION_LOCATOR_KEYS`) out of other integrations' entries so
+it is itself the model citizen, and detect the extraction patterns it
+cannot prevent (the four scanner rules above). Second, file modes
+protect against other uids, not against root or anything with the
+config directory mapped; the misconfiguration sweep now flags add-ons
+that widen that boundary, unprotected backups, and unauthenticated
+Samba shares of the config directory.
+
 ## Honesty, briefly
 
 - MFA can be **audited** always, and **enforced** only in the one way Home
   Assistant core actually allows: deactivating an admin account that stays
   out of compliance past a configurable grace period (`auto_deactivate`
   policy, off by default). There is still no hook to require a second
-  factor at login itself.
+  factor at login itself. The policy assesses Home Assistant's own MFA
+  modules only: a user whose every credential comes from an external
+  provider (an SSO proxy, trusted networks) is exempt from
+  `auto_deactivate` and reported as **MFA not assessable**; an install
+  authenticating externally should keep `audit_only`.
 - Dashboard/view visibility is **cosmetic** — the real access-control
   boundary is a user's admin/non-admin group, nothing finer exists.
 - Failed-login telemetry is **IP-only** — Home Assistant never logs an
-  attempted username on a failed login, anywhere.
+  attempted username on a failed login, anywhere. Capturing even the IP
+  depends on the `homeassistant.components.http.ban` logger staying at
+  WARNING or lower; a health check flags an install that has silenced it.
 - Every vulnerability/scanner finding is **advisory** — a starting point for
   a human to confirm or dismiss, never an automatic verdict.
 - The audit log is **tamper-evident, not tamper-proof** — anyone with the
   filesystem access that reaches `.storage/` can rewrite the hash chain too.
+  Retention does not break this: when expired day files are deleted, the
+  newest expired record's sequence number and hash are kept as an anchor,
+  verification restarts from it, and the panel says "verified from record
+  N; records before D expired under retention" rather than pretending the
+  whole history was re-checked. Records before the anchor are attested by
+  the anchor's stored hash, not re-verified record by record.
+- A failed load is never shown as "no data" or left as an endless spinner.
+  Every panel view catches its own load failure into a distinct
+  could-not-load state, with the server's message and a Retry button,
+  so a WebSocket error is never mistaken for an empty result or a specific
+  backend state (e.g. "USB discovery isn't available") it did not actually
+  report.
 
 ## Optional: HA SOC Probe add-on
 
@@ -306,6 +393,22 @@ true`, a second elevated privilege this add-on doesn't ask for) and never
 active scanning (it only reads the kernel's own connection table, so it
 never generates outbound traffic).
 
+**Who may call the two callback services.** The Supervisor's Core API
+proxy forwards every add-on call with the Supervisor's own token and no
+add-on identity, so Core sees each legitimate call as the Supervisor
+system user. HA SOC therefore accepts `ha_soc.ingest_probe_result` and
+`ha_soc.poll_firewall_command` only when the call carries that exact user
+context; anything else, including an automation with no user context, is
+rejected before the payload is read, audit-logged as
+`probe_auth_rejected`, and raised as a HIGH detection (at most one per
+caller per hour). The per-install shared secret remains as defense in
+depth behind that check: a call with no secret is always rejected, the
+comparison is constant-time, and the secret can only ever be pinned by a
+call that already passed the Supervisor check. The owner-only pairing
+reset in Settings still exists for reinstalling the add-on. On Home
+Assistant Core and Container installs the two services are not
+registered at all, since no Supervisor exists to legitimately call them.
+
 To install: Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
 this repository's URL, then install **HA SOC Probe** from the list. The
 integration's Scanner tab shows a "not available" (Core/Container) or
@@ -322,13 +425,17 @@ lasts more than 30 minutes, `health.py` raises a Repairs issue
 (`probe_addon_not_reporting`) so a half-set-up pairing is visible in
 Home Assistant itself, not just the add-on's own log.
 
-The add-on's config.yaml/Dockerfile/run-script were written and reviewed
-against Home Assistant's official add-on documentation and real, current
-official add-ons, and its port-extraction logic was tested against a
-realistic `/proc/net/tcp` fixture — but unlike the integration itself
-(validated against a real `pytest-homeassistant-custom-component` harness),
-it has not yet been built and run against a real Supervisor. See
-[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
+Since 2026-08-30 the add-on runs in production on the owner's Home
+Assistant OS install: two read-only verification passes (work plan
+decision D-21) confirmed it installs, scans, and reports on a real
+Supervisor 2026.08.0, that the hold-and-retry path recovers from a Core
+restart exactly as designed, that the Supervisor rates it 1 as the
+privilege ledger states, and, at the container level, that both the
+add-on and the host use the nf_tables backend, that ip6tables works,
+that the container runs unprivileged with only NET_ADMIN added under
+the docker-default AppArmor profile, and that the Docker socket is
+genuinely unmounted under Protection Mode. The full verified-facts
+list lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
 
 ## Integration Security (provenance)
 
@@ -420,15 +527,58 @@ host security control. The Firewall Rules card, on the Scanner tab, is
 the one deliberate exception — reading, and optionally writing, the host's
 iptables rules through the HA SOC Probe add-on. It needs the add-on to
 declare a real `CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its
-`config.yaml`), which lowers the add-on's Supervisor security rating by
-one point — a documented, deliberate trade-off, not an accident.
+`config.yaml`).
+
+**The add-on's Supervisor security rating is 1, the lowest, and that is a
+deliberate choice.** The Supervisor's rating algorithm sets the rating to
+1 unconditionally for any add-on declaring `docker_api` (verified against
+the Supervisor source, `rating_security`, commit `c5a5477`), so no
+arrangement of the other grants changes the number while hard caps exist.
+The project decided (work plan decision D-2) to ship one companion add-on
+carrying every host-level capability the SOC needs, rather than several
+partially privileged ones, and to document each grant instead of chasing
+the score. The privilege ledger below states every grant, the feature
+that needs it, what breaks without it, and how its use is limited; the
+same ledger lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
+
+| Grant | Needed by | What the add-on does with it | Without it | How its use is limited |
+| --- | --- | --- | --- | --- |
+| `host_network` | Port report | Shares the host's network namespace so `/proc/net/*` shows the host's real listeners and bind addresses | The report would show the container's own (empty) namespace | Read-only use of `/proc/net`; the add-on opens no listening socket of its own |
+| `privileged: [NET_ADMIN]` | Firewall read/test/confirm | Runs `iptables` against the host's real netfilter tables | The firewall card cannot read or write anything; the port report still works | Writes stay in the dedicated `HA_SOC_RULES` chain plus exactly one jump rule at the top of `INPUT` into that chain; full ruleset backup before every apply; local self-contained revert timer |
+| `docker_api` | Resource hard caps | Applies per-container `--cpus`/`--memory` limits through the Docker socket | Hard caps report `denied`/unavailable; the watchdog's Supervisor-API restart and stop actions still work | With Protection Mode on (the default) the Supervisor does not mount the socket at all; slugs are validated against the installed add-on list; only container update calls are issued |
+| `homeassistant_api` | Everything | Delivers port reports and firewall/cap poll results into Core through the Supervisor proxy | The add-on cannot report anything | Calls only the two `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
+| Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
 
 The design exists to answer one question safely: change which ports are
 reachable from where without risking a lockout.
 
+**The firewall is owner-only in its entirety**, `firewall/status`
+included, whatever `access_level` says: no other account can attempt a
+takeover or a change that ends with the platform unreachable. A
+non-owner admin sees a one-line "owner only" note where the card would
+be. The same reasoning (recorded decision D-23) makes
+`entity_remap/apply` and sidebar policy pushes owner-only outright, and
+makes deactivating, deleting, or revoking the sessions of an
+admin-group account owner-only, while admins keep routine management of
+non-admin users.
+
 - Every rule this project ever applies lives in one dedicated iptables
-  chain (`HA_SOC_RULES`) the add-on owns outright — never the host's raw
-  `INPUT` chain, never anything Docker itself manages.
+  chain (`HA_SOC_RULES`) the add-on owns outright, plus exactly one jump
+  rule the add-on maintains at position 1 of `INPUT` into that chain; it
+  sits first because a deny that lands below an accept is not a deny.
+  Nothing Docker manages and no pre-existing rule is ever touched.
+  Rules are **dual-stack by default**: each rule carries a family (`4`,
+  `6`, or `both`), a source address pins the family to its own and a
+  contradicting explicit value is rejected, and the add-on mirrors the
+  chain into `ip6tables` with the same jump. Before every apply the
+  add-on takes checked backups per family (a full-table save for manual
+  recovery plus the chain-only snapshot it actually reverts from); if
+  any backup fails, nothing is applied, and a failure in either table
+  restores both. A revert flushes and replays only the `HA_SOC_RULES`
+  chains, never a whole table. On a host without `ip6tables` the card
+  says "IPv6 rules not applied" and marks every dual-stack rule
+  partially applied, computed at read time so history is never
+  rewritten; a silent IPv4-only success does not exist.
 - A proposed ruleset is never permanent on arrival. Proposing one requires
   acknowledging that the current ruleset will be backed up first; the
   button that starts this reads **Test**, and relabels itself **Apply**
@@ -441,7 +591,22 @@ reachable from where without risking a lockout.
   that path. If you don't click Apply in time (or the add-on itself
   crashes mid-test), the pre-change ruleset is restored automatically —
   an interrupted test is always treated as failed, never as "probably
-  still fine."
+  still fine." The countdown the panel shows re-anchors the moment the
+  add-on actually applies the rules, so it tracks the add-on's real
+  local revert timer instead of running up to one poll interval ahead.
+- A deliberate stop of the add-on reverts an unresolved test immediately
+  (the service's `finish` script runs the same recovery). A host reboot
+  with the add-on disabled leaves the pre-test ruleset only if the timer
+  or `finish` ran; otherwise the next start reverts it. If the add-on
+  goes silent mid-test, nothing ever unblocks automatically: the owner,
+  and only the owner, can discard the unreported test once its window
+  has lapsed, which archives it as `discarded_unreported` and is
+  audit-logged.
+- Uninstalling the add-on is best-effort cleanup: no Supervisor
+  uninstall hook is verified to exist, so an empty `HA_SOC_RULES` chain
+  and its one `INPUT` jump can remain. Manual removal is
+  `iptables -D INPUT -j HA_SOC_RULES` followed by
+  `iptables -X HA_SOC_RULES`.
 - Core only ever proposes and displays; the add-on is the only thing that
   actually touches iptables, and its own report is always the final word
   on what's really active.

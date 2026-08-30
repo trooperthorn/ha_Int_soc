@@ -74,6 +74,42 @@ async def test_load_merges_missing_nested_settings_keys(hass: HomeAssistant) -> 
     assert store2.settings["scanner_enabled"] is False
 
 
+async def test_watchdog_preserves_ack(hass: HomeAssistant) -> None:
+    """Work item 3.10: a writer replacing a detection row wholesale (the
+    resource watchdog builds a fresh dict with status open on every
+    re-trip) must not clobber an analyst's ack/resolved status."""
+    store = HaSocData(hass)
+    await store.async_load()
+
+    def watchdog_row() -> dict:
+        # The exact shape resource_watchdog.py writes: a fresh dict with
+        # status "open", no knowledge of prior analyst state.
+        return {
+            "id": "watchdog_ma",
+            "rule_id": "container_resource_breach",
+            "severity": "high",
+            "status": "open",
+            "ts": "2026-08-30T00:00:00+00:00",
+            "last_seen": "2026-08-30T00:00:00+00:00",
+            "recurrence_count": 1,
+            "title": "Container 'ma' sustained cpu",
+            "detail": {},
+        }
+
+    store.async_upsert_detection("watchdog_ma", watchdog_row())
+    store.async_set_detection_status(
+        "watchdog_ma", "ack", by_user_id="analyst", at="2026-08-30T01:00:00+00:00"
+    )
+
+    # Re-trip: a brand-new dict, status open again.
+    store.async_upsert_detection("watchdog_ma", watchdog_row())
+
+    detection = store.data["detections"]["watchdog_ma"]
+    assert detection["status"] == "ack"
+    assert detection["status_by"] == "analyst"
+    assert detection["status_at"] == "2026-08-30T01:00:00+00:00"
+
+
 async def test_purge_user(hass: HomeAssistant) -> None:
     store = HaSocData(hass)
     await store.async_load()

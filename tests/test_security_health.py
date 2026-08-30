@@ -99,6 +99,35 @@ async def test_battery_sibling_is_found(hass: HomeAssistant, store: HaSocData) -
     assert overview["low_battery_count"] == 1
 
 
+async def test_missing_lock_state_is_a_problem(hass: HomeAssistant, store: HaSocData) -> None:
+    """Work plan item 4.5: a lock registered in the entity registry whose
+    integration never loaded it (no state object) is the worst state a
+    physical-security entity can be in and must render as a problem, not
+    silently vanish from the card."""
+    _device, reg_entry = _make_device_entity(hass, "lock", "ghost_lock", "dev_ghost")
+    assert hass.states.get(reg_entry.entity_id) is None
+
+    overview = await security_health.async_security_overview(hass, store)
+    rows = [e for e in overview["entities"] if e["entity_id"] == reg_entry.entity_id]
+    assert len(rows) == 1
+    assert rows[0]["problem"] is True
+    assert rows[0]["reason"] == "no state (integration not loaded)"
+    assert rows[0]["state"] is None
+    assert overview["problem_count"] == 1
+
+
+async def test_disabled_registry_lock_is_not_flagged(hass: HomeAssistant, store: HaSocData) -> None:
+    from homeassistant.helpers.entity_registry import RegistryEntryDisabler
+
+    _device, reg_entry = _make_device_entity(hass, "lock", "off_lock", "dev_off")
+    er.async_get(hass).async_update_entity(
+        reg_entry.entity_id, disabled_by=RegistryEntryDisabler.USER
+    )
+
+    overview = await security_health.async_security_overview(hass, store)
+    assert all(e["entity_id"] != reg_entry.entity_id for e in overview["entities"])
+
+
 async def test_disabled_source_excludes_domain(hass: HomeAssistant, store: HaSocData) -> None:
     _device, reg_entry = _make_device_entity(hass, "siren", "siren1", "dev5")
     hass.states.async_set(reg_entry.entity_id, "on")

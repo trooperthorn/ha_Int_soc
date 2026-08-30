@@ -2,11 +2,16 @@
   "domain": "ha_soc",
   "name": "HA SOC",
   "after_dependencies": [
+    "alert",
+    "automation",
     "energy",
+    "group",
     "hassio",
     "lovelace",
+    "person",
     "proximity",
     "recorder",
+    "script",
     "unifi",
     "unifiprotect",
     "usb"

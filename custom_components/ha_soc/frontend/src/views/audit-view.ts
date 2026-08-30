@@ -3,7 +3,15 @@ import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import { SortState, sortRows, sortableTh } from "../sortable";
-import { AuditEvent, HaSocUser, fetchUsers, queryAudit, verifyAuditChain } from "../data/ha-soc-ws";
+import {
+  AuditCategoryStats,
+  AuditEvent,
+  HaSocUser,
+  fetchAuditCategoryStats,
+  fetchUsers,
+  queryAudit,
+  verifyAuditChain,
+} from "../data/ha-soc-ws";
 
 // [category value, display label]. Must track every category audit.py can
 // write, or records become reachable only through "All categories".
@@ -40,10 +48,20 @@ export class HaSocAuditView extends LitElement {
   @state() private _events: AuditEvent[] = [];
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
+  // Non-null when the query failed: rendered as a distinct could-not-load
+  // state with the server's message, never an empty "no matching events".
+  // The two must never be visually the same thing (work plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _category = "";
   @state() private _userId = "";
-  @state() private _verifyResult: { ok: boolean; records_checked: number } | null = null;
+  @state() private _verifyResult: {
+    ok: boolean;
+    records_checked: number;
+    verified_from_seq?: number;
+    expired_through?: string | null;
+  } | null = null;
   @state() private _sort: SortState | null = null;
+  @state() private _stats: AuditCategoryStats | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -60,12 +78,17 @@ export class HaSocAuditView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._events = await queryAudit(this.hass, {
         category: this._category || undefined,
         user_id: this._userId || undefined,
         limit: 200,
       });
+    } catch (err: any) {
+      // "No matching events" and "the query itself failed" must never
+      // look the same; store the server's message and show it distinctly.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -78,6 +101,12 @@ export class HaSocAuditView extends LitElement {
 
   private async _onVerify() {
     this._verifyResult = await verifyAuditChain(this.hass);
+  }
+
+  private async _onCategoryStats() {
+    // On demand rather than on every load: the server scans the newest
+    // day's file(s) each call, which is cheap but not free.
+    this._stats = await fetchAuditCategoryStats(this.hass);
   }
 
   private _onCategoryChange(e: Event) {
@@ -132,17 +161,48 @@ export class HaSocAuditView extends LitElement {
           </select>
           <span class="spacer"></span>
           <button class="ha-btn" @click=${this._onVerify}>Verify chain integrity</button>
+          <button class="ha-btn" @click=${this._onCategoryStats}>Volume by category</button>
           <button class="ha-btn" @click=${this._load}>Refresh</button>
         </div>
+        ${this._stats
+          ? html`<p class="muted" style="font-size:12px;">
+              ${this._stats.day
+                ? html`${this._stats.day}: ${this._stats.total_records.toLocaleString()} records,
+                  ${(this._stats.total_bytes / 1024).toFixed(0)} KB.
+                  ${this._stats.categories
+                    .slice(0, 6)
+                    .map(
+                      (c) =>
+                        `${c.category} ${c.records.toLocaleString()} (${Math.round(c.byte_share * 100)}%)`
+                    )
+                    .join(" · ")}${this._stats.categories.length > 6 ? " · …" : ""}`
+                : "No audit day files yet."}
+            </p>`
+          : null}
         ${this._verifyResult
           ? html`<p class="${this._verifyResult.ok ? "muted" : ""}" style="font-size:12.5px;">
-              ${this._verifyResult.ok
-                ? `Chain intact — ${this._verifyResult.records_checked} records checked.`
-                : `Chain broken — see logs for the first mismatched record.`}
+              ${!this._verifyResult.ok
+                ? `Chain broken - see logs for the first mismatched record.`
+                : (this._verifyResult.verified_from_seq ?? 1) > 1
+                ? // A bare "intact" would overclaim here: records before the
+                  // retention anchor were deleted by design and are attested
+                  // by the anchor's stored hash, not re-checked.
+                  `Chain intact - ${this._verifyResult.records_checked} records checked. ` +
+                  `Verified from record ${this._verifyResult.verified_from_seq}; records ` +
+                  `before ${this._verifyResult.expired_through ?? "the retention cutoff"} ` +
+                  `expired under retention.`
+                : `Chain intact - ${this._verifyResult.records_checked} records checked.`}
             </p>`
           : null}
         ${this._loading
           ? html`<div class="empty">Loading…</div>`
+          : this._error
+          ? html`
+              <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+                <p style="font-size:13px;margin:0 0 8px;">${this._error}</p>
+                <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+              </div>
+            `
           : !this._events.length
           ? html`<div class="empty">No matching events.</div>`
           : html`

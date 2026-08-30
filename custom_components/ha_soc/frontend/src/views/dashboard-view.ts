@@ -402,6 +402,10 @@ export class HaSocDashboardView extends LitElement {
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
+  // Non-null when the load failed: rendered as a distinct could-not-load
+  // state carrying the server's message, never a blank dashboard (work
+  // plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _deviceSearch = "";
   @state() private _deviceStatusFilter: DeviceStatus | null = null;
   // Same default order the view has always had: riskiest devices first.
@@ -423,6 +427,7 @@ export class HaSocDashboardView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       const [summary, deviceOverview, integrationOverview, peripherals, security, detections, risk, users] =
         await Promise.all([
@@ -443,6 +448,11 @@ export class HaSocDashboardView extends LitElement {
       this._detections = detections;
       this._risk = risk;
       this._users = users;
+    } catch (err: any) {
+      // One rejected fetch fails the whole Promise.all; showing a partial
+      // dashboard would misrepresent which numbers are current, so store
+      // the server's message and render the could-not-load state.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -539,6 +549,47 @@ export class HaSocDashboardView extends LitElement {
     return sortRows(filtered, this._integrationSort, HaSocDashboardView.INTEGRATION_SORT);
   }
 
+  // Human labels for the posture terms named by missing_terms (work item
+  // 3.4, D-10). An unknown term falls back to its raw id.
+  private static readonly POSTURE_TERM_LABELS: Record<string, string> = {
+    p_user: "user risk",
+    p_vuln: "device vulnerabilities",
+    p_misconfig: "misconfigurations",
+    p_integration: "integration health",
+    p_detection: "detections",
+  };
+
+  private _renderPostureCard() {
+    const posture = this._summary?.posture;
+    if (!posture) return nothing;
+    const missing = (posture.missing_terms ?? []).map(
+      (t) => HaSocDashboardView.POSTURE_TERM_LABELS[t] ?? t
+    );
+    return html`
+      <h2 class="section-title">Security Posture</h2>
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
+          <div style="font-size:36px;font-weight:700;line-height:1;">${posture.grade}</div>
+          <div>
+            <div style="font-size:15px;font-weight:600;">Score ${posture.score} / 100</div>
+            ${posture.provisional
+              ? html`
+                  <span
+                    class="tag cosmetic"
+                    title="Not every posture term has computed from real data yet; the grade may move once they have."
+                    >provisional</span
+                  >
+                  <span class="muted" style="font-size:12px;">
+                    waiting on first data for: ${missing.join(", ")}
+                  </span>
+                `
+              : nothing}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
   private _statusDotColor(status: string): string {
     switch (status) {
       case "unavailable":
@@ -555,8 +606,19 @@ export class HaSocDashboardView extends LitElement {
   }
 
   render() {
-    if (this._loading || !this._summary || !this._deviceOverview || !this._integrationOverview) {
+    if (this._loading) {
       return html`<div class="empty">Loading dashboard…</div>`;
+    }
+    if (this._error || !this._summary || !this._deviceOverview || !this._integrationOverview) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load the dashboard</h3>
+          <p style="font-size:13px;">
+            ${this._error ?? "The server returned an incomplete dashboard payload."}
+          </p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
     }
     const s = this._summary;
     const d = this._deviceOverview;
@@ -649,7 +711,7 @@ export class HaSocDashboardView extends LitElement {
     ];
 
     return html`
-      ${this._renderSecurityCard()}
+      ${this._renderPostureCard()} ${this._renderSecurityCard()}
 
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">
@@ -1015,12 +1077,27 @@ export class HaSocDashboardView extends LitElement {
             .filter(([domain]) => sec.sources_enabled[domain] ?? true)
             .map(([domain, label]) => {
               const rows = entitiesByDomain[domain] ?? [];
-              const problems = rows.filter((r) => r.problem).length;
+              const problemRows = rows.filter((r) => r.problem);
+              const problems = problemRows.length;
               const lowBattery = rows.filter((r) => r.low_battery).length;
+              // The tooltip names each problem entity with the server's
+              // reason field, so "no state (integration not loaded)" is
+              // distinguishable from a plain unavailable/jammed state
+              // without leaving the tile (work plan item 4.5).
+              const reasonLines = problemRows
+                .slice(0, 8)
+                .map((r) => `${r.entity_id}: ${r.reason ?? r.state ?? "problem"}`);
+              if (problems > 8) reasonLines.push(`and ${problems - 8} more`);
+              const tileTitle = rows.length
+                ? [
+                    `View ${label.toLowerCase()} in Home Assistant's Devices page`,
+                    ...reasonLines,
+                  ].join("\n")
+                : "";
               return html`
                 <div
                   class="security-source-tile ${rows.length ? "clickable" : ""}"
-                  title=${rows.length ? `View ${label.toLowerCase()} in Home Assistant's Devices page` : ""}
+                  title=${tileTitle}
                   @click=${() => rows.length && navigateToHaPath(devicesForDomainPath(domain))}
                 >
                   <div class="label">${label}</div>

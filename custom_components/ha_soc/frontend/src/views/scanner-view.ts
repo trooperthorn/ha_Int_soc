@@ -10,20 +10,25 @@ import {
   FirewallRule,
   FirewallRuleAction,
   FirewallRuleProto,
+  FirewallRuleFamily,
   FirewallStatus,
   FirewallPendingTest,
-  fetchScannerFindings,
+  ScannerDomainCoverage,
+  fetchScannerListing,
   scanIntegrationNow,
+  exportFinding,
   fetchVulns,
   scanVulnsNow,
   setVulnStatus,
   setMisconfigStatus,
   fetchHealth,
+  fetchAccessInfo,
   fetchProbeStatus,
   fetchFirewallStatus,
   proposeFirewallTest,
   confirmFirewallTest,
   cancelFirewallTest,
+  discardFirewallPending,
 } from "../data/ha-soc-ws";
 
 const STATUS_OPTIONS = ["new", "confirmed", "dismissed", "resolved"];
@@ -47,6 +52,24 @@ function confidenceRank(order: readonly string[], confidence: unknown): number |
 
 const SCANNER_CONFIDENCE_ORDER = ["high", "medium", "advisory"] as const;
 const VULN_CONFIDENCE_ORDER = ["exact_cpe", "curated_map", "keyword", "heuristic"] as const;
+
+// Human labels for a rule's address family. Records persisted before the
+// dual-stack change carry no family; the server treats absence as "both",
+// so the display does the same.
+function familyLabel(family?: FirewallRuleFamily): string {
+  if (family === "4") return "IPv4";
+  if (family === "6") return "IPv6";
+  return "IPv4+IPv6";
+}
+
+// The family a source address pins a rule to, mirroring the server's own
+// derivation (an IPv6 address always contains a colon, an IPv4 address
+// never does). null means "no source, no pin" and the family stays the
+// operator's choice (default both).
+function familyForSource(source: string): FirewallRuleFamily | null {
+  if (!source) return null;
+  return source.includes(":") ? "6" : "4";
+}
 
 // True if an IPv4 dotted-quad is in an RFC 1918 private range
 // (10/8, 172.16/12, 192.168/16). Loopback/link-local are handled separately.
@@ -85,18 +108,38 @@ export class HaSocScannerView extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _scannerFindings: Finding[] = [];
+  // Per-domain coverage from listing_payload (work plan item 4.8): which
+  // domains a completed scan actually looked at. null means the payload
+  // carried no coverage map at all (an older backend); either way, a
+  // domain without a record renders as "not scanned", never as an
+  // implied-clean zero findings.
+  @state() private _coverage: Record<string, ScannerDomainCoverage> | null = null;
   @state() private _vulnFindings: Finding[] = [];
   @state() private _misconfigFindings: Finding[] = [];
   @state() private _probe: ProbeOverview | null = null;
   @state() private _loading = true;
+  // Non-null when the load failed: rendered as a distinct could-not-load
+  // state with the server's message, never empty tables (work plan item
+  // 4.12).
+  @state() private _error: string | null = null;
   @state() private _scanning = false;
+  @state() private _scanError: string | null = null;
+  @state() private _exportNotice: string | null = null;
 
   @state() private _firewall: FirewallStatus | null = null;
-  @state() private _fwDraftRules: FirewallRule[] = [{ action: "allow", proto: "tcp", port: 0, source: "" }];
+  @state() private _fwDraftRules: FirewallRule[] = [
+    { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
+  ];
   @state() private _fwBackupAck = false;
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
   private _fwPollHandle: number | null = null;
+  // The whole firewall feature is owner-only server-side (D-4), status
+  // command included, so the card renders for the owner alone and a
+  // non-owner admin sees the owner-only note instead. Defaults to false
+  // and stays false when the access lookup fails: fail closed, exactly
+  // like the WS gate underneath.
+  @state() private _isOwner = false;
 
   // Column sort state, one per table (see sortable.ts). null means "no
   // user choice yet", in which case each table keeps its original default
@@ -106,10 +149,29 @@ export class HaSocScannerView extends LitElement {
   @state() private _vulnSort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
   @state() private _fwRulesSort: SortState | null = null;
+  @state() private _coverageSort: SortState | null = null;
 
   private static readonly MISCONFIG_SORT: Record<string, (f: Finding) => unknown> = {
     check: (f) => f.check,
+    // Ascending reads worst first, matching the default order; the
+    // explicit column makes split-severity checks (notify_coverage_gaps
+    // emits one LOW and one MEDIUM finding) visibly distinct rows.
+    severity: (f) => severityRank(String(f.severity)),
     summary: (f) => f.summary,
+  };
+
+  // Coverage-table sort accessors (work plan item 4.8). scanned_at is an
+  // ISO timestamp, which compares correctly as a string.
+  private static readonly COVERAGE_SORT: Record<
+    string,
+    (r: { domain: string; cov: ScannerDomainCoverage }) => unknown
+  > = {
+    domain: (r) => r.domain,
+    files: (r) => r.cov.scanned_files,
+    oversize: (r) => r.cov.skipped_oversize,
+    over_cap: (r) => r.cov.skipped_over_cap,
+    parse_failures: (r) => r.cov.parse_failures,
+    scanned_at: (r) => r.cov.scanned_at,
   };
 
   private static readonly SCANNER_SORT: Record<string, (f: Finding) => unknown> = {
@@ -145,6 +207,9 @@ export class HaSocScannerView extends LitElement {
     // null source displays as "any"; sort it as that word rather than
     // sinking it as unknown, since "any" is a definite value here.
     source: (r) => r.source ?? "any",
+    // Sorted by display label so IPv4 < IPv4+IPv6 < IPv6 groups cleanly;
+    // an absent family displays (and sorts) as the dual-stack default.
+    family: (r) => familyLabel(r.family),
   };
 
   connectedCallback(): void {
@@ -162,20 +227,34 @@ export class HaSocScannerView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
-      const [scanner, vulns, health, probe, firewall] = await Promise.all([
-        fetchScannerFindings(this.hass),
+      const [scanner, vulns, health, probe, access] = await Promise.all([
+        fetchScannerListing(this.hass),
         fetchVulns(this.hass),
         fetchHealth(this.hass),
         fetchProbeStatus(this.hass),
-        fetchFirewallStatus(this.hass),
+        // A failed access lookup reads as "not the owner" rather than
+        // failing the whole tab; the server gate is what actually enforces.
+        fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
       ]);
-      this._scannerFindings = scanner;
+      this._scannerFindings = scanner.findings;
+      this._coverage = scanner.coverage ?? null;
       this._vulnFindings = vulns;
       this._misconfigFindings = health.misconfig_findings;
       this._probe = probe;
-      this._firewall = firewall;
+      this._isOwner = !!access.is_owner;
+      // ha_soc/firewall/status is owner-only (D-4); asking as a non-owner
+      // would just bounce off the gate, so it is not asked at all.
+      this._firewall = this._isOwner
+        ? await fetchFirewallStatus(this.hass).catch(() => null)
+        : null;
       this._maybeManageFirewallPolling();
+    } catch (err: any) {
+      // One rejected fetch fails the whole Promise.all; an empty findings
+      // table would read as a clean scan, so store the server's message
+      // and render the could-not-load state instead.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -213,12 +292,19 @@ export class HaSocScannerView extends LitElement {
   }
 
   private _fwRuleValid(r: FirewallRule): boolean {
+    const family = r.family ?? "both";
+    // A sourced rule's family must be the one its source pins; the
+    // builder derives and locks it, so this only catches a state bug,
+    // matching the server's own rejection.
+    const pinned = familyForSource(r.source ?? "");
     return (
       Number.isInteger(r.port) &&
       r.port >= 1 &&
       r.port <= 65535 &&
       (r.action === "allow" || r.action === "deny") &&
-      (r.proto === "tcp" || r.proto === "udp")
+      (r.proto === "tcp" || r.proto === "udp") &&
+      (family === "4" || family === "6" || family === "both") &&
+      (pinned === null || pinned === family)
     );
   }
 
@@ -227,7 +313,10 @@ export class HaSocScannerView extends LitElement {
   }
 
   private _fwAddRule() {
-    this._fwDraftRules = [...this._fwDraftRules, { action: "allow", proto: "tcp", port: 0, source: "" }];
+    this._fwDraftRules = [
+      ...this._fwDraftRules,
+      { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
+    ];
   }
 
   private _fwRemoveRule(index: number) {
@@ -243,6 +332,10 @@ export class HaSocScannerView extends LitElement {
         proto: r.proto,
         port: r.port,
         source: r.source ? r.source : null,
+        // The server re-derives a sourced rule's family itself; sending
+        // the builder's value (already pinned to the same derivation)
+        // keeps the payload explicit without ever contradicting it.
+        family: r.family ?? "both",
       }));
       await proposeFirewallTest(this.hass, rules, this._fwBackupAck);
       this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
@@ -281,11 +374,42 @@ export class HaSocScannerView extends LitElement {
     }
   }
 
+  // Owner-only escape hatch for an add-on gone silent mid-test: archives
+  // the pending record as discarded_unreported. Offered only once the
+  // countdown has lapsed (the server refuses it earlier), and it never
+  // unblocks anything automatically; this click is the deliberate act.
+  private async _onDiscardPending() {
+    if (!this._firewall?.pending) return;
+    const ok = confirm(
+      "Discard this unreported firewall test?\n\n" +
+        "The add-on never reported its outcome, so HA SOC does not know " +
+        "what is live on the host. The record is archived as " +
+        "'discarded_unreported' and new tests become possible again. " +
+        "Nothing is changed on the host by discarding."
+    );
+    if (!ok) return;
+    this._fwError = null;
+    this._fwSubmitting = true;
+    try {
+      await discardFirewallPending(this.hass);
+      this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
+    } catch (err: any) {
+      this._fwError = err?.message ?? "Failed to discard the pending firewall test.";
+    } finally {
+      this._fwSubmitting = false;
+    }
+  }
+
   private async _onScanIntegrations() {
     this._scanning = true;
+    this._scanError = null;
     try {
       await scanIntegrationNow(this.hass);
       await this._load();
+    } catch (err: any) {
+      // A rejected scan request must not end in a silently unchanged
+      // table; show the server's reason next to the button that failed.
+      this._scanError = `Integration scan failed: ${err?.message ?? err}`;
     } finally {
       this._scanning = false;
     }
@@ -293,21 +417,77 @@ export class HaSocScannerView extends LitElement {
 
   private async _onScanVulns() {
     this._scanning = true;
+    this._scanError = null;
     try {
       await scanVulnsNow(this.hass);
       await this._load();
+    } catch (err: any) {
+      this._scanError = `Device vulnerability scan failed: ${err?.message ?? err}`;
     } finally {
       this._scanning = false;
     }
   }
 
   private async _onVulnStatus(id: string, status: string) {
-    await setVulnStatus(this.hass, id, status);
+    this._scanError = null;
+    try {
+      await setVulnStatus(this.hass, id, status);
+    } catch (err: any) {
+      // The select already shows the new value in the DOM; the reload
+      // below re-renders it from the stored state, so on a rejection the
+      // old status comes back and the reason is shown.
+      this._scanError = `Status change failed: ${err?.message ?? err}`;
+    }
     await this._load();
   }
 
+  // The GHSA export is a copy-to-clipboard convenience, never a submission
+  // channel (the server only shapes text; nothing is sent anywhere). The
+  // confirmation names the stored snippet and the target integration
+  // because the copied text is the one thing in this view designed to
+  // leave the instance, and the operator should see exactly what code
+  // excerpt and whose name it carries before it lands on the clipboard.
+  private async _onExportFinding(f: any) {
+    const ok = confirm(
+      `Copy a GHSA-shaped advisory draft to the clipboard?\n\n` +
+        `Integration: ${f.domain}\n` +
+        `Matched code: ${f.snippet}\n\n` +
+        `Nothing is submitted anywhere. The text is only placed on your ` +
+        `clipboard for you to review and paste yourself.`
+    );
+    if (!ok) return;
+    this._exportNotice = null;
+    try {
+      const ghsa = (await exportFinding(this.hass, f.id)) as {
+        title: string;
+        description: string;
+        severity: string;
+        cwe: string;
+        affected: { ecosystem: string; package: string; version: string };
+        references: string[];
+      };
+      const text = [
+        `Title: ${ghsa.title}`,
+        `Severity: ${ghsa.severity}`,
+        `CWE: ${ghsa.cwe}`,
+        `Package: ${ghsa.affected.package} (${ghsa.affected.ecosystem})`,
+        ``,
+        ghsa.description,
+      ].join("\n");
+      await navigator.clipboard.writeText(text);
+      this._exportNotice = `Copied the advisory draft for ${f.domain} (${f.file}:${f.line}) to the clipboard.`;
+    } catch (err: any) {
+      this._exportNotice = `Export failed: ${err?.message ?? "could not copy to the clipboard"}`;
+    }
+  }
+
   private async _onMisconfigStatus(id: string, status: string) {
-    await setMisconfigStatus(this.hass, id, status);
+    this._scanError = null;
+    try {
+      await setMisconfigStatus(this.hass, id, status);
+    } catch (err: any) {
+      this._scanError = `Status change failed: ${err?.message ?? err}`;
+    }
     await this._load();
   }
 
@@ -351,6 +531,92 @@ export class HaSocScannerView extends LitElement {
     return groups;
   }
 
+  // Work plan item 4.8: what the most recently completed pass actually
+  // looked at, per domain, so an absent record can never be misread as
+  // "scanned, nothing found". A domain that has findings but no coverage
+  // entry (this pass skipped it, or a rescan has not run since it was
+  // last flagged) is called out by name instead of silently vanishing
+  // from the coverage picture. Renders nothing at all against a backend
+  // that never sent a coverage map (the ScannerListing.coverage field is
+  // optional precisely so an older payload still parses).
+  private _renderScannerCoverage() {
+    if (!this._coverage) return nothing;
+    const coveredDomains = new Set(Object.keys(this._coverage));
+    const findingDomains = new Set(this._scannerFindings.map((f: any) => String(f.domain)));
+    const notScanned = Array.from(findingDomains)
+      .filter((d) => !coveredDomains.has(d))
+      .sort((a, b) => a.localeCompare(b));
+    const rows = Object.entries(this._coverage).map(([domain, cov]) => ({ domain, cov }));
+    const sorted = this._coverageSort
+      ? sortRows(rows, this._coverageSort, HaSocScannerView.COVERAGE_SORT)
+      : rows.slice().sort((a, b) => a.domain.localeCompare(b.domain));
+
+    return html`
+      <h4 class="fw-subhead">Scan coverage</h4>
+      <p class="muted" style="font-size:12px;margin-top:-6px;">
+        What the most recent completed pass over each domain actually looked at.
+        A domain is never implied clean by an absent record.
+      </p>
+      ${!rows.length
+        ? html`<div class="empty">No domain has completed a scan yet.</div>`
+        : html`
+            <table>
+              <thead>
+                <tr>
+                  ${sortableTh("Domain", "domain", this._coverageSort, (n) => (this._coverageSort = n))}
+                  ${sortableTh("Files scanned", "files", this._coverageSort, (n) => (this._coverageSort = n), {
+                    numeric: true,
+                  })}
+                  ${sortableTh(
+                    "Skipped (too large)",
+                    "oversize",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh(
+                    "Skipped (over cap)",
+                    "over_cap",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh(
+                    "Parse failures",
+                    "parse_failures",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh("Scanned at", "scanned_at", this._coverageSort, (n) => (this._coverageSort = n))}
+                </tr>
+              </thead>
+              <tbody>
+                ${sorted.map(
+                  (r) => html`
+                    <tr>
+                      <td>${r.domain}</td>
+                      <td class="num">${r.cov.scanned_files}</td>
+                      <td class="num">${r.cov.skipped_oversize}</td>
+                      <td class="num">${r.cov.skipped_over_cap}</td>
+                      <td class="num">${r.cov.parse_failures}</td>
+                      <td>${new Date(r.cov.scanned_at).toLocaleString()}</td>
+                    </tr>
+                  `
+                )}
+              </tbody>
+            </table>
+          `}
+      ${notScanned.length
+        ? html`<p style="font-size:12.5px;margin-top:8px;">
+            <strong>Not scanned this pass:</strong> ${notScanned.join(", ")}.
+            ${notScanned.length === 1 ? "Its" : "Their"} existing findings above were not
+            re-verified in the most recent run.
+          </p>`
+        : nothing}
+    `;
+  }
+
   private _renderStatusSelect(id: string, current: string, onChange: (s: string) => void) {
     return html`
       <select @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value)}>
@@ -370,8 +636,22 @@ export class HaSocScannerView extends LitElement {
 
   render() {
     if (this._loading) return html`<div class="empty">Loading findings…</div>`;
+    if (this._error)
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load the Scanner tab</h3>
+          <p style="font-size:13px;">${this._error}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
 
     return html`
+      ${this._scanError
+        ? html`<div class="card" style="border:1px solid var(--error-color,#db4437);">
+            <p style="font-size:13px;color:var(--error-color,#db4437);margin:0;">${this._scanError}</p>
+          </div>`
+        : nothing}
+
       <div class="card">
         <h3>Misconfiguration Findings</h3>
         ${!this._misconfigFindings.length
@@ -381,6 +661,7 @@ export class HaSocScannerView extends LitElement {
                 <thead>
                   <tr>
                     ${sortableTh("Check", "check", this._misconfigSort, (n) => (this._misconfigSort = n))}
+                    ${sortableTh("Severity", "severity", this._misconfigSort, (n) => (this._misconfigSort = n))}
                     ${sortableTh("Summary", "summary", this._misconfigSort, (n) => (this._misconfigSort = n))}
                     <th>Status</th>
                   </tr>
@@ -389,9 +670,16 @@ export class HaSocScannerView extends LitElement {
                   ${this._sortedMisconfigFindings().map(
                     (f: any) => html`
                       <tr>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.check}</span></td>
+                        <td>${f.check}</td>
+                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.severity}</span></td>
                         <td>${f.summary}</td>
-                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}</td>
+                        <td>
+                          ${f.acknowledged_by_design
+                            ? html`<span class="tag enforced" title=${f.acknowledged_reason ?? "Acknowledged by design"}
+                                >acknowledged by design</span
+                              >`
+                            : this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}
+                        </td>
                       </tr>
                     `
                   )}
@@ -406,7 +694,9 @@ export class HaSocScannerView extends LitElement {
           Static AST/regex analysis of every installed integration's source — core and
           custom. Every finding is advisory and needs a human to confirm; Home
           Assistant's own quality tooling (hassfest) never checks for these patterns and
-          never runs against custom_components at all.
+          never runs against custom_components at all. These rules find unobfuscated
+          pattern instances only; a dynamically constructed call, a string-built
+          decorator, or a renamed import will not be detected.
         </p>
         <div class="toolbar">
           <button class="ha-btn" ?disabled=${this._scanning} @click=${this._onScanIntegrations}>
@@ -425,6 +715,7 @@ export class HaSocScannerView extends LitElement {
                     ${sortableTh("Confidence", "confidence", this._scannerSort, (n) => (this._scannerSort = n))}
                     ${sortableTh("CWE", "cwe", this._scannerSort, (n) => (this._scannerSort = n))}
                     <th>Status</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -437,12 +728,17 @@ export class HaSocScannerView extends LitElement {
                         <td>${f.confidence}</td>
                         <td>${f.cwe}</td>
                         <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
+                        <td><button class="ha-btn" @click=${() => this._onExportFinding(f)}>Export</button></td>
                       </tr>
                     `
                   )}
                 </tbody>
               </table>
+              ${this._exportNotice
+                ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${this._exportNotice}</p>`
+                : nothing}
             `}
+        ${this._renderScannerCoverage()}
       </div>
 
       <div class="card">
@@ -565,11 +861,66 @@ export class HaSocScannerView extends LitElement {
     `;
   }
 
+  // The firewall rule (if any) covering one listening port, computed per
+  // address family (work item 2.4's port-scan correlation): a row with a
+  // decoded dotted-quad bind address came from /proc/net/tcp and is an
+  // IPv4 listener, while the add-on reports IPv6 bind addresses as null
+  // (deliberately not decoded, see the run script), so a null-address row
+  // is an IPv6-table listener that can only be correlated by port and
+  // protocol. A "both" (or pre-family) rule covers either family; a "4"
+  // or "6" rule covers only its own.
+  private _fwRuleCoveringPort(p: OpenPort): FirewallRule | null {
+    const rules = this._firewall?.known_rules;
+    if (!rules?.length) return null;
+    const rowFamily: FirewallRuleFamily = p.address ? "4" : "6";
+    const matches = rules.filter((r) => {
+      const fam = r.family ?? "both";
+      return r.port === p.port && r.proto === p.proto && (fam === "both" || fam === rowFamily);
+    });
+    if (!matches.length) return null;
+    // A deny is the security-notable coverage, so it wins over an allow;
+    // among equals an any-source rule wins over a source-scoped one, so
+    // the pill shows the broadest effect on this listener.
+    matches.sort((a, b) => {
+      if (a.action !== b.action) return a.action === "deny" ? -1 : 1;
+      return (a.source ? 1 : 0) - (b.source ? 1 : 0);
+    });
+    return matches[0];
+  }
+
+  private _renderPortRuleCell(p: OpenPort) {
+    const rule = this._fwRuleCoveringPort(p);
+    // Honesty about the correlation basis: an IPv6 listener's bind
+    // address is reported as null by the add-on, so its match (or
+    // non-match) rests on port and protocol alone.
+    const ipv6Caveat = !p.address
+      ? " IPv6 bind addresses are not decoded by the add-on, so this correlation is by port and protocol only."
+      : "";
+    if (!rule) {
+      return html`<td class="muted"><span title=${"No HA_SOC_RULES entry matches this port and protocol for this listener's address family." + ipv6Caveat}>no rule</span></td>`;
+    }
+    const scope = rule.source ? `from ${rule.source}` : "any source";
+    return html`
+      <td>
+        <span
+          class="pill ${rule.action === "allow" ? "good" : "critical"}"
+          title=${`Covered by the ${rule.action} ${rule.proto}/${rule.port} rule (${familyLabel(rule.family)}, ${scope}).` +
+          (rule.source ? " Source-scoped: traffic from other sources is not affected by it." : "") +
+          ipv6Caveat}
+          ><span class="dot"></span>${rule.action}${!p.address ? " (by port)" : ""}</span
+        >
+      </td>
+    `;
+  }
+
   // Group the host's listening ports by bind address. Group order is fixed
   // by security notability: 0.0.0.0 first, then public/routable
   // (non-RFC1918), then private (RFC1918), then loopback/link-local, then
   // unresolved. Column sorting never reorders the groups themselves; it
   // only reorders ports within each group (default: port ascending).
+  // When the owner's firewall status carries known rules, each row also
+  // gets a per-family "covered by rule" cell, so a dual-stack deny on a
+  // port visibly covers both its 0.0.0.0 and :: listeners.
   private _renderPortsByBindAddress(ports: OpenPort[]) {
     const groups = new Map<string, OpenPort[]>();
     for (const p of ports) {
@@ -585,6 +936,13 @@ export class HaSocScannerView extends LitElement {
       return a[0].localeCompare(b[0]);
     });
 
+    // The coverage column only renders when there are known rules to
+    // correlate against (owner-only status, add-on has reported): an
+    // always-empty column would read as "nothing is covered", which is
+    // not what "no data" means.
+    const showRuleCol = !!this._firewall?.known_rules?.length;
+    const colCount = showRuleCol ? 4 : 3;
+
     return html`
       <table>
         <thead>
@@ -592,6 +950,7 @@ export class HaSocScannerView extends LitElement {
             ${sortableTh("Port", "port", this._portSort, (n) => (this._portSort = n))}
             ${sortableTh("Protocol", "proto", this._portSort, (n) => (this._portSort = n))}
             ${sortableTh("Interface", "interface", this._portSort, (n) => (this._portSort = n))}
+            ${showRuleCol ? html`<th>Covered by rule</th>` : nothing}
           </tr>
         </thead>
         ${ordered.map(([key, groupPorts]) => {
@@ -600,7 +959,7 @@ export class HaSocScannerView extends LitElement {
           return html`
             <tbody>
               <tr>
-                <td colspan="3" style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                <td colspan=${colCount} style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
                   <strong>${addr ?? "unresolved (IPv6)"}</strong>
                   <span class="pill ${info.cls}" style="margin-left:8px;"
                     ><span class="dot"></span>${info.label}</span
@@ -623,6 +982,7 @@ export class HaSocScannerView extends LitElement {
                           ? html`<span class="pill high"><span class="dot"></span>all interfaces</span>`
                           : html`<span class="muted">${p.interface ?? "—"}</span>`}
                       </td>
+                      ${showRuleCol ? this._renderPortRuleCell(p) : nothing}
                     </tr>
                   `
                 )}
@@ -633,13 +993,63 @@ export class HaSocScannerView extends LitElement {
     `;
   }
 
+  // One family cell shared by the active-rules and proposed-rules tables:
+  // the family label, plus the honest partial marker the server sets on
+  // every "6"/"both" rule while the host reports no ip6tables support.
+  private _renderFamilyCell(r: FirewallRule) {
+    return html`
+      <td>
+        ${familyLabel(r.family)}
+        ${r.partially_applied
+          ? html`<span
+              class="pill high"
+              style="margin-left:6px;"
+              title="The host kernel does not support ip6tables, so the IPv6 half of this rule is not applied. Only its IPv4 half (if any) is live."
+              ><span class="dot"></span>IPv6 not applied</span
+            >`
+          : nothing}
+      </td>
+    `;
+  }
+
+  // The most recent archived test's failure reason (carried protocol
+  // item): backup_failed and per-family apply failures used to live only
+  // in the add-on's log; now the add-on reports them and the card shows
+  // the latest one where the operator is already looking. Rendered only
+  // when the newest history entry actually carries a reason, so a normal
+  // confirm/revert leaves no residue here.
+  private _renderLastOutcomeReason(fw: FirewallStatus) {
+    const latest = fw.history.length ? fw.history[fw.history.length - 1] : null;
+    if (!latest?.reason) return nothing;
+    return html`
+      <p style="color:var(--error-color,#db4437);font-size:12.5px;margin:8px 0 0;">
+        Last test (${latest.test_id.slice(0, 8)}) ended ${latest.status}: ${latest.reason}
+      </p>
+    `;
+  }
+
   private _renderFirewallCard() {
     const probe = this._probe;
     const fw = this._firewall;
     // Same prerequisite as Host Probe: without the add-on actually
     // running, there is nothing that could apply these rules — the Host
     // Probe card above already explains why in that case.
-    if (!probe?.supervisor || !probe?.installed || !fw) return nothing;
+    if (!probe?.supervisor || !probe?.installed) return nothing;
+    // Owner-only in its entirety (D-4), the same one-line note treatment
+    // the Settings tab gets: the server refuses every firewall command,
+    // status included, for a non-owner admin, so rendering anything more
+    // here would only be a card full of dead controls.
+    if (!this._isOwner) {
+      return html`
+        <div class="card">
+          <h3>Firewall Rules <span class="tag cosmetic">owner only</span></h3>
+          <p class="muted" style="font-size:12.5px;">
+            The firewall is available to the account owner only.
+          </p>
+        </div>
+      `;
+    }
+    if (!fw) return nothing;
 
     return html`
       <div class="card">
@@ -649,8 +1059,21 @@ export class HaSocScannerView extends LitElement {
           SOC Probe add-on's <code>NET_ADMIN</code> capability. Every proposed change is
           backed up first and applied to a dedicated chain this project owns outright,
           never the host's raw INPUT chain. An unconfirmed change reverts itself
-          automatically once its test window closes.
+          automatically once its test window closes. Rules are dual-stack by default:
+          a rule with no source applies to IPv4 and IPv6 alike, and a source address
+          pins the rule to that address's own family.
         </p>
+        ${fw.ipv6_supported === false
+          ? html`
+              <p
+                style="color:var(--error-color,#db4437);font-size:12.5px;border:1px solid var(--error-color,#db4437);border-radius:4px;padding:8px 10px;"
+              >
+                IPv6 rules not applied: the host kernel does not support ip6tables.
+                Rules with family IPv6 are not live at all, and dual-stack rules are
+                live for IPv4 only.
+              </p>
+            `
+          : nothing}
 
         <h4 class="fw-subhead">Active rules</h4>
         ${!fw.known_rules || !fw.known_rules.length
@@ -665,6 +1088,7 @@ export class HaSocScannerView extends LitElement {
                     ${sortableTh("Protocol", "proto", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Port", "port", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Source", "source", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Family", "family", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                   </tr>
                 </thead>
                 <tbody>
@@ -679,6 +1103,7 @@ export class HaSocScannerView extends LitElement {
                         <td>${r.proto}</td>
                         <td>${r.port}</td>
                         <td class="muted">${r.source ?? "any"}</td>
+                        ${this._renderFamilyCell(r)}
                       </tr>
                     `
                   )}
@@ -690,7 +1115,15 @@ export class HaSocScannerView extends LitElement {
               Last reported ${new Date(fw.known_rules_reported_at).toLocaleString()}
             </p>`
           : nothing}
-        ${fw.pending ? this._renderFirewallPending(fw.pending) : this._renderFirewallBuilder()}
+        ${this._renderLastOutcomeReason(fw)}
+        ${fw.pending
+          ? html`
+              ${this._renderFirewallPending(fw.pending)}
+              ${this._renderFirewallBuilder(
+                "A proposed change is still pending. A new test can only be proposed once the add-on has reported the outcome of the current one."
+              )}
+            `
+          : this._renderFirewallBuilder(null)}
         ${this._fwError
           ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">${this._fwError}</p>`
           : nothing}
@@ -700,11 +1133,23 @@ export class HaSocScannerView extends LitElement {
 
   private _renderFirewallPending(pending: FirewallPendingTest) {
     const remaining = Math.max(0, Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 1000));
+    // The discard escape hatch appears only once the countdown has lapsed
+    // (which is also exactly when the server stops refusing it): before
+    // that, the add-on's report or its local timer may still resolve the
+    // test the honest way. expires_at is re-anchored to applied_at server-
+    // side, so "lapsed" here means the add-on's own timer has fired too,
+    // if the add-on is alive at all.
+    const countdownLapsed = Date.now() >= new Date(pending.expires_at).getTime();
     const statusLabel: Record<string, string> = {
       testing: pending.applied_at ? "Testing — live on the host" : "Queued — waiting for the add-on to apply",
       confirmed: "Confirmed — waiting for the add-on to acknowledge",
       reverted: "Reverting — waiting for the add-on to acknowledge",
-      expired: "Window expired — reverting automatically",
+      // The window has closed but the add-on has not confirmed the revert
+      // yet; the record stays here (and blocks new proposals) until it does.
+      expired_unreported: "Window expired, the add-on has not confirmed the revert yet",
+      // Pre-rename spelling of the same state, possibly persisted by an
+      // older version of the integration.
+      expired: "Window expired, the add-on has not confirmed the revert yet",
     };
 
     return html`
@@ -716,6 +1161,7 @@ export class HaSocScannerView extends LitElement {
             <th>Protocol</th>
             <th>Port</th>
             <th>Source</th>
+            <th>Family</th>
           </tr>
         </thead>
         <tbody>
@@ -730,6 +1176,7 @@ export class HaSocScannerView extends LitElement {
                 <td>${r.proto}</td>
                 <td>${r.port}</td>
                 <td class="muted">${r.source ?? "any"}</td>
+                ${this._renderFamilyCell(r)}
               </tr>
             `
           )}
@@ -750,13 +1197,33 @@ export class HaSocScannerView extends LitElement {
         >
           Cancel now
         </button>
+        ${countdownLapsed
+          ? html`
+              <button
+                class="ha-btn danger"
+                ?disabled=${this._fwSubmitting}
+                title="The add-on never reported this test's outcome. Discard archives it as 'discarded_unreported' so a new test can be proposed; nothing on the host is changed."
+                @click=${this._onDiscardPending}
+              >
+                Discard unreported test
+              </button>
+            `
+          : nothing}
       </div>
     `;
   }
 
-  private _renderFirewallBuilder() {
+  // blockedReason is non-null while a pending test still occupies the
+  // one-at-a-time slot server-side; the builder stays visible so a next
+  // ruleset can be drafted, but the Test button is disabled and says why,
+  // matching the server's test_pending_unreported refusal instead of
+  // letting the click bounce off it.
+  private _renderFirewallBuilder(blockedReason: string | null) {
     const canSubmit =
-      this._fwBackupAck && this._fwDraftRules.length > 0 && this._fwDraftRules.every((r) => this._fwRuleValid(r));
+      blockedReason === null &&
+      this._fwBackupAck &&
+      this._fwDraftRules.length > 0 &&
+      this._fwDraftRules.every((r) => this._fwRuleValid(r));
 
     return html`
       <h4 class="fw-subhead">Propose a change</h4>
@@ -767,12 +1234,19 @@ export class HaSocScannerView extends LitElement {
             <th>Protocol</th>
             <th>Port</th>
             <th>Source (optional)</th>
+            <th>Family</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          ${this._fwDraftRules.map(
-            (r, i) => html`
+          ${this._fwDraftRules.map((r, i) => {
+            // A source address pins the family (the server derives and
+            // enforces exactly this), so the selector locks to the
+            // derived value while a source is present and is free
+            // (default both) otherwise.
+            const pinned = familyForSource(r.source ?? "");
+            const family = pinned ?? r.family ?? "both";
+            return html`
               <tr>
                 <td>
                   <select
@@ -806,16 +1280,39 @@ export class HaSocScannerView extends LitElement {
                 <td>
                   <input
                     type="text"
-                    placeholder="e.g. 192.168.10.0/24"
+                    placeholder="e.g. 192.168.10.0/24 or fd00::/8"
                     .value=${r.source ?? ""}
                     style="width:170px;"
-                    @input=${(e: Event) => this._fwUpdateRule(i, { source: (e.target as HTMLInputElement).value })}
+                    @input=${(e: Event) => {
+                      const source = (e.target as HTMLInputElement).value;
+                      const derived = familyForSource(source);
+                      // Entering a source pins the family to it; clearing
+                      // the source returns to the dual-stack default
+                      // rather than silently keeping the pin.
+                      this._fwUpdateRule(i, { source, family: derived ?? "both" });
+                    }}
                   />
+                </td>
+                <td>
+                  <select
+                    ?disabled=${pinned !== null}
+                    title=${pinned !== null
+                      ? "Locked: the source address pins this rule to its own address family."
+                      : "IPv4+IPv6 writes the rule into both tables; pick one family to scope it."}
+                    @change=${(e: Event) =>
+                      this._fwUpdateRule(i, {
+                        family: (e.target as HTMLSelectElement).value as FirewallRuleFamily,
+                      })}
+                  >
+                    <option value="both" ?selected=${family === "both"}>IPv4+IPv6</option>
+                    <option value="4" ?selected=${family === "4"}>IPv4</option>
+                    <option value="6" ?selected=${family === "6"}>IPv6</option>
+                  </select>
                 </td>
                 <td><button class="ha-btn danger" @click=${() => this._fwRemoveRule(i)}>Remove</button></td>
               </tr>
-            `
-          )}
+            `;
+          })}
         </tbody>
       </table>
       <div class="toolbar" style="margin-top:8px;">
@@ -841,6 +1338,9 @@ export class HaSocScannerView extends LitElement {
           Test
         </button>
       </div>
+      ${blockedReason
+        ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${blockedReason}</p>`
+        : nothing}
     `;
   }
 }

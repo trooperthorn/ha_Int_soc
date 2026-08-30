@@ -17,6 +17,24 @@ import {
 
 const PAGE_SIZE_OPTIONS: (number | "all")[] = [25, 50, 100, "all"];
 
+// Client-side scheme gate for every external href this view binds (work
+// plan item 4.12). The camera and thumbnail links are built server-side
+// from controller-supplied host strings, so a hostile or misconfigured
+// controller could hand back a javascript: or data: URL; only http(s)
+// may ever reach an anchor's href. Anything else returns null and the
+// caller renders plain text instead of a link.
+function safeExternalHref(href: string | null): string | null {
+  if (!href) return null;
+  try {
+    const scheme = new URL(href).protocol;
+    return scheme === "http:" || scheme === "https:" ? href : null;
+  } catch {
+    // Not parseable as an absolute URL: refuse it rather than let the
+    // browser resolve it into something this check never saw.
+    return null;
+  }
+}
+
 // Kept close to the Dashboard view's language on purpose — the user asked
 // the Network tab to "look close to identical to Dashboard View". Same stat
 // tiles up top, same searchable/paginated table styling below.
@@ -958,13 +976,15 @@ export class HaSocNetworkView extends LitElement {
             </tr>
           </thead>
           <tbody>
-            ${rows.map(
-              (c) => html`
+            ${rows.map((c) => {
+              // One scheme check serves both cells for this camera row.
+              const link = safeExternalHref(c.link);
+              return html`
                 <tr>
                   <td>
                     <div style="font-weight:600;">
-                      ${c.link
-                        ? html`<a class="thumb-link" href=${c.link} target="_blank" rel="noopener"
+                      ${link
+                        ? html`<a class="thumb-link" href=${link} target="_blank" rel="noopener"
                             >${c.name} ↗</a
                           >`
                         : c.name}
@@ -989,13 +1009,13 @@ export class HaSocNetworkView extends LitElement {
                       : "—"}
                   </td>
                   <td>
-                    ${c.link
-                      ? html`<a class="thumb-link" href=${c.link} target="_blank" rel="noopener">Open ↗</a>`
+                    ${link
+                      ? html`<a class="thumb-link" href=${link} target="_blank" rel="noopener">Open ↗</a>`
                       : nothing}
                   </td>
                 </tr>
-              `
-            )}
+              `;
+            })}
           </tbody>
         </table>
       </div>
@@ -1061,8 +1081,12 @@ export class HaSocNetworkView extends LitElement {
                             <td>${this._fmtLastSeen(e.start)}</td>
                             <td class="num">${this._fmtDuration(e.duration)}</td>
                             <td>
-                              ${e.thumbnail_link
-                                ? html`<a class="thumb-link" href=${e.thumbnail_link} target="_blank" rel="noopener"
+                              ${safeExternalHref(e.thumbnail_link)
+                                ? html`<a
+                                    class="thumb-link"
+                                    href=${safeExternalHref(e.thumbnail_link)!}
+                                    target="_blank"
+                                    rel="noopener"
                                     >view ↗</a
                                   >`
                                 : e.thumbnail

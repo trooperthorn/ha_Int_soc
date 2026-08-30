@@ -1,10 +1,15 @@
 # Both services exist as the transport between the optional HA SOC Probe
-# add-on and this integration. They are not intended to be called by hand:
-# every call must present the trust-on-first-use probe secret (pinned on
-# first contact, see firewall.py), and a call without a valid secret is
-# rejected and audit-logged. They are documented here because hassfest
-# requires registered services to be described, and honestly labeling an
-# internal surface beats hiding it.
+# add-on and this integration, and they are registered only on Supervisor
+# installs (on Core/Container there is no legitimate caller, so they do
+# not exist at all). They are not intended to be called by hand: every
+# call must arrive in the Supervisor system user's context (the add-on
+# calls through the Supervisor proxy, which forwards as exactly that
+# user) AND present the shared probe secret (pinned on the first
+# Supervisor-context call, see firewall.py). A call failing either check
+# is rejected, audit-logged as probe_auth_rejected, and raised as a HIGH
+# detection. They are documented here because hassfest requires
+# registered services to be described, and honestly labeling an internal
+# surface beats hiding it.
 
 ingest_probe_result:
   name: Ingest probe result
@@ -12,7 +17,8 @@ ingest_probe_result:
     Internal. Called by the HA SOC Probe add-on to report the host's
     listening TCP ports, the live firewall chain contents, firewall
     test resolutions, and resource hard-cap application state. Calls
-    without the pinned probe secret are rejected.
+    outside the Supervisor user's context, or without the pinned probe
+    secret, are rejected.
   fields:
     open_ports:
       name: Open ports
@@ -54,7 +60,7 @@ ingest_probe_result:
         object:
     probe_secret:
       name: Probe secret
-      description: Trust-on-first-use shared secret proving the call came from the add-on.
+      description: Shared secret pinned on the add-on's first authenticated call, defense in depth behind the Supervisor-context check.
       required: false
       selector:
         text:
@@ -65,7 +71,8 @@ poll_firewall_command:
     Internal. Polled every few seconds by the HA SOC Probe add-on for
     pending firewall apply/confirm/revert work and the current resource
     hard-cap set. Returns the next instruction as a service response.
-    Calls without the pinned probe secret receive no work.
+    Calls outside the Supervisor user's context, or without the pinned
+    probe secret, receive no work.
   fields:
     current_test_id:
       name: Current test id
@@ -75,7 +82,7 @@ poll_firewall_command:
         text:
     probe_secret:
       name: Probe secret
-      description: Trust-on-first-use shared secret proving the call came from the add-on.
+      description: Shared secret pinned on the add-on's first authenticated call, defense in depth behind the Supervisor-context check.
       required: false
       selector:
         text:

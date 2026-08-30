@@ -3,7 +3,16 @@ import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import { navigateToHaPath, devicesForIntegrationPath } from "../nav";
-import { HaSocSettings, SecurityOverview, fetchSettings, fetchSecurityHealth, updateSettings } from "../data/ha-soc-ws";
+import {
+  DetectionThresholdTable,
+  HaSocSettings,
+  SecurityOverview,
+  fetchDetectionThresholds,
+  fetchSecurityHealth,
+  fetchSettings,
+  resetDetectionThresholds,
+  updateSettings,
+} from "../data/ha-soc-ws";
 
 const MB = 1024 * 1024;
 
@@ -21,6 +30,21 @@ const NAMED_INTEGRATION_SOURCE_LABELS: { domain: string; label: string }[] = [
   { domain: "emporia_vue", label: "Emporia Vue" },
 ];
 
+// Display names for the detection rules whose thresholds render below.
+// Any rule id the backend adds later still renders, falling back to the
+// raw id, so this list can lag without hiding a control.
+const DETECTION_RULE_LABELS: Record<string, string> = {
+  brute_force_ip: "Brute force (per source IP)",
+  success_after_failures: "Success after failed logins",
+  new_ip_login: "Login from a new network",
+  off_hours_anomaly: "Off-hours activity burst",
+  dormant_revival: "Dormant account revival",
+  mass_entity_burst: "Mass entity control burst",
+  token_minting_anomaly: "Token minting anomaly",
+  disabled_user_activity: "Disabled-user activity",
+  privilege_escalation: "Privilege escalation",
+};
+
 @customElement("ha-soc-settings-view")
 export class HaSocSettingsView extends LitElement {
   static styles = sharedStyles;
@@ -29,7 +53,14 @@ export class HaSocSettingsView extends LitElement {
 
   @state() private _settings: HaSocSettings | null = null;
   @state() private _security: SecurityOverview | null = null;
+  @state() private _thresholds: DetectionThresholdTable | null = null;
   @state() private _loading = true;
+  // Non-null when fetchSettings itself failed (the security/threshold
+  // sub-loads already degrade independently below). Without this, a
+  // failed load left the page reading "Loading settings..." forever,
+  // which looks like a stuck page rather than a failure (work plan item
+  // 4.12).
+  @state() private _error: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -38,6 +69,7 @@ export class HaSocSettingsView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._settings = await fetchSettings(this.hass);
       // Fetched separately: a failure here (e.g. the security_health
@@ -50,9 +82,35 @@ export class HaSocSettingsView extends LitElement {
       } catch {
         this._security = null;
       }
+      // Same isolation for the threshold table: without it the card
+      // degrades to a short "could not load" line, not a stuck page.
+      try {
+        this._thresholds = await fetchDetectionThresholds(this.hass);
+      } catch {
+        this._thresholds = null;
+      }
+    } catch (err: any) {
+      // Unlike the two isolated sub-loads above, fetchSettings itself
+      // failing must not be swallowed: the whole page has nothing to
+      // show without it, and "Loading settings..." forever looks like a
+      // stuck page rather than a failure.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
+  }
+
+  private async _updateThreshold(rule: string, param: string, value: number | boolean) {
+    // Sends only the touched field; the server merges per field and
+    // audits a per-field diff (work item 3.0).
+    await updateSettings(this.hass, {
+      detection_thresholds: { [rule]: { [param]: value } },
+    } as Partial<HaSocSettings>);
+    this._thresholds = await fetchDetectionThresholds(this.hass);
+  }
+
+  private async _resetThresholds() {
+    this._thresholds = await resetDetectionThresholds(this.hass);
   }
 
   // Applies immediately, like every other tab's toggles (permissions-view's
@@ -128,8 +186,102 @@ export class HaSocSettingsView extends LitElement {
     `;
   }
 
+  private _renderThresholdsCard(s: HaSocSettings) {
+    return html`
+      <div class="card">
+        <h3>Detection Thresholds</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Every detection rule's tunable parameters, each accepted only within the
+          range shown. The secure defaults are the most sensitive values that do not
+          alert on ordinary same-network activity - they miss the fewest attacks, at
+          the cost of more alerts. Changes apply from the next analysis pass and are
+          audited with a per-field diff.
+        </p>
+        <label class="settings-row">
+          <span>
+            Evidence retention (days)
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Resolved detections and resolved/dismissed findings older than this are
+              pruned; open and acknowledged items never expire.</span
+            >
+          </span>
+          <input
+            type="number"
+            min="30"
+            max="3650"
+            .value=${String(s.evidence_retention_days)}
+            @change=${(e: Event) =>
+              this._update("evidence_retention_days", Number((e.target as HTMLInputElement).value))}
+          />
+        </label>
+        ${!this._thresholds
+          ? html`<p class="muted" style="font-size:12.5px;">Could not load the threshold table.</p>`
+          : Object.entries(this._thresholds).map(
+              ([rule, params]) => html`
+                <h4
+                  style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);"
+                >
+                  ${DETECTION_RULE_LABELS[rule] ?? rule}
+                </h4>
+                ${Object.entries(params).map(([param, spec]) =>
+                  spec.type === "bool"
+                    ? html`
+                        <label class="settings-row">
+                          <span>
+                            ${param}
+                            <span class="muted" style="display:block;font-size:11.5px;"
+                              >secure default: ${spec.default ? "on" : "off"}</span
+                            >
+                          </span>
+                          <input
+                            type="checkbox"
+                            .checked=${Boolean(spec.value)}
+                            @change=${(e: Event) =>
+                              this._updateThreshold(rule, param, (e.target as HTMLInputElement).checked)}
+                          />
+                        </label>
+                      `
+                    : html`
+                        <label class="settings-row">
+                          <span>
+                            ${param}
+                            <span class="muted" style="display:block;font-size:11.5px;"
+                              >${spec.min} to ${spec.max}, secure default ${spec.default}</span
+                            >
+                          </span>
+                          <input
+                            type="number"
+                            min=${String(spec.min)}
+                            max=${String(spec.max)}
+                            step=${spec.type === "float" ? "any" : "1"}
+                            .value=${String(spec.value)}
+                            @change=${(e: Event) =>
+                              this._updateThreshold(rule, param, Number((e.target as HTMLInputElement).value))}
+                          />
+                        </label>
+                      `
+                )}
+              `
+            )}
+        <div class="toolbar" style="margin-top:12px;">
+          <span class="spacer"></span>
+          <button class="ha-btn" @click=${this._resetThresholds}>Reset to secure defaults</button>
+        </div>
+      </div>
+    `;
+  }
+
   render() {
-    if (this._loading || !this._settings) return html`<div class="empty">Loading settings…</div>`;
+    if (this._loading) return html`<div class="empty">Loading settings…</div>`;
+    if (this._error || !this._settings) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load Settings</h3>
+          <p style="font-size:13px;">${this._error ?? "The server returned no settings."}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
+    }
     const s = this._settings;
 
     return html`
@@ -212,23 +364,30 @@ export class HaSocSettingsView extends LitElement {
           vendor/model match against NVD, not a confirmed exploit — absence of a match is
           not evidence a device is secure.
         </p>
+        <label class="settings-row">
+          <span>
+            Look up device CVEs against NIST's NVD
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >While on, device manufacturer and model strings are sent to
+              NIST's NVD (the U.S. National Vulnerability Database) to find
+              candidate CVEs. Turning this off stops that lookup entirely.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.nvd_lookups_enabled}
+            @change=${(e: Event) =>
+              this._update("nvd_lookups_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
         ${this._renderSecretField(
           "NVD API key (optional — raises the public rate limit)",
           "nvd_api_key",
           !!s.nvd_api_key_set
         )}
-        <label class="settings-row">
-          <span>Risk-scoring learning period (days)</span>
-          <input
-            type="number"
-            min="1"
-            max="90"
-            .value=${String(s.risk_learning_period_days)}
-            @change=${(e: Event) =>
-              this._update("risk_learning_period_days", Number((e.target as HTMLInputElement).value))}
-          />
-        </label>
       </div>
+
+      ${this._renderThresholdsCard(s)}
 
       <div class="card">
         <h3>Integration Security (Provenance)</h3>

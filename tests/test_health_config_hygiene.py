@@ -99,9 +99,11 @@ async def test_no_findings_when_nothing_broken(hass: HomeAssistant, health: Inte
         assert await check() == []
 
 
-async def test_notify_coverage_gap_high_severity_mirrors_to_repairs(
+async def test_notify_coverage_gap_severities_split_per_d11(
     hass: HomeAssistant, health: IntegrationHealth
 ) -> None:
+    """D-11 (work plan item 4.4): an untracked source is LOW, a source the
+    operator toggled off is MEDIUM; both still mirror to Repairs."""
     from homeassistant.setup import async_setup_component
 
     config = [
@@ -110,17 +112,32 @@ async def test_notify_coverage_gap_high_severity_mirrors_to_repairs(
             "alias": "Smoke -> Phone",
             "trigger": [{"platform": "state", "entity_id": "binary_sensor.smoke_detector", "to": "on"}],
             "action": [{"service": "notify.mobile_app_test", "data": {"message": "smoke!"}}],
-        }
+        },
+        {
+            "id": "auto2",
+            "alias": "Lock -> Phone",
+            "trigger": [{"platform": "state", "entity_id": "lock.front_door", "to": "unlocked"}],
+            "action": [{"service": "notify.mobile_app_test", "data": {"message": "unlocked!"}}],
+        },
     ]
     assert await async_setup_component(hass, "automation", {"automation": config})
     await hass.async_block_till_done()
 
+    health._store.data["settings"]["security_sources_enabled"]["lock"] = False
+
     findings = await health._check_notify_coverage_gaps()
 
-    assert len(findings) == 1
-    assert findings[0]["check"] == "notify_coverage_gaps"
-    assert findings[0]["severity"] == "high"
+    by_id = {f["id"]: f for f in findings}
+    assert set(by_id) == {
+        "misconfig:notify_coverage_gaps:untracked",
+        "misconfig:notify_coverage_gaps:disabled",
+    }
+    assert by_id["misconfig:notify_coverage_gaps:untracked"]["severity"] == "low"
+    assert by_id["misconfig:notify_coverage_gaps:disabled"]["severity"] == "medium"
+    for finding in findings:
+        assert finding["check"] == "notify_coverage_gaps"
+        assert finding["detail"]["total_count"] == len(finding["detail"]["items"])
 
     registry = ir.async_get(hass)
     issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
-    assert findings[0]["id"] in issue_ids
+    assert set(by_id) <= issue_ids

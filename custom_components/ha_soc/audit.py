@@ -14,12 +14,19 @@ Captured directly (one bus event or dispatcher signal per record):
 - ``service_call`` - every ``call_service`` event. This fires *before*
   permission checks and *before* the service actually runs, so it records
   an attempted call, not its outcome or even whether it was authorized.
-  Obviously-sensitive ``service_data`` keys (``password``, ``token``,
-  ``code``, and ``message`` for ``notify``/``tts`` domains) are redacted to
-  ``"[redacted]"`` before anything touches disk. Core merges a call's
-  target block into ``service_data``, so non-entity targets (``area_id``,
-  ``device_id``, ``label_id``, ``floor_id``) are extracted into
-  ``detail["targets"]`` alongside the top-level ``entity_ids``.
+  Credential-shaped ``service_data`` keys (``password``, ``token``,
+  ``code``, ``api_key``, ``apikey``, ``secret``, ``pin``, ``passphrase``,
+  ``access_token``, ``refresh_token``, ``client_secret``,
+  ``authorization``, matched case-insensitively and at any nesting depth
+  inside dicts and lists), plus ``message``/``title`` for the ``notify``,
+  ``tts``, and ``persistent_notification`` domains and ``payload`` for
+  ``mqtt.publish``, are redacted to ``"[redacted]"`` before anything
+  touches disk. That redaction runs inside ``async_log`` itself - one
+  chokepoint every record passes through, never per-call-site (work item
+  1.6). Core merges a call's target block into ``service_data``, so
+  non-entity targets (``area_id``, ``device_id``, ``label_id``,
+  ``floor_id``) are extracted into ``detail["targets"]`` alongside the
+  top-level ``entity_ids``.
 - ``user_added`` / ``user_updated`` / ``user_removed`` - the three
   ``homeassistant.auth`` lifecycle events. SEMANTICS NOTE: ``user_id`` on
   these records is the best-effort ACTING user (the admin who made the
@@ -48,6 +55,14 @@ Captured directly (one bus event or dispatcher signal per record):
   empty, so this is a tripwire only: it records that the frontend panel
   set changed (a dashboard was created or deleted, a panel registered or
   removed), not which panel or by how much.
+
+HA SOC's own actions (work item 1.4, D-14): beyond the core events above,
+this project's own code calls ``async_log`` directly so the tool is in its
+own chain - ``detection_status_changed`` and ``privileged_read`` from
+websocket_api.py, ``firewall_resolved`` from firewall.py,
+``probe_auth_rejected`` from probe.py, ``soc_config_change`` and the
+user-management records from their handlers, and ``audit_chain_reset``
+from this module itself (see the wipe-detection paragraph below).
 
 Actor attribution (``detail["actor_source"]`` on records that use it):
 
@@ -85,13 +100,22 @@ the installed core source - so they are reconstructed indirectly):
   every invalid-auth request. This is IP-only. Home Assistant's ban
   middleware never logs the attempted username anywhere, so
   ``attempted_user`` is always ``None`` here - this module will not
-  fabricate one.
+  fabricate one. CONFIGURATION DEPENDENCY: this only works while the
+  ``homeassistant.components.http.ban`` logger's effective level stays at
+  WARNING or lower - raising it (via the ``logger:`` integration) stops
+  the logger from emitting the record at all, and the attached handler
+  never sees it, silently blinding failed-login auditing. health.py's
+  ``audit_ban_logger_silenced`` check watches for exactly that.
 - ``login_ok`` - polled every 30s by diffing each user's refresh tokens
   against a snapshot from the previous poll. A brand-new normal/webhook
   token, or an existing token whose ``last_used_at`` advanced, is logged as
   ``login_ok``. A token refresh looks identical to a fresh interactive
   login through this API, so this is best read as "this user's session was
-  active", not "this user just typed a password".
+  active", not "this user just typed a password". Each record's
+  ``detail.new_token`` says which branch produced it (True: a token that
+  did not exist on the previous poll; False: an existing token's activity
+  advanced) - the closest available signal to "a new session began", and
+  the one the success_after_failures detection rule keys on.
 - ``token_created`` - same poll loop; a brand-new
   ``long_lived_access_token`` id. For long-lived tokens this is the ONLY
   signal the poll will ever produce: core updates ``last_used_at`` and
@@ -134,21 +158,61 @@ Out of scope / structurally impossible from here:
   WebSocket/REST API. The Unauthorized error is raised and returned to the
   client; there is no bus event and no dedicated logger for it.
 - True tamper-*proof* storage. ``async_verify_chain`` proves the on-disk
-  hash chain is internally consistent, i.e. nothing in these files was
-  edited without recomputing every hash after it. It cannot prove the
-  files were never touched: anything with the same filesystem access that
-  reaches ``.storage/`` (an SSH/Terminal add-on, Samba, the File Editor
-  add-on, root on the host) can rewrite ``chain_head.json`` and every
-  record's hash to match. That makes this tamper-*evident*, not
-  tamper-proof. Real integrity guarantees require exporting the chain off
-  this box (e.g. to a remote syslog/SIEM) as it is written, which is out of
-  scope for this module.
+  hash chain is internally consistent from the retention anchor forward,
+  i.e. nothing in the surviving files was edited without recomputing every
+  hash after it. When retention has expired old day files, the anchor in
+  ``chain_head.json`` records the seq and hash of the newest expired
+  record, verification restarts the chain there, and the result reports
+  ``verified_from_seq`` (1 when nothing has ever expired) plus
+  ``expired_through`` so the operator can see exactly which prefix is
+  attested by the anchor rather than re-checked record by record. It
+  cannot prove the files were never touched: anything with the same
+  filesystem access that reaches ``.storage/`` (an SSH/Terminal add-on,
+  Samba, the File Editor add-on, root on the host) can rewrite
+  ``chain_head.json``, the anchor inside it, and every record's hash to
+  match. That makes this tamper-*evident*, not tamper-proof. Real
+  integrity guarantees require exporting the chain off this box (e.g. to a
+  remote syslog/SIEM) as it is written, which is out of scope for this
+  module.
 
 Storage: newline-delimited JSON, one file per UTC calendar day
 (``audit-YYYY-MM-DD.jsonl``) under ``.storage/<AUDIT_STORAGE_SUBDIR>/``,
 plus a tiny ``chain_head.json`` sidecar so the hash chain survives a
-restart. Records are only ever appended; nothing is rewritten in place.
-All file I/O runs in the executor - never on the event loop.
+restart. The sidecar also carries the retention anchor described above,
+written whenever retention deletes expired day files, so expiry does not
+break verification of everything that survives. Records are only ever
+appended; nothing is rewritten in place. All file I/O runs in the
+executor - never on the event loop.
+
+File modes (work item 1.1): the directory is created and kept 0o700, and
+every file in it - day files, ``chain_head.json``, and its ``.tmp``
+staging file - is opened through ``os.open`` with mode 0o600 so no other
+uid on the host can read the log. Files a pre-1.1 build left wider are
+tightened to 0o600 once at startup and the migration is logged at INFO.
+This matches what core does for its own auth store; it does not (and
+cannot) protect against the same-uid attacker described above.
+
+Flush cadence (work item 1.7): the buffer normally drains on a 30 s
+timer, but high-value categories (user lifecycle, HA SOC's own config
+changes, every ``firewall_*`` record, ``detection_status_changed``,
+``probe_auth_rejected``, ``audit_chain_reset``, ``privileged_read``)
+schedule an immediate flush task instead, so the records most worth
+tampering with reach the hash-chained files with the smallest possible
+window in which a crash - or a kill - could drop them from the buffer.
+
+Wipe/rollback detection (work item 1.5): after every successful flush the
+head {seq, hash, at} is mirrored into the general HA SOC store
+(``store.data["audit_head"]``), a separate file an attacker would have to
+falsify consistently with the audit directory. At startup, an on-disk
+head that is absent or behind that mirror means the directory was wiped,
+replaced, or rolled back: an ``audit_chain_reset`` record carrying both
+heads is written as the first record of the continued chain - with the
+mirror's hash as its ``prev_hash``, so the discontinuity is itself
+chained - a Repairs issue is raised, and ``chain_head.json`` keeps a
+``reset`` marker. While that marker exists (it ages out when retention
+expires the reset point), ``async_verify_chain`` reports
+``reason: chain_reset`` even when everything after the reset re-verifies,
+because the pre-reset history is gone and "ok" would be a false claim.
 """
 from __future__ import annotations
 
@@ -281,10 +345,61 @@ _SEGMENT_MAX_BYTES = 32 * 1024 * 1024
 
 _DEFAULT_QUERY_LOOKBACK = timedelta(days=7)
 
-_REDACTED_SERVICE_DATA_KEYS = frozenset({"password", "token", "code"})
-_REDACTED_MESSAGE_DOMAINS = frozenset({"notify", "tts"})
+# Keys redacted wherever they appear in a detail payload, matched
+# case-insensitively on the exact key name (never substring - "token_id"
+# stays visible, "token" does not) and at any nesting depth inside dicts
+# and lists (work item 1.6).
+_REDACTED_SERVICE_DATA_KEYS = frozenset(
+    {
+        "password",
+        "token",
+        "code",
+        "api_key",
+        "apikey",
+        "secret",
+        "pin",
+        "passphrase",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "authorization",
+        # Beyond item 1.6's list: HA SOC's own Probe pairing secret rides
+        # in the service_data of every ingest_probe_result and
+        # poll_firewall_command call, and the call_service bus event
+        # delivers that service_data straight into this module. Without
+        # this key the audit chain would archive the pairing credential
+        # verbatim on every poll.
+        "probe_secret",
+    }
+)
+# Domains whose message/title content is personal, not operational: what a
+# notification SAID is none of the audit log's business, only that one was
+# sent. persistent_notification joined notify/tts in work item 1.6.
+_REDACTED_MESSAGE_DOMAINS = frozenset({"notify", "tts", "persistent_notification"})
 
-_BAN_LOGGER_NAME = "homeassistant.components.http.ban"
+# Categories flushed to disk immediately (work item 1.7) rather than on the
+# 30 s timer, matched exactly or (for the prefixes) on startswith. These are
+# the records an attacker is most motivated to keep out of the chain, so
+# the buffer window for them is minimized. Public module constant so tests
+# can assert the set matches the plan.
+IMMEDIATE_FLUSH_CATEGORIES = frozenset(
+    {
+        "user_added",
+        "user_updated",
+        "user_removed",
+        "soc_config_change",
+        "detection_status_changed",
+        "probe_auth_rejected",
+        "audit_chain_reset",
+        "privileged_read",
+    }
+)
+IMMEDIATE_FLUSH_PREFIXES = ("firewall_",)
+
+# Public so health.py's audit_ban_logger_silenced check reads the exact
+# logger name this module's login_fail capture depends on, instead of
+# duplicating the string and drifting.
+BAN_LOGGER_NAME = "homeassistant.components.http.ban"
 # On core 2026.2, http/ban.py builds the invalid-auth warning as a fully
 # formatted f-string ("Login attempt or request with invalid authentication
 # from <host> (<addr>). Requested URL: ...") and logs it with NO args, so
@@ -306,19 +421,52 @@ def _normalize_entity_ids(value: Any) -> list[str]:
     return [str(value)]
 
 
-def _redact_service_data(domain: str | None, service_data: Any) -> dict[str, Any]:
-    """Return a copy of service_data with obviously sensitive keys masked."""
-    if not isinstance(service_data, dict):
-        return {}
-    redacted: dict[str, Any] = {}
-    for key, value in service_data.items():
-        if key in _REDACTED_SERVICE_DATA_KEYS:
-            redacted[key] = "[redacted]"
-        elif key == "message" and domain in _REDACTED_MESSAGE_DOMAINS:
-            redacted[key] = "[redacted]"
-        else:
-            redacted[key] = value
-    return redacted
+def _redact_service_data(
+    domain: str | None, service: str | None, value: Any
+) -> Any:
+    """Recursively mask credential-shaped keys in a detail payload.
+
+    Called on every record's ``detail`` from inside ``async_log`` - the
+    single chokepoint of work item 1.6 - so no call path can forget to
+    redact. Three rules, and why each is shaped the way it is:
+
+    - A key in ``_REDACTED_SERVICE_DATA_KEYS`` is masked wherever it
+      appears (any depth, inside lists too), matched case-insensitively on
+      the EXACT key name: substring matching would eat harmless keys like
+      ``token_id`` that the panel legitimately displays.
+    - ``message`` and ``title`` are masked for the notify/tts/
+      persistent_notification domains, and only when the record is a
+      service call (``service is not None``): a config-entry record for
+      the same domain carries a ``title`` that is the entry's display
+      name, not a notification body, and masking it would just destroy
+      information.
+    - ``payload`` is masked for ``mqtt.publish`` specifically, because an
+      MQTT payload routinely carries whatever the automation put in it,
+      credentials included, and no generic key rule can know that.
+
+    Values are replaced unconditionally (even empty ones) so the log never
+    reveals whether a credential field was filled in.
+    """
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, val in value.items():
+            key_lower = key.lower() if isinstance(key, str) else None
+            if key_lower in _REDACTED_SERVICE_DATA_KEYS:
+                redacted[key] = REDACTED_PLACEHOLDER
+            elif (
+                key_lower in ("message", "title")
+                and service is not None
+                and domain in _REDACTED_MESSAGE_DOMAINS
+            ):
+                redacted[key] = REDACTED_PLACEHOLDER
+            elif key_lower == "payload" and domain == "mqtt" and service == "publish":
+                redacted[key] = REDACTED_PLACEHOLDER
+            else:
+                redacted[key] = _redact_service_data(domain, service, val)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_service_data(domain, service, item) for item in value]
+    return value
 
 
 def _redact_secrets_deep(value: Any) -> Any:
@@ -413,6 +561,30 @@ class AuditLog:
         self._flush_lock = asyncio.Lock()
         self._seq = 0
         self._prev_hash = _GENESIS_PREV_HASH
+        # Retention anchor: the seq and hash of the newest record whose day
+        # file retention has deleted, plus when and through which day it
+        # expired. Kept in memory so every chain-head rewrite preserves it;
+        # None until retention first deletes something.
+        self._anchor: dict[str, Any] | None = None
+        # Chain-reset marker (work item 1.5): {seq, hash, at, disk_head_seq}
+        # of the store-mirrored head a wiped/rolled-back on-disk chain was
+        # continued from. Kept in memory for the same reason as the anchor
+        # (every head rewrite must preserve it) and cleared only when
+        # retention expires the reset point itself.
+        self._reset: dict[str, Any] | None = None
+        # Whether _sync_load_chain_head found a head file at all, so reset
+        # detection can distinguish "directory wiped" (no head) from "head
+        # rolled back" (head present but behind the store mirror).
+        self._head_file_found = False
+        # The in-flight immediate-flush task (work item 1.7), so a burst of
+        # high-value records schedules one flush, not one task per record.
+        self._flush_task: asyncio.Task[None] | None = None
+        # Whether _sync_load_chain_head has run. Immediate flushing is
+        # gated on this: an instance that has not loaded the head still
+        # carries genesis seq/prev_hash, and flushing it would chain new
+        # records from the wrong point and rewrite chain_head.json
+        # backwards over a live chain. Until then, records only buffer.
+        self._head_loaded = False
 
         self._unsubs: list[Unsub] = []
         self._cancel_flush_timer: Unsub | None = None
@@ -437,6 +609,11 @@ class AuditLog:
         """Create storage, load the chain head, and start capturing."""
         await self.hass.async_add_executor_job(self._sync_ensure_dir)
         await self.hass.async_add_executor_job(self._sync_load_chain_head)
+        # Reset detection must run after the head is loaded and before any
+        # listener can log, so the audit_chain_reset record is the FIRST
+        # record of the continued chain and carries the mirror's hash as
+        # its prev_hash (work item 1.5).
+        self._async_detect_chain_reset()
 
         self._unsubs.append(
             self.hass.bus.async_listen(EVENT_CALL_SERVICE, self._handle_call_service)
@@ -507,7 +684,7 @@ class AuditLog:
         )
 
         self._ban_handler = _FailedLoginLogHandler(self.hass, self._on_failed_login)
-        logging.getLogger(_BAN_LOGGER_NAME).addHandler(self._ban_handler)
+        logging.getLogger(BAN_LOGGER_NAME).addHandler(self._ban_handler)
 
         self._cancel_flush_timer = async_track_time_interval(
             self.hass, self._async_flush, _FLUSH_INTERVAL
@@ -530,10 +707,90 @@ class AuditLog:
         self._unsubs.clear()
 
         if self._ban_handler is not None:
-            logging.getLogger(_BAN_LOGGER_NAME).removeHandler(self._ban_handler)
+            logging.getLogger(BAN_LOGGER_NAME).removeHandler(self._ban_handler)
             self._ban_handler = None
 
         await self._async_flush()
+
+    # -- Wipe / rollback detection (work item 1.5) -----------------------
+
+    @callback
+    def _async_detect_chain_reset(self) -> None:
+        """Compare the loaded on-disk head against the store's mirror.
+
+        The mirror (store.data["audit_head"]) is written after every
+        successful flush, into a different file than the audit directory.
+        If the on-disk head is absent or behind it, the directory was
+        wiped, replaced, or rolled back since that flush. The response is
+        threefold: an audit_chain_reset record carrying both heads (logged
+        first, so it becomes the first record of the continued chain, with
+        the mirror's hash as its prev_hash - the discontinuity is itself
+        chained), a Repairs issue so a human actually sees it, and a
+        persistent reset marker in chain_head.json that keeps
+        verification honest (reason chain_reset) until the reset point
+        ages out under retention.
+
+        An on-disk head AHEAD of the mirror is normal, not suspicious: the
+        mirror's save is debounced, so a crash can lose its last update
+        while the chain head was written synchronously with the flush.
+        """
+        mirror = self._store.data.get("audit_head")
+        if not isinstance(mirror, dict):
+            return
+        try:
+            mirror_seq = int(mirror.get("seq"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            return
+        mirror_hash = mirror.get("hash")
+        if mirror_seq <= 0 or not isinstance(mirror_hash, str) or not mirror_hash:
+            return
+        if self._seq >= mirror_seq:
+            return
+
+        disk_head: dict[str, Any] | None = None
+        if self._head_file_found:
+            disk_head = {"seq": self._seq, "prev_hash": self._prev_hash}
+        _LOGGER.warning(
+            "HA SOC audit log: the on-disk chain head (%s) is behind the "
+            "store's mirror of the last flushed head (seq %d). The audit "
+            "directory was wiped, replaced, or rolled back. Continuing the "
+            "chain from the mirrored head and raising a Repairs issue.",
+            "absent" if disk_head is None else f"seq {self._seq}",
+            mirror_seq,
+        )
+
+        self._reset = {
+            "seq": mirror_seq,
+            "hash": mirror_hash,
+            "at": dt_util.utcnow().isoformat(),
+            "disk_head_seq": self._seq if self._head_file_found else None,
+        }
+        # Continue numbering and chaining from the mirror rather than from
+        # genesis: the next record (the audit_chain_reset record logged
+        # just below) gets seq mirror_seq + 1 and prev_hash mirror_hash,
+        # so the break in history is itself part of the chain.
+        self._seq = mirror_seq
+        self._prev_hash = mirror_hash
+
+        self.async_log(
+            "audit_chain_reset",
+            detail={
+                "store_head": dict(mirror),
+                "disk_head": disk_head,
+                "actor_source": "system",
+            },
+        )
+
+        # Local import: repairs.py exists precisely so single call sites
+        # like this one do not spread issue_registry imports around, and
+        # importing it lazily keeps this module's import graph minimal.
+        from .repairs import async_create_audit_chain_reset_issue
+
+        async_create_audit_chain_reset_issue(
+            self.hass,
+            store_seq=mirror_seq,
+            disk_seq=self._reset["disk_head_seq"],
+        )
 
     # -- Actor recovery -------------------------------------------------
 
@@ -629,7 +886,10 @@ class AuditLog:
         if not isinstance(service_data, dict):
             service_data = {}
         entity_ids = _normalize_entity_ids(service_data.get("entity_id"))
-        detail = _redact_service_data(domain, service_data)
+        # No redaction here on purpose: async_log is the single redaction
+        # chokepoint (work item 1.6), and it receives domain and service
+        # below, which is all _redact_service_data needs.
+        detail = dict(service_data)
         # Core merges a call's target block into service_data before firing
         # the event, so area/device/label/floor targets arrive as plain
         # keys here. Normalize them into detail["targets"] so an
@@ -853,7 +1113,7 @@ class AuditLog:
             return
 
         new_snapshot: dict[str, tuple[datetime | None, str | None]] = {}
-        events: list[tuple[str, str | None, str | None]] = []
+        events: list[tuple[str, str | None, str | None, dict[str, Any] | None]] = []
 
         for user in users:
             for token in user.refresh_tokens.values():
@@ -867,24 +1127,35 @@ class AuditLog:
                     # for every already-existing session at HA restart.
                     continue
 
+                # login_ok records carry detail.new_token so consumers can
+                # tell a brand-new refresh token (this previous-is-None
+                # branch) from an existing token whose last_used_at merely
+                # advanced. detections.py's success_after_failures rule
+                # depends on that distinction (work item 3.8): a token
+                # refresh is not a login, and treating it as one is what
+                # made the rule fire on background activity.
                 if previous is None:
                     if token.token_type == TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN:
-                        events.append(("token_created", user.id, token.last_used_ip))
+                        events.append(("token_created", user.id, token.last_used_ip, None))
                     else:
-                        events.append(("login_ok", user.id, token.last_used_ip))
+                        events.append(
+                            ("login_ok", user.id, token.last_used_ip, {"new_token": True})
+                        )
                 else:
                     prev_last_used_at, _prev_ip = previous
                     if (
                         token.last_used_at is not None
                         and token.last_used_at != prev_last_used_at
                     ):
-                        events.append(("login_ok", user.id, token.last_used_ip))
+                        events.append(
+                            ("login_ok", user.id, token.last_used_ip, {"new_token": False})
+                        )
 
         self._token_snapshot = new_snapshot
         self._first_poll_done = True
 
-        for category, user_id, ip in events:
-            self.async_log(category, user_id=user_id, ip=ip)
+        for category, user_id, ip, detail in events:
+            self.async_log(category, user_id=user_id, ip=ip, detail=detail)
 
     # -- Public logging API ---------------------------------------------
 
@@ -901,13 +1172,31 @@ class AuditLog:
         ip: str | None = None,
         attempted_user: str | None = None,
         detail: dict[str, Any] | None = None,
+        flush: bool = False,
     ) -> None:
         """Append a normalized record to the in-memory buffer. No I/O here.
 
         Event-loop only (bus listeners, the token poll, and the ban log
         handler's threadsafe handoff all call this from the loop) - it must
         stay a plain, synchronous, non-blocking callback.
+
+        This is the single redaction chokepoint (work item 1.6): every
+        detail payload passes through _redact_service_data (credential-
+        shaped keys, deep) and _redact_secrets_deep (HA SOC's own secret
+        setting keys) here, so no caller can forget.
+
+        ``flush=True`` forces an immediate flush task; the high-value
+        categories in IMMEDIATE_FLUSH_CATEGORIES / IMMEDIATE_FLUSH_PREFIXES
+        get one regardless (work item 1.7), so a caller outside this module
+        - probe.py's probe_auth_rejected, for one - cannot skip it by
+        omitting the flag.
         """
+        if detail is not None:
+            detail_value = _redact_secrets_deep(
+                _redact_service_data(domain, service, detail)
+            )
+        else:
+            detail_value = {}
         record = {
             "ts": dt_util.utcnow().isoformat(),
             "user_id": user_id,
@@ -919,9 +1208,43 @@ class AuditLog:
             "context_parent_id": context_parent_id,
             "ip": ip,
             "attempted_user": attempted_user,
-            "detail": _redact_secrets_deep(detail) if detail is not None else {},
+            "detail": detail_value,
         }
         self._buffer.append(record)
+        if (
+            flush
+            or category in IMMEDIATE_FLUSH_CATEGORIES
+            or category.startswith(IMMEDIATE_FLUSH_PREFIXES)
+        ):
+            self._async_schedule_flush()
+
+    @callback
+    def _async_schedule_flush(self) -> None:
+        """Schedule one immediate flush task (work item 1.7).
+
+        eager_start=False on purpose: an eagerly-started task would drain
+        the buffer synchronously inside the caller's frame, turning
+        async_log from "append and return" into "append, hash, and hand
+        off to the executor" mid-listener. Deferring to the next loop
+        iteration keeps async_log non-blocking and lets a burst of
+        high-value records ride one flush. The done-check (rather than a
+        None reset in a callback) is enough dedup: a task that is done has
+        already drained whatever was buffered when it ran, and anything
+        logged after that schedules a fresh one.
+
+        No-op until the chain head has been loaded: before that, this
+        instance's seq starts at genesis, and a flush would write records
+        numbered from 1 and clobber chain_head.json over whatever chain is
+        actually on disk. Records buffer instead, exactly as they did
+        before work item 1.7, and the start-time load makes them eligible.
+        """
+        if not self._head_loaded:
+            return
+        if self._flush_task is not None and not self._flush_task.done():
+            return
+        self._flush_task = self.hass.async_create_task(
+            self._async_flush(), eager_start=False
+        )
 
     # -- Flush / hash chain -----------------------------------------------
 
@@ -949,21 +1272,114 @@ class AuditLog:
     async def _async_flush(self, _now: Any = None) -> None:
         async with self._flush_lock:
             records = self._drain_and_prepare()
-            await self.hass.async_add_executor_job(self._sync_flush, records)
+            flushed_ok = await self.hass.async_add_executor_job(
+                self._sync_flush, records
+            )
+            if flushed_ok and records:
+                # Mirror the flushed head into the general store (work item
+                # 1.5) - on the event loop, after the executor job returned,
+                # because store.data must never be mutated off-loop. _seq
+                # and _prev_hash cannot have moved since the drain: the
+                # flush lock is held and only _drain_and_prepare mutates
+                # them. Only a successful flush advances the mirror; a
+                # failed one would make the mirror attest records that
+                # never reached disk.
+                self._store.async_set_audit_head(
+                    {
+                        "seq": self._seq,
+                        "hash": self._prev_hash,
+                        "at": dt_util.utcnow().isoformat(),
+                    }
+                )
 
     # -- Executor-only I/O ------------------------------------------------
 
     def _sync_ensure_dir(self) -> None:
-        os.makedirs(self._dir_path, exist_ok=True)
+        """Create the audit directory 0o700 and tighten what already exists.
+
+        makedirs' mode is subject to the process umask and ignored entirely
+        for a directory that already exists, so the explicit chmod is what
+        actually guarantees 0o700 in both cases (work item 1.1). Files a
+        pre-1.1 build created with default modes are tightened to 0o600
+        once and the migration is logged at INFO; on an already-migrated
+        directory the loop finds nothing to change and logs nothing.
+        """
+        os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(self._dir_path, 0o700)
+        except OSError:
+            _LOGGER.warning(
+                "HA SOC audit log: could not chmod %s to 0o700",
+                self._dir_path,
+                exc_info=True,
+            )
+        tightened: list[str] = []
+        try:
+            names = os.listdir(self._dir_path)
+        except OSError:
+            return
+        for name in names:
+            path = os.path.join(self._dir_path, name)
+            try:
+                if not os.path.isfile(path):
+                    continue
+                # Group or other bits set means another uid could read it.
+                if os.stat(path).st_mode & 0o077:
+                    os.chmod(path, 0o600)
+                    tightened.append(name)
+            except OSError:
+                _LOGGER.warning(
+                    "HA SOC audit log: could not chmod %s to 0o600",
+                    path,
+                    exc_info=True,
+                )
+        if tightened:
+            _LOGGER.info(
+                "HA SOC audit log: tightened %d pre-existing audit file(s) "
+                "to mode 0o600: %s",
+                len(tightened),
+                ", ".join(sorted(tightened)),
+            )
+
+    @staticmethod
+    def _sync_open_private(path: str, flags: int):
+        """Open ``path`` through os.open with creation mode 0o600.
+
+        A plain open() creates files with the process umask (typically
+        0o644); routing creation through os.open pins 0o600 at creation
+        time so there is no window in which a new day file or head temp
+        file is readable by another uid (work item 1.1). os.fdopen wraps
+        the descriptor into a normal text file object; the mode argument
+        only matters at creation, existing files keep their (already
+        tightened) mode.
+        """
+        fd = os.open(path, flags, 0o600)
+        return os.fdopen(fd, "w", encoding="utf-8")
 
     def _sync_load_chain_head(self) -> None:
+        # Whatever this method concludes - a restored head, or a legitimate
+        # fresh chain because nothing was on disk - is the real starting
+        # point, so immediate flushing (gated on this flag, see __init__)
+        # becomes safe the moment it has run.
+        self._head_loaded = True
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
-        if os.path.exists(path):
+        self._head_file_found = os.path.exists(path)
+        if self._head_file_found:
             try:
                 with open(path, "r", encoding="utf-8") as handle:
                     data = json.load(handle)
                 self._prev_hash = data.get("prev_hash", _GENESIS_PREV_HASH)
                 self._seq = int(data.get("seq", 0))
+                # The retention anchor rides along in the head file and must
+                # be restored across restarts, or the next head rewrite
+                # would silently drop it and expiry would break the chain.
+                anchor = data.get("anchor")
+                self._anchor = anchor if isinstance(anchor, dict) else None
+                # The reset marker (work item 1.5) is restored for the same
+                # reason: dropping it on the first post-restart head write
+                # would make a wiped chain verify clean again.
+                reset = data.get("reset")
+                self._reset = reset if isinstance(reset, dict) else None
                 return
             except (OSError, ValueError, TypeError):
                 _LOGGER.warning(
@@ -971,15 +1387,30 @@ class AuditLog:
                     path,
                     exc_info=True,
                 )
+                self._head_file_found = False
         self._prev_hash = _GENESIS_PREV_HASH
         self._seq = 0
+        self._anchor = None
+        self._reset = None
 
     def _sync_write_chain_head(self) -> None:
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         tmp_path = f"{path}.tmp"
-        payload = {"prev_hash": self._prev_hash, "seq": self._seq}
+        payload: dict[str, Any] = {"prev_hash": self._prev_hash, "seq": self._seq}
+        # Every head rewrite must carry the retention anchor forward. Losing
+        # it here would make a healthy log unverifiable from the first flush
+        # after retention expired anything. The reset marker is carried for
+        # the same reason (see the module docstring on 1.5).
+        if self._anchor is not None:
+            payload["anchor"] = self._anchor
+        if self._reset is not None:
+            payload["reset"] = self._reset
         try:
-            with open(tmp_path, "w", encoding="utf-8") as handle:
+            # The temp file is created 0o600 through os.open (work item
+            # 1.1); os.replace then preserves that mode on the real head.
+            with self._sync_open_private(
+                tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+            ) as handle:
                 json.dump(payload, handle)
             os.replace(tmp_path, path)
         except OSError:
@@ -987,9 +1418,13 @@ class AuditLog:
                 "HA SOC audit log: failed writing %s", path, exc_info=True
             )
 
-    def _sync_flush(self, records: list[dict[str, Any]]) -> None:
+    def _sync_flush(self, records: list[dict[str, Any]]) -> bool:
+        """Append prepared records and maintain the head. Returns whether
+        the write succeeded, so the caller only advances the store's head
+        mirror over records that actually reached disk (work item 1.5).
+        """
         try:
-            os.makedirs(self._dir_path, exist_ok=True)
+            os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
             if records:
                 by_day: dict[str, list[str]] = {}
                 for record in records:
@@ -999,12 +1434,20 @@ class AuditLog:
                     )
                 for day, lines in by_day.items():
                     file_path = self._sync_target_day_file(day)
-                    with open(file_path, "a", encoding="utf-8") as handle:
+                    # os.open with O_APPEND and mode 0o600 (work item 1.1):
+                    # a brand-new day file is born private, and appends to
+                    # an existing one behave exactly like open(..., "a").
+                    fd = os.open(
+                        file_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+                    )
+                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
                         handle.write("\n".join(lines) + "\n")
                 self._sync_write_chain_head()
             self._sync_apply_retention()
         except OSError:
             _LOGGER.exception("HA SOC audit log: flush to disk failed")
+            return False
+        return True
 
     def _sync_list_day_files(self) -> list[tuple[date, str]]:
         if not os.path.isdir(self._dir_path):
@@ -1055,9 +1498,27 @@ class AuditLog:
         retention_days = self._store.settings["audit_retention_days"]
         cutoff = dt_util.utcnow().date() - timedelta(days=retention_days)
 
+        # Every unlink below removes the front of the hash chain, so the
+        # tail (seq, hash) of each file is captured before removal and the
+        # highest one becomes the retention anchor that verification
+        # restarts the chain from. Only files that were actually removed
+        # count; a file that survived an unlink failure still verifies.
+        best_tail: tuple[int, str] | None = None
+        expired_through: date | None = None
+        deleted_any = False
+
+        def _note_deleted(file_date: date, tail: tuple[int, str] | None) -> None:
+            nonlocal best_tail, expired_through, deleted_any
+            deleted_any = True
+            if expired_through is None or file_date > expired_through:
+                expired_through = file_date
+            if tail is not None and (best_tail is None or tail[0] > best_tail[0]):
+                best_tail = tail
+
         kept: list[tuple[date, str, int]] = []
         for file_date, path in entries:
             if file_date < cutoff:
+                tail = self._sync_read_tail_seq_hash(path)
                 try:
                     os.remove(path)
                 except OSError:
@@ -1066,6 +1527,8 @@ class AuditLog:
                         path,
                         exc_info=True,
                     )
+                    continue
+                _note_deleted(file_date, tail)
                 continue
             try:
                 size = os.path.getsize(path)
@@ -1079,7 +1542,8 @@ class AuditLog:
         # if that alone exceeds the cap - losing the entire log is worse
         # than briefly going over budget.
         while total_size > max_bytes and len(kept) > 1:
-            _file_date, path, size = kept.pop(0)
+            file_date, path, size = kept.pop(0)
+            tail = self._sync_read_tail_seq_hash(path)
             try:
                 os.remove(path)
                 total_size -= size
@@ -1089,6 +1553,90 @@ class AuditLog:
                     path,
                     exc_info=True,
                 )
+                continue
+            _note_deleted(file_date, tail)
+
+        if not deleted_any:
+            return
+        if best_tail is None:
+            # Files were removed but none yielded a parseable tail record,
+            # so there is nothing truthful to anchor on. Any existing anchor
+            # is left in place and verification will honestly fail at the
+            # new front of the log rather than being papered over.
+            _LOGGER.warning(
+                "HA SOC audit log: expired files had no parseable tail "
+                "record; retention anchor not advanced"
+            )
+            return
+        if self._anchor is not None:
+            try:
+                existing_seq = int(self._anchor.get("seq"))
+            except (TypeError, ValueError):
+                existing_seq = None
+            # Deletions proceed oldest-first, so a new anchor should always
+            # be ahead of the old one; if it somehow is not, keeping the
+            # further-along anchor is the conservative choice.
+            if existing_seq is not None and existing_seq >= best_tail[0]:
+                return
+        self._anchor = {
+            "seq": best_tail[0],
+            "hash": best_tail[1],
+            "expired_through": expired_through.isoformat()
+            if expired_through is not None
+            else None,
+            "expired_at": dt_util.utcnow().isoformat(),
+        }
+        if self._reset is not None:
+            try:
+                reset_seq = int(self._reset.get("seq"))
+            except (TypeError, ValueError):
+                reset_seq = None
+            # Once the retention anchor has advanced past the reset point,
+            # the wiped range (and the audit_chain_reset record documenting
+            # it) has aged out of the retained window; keeping the marker
+            # would make verification fail forever over records that are
+            # legitimately gone. The reset stays discoverable in the store
+            # mirror's history and the Repairs issue until dismissed.
+            if reset_seq is None or best_tail[0] >= reset_seq:
+                _LOGGER.info(
+                    "HA SOC audit log: the chain-reset point (seq %s) has "
+                    "expired under retention; clearing the reset marker.",
+                    reset_seq,
+                )
+                self._reset = None
+        self._sync_write_chain_head()
+
+    @staticmethod
+    def _sync_read_tail_seq_hash(path: str) -> tuple[int, str] | None:
+        """Return (seq, hash) of a day file's last non-empty line.
+
+        Called on files retention is about to delete, so the chain can be
+        re-anchored where the deleted prefix ended. Returns None when the
+        file cannot be read or its tail is not a well-formed record; the
+        caller treats that as "nothing truthful to anchor on".
+        """
+        last_line: str | None = None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+        except OSError:
+            return None
+        if last_line is None:
+            return None
+        try:
+            record = json.loads(last_line)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        seq = record.get("seq")
+        record_hash = record.get("hash")
+        if not isinstance(seq, int) or not isinstance(record_hash, str) or not record_hash:
+            return None
+        return (seq, record_hash)
 
     @staticmethod
     def _read_jsonl(path: str):
@@ -1166,20 +1714,115 @@ class AuditLog:
         results.sort(key=lambda record: record.get("seq", 0), reverse=True)
         return results[:limit]
 
+    # -- Category volume stats -------------------------------------------
+
+    async def async_category_stats(self) -> dict[str, Any]:
+        """Per-category record counts and byte shares for the newest day.
+
+        Answers the open-items report's volume observation (a busy install
+        writes on the order of 10 MB of audit records per day) by showing
+        the owner WHAT produces the bulk, so retention and size-cap tuning
+        stops being guesswork. Deliberately cheap: only the newest day's
+        file(s) are scanned - a day is normally one file, plus rollover
+        segments only past 32 MB - in one pass each, with no new storage
+        and nothing indexed. Flushes first so the current day's buffered
+        records are counted.
+        """
+        await self._async_flush()
+        return await self.hass.async_add_executor_job(self._sync_category_stats)
+
+    def _sync_category_stats(self) -> dict[str, Any]:
+        entries = self._sync_list_day_files()
+        if not entries:
+            return {
+                "day": None,
+                "files": 0,
+                "total_records": 0,
+                "total_bytes": 0,
+                "categories": [],
+            }
+        newest_day = entries[-1][0]
+        paths = [path for file_date, path in entries if file_date == newest_day]
+
+        records: dict[str, int] = {}
+        sizes: dict[str, int] = {}
+        total_records = 0
+        total_bytes = 0
+        for path in paths:
+            # Read as bytes so byte shares reflect what is actually on
+            # disk, not a post-decode character count.
+            try:
+                with open(path, "rb") as handle:
+                    for raw_line in handle:
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        try:
+                            record = json.loads(line)
+                        except (ValueError, TypeError):
+                            category = "unparseable"
+                        else:
+                            category = (
+                                record.get("category") if isinstance(record, dict) else None
+                            ) or "unknown"
+                        size = len(raw_line)
+                        records[category] = records.get(category, 0) + 1
+                        sizes[category] = sizes.get(category, 0) + size
+                        total_records += 1
+                        total_bytes += size
+            except OSError:
+                continue
+
+        categories = [
+            {
+                "category": category,
+                "records": records[category],
+                "bytes": sizes[category],
+                "byte_share": round(sizes[category] / total_bytes, 4)
+                if total_bytes
+                else 0.0,
+            }
+            for category in records
+        ]
+        categories.sort(key=lambda entry: entry["bytes"], reverse=True)
+        return {
+            "day": newest_day.isoformat(),
+            "files": len(paths),
+            "total_records": total_records,
+            "total_bytes": total_bytes,
+            "categories": categories,
+        }
+
     # -- Chain verification ---------------------------------------------
 
     async def async_verify_chain(self) -> dict[str, Any]:
-        """Recompute the hash chain from the first record and check it.
+        """Recompute the hash chain and check it end to end.
 
         This proves the on-disk log is internally consistent - i.e. every
-        record's hash still matches ``prev_hash`` plus its own content, all
-        the way from the first record ever written. It does NOT prove the
-        files were never tampered with: anyone who can reach ``.storage/``
-        with the same filesystem access this integration has (an SSH/
-        Terminal add-on, Samba, the File Editor add-on, root on the host)
-        can rewrite every hash to be self-consistent again. Tamper-evident,
-        not tamper-proof - real integrity needs an off-box export, which is
-        out of scope for this module.
+        surviving record's hash still matches ``prev_hash`` plus its own
+        content - starting from the retention anchor when old day files
+        have expired, or from the first record ever written when nothing
+        has. The result reports ``verified_from_seq`` (1 when there is no
+        anchor) and ``expired_through`` (the last expired day, or None) so
+        the caller can state exactly which range was re-checked; records at
+        or before the anchor are attested only by the anchor's stored hash.
+        It does NOT prove the files were never tampered with: anyone who
+        can reach ``.storage/`` with the same filesystem access this
+        integration has (an SSH/Terminal add-on, Samba, the File Editor
+        add-on, root on the host) can rewrite every hash, the head, and the
+        anchor to be self-consistent again. Tamper-evident, not
+        tamper-proof - real integrity needs an off-box export, which is out
+        of scope for this module.
+
+        Chain reset (work item 1.5): the result reports ``reason:
+        chain_reset`` (with ``ok: False``) in two situations - when the
+        store's head mirror is ahead of the on-disk chain head (the
+        directory was wiped or rolled back and no restart has processed it
+        yet), and while ``chain_head.json`` carries the reset marker a
+        restart wrote after detecting exactly that (the continued chain
+        after the reset point is still re-verified record by record, but
+        "ok" would falsely claim an unbroken history). The marker ages out
+        when retention expires the reset point.
         """
         # Flush first so the check covers everything logged so far and the
         # records-checked count matches what the query view shows. The
@@ -1189,33 +1832,105 @@ class AuditLog:
         return await self.hass.async_add_executor_job(self._sync_verify_chain)
 
     def _sync_verify_chain(self) -> dict[str, Any]:
-        prev_hash = _GENESIS_PREV_HASH
+        # The anchor and reset marker are read from disk, not from memory,
+        # for the same reason the checkpoint below is: verification must
+        # judge what an attacker could have edited, not what this process
+        # remembers.
+        anchor_seq, anchor_hash, expired_through = self._sync_read_chain_head_anchor()
+        reset = self._sync_read_chain_head_reset()
+
+        # The chain walk starts from whichever discontinuity point is
+        # further along: the retention anchor (records legitimately
+        # expired) or the reset marker (records lost to a wipe/rollback,
+        # work item 1.5). Both carry the seq and hash the surviving chain
+        # continues from; only the verdict differs - an anchored start can
+        # end in ok, a reset start never can while the marker exists.
+        start_seq, start_hash = anchor_seq, anchor_hash
+        start_is_reset = False
+        if reset is not None and (start_seq is None or reset[0] > start_seq):
+            start_seq, start_hash = reset
+            start_is_reset = True
+        verified_from_seq = start_seq + 1 if start_seq is not None else 1
+
+        prev_hash = start_hash if start_seq is not None else _GENESIS_PREV_HASH
         checked = 0
-        last_seq = 0
+        # With a start point, the missing prefix legitimately ends at its
+        # seq; starting last_seq there keeps the completeness check from
+        # reading expiry (possibly of every file) as truncation.
+        last_seq = start_seq if start_seq is not None else 0
+
+        def _fail(
+            reason: str, first_break_seq: int | None, **extra: Any
+        ) -> dict[str, Any]:
+            result: dict[str, Any] = {
+                "ok": False,
+                "records_checked": checked,
+                "first_break_seq": first_break_seq,
+                "reason": reason,
+                "verified_from_seq": verified_from_seq,
+                "expired_through": expired_through,
+            }
+            result.update(extra)
+            return result
+
+        # A start-point contradiction is reported under the name of the
+        # marker being contradicted, so the operator is told which claim
+        # and which files disagree.
+        start_break_reason = "chain_reset" if start_is_reset else "anchor_inconsistent"
+
+        # Wipe/rollback while running (work item 1.5): the store's mirror
+        # of the last flushed head lives in a different file than anything
+        # under the audit directory, so a checkpoint that has fallen
+        # behind it means the directory contents were replaced with an
+        # older copy (or recreated from nothing) since that flush. Reading
+        # the mirror from store.data here is a read-only dict access from
+        # the executor, the same pattern _sync_apply_retention already
+        # uses for settings.
+        mirror = self._store.data.get("audit_head")
+        mirror_seq: int | None = None
+        if isinstance(mirror, dict):
+            try:
+                mirror_seq = int(mirror.get("seq"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                mirror_seq = None
+        head_seq, head_hash = self._sync_read_chain_head_checkpoint()
+        if mirror_seq is not None and (head_seq is None or head_seq < mirror_seq):
+            return _fail(
+                "chain_reset",
+                None,
+                store_head_seq=mirror_seq,
+                checkpoint_seq=head_seq,
+            )
 
         for _file_date, path in self._sync_list_day_files():
             for line in self._read_jsonl(path):
                 try:
                     record = json.loads(line)
                 except (ValueError, TypeError):
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": None,
-                        "reason": "corrupt_record",
-                    }
+                    return _fail("corrupt_record", None)
 
                 checked += 1
                 seq = record.get("seq")
                 stored_hash = record.get("hash")
 
+                if start_seq is not None and isinstance(seq, int):
+                    # No surviving record may sit at or before the start
+                    # point: the anchor asserts everything through its seq
+                    # was expired, and the reset marker asserts everything
+                    # through its seq was lost, so such a record is either
+                    # resurrected old data or a forged marker, and either
+                    # way the log and the marker cannot both be telling
+                    # the truth.
+                    if seq <= start_seq:
+                        return _fail(start_break_reason, seq)
+                    # The first surviving record must be the start point's
+                    # direct successor; a gap means records written after
+                    # it are missing.
+                    if checked == 1 and seq != start_seq + 1:
+                        return _fail(start_break_reason, seq)
+
                 if record.get("prev_hash") != prev_hash:
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": seq,
-                        "reason": "hash_mismatch",
-                    }
+                    return _fail("hash_mismatch", seq)
 
                 payload = {k: v for k, v in record.items() if k != "hash"}
                 recomputed = hashlib.sha256(
@@ -1223,12 +1938,7 @@ class AuditLog:
                 ).hexdigest()
 
                 if recomputed != stored_hash:
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": seq,
-                        "reason": "hash_mismatch",
-                    }
+                    return _fail("hash_mismatch", seq)
 
                 prev_hash = stored_hash
                 if isinstance(seq, int):
@@ -1245,35 +1955,104 @@ class AuditLog:
         # an attacker who rewrites BOTH the log and chain_head.json (that
         # needs an off-box anchor - see async_verify_chain's docstring), but
         # it closes the plain-truncation gap.
-        head_seq, head_hash = self._sync_read_chain_head_checkpoint()
         if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):
-            return {
-                "ok": False,
-                "records_checked": checked,
-                "first_break_seq": None,
-                "reason": "tail_truncated",
-                "checkpoint_seq": head_seq,
-                "last_on_disk_seq": last_seq,
-            }
+            return _fail(
+                "tail_truncated",
+                None,
+                checkpoint_seq=head_seq,
+                last_on_disk_seq=last_seq,
+            )
+
+        if reset is not None:
+            # Everything after the reset point re-verified clean, but the
+            # history before it is gone and only the store mirror ever
+            # attested where it ended - reporting ok here would claim an
+            # unbroken chain that does not exist. The marker (and with it
+            # this verdict) ages out when retention expires the reset
+            # point; until then the honest answer is "reset, then clean".
+            return _fail("chain_reset", None, reset_seq=reset[0])
 
         return {
             "ok": True,
             "records_checked": checked,
             "first_break_seq": None,
             "reason": None,
+            "verified_from_seq": verified_from_seq,
+            "expired_through": expired_through,
         }
 
-    def _sync_read_chain_head_checkpoint(self) -> tuple[int | None, str]:
-        """Read the persisted chain head (seq, prev_hash) straight from disk,
-        independent of the in-memory head, for the completeness check above.
-        Returns (None, "") when no checkpoint exists yet (fresh install).
+    def _sync_read_chain_head_file(self) -> dict[str, Any] | None:
+        """Read chain_head.json straight from disk, ignoring the in-memory
+        head, so the checks above judge what an attacker could have edited.
+        Returns None when the file is missing or unreadable.
         """
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         if not os.path.exists(path):
-            return (None, "")
+            return None
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-            return (int(data.get("seq", 0)), data.get("prev_hash", _GENESIS_PREV_HASH))
         except (OSError, ValueError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _sync_read_chain_head_checkpoint(self) -> tuple[int | None, str]:
+        """The persisted chain head (seq, prev_hash), for the completeness
+        check above. Returns (None, "") when no checkpoint exists yet (fresh
+        install) or the head file is unreadable.
+        """
+        data = self._sync_read_chain_head_file()
+        if data is None:
             return (None, "")
+        try:
+            return (int(data.get("seq", 0)), data.get("prev_hash", _GENESIS_PREV_HASH))
+        except (ValueError, TypeError):
+            return (None, "")
+
+    def _sync_read_chain_head_anchor(self) -> tuple[int | None, str, str | None]:
+        """The persisted retention anchor as (seq, hash, expired_through).
+
+        Returns (None, "", None) when no anchor exists or the stored one is
+        malformed; verification then starts at genesis, which fails loudly
+        (rather than silently passing) if records really did expire.
+        """
+        data = self._sync_read_chain_head_file()
+        anchor = data.get("anchor") if data is not None else None
+        if not isinstance(anchor, dict):
+            return (None, "", None)
+        try:
+            seq = int(anchor["seq"])
+            anchor_hash = anchor["hash"]
+        except (KeyError, ValueError, TypeError):
+            return (None, "", None)
+        if not isinstance(anchor_hash, str) or not anchor_hash:
+            return (None, "", None)
+        expired_through = anchor.get("expired_through")
+        return (
+            seq,
+            anchor_hash,
+            expired_through if isinstance(expired_through, str) else None,
+        )
+
+    def _sync_read_chain_head_reset(self) -> tuple[int, str] | None:
+        """The persisted chain-reset marker as (seq, hash), or None.
+
+        Written by _async_detect_chain_reset when a startup found the
+        on-disk head behind the store's mirror (work item 1.5), preserved
+        by every head rewrite, and cleared when retention expires the
+        reset point. A malformed marker reads as absent, which fails
+        loudly at the walk (the post-reset records' prev_hash chain has
+        nowhere valid to start) rather than silently passing.
+        """
+        data = self._sync_read_chain_head_file()
+        reset = data.get("reset") if data is not None else None
+        if not isinstance(reset, dict):
+            return None
+        try:
+            seq = int(reset["seq"])
+            reset_hash = reset["hash"]
+        except (KeyError, ValueError, TypeError):
+            return None
+        if not isinstance(reset_hash, str) or not reset_hash:
+            return None
+        return (seq, reset_hash)

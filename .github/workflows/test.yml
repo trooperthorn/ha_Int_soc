@@ -1,0 +1,68 @@
+# Runs the pytest suite and the frontend bundle drift check (work plan item
+# 0.6, CI-1). Both jobs run on every push and pull request so a change that
+# breaks a test or ships a stale bundle fails before merge, and release.yml
+# calls this workflow so the same jobs gate every GitHub Release.
+name: Test
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  # workflow_call lets release.yml run these exact jobs as a release gate
+  # instead of maintaining a second copy that could drift out of sync.
+  workflow_call:
+
+# The jobs only read the repository, so the workflow token gets read-only
+# scope; a compromised step must not be able to push or publish.
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest (Python 3.13)
+    runs-on: ubuntu-latest
+    steps:
+      # Third-party actions are pinned by commit SHA so a moved or
+      # compromised tag cannot change the code this workflow runs. Each
+      # digest was resolved from github.com on 2026-08-30 and the tag it
+      # matched at that time is in the trailing comment.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0 (v6)
+        with:
+          python-version: "3.13"
+      # The harness pin brings Home Assistant core 2026.2.3, and the
+      # home-assistant-frontend pin must match the version in that core's
+      # package_constraints.txt. When the harness is bumped, read the new
+      # constraint and bump the frontend pin in the same change (work plan
+      # section 7). Per decision D-16's safe default, CI tests only this
+      # pinned latest version until a minimum-version job is decided.
+      - name: Install the test harness
+        run: >
+          pip install "pytest-homeassistant-custom-component==0.13.316"
+          "home-assistant-frontend==20260128.6" aiousbwatcher pyserial pyudev
+      - name: Run the suite
+        run: pytest tests/ -q
+
+  bundle-drift:
+    name: Frontend bundle matches source
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      # frontend/package.json declares no engines constraint, so CI pins the
+      # Node line here. Node 22 is the active LTS line and the line the
+      # committed bundle was verified to rebuild byte-for-byte under.
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0 (v5)
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: custom_components/ha_soc/frontend/package-lock.json
+      # HACS serves the committed dist/ bundle, not the TypeScript source, so
+      # a source change without a rebuilt bundle would ship stale code.
+      # Rebuilding from source and diffing the committed bundle fails CI on
+      # any mismatch.
+      - name: Rebuild the bundle and fail on drift
+        run: |
+          cd custom_components/ha_soc/frontend
+          npm ci
+          npm run build
+          git diff --exit-code dist/

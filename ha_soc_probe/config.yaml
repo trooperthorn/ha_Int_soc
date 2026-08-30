@@ -17,23 +17,42 @@ startup: services
 boot: auto
 host_network: true
 homeassistant_api: true
-# NET_ADMIN is required for the firewall read/write feature — a real
+# NET_ADMIN is required for the firewall read/write feature: a real
 # CAP_NET_ADMIN is the only way a container can run iptables against the
-# host's actual netfilter tables, Protection Mode or not (see the HA SOC
-# integration's README for the full Supervisor security-rating breakdown
-# this incurs — a documented, deliberate -1). Every rule this add-on ever
-# applies lives in its own dedicated iptables chain (HA_SOC_RULES); it
-# never touches the raw INPUT chain or anything Docker itself manages.
+# host's actual netfilter tables, Protection Mode or not. Every rule this
+# add-on ever applies lives in its own dedicated iptables chain
+# (HA_SOC_RULES) plus exactly one jump rule at the top of INPUT into that
+# chain; it never touches anything Docker itself manages.
 privileged:
   - NET_ADMIN
-# docker_api maps the Docker socket for the OPTIONAL resource hard-cap
-# feature (per-add-on --memory/--cpus, configured owner-only in the HA SOC
-# panel). With Protection Mode ON (the default) the socket is read-only and
-# every cap application honestly reports "denied" — actually applying caps
-# requires the user to deliberately disable Protection Mode on THIS add-on,
-# a root-equivalent grant the panel spells out before anything is applied.
-# Users who don't use hard caps lose nothing by leaving Protection Mode on.
+# docker_api exists for the OPTIONAL resource hard-cap feature (per-add-on
+# --memory/--cpus, configured owner-only in the HA SOC panel). Declaring it
+# sets this add-on's Supervisor security rating to 1 unconditionally; that
+# is a deliberate, documented choice (one companion carries every host
+# capability the SOC needs; see the privilege ledger in DOCS.md and the
+# integration README). With Protection Mode ON (the default) the Supervisor
+# does not mount the Docker socket at all, and every cap application
+# honestly reports "denied". Actually applying caps requires deliberately
+# disabling Protection Mode on THIS add-on, a root-equivalent grant the
+# panel spells out before anything is applied. Users who don't use hard
+# caps lose nothing by leaving Protection Mode on.
 docker_api: true
+# Image signing, investigated 2026-08-30 (work item 2.5, recorded here as
+# the answer, not implemented): per the current developer documentation
+# (developers.home-assistant docs source at commit 186ad06,
+# docs/apps/security.md and docs/apps/publishing.md), image signing for
+# add-ons is done with Cosign through the official builder GitHub Actions
+# workflow, and it applies to PRE-BUILT images published to a container
+# registry under an `image:` key in this file. This add-on ships as a
+# locally built add-on (no `image:` key; the Supervisor builds it on the
+# user's machine from the Dockerfile), so a signed image is structurally
+# unavailable in its current publishing mode - the live install records
+# `signed: false`, and that is accurate, not an oversight. Moving to
+# signed pre-built images means publishing through the official builder
+# actions with Cosign and adding `image:`; the older CodeNotary mechanism
+# no longer appears in the configuration documentation at all. The
+# Dockerfile's base-image digest pin is the compensating supply-chain
+# control while the add-on remains locally built.
 options:
   scan_interval_hours: 6
 schema:

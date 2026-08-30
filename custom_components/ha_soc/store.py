@@ -6,13 +6,31 @@ resolved) of vulnerability, misconfiguration, scanner, and detection
 findings. It deliberately excludes the audit log and raw event history,
 which are high-volume and live in their own rotating JSONL files
 (see audit.py) — rewriting one Store file on every audit event would mean
-serializing the whole history on every write.
+serializing the whole history on every write. It also deliberately
+excludes every secret value: those live in the dedicated private secret
+store (secrets_store.py), so that this file never carries a credential.
+
+The one audit-related thing this Store DOES hold is ``audit_head``: a tiny
+{seq, hash, at} mirror of the audit chain's on-disk head, written by
+audit.py after every successful flush (work item 1.5). It exists because
+the audit directory and this Store file are two different files an
+attacker would have to falsify consistently: a wiped or rolled-back audit
+directory whose head has fallen behind this mirror is detected at the next
+startup and verification. The mirror only ever advances (see
+async_set_audit_head).
+
+The Store itself is created ``private=True, atomic_writes=True`` (work
+item 1.1): findings, baselines, and firewall history are sensitive even
+with the secrets moved out, so the file is written 0o600 through a temp
+file and rename, the same way core writes its own auth store.
 """
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
+import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
@@ -22,11 +40,13 @@ from .const import (
     DEFAULT_AUDIT_RETENTION_DAYS,
     DEFAULT_MFA_GRACE_PERIOD_DAYS,
     DEFAULT_MFA_POLICY,
-    DEFAULT_RISK_LEARNING_PERIOD_DAYS,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
     DEFAULT_SECURITY_SOURCES_ENABLED,
     DEFAULT_UNIFI_VERIFY_SSL,
+    DETECTION_RESOLVED,
+    STATUS_DISMISSED,
+    STATUS_RESOLVED,
     STORAGE_KEY,
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION_MAJOR,
@@ -35,14 +55,52 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Evidence retention (work item 3.3, decision D-6 option (a)): how long
+# RESOLVED detections and RESOLVED/DISMISSED findings are kept before the
+# periodic sweep prunes them. Open and acknowledged items never expire.
+# Module-local rather than in const.py: only this module reads it, per
+# const.py's own convention.
+DEFAULT_EVIDENCE_RETENTION_DAYS = 365
+
+# NVD lookups (decision D-12 option (a)): the device-vulnerability scan
+# sends device manufacturer and model strings to NIST's NVD. It stays ON
+# by default (existing behavior, now disclosed in Settings and the docs)
+# with this owner-facing off switch; vulns.py consumes the setting.
+DEFAULT_NVD_LOOKUPS_ENABLED = True
+
+# The three finding tables the evidence retention sweep prunes. The
+# firewall history is a capped list owned by firewall.py and is not swept
+# here.
+_EVIDENCE_FINDING_TABLES = ("vuln_findings", "misconfig_findings", "scanner_findings")
+
 
 class SettingsData(TypedDict):
+    # Secret VALUES are deliberately absent from this shape. Every key in
+    # const.SECRET_SETTING_KEYS (the NVD API key, the GitHub token, the two
+    # UniFi API keys) lives in the dedicated private secret store instead
+    # (secrets_store.py, work item SEC-1); async_migrate_legacy_secrets
+    # drains any value an older install still has in here on first load.
+    # The frontend's "<key>_set" booleans are derived on the wire by
+    # websocket_api._masked_settings, never persisted here.
     audit_retention_days: int
     audit_max_bytes: int
+    # How long resolved detections and resolved/dismissed findings are
+    # retained (work item 3.3, D-6). Distinct from audit_retention_days,
+    # which governs the audit chain's day files.
+    evidence_retention_days: int
     scanner_enabled: bool
     scanner_network_checks_enabled: bool
-    nvd_api_key: str | None
-    risk_learning_period_days: int
+    # D-12: device manufacturer/model strings are sent to NIST's NVD only
+    # while this is on. Consumed by vulns.py.
+    nvd_lookups_enabled: bool
+    # Owner overrides for the tunable detection thresholds (work item 3.0,
+    # D-9): rule id -> {parameter: value}, sparse. Effective values are
+    # always read through detections.thresholds(), which merges these over
+    # the secure defaults, so a missing key never means "off". The old
+    # risk_learning_period_days setting was replaced by the two per-rule
+    # learning_days parameters in here; async_load migrates a stored value
+    # into both once.
+    detection_thresholds: dict[str, dict[str, Any]]
     access_level: str
     mfa_policy: str
     mfa_grace_period_days: int
@@ -54,14 +112,11 @@ class SettingsData(TypedDict):
     # start dark for an existing install.
     security_sources_enabled: dict[str, bool]
     # UniFi Network / Protect direct-to-console connections (Network tab).
-    # Host + local API key + SSL-verify per app; the two API keys are
-    # secrets (see const.SECRET_SETTING_KEYS) — never returned raw, never
-    # logged. Empty host means "not configured".
+    # Host + SSL-verify per app; the matching API keys are secrets and live
+    # in the secret store. Empty host means "not configured".
     unifi_network_host: str | None
-    unifi_network_api_key: str | None
     unifi_network_verify_ssl: bool
     unifi_protect_host: str | None
-    unifi_protect_api_key: str | None
     unifi_protect_verify_ssl: bool
 
 
@@ -69,6 +124,11 @@ class StoreData(TypedDict):
     """Shape of the JSON persisted under .storage/ha_soc.storage."""
 
     settings: SettingsData
+    # {seq, hash, at} mirror of the audit chain's last flushed head, written
+    # by audit.py after every successful flush and compared against the
+    # on-disk chain head at startup so a wiped or rolled-back audit
+    # directory is detected (work item 1.5). None until the first flush.
+    audit_head: dict[str, Any] | None
     # user_id -> dashboard url_path -> {"views": {view_path: bool}, "sidebar_hidden": bool}
     permissions_matrix: dict[str, dict[str, Any]]
     # finding_id -> finding record (see vulns.py / health.py / scanner.py for field shapes)
@@ -83,6 +143,15 @@ class StoreData(TypedDict):
     user_baselines: dict[str, dict[str, Any]]
     # daily posture-score snapshots for the dashboard's 30d sparkline
     posture_history: list[dict[str, Any]]
+    # posture term -> ISO timestamp of the FIRST time that term ever
+    # computed from real data (work item 3.4, D-10 "computed once ever").
+    # risk.py stamps terms as their sources become observable; until every
+    # term is present the posture result carries provisional=True.
+    posture_terms: dict[str, str]
+    # Detection-engine runtime facts that must survive a restart. Today:
+    # {"last_pass_completed_at": ISO} - written by detections.py at the end
+    # of every pass, read by risk.py as the p_detection term's evidence.
+    detections_meta: dict[str, Any]
     # config_entry_id -> rolling 24h health counters, written by health.py and
     # read by risk.py for the P_integration posture term:
     # {state, error_count_24h, unavailable_ratio, retry_transitions_24h, domain, title}
@@ -126,21 +195,21 @@ def default_store_data() -> StoreData:
         settings=SettingsData(
             audit_retention_days=DEFAULT_AUDIT_RETENTION_DAYS,
             audit_max_bytes=DEFAULT_AUDIT_MAX_BYTES,
+            evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
-            nvd_api_key=None,
-            risk_learning_period_days=DEFAULT_RISK_LEARNING_PERIOD_DAYS,
+            nvd_lookups_enabled=DEFAULT_NVD_LOOKUPS_ENABLED,
+            detection_thresholds={},
             access_level=DEFAULT_ACCESS_LEVEL,
             mfa_policy=DEFAULT_MFA_POLICY,
             mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
             security_sources_enabled=dict(DEFAULT_SECURITY_SOURCES_ENABLED),
             unifi_network_host=None,
-            unifi_network_api_key=None,
             unifi_network_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
             unifi_protect_host=None,
-            unifi_protect_api_key=None,
             unifi_protect_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
         ),
+        audit_head=None,
         permissions_matrix={},
         vuln_findings={},
         misconfig_findings={},
@@ -148,6 +217,8 @@ def default_store_data() -> StoreData:
         detections={},
         user_baselines={},
         posture_history=[],
+        posture_terms={},
+        detections_meta={},
         integration_health={},
         mfa_grace_started={},
         host_probe=None,
@@ -157,11 +228,13 @@ def default_store_data() -> StoreData:
             "known_rules_reported_at": None,
             "pending": None,
             "history": [],
-            # Trust-on-first-use secret shared with the add-on. Pinned to the
-            # first non-empty probe_secret Core sees; thereafter every
-            # ingest/poll call must present a match or it's rejected. See
+            # No "addon_secret" key here anymore, deliberately: the shared
+            # pairing secret with the Probe add-on lives in the private
+            # secret store (secrets_store.PROBE_PAIRING_SECRET_KEY) since
+            # work item SEC-1, and a legacy value in an older install's
+            # stored firewall dict is drained into it on first load by
+            # async_migrate_legacy_secrets. See
             # firewall.async_verify_or_pin_secret.
-            "addon_secret": None,
         },
         integration_security={"github": {}, "refreshed_at": None},
         resource_watchdog={
@@ -208,21 +281,34 @@ class HaSocData:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
+        # private=True + atomic_writes=True (work item 1.1, D-8 option (a)):
+        # findings, per-user baselines, and the firewall history are
+        # sensitive even without the secret values (which live in
+        # secrets_store.py), so the file gets the same 0o600 temp-file-and-
+        # rename treatment core gives its own auth store.
         self._store = HaSocStore(
             hass,
             STORAGE_VERSION_MAJOR,
             STORAGE_KEY,
+            private=True,
+            atomic_writes=True,
             minor_version=STORAGE_VERSION_MINOR,
         )
         self.data: StoreData = default_store_data()
+        # Runtime-only cache of the Supervisor system user's id, resolved
+        # lazily by probe.py on the first inbound Probe call and never
+        # persisted: the id is core's to assign, and caching it here just
+        # spares the ~5s poll cadence a registry lookup per call.
+        self.supervisor_user_id: str | None = None
 
     async def async_load(self) -> bool:
         """Load persisted state. Returns True if a prior save existed.
 
-        The return value lets the caller distinguish "this is the very
-        first time HA SOC has ever run" (nothing on disk yet) from a normal
-        restart — used once, in __init__.py, to decide whether a pre-setup
-        options-flow save should be seeded into settings.
+        The return value distinguishes "this is the very first time HA SOC
+        has ever run" (nothing on disk yet) from a normal restart. The old
+        seed-from-entry.options path that consumed it was removed with the
+        entry.options mirror (work item SEC-2); the flag is kept because it
+        is cheap and honest information a future first-run step may need.
         """
         stored = await self._store.async_load()
         if stored is not None:
@@ -241,9 +327,34 @@ class HaSocData:
             # code (and the frontend) assumes is always present.
             settings_defaults = default_store_data()["settings"]
             settings_defaults.update(stored.get("settings") or {})  # type: ignore[typeddict-item]
+            self._migrate_legacy_learning_period(settings_defaults)
             defaults["settings"] = settings_defaults
             self.data = defaults
         return stored is not None
+
+    @staticmethod
+    def _migrate_legacy_learning_period(settings: dict[str, Any]) -> None:
+        """Copy risk_learning_period_days into the per-rule learning_days.
+
+        Work item 3.0 (D-9): the single risk_learning_period_days setting
+        was replaced by the two per-rule learning_days thresholds. A value
+        an existing install had stored is copied into BOTH rules' override
+        slots exactly once (setdefault, so an already-set per-rule value
+        wins), then the legacy key is dropped so it stops round-tripping
+        forever. The rule ids are literal strings here because store.py
+        must not import detections.py (detections imports this module).
+        """
+        legacy = settings.pop("risk_learning_period_days", None)
+        if legacy is None:
+            return
+        thresholds = settings.setdefault("detection_thresholds", {})
+        for rule in ("new_ip_login", "off_hours_anomaly"):
+            thresholds.setdefault(rule, {}).setdefault("learning_days", legacy)
+        _LOGGER.info(
+            "HA SOC: migrated risk_learning_period_days=%s into the per-rule "
+            "learning_days detection thresholds",
+            legacy,
+        )
 
     def async_schedule_save(self) -> None:
         """Debounced save — safe to call after every small mutation."""
@@ -259,6 +370,28 @@ class HaSocData:
 
     def async_update_settings(self, **changes: Any) -> None:
         self.data["settings"].update(changes)  # type: ignore[typeddict-item]
+        self.async_schedule_save()
+
+    # -- Audit chain head mirror (work item 1.5) -----------------------------
+    def async_set_audit_head(self, head: dict[str, Any]) -> None:
+        """Record the audit chain's flushed head ({seq, hash, at}).
+
+        The mirror only ever advances. A chain head that moves backwards is
+        exactly the wipe/rollback signal audit.py compares this mirror
+        against, so accepting a lower seq here would erase the evidence the
+        mirror exists to preserve. In normal operation the head always
+        advances anyway (a post-reset chain continues numbering from this
+        mirror, see audit.py), so a regressing call is a programming error
+        or a race and is dropped rather than honored.
+        """
+        current = self.data.get("audit_head")
+        if isinstance(current, dict):
+            try:
+                if int(current.get("seq", 0)) >= int(head["seq"]):
+                    return
+            except (TypeError, ValueError, KeyError):
+                pass
+        self.data["audit_head"] = head
         self.async_schedule_save()
 
     # -- Permissions matrix -------------------------------------------------
@@ -318,15 +451,128 @@ class HaSocData:
 
     # -- Detections ---------------------------------------------------------
     def async_upsert_detection(self, detection_id: str, detection: dict[str, Any]) -> None:
+        """Insert or replace a detection row, preserving analyst state.
+
+        Work item 3.10: when a WRITER other than the row's own prior state
+        replaces an existing detection wholesale (the resource watchdog
+        builds a fresh dict with status "open" on every re-trip), the
+        analyst-set lifecycle fields must survive - an acknowledged or
+        resolved detection never flips back to open just because the same
+        condition tripped again. detections.py's engine passes the
+        existing dict object back on update, so this branch is a no-op
+        for it.
+        """
+        existing = self.data["detections"].get(detection_id)
+        if existing is not None and existing is not detection:
+            detection["status"] = existing.get("status", detection.get("status"))
+            for key in ("status_by", "status_at", "previous_status"):
+                if key in existing:
+                    detection[key] = existing[key]
         self.data["detections"][detection_id] = detection
         self.async_schedule_save()
 
-    def async_set_detection_status(self, detection_id: str, status: str) -> None:
+    def async_set_detection_status(
+        self,
+        detection_id: str,
+        status: str,
+        *,
+        by_user_id: str | None = None,
+        at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Set a detection's status, recording who, when, and what it was.
+
+        status_by/status_at/previous_status are recorded on the detection
+        itself (work item 1.4) so the analyst trail survives on the record,
+        not only in the audit chain. Returns the mutated detection so the
+        caller can audit rule_id and previous_status, or None when no such
+        detection exists (in which case nothing changed and nothing should
+        be audited).
+        """
         detection = self.data["detections"].get(detection_id)
         if detection is None:
-            return
+            return None
+        detection["previous_status"] = detection.get("status")
         detection["status"] = status
+        detection["status_by"] = by_user_id
+        detection["status_at"] = at
         self.async_schedule_save()
+        return detection
+
+    def async_note_detection_pass_completed(self, at_iso: str) -> None:
+        """Record that a detection pass finished (read by risk.py, item 3.4)."""
+        self.data["detections_meta"]["last_pass_completed_at"] = at_iso
+        self.async_schedule_save()
+
+    # -- Evidence retention (work item 3.3, decision D-6) --------------------
+    def async_prune_evidence(self, now: datetime) -> dict[str, int]:
+        """Prune closed-out evidence older than evidence_retention_days.
+
+        D-6 option (a): only RESOLVED detections and RESOLVED/DISMISSED
+        findings are eligible - an open or acknowledged item never
+        expires, no matter how old. Age is measured from when the analyst
+        closed the record (status_at) where that exists, falling back to
+        the record's own last activity timestamp for records closed by a
+        build that predates status_at. Returns per-table removal counts
+        for the caller's logging.
+        """
+        retention_days = self.settings.get(
+            "evidence_retention_days", DEFAULT_EVIDENCE_RETENTION_DAYS
+        )
+        cutoff = dt_util.as_utc(now) - timedelta(days=retention_days)
+        removed: dict[str, int] = {}
+
+        def _is_expired(record: dict[str, Any], fallback_keys: tuple[str, ...]) -> bool:
+            for key in ("status_at", *fallback_keys):
+                raw = record.get(key)
+                if raw:
+                    moment = dt_util.parse_datetime(raw)
+                    if moment is not None:
+                        return moment < cutoff
+            # No parseable timestamp at all: keep the record. Deleting
+            # evidence whose age cannot be established would be guessing.
+            return False
+
+        detections = self.data["detections"]
+        expired_ids = [
+            det_id
+            for det_id, det in detections.items()
+            if det.get("status") == DETECTION_RESOLVED
+            and _is_expired(det, ("last_seen", "ts"))
+        ]
+        for det_id in expired_ids:
+            del detections[det_id]
+        removed["detections"] = len(expired_ids)
+
+        for table in _EVIDENCE_FINDING_TABLES:
+            findings = self._findings_table(table)
+            expired_ids = [
+                finding_id
+                for finding_id, finding in findings.items()
+                if finding.get("status") in (STATUS_RESOLVED, STATUS_DISMISSED)
+                and _is_expired(finding, ("last_seen", "first_seen"))
+            ]
+            for finding_id in expired_ids:
+                del findings[finding_id]
+            removed[table] = len(expired_ids)
+
+        if any(removed.values()):
+            self.async_schedule_save()
+            _LOGGER.debug("HA SOC evidence retention pruned: %s", removed)
+        return removed
+
+    # -- Posture term bookkeeping (work item 3.4, decision D-10) -------------
+    def async_mark_posture_term_computed(self, term: str, at_iso: str) -> None:
+        """Record the FIRST time a posture term computed from real data.
+
+        Only the first stamp is kept ("computed once ever", per D-10): a
+        term that has produced a value once stays counted even if its
+        source table later empties out, because provisional means "never
+        yet computed", not "currently empty".
+        """
+        terms = self.data["posture_terms"]
+        if term not in terms:
+            terms[term] = at_iso
+            self.async_schedule_save()
 
     # -- Posture history ------------------------------------------------
     def async_append_posture_snapshot(self, snapshot: dict[str, Any], *, max_days: int = 90) -> None:
