@@ -112,8 +112,13 @@ async def test_ha_soc_itself_is_a_custom_row(
     row = next(r for r in overview["integrations"] if r["domain"] == DOMAIN)
     assert row["tier"] == INTEGRATION_TIER_CUSTOM
     assert row["is_custom"] is True
-    # There is NO LICENSE/COPYING file in custom_components/ha_soc/, so the
-    # local license check honestly reports False (asserting the real fact).
+    # custom_components/ha_soc/ ships its own LICENSE copy (added alongside
+    # the repo-root one for the HACS license check), so the local license
+    # check reports True. The check runs against the HARNESS config dir's
+    # custom_components, which doesn't exist there — so it falls back to the
+    # per-row executor check against... the harness path, and reports False.
+    # Assert the honest harness-visible value: no LICENSE at the harness's
+    # config-dir path means False here, True on a real install.
     assert row["license_present"] is False
 
 
