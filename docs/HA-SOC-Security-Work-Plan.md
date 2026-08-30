@@ -737,6 +737,8 @@ Test environment used: Python 3.13.13, `pytest-homeassistant-custom-component` 0
 
 Settled since revision 1 (moved to 6.1): the `get_addons_info()` field set, `!secret`/`!include` behavior, the `automation.reload` schema, and yarl `..` normalization.
 
+Settled by the first live D-21 run (2026-08-30, output pasted by the owner; recorded in `ha_soc_probe/DOCS.md`): Supervisor 2026.08.0 (GHSA-gh5m-4m97-c95h patched); the add-on installs, scans, and reports on the real Supervisor, and the 502 hold-and-retry path recovered from a live Core restart; the observed rating is 1 with `apparmor: default`, `protected: true`, `signed: false`; the live `get_addons_info()` payload carries every key the sprint 7 inventory needs; both services are registered through the proxy; the pre-fix build's file modes (0o644 store and audit files, 0o755 audit directory) confirmed the DATA-1 finding on disk; backup encryption is on for the default and the one configured agent. The run's container-level section found no container to inspect (the add-on was mid-recreate under auto-update), so the entries below stay open; the script now discovers the container instead of assuming its name.
+
 Still open, all covered by `ha_soc_verify_supervisor.sh` (D-21) except the last two:
 
 - Whether `/var/run/docker.sock` resolves to `/run/docker.sock` inside the running Probe container on this host.

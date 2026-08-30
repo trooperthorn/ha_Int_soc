@@ -191,12 +191,49 @@ scan_interval_hours: 6
 - The HA SOC integration installed and loaded, since this add-on's only
   job is calling into it.
 
+## Verified on a real Supervisor
+
+On 2026-08-30 the owner ran the read-only verification script
+(`scripts/ha_soc_verify_supervisor.sh` in the repository, work plan
+decision D-21) on the production Home Assistant OS install. Facts
+recorded from that run, each checkable against the pasted output:
+
+- Supervisor 2026.08.0. GHSA-gh5m-4m97-c95h (fixed in 2026.03.2) is
+  patched on this install.
+- The add-on installs, starts, and works: version 2026.08.30.2, state
+  started, 91 listening TCP ports found and reported successfully. The
+  hold-and-retry path was exercised live: during a Core restart the
+  report was refused with HTTP 502 and the add-on backed off 30s, 60s,
+  120s, then succeeded on the next cycle.
+- The Supervisor rates the add-on 1, exactly as the privilege ledger
+  states, with `protected: true`, `host_network: true`,
+  `docker_api: true`, `privileged: [NET_ADMIN]`, `apparmor: default`
+  (no custom profile yet; that is planned work), `signed: false`,
+  `hassio_role: default`.
+- The cached add-on info payload carries every key the planned add-on
+  privilege inventory needs (`host_pid`, `host_uts`, `full_access`,
+  `hassio_role`, `ingress`, `rating`, `protected`, `signed`, and the
+  rest), confirming the aiohasupervisor model against the live shape.
+- Both callback services are registered and reachable through the
+  Supervisor proxy.
+- The install slug is Supervisor-assigned from the repository
+  (`9ddefa12_ha_soc_probe` there; yours will differ), which is why the
+  integration matches this add-on by its `name`, never by slug.
+
+Still unverified, because the container-level half of that run hit the
+add-on mid-recreate (auto-update) and found no container to inspect:
+the iptables backend in use versus the host's, `ip6tables` and kernel
+`ip6_tables` support, the effective AppArmor profile and capability
+set, the Docker socket path and `/var/run` symlink question, the secret
+file mode, and the absence of listening sockets. The script now
+discovers the container instead of assuming its name; a re-run of just
+that section settles these.
+
 ## A note on how this was built
 
 This add-on's scripts were written and reviewed against Home Assistant's
 official add-on documentation and real, current official add-ons (see the
 integration repo's design notes for exactly what was checked and where),
-but — unlike the HA SOC integration itself, which is validated against a
-real `pytest-homeassistant-custom-component` test harness — this add-on
-has not yet been built and run against a real Home Assistant Supervisor.
-If something here doesn't work as described, please open an issue.
+and since 2026-08-30 it has run in production on the owner's Home
+Assistant OS install (see "Verified on a real Supervisor" above). If
+something here doesn't work as described, please open an issue.

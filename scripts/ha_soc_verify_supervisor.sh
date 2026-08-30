@@ -41,17 +41,20 @@ JQ=""
 if have jq; then JQ="jq"; else note "jq not found; raw JSON is printed instead of extracted fields."; fi
 
 section "Platform versions"
-ha info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '{supervisor, homeassistant, hassos, operating_system, machine, arch, supported, healthy}' || cat; }
-ha supervisor info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '{version, version_latest, supported, healthy, addons_repositories}' || cat; }
-ha os info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '{version, version_latest, board, boot, data_disk, update_available}' || cat; }
+# The ha CLI wraps every payload in {"result": ..., "data": {...}}; unwrap
+# .data first or every extracted field prints null (seen on the first live
+# run, Supervisor 2026.08.0).
+ha info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {supervisor, homeassistant, hassos, operating_system, machine, arch, supported, healthy}' || cat; }
+ha supervisor info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {version, version_latest, supported, healthy, addons_repositories}' || cat; }
+ha os info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {version, version_latest, board, boot, data_disk, update_available}' || cat; }
 if [ -n "$JQ" ]; then
     SUP_VER=$(ha supervisor info --raw-json 2>/dev/null | jq -r '.data.version // .version // empty')
     fact "supervisor_version=${SUP_VER:-unknown}  (GHSA-gh5m-4m97-c95h is fixed in 2026.03.2 and later)"
 fi
 
 section "Boot slots (the RAUC / 18.2 question)"
-ha os info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '{boot, version, version_latest, update_available}' || cat; }
-ha host info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '{operating_system, kernel, boot_timestamp, startup_time, disk_total, disk_used, disk_free}' || cat; }
+ha os info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {boot, version, version_latest, update_available}' || cat; }
+ha host info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {operating_system, kernel, boot_timestamp, startup_time, disk_total, disk_used, disk_free}' || cat; }
 
 section "Locate the Probe add-on by its name"
 SLUG=""
@@ -120,7 +123,18 @@ if ! have docker; then
 elif [ -z "$SLUG" ]; then
     note "Probe slug unknown; container-level facts skipped."
 else
-    C="addon_$SLUG"
+    # Discover the container instead of assuming addon_<slug>: with
+    # auto_update on, the Supervisor recreates the container on every add-on
+    # update, and the first live run hit exactly that window ("No such
+    # container"). Fall back to the conventional name, and say what IS
+    # running when neither matches so a retry is informed, not blind.
+    C=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 "ha_soc_probe" || true)
+    if [ -z "$C" ]; then C="addon_$SLUG"; fi
+    if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$C"; then
+        note "Container $C is not running right now (an auto-update may have it mid-recreate)."
+        note "Running containers matching nothing suppressed; retry in a minute. Full list:"
+        docker ps --format '  {{.Names}}' 2>/dev/null
+    fi
     docker inspect "$C" --format 'FACT container.NetworkMode={{.HostConfig.NetworkMode}}
 FACT container.CapAdd={{json .HostConfig.CapAdd}}
 FACT container.Privileged={{.HostConfig.Privileged}}

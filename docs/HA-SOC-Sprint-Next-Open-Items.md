@@ -32,11 +32,18 @@ it. The next sprint starts from section 2 in order.
   the tested core version (D-16), the upstream proposal drafted for owner
   review (D-22, docs/UPSTREAM-CORE-PROPOSAL.md).
 
-## 2. Blocked on the owner's verification run (D-21)
+## 2. Blocked on the container half of the verification run (D-21)
 
-The read-only script is committed at scripts/ha_soc_verify_supervisor.sh.
-Until its FACT lines are pasted back and recorded in ha_soc_probe/DOCS.md,
-these stay parked; every one of them consumes a fact only that run settles:
+The owner ran the script on 2026-08-30. The platform and add-on level
+facts are recorded in ha_soc_probe/DOCS.md and cleared from the plan's
+section 6.2: the add-on works on the real Supervisor, the rating is 1 as
+documented, the 502 hold-and-retry recovered from a live Core restart,
+and the pre-fix build's world-readable file modes confirmed DATA-1 on
+disk. The container-level section found no container to inspect because
+the add-on was mid-recreate under auto-update; the script now discovers
+the container by name instead of assuming it. What remains is one
+re-run of that last section (SSH add-on Protection Mode off for the
+run, then back on), and these stay parked until it lands:
 
 - 2.4 IPv6 firewall parity (D-3 requires it). Needs: which iptables
   backend (legacy or nft) the Probe's binaries and the host's Docker use,
@@ -86,10 +93,11 @@ versioning step, with a migration note.
 
 ## 4. Owner actions (no code can substitute)
 
-- Run scripts/ha_soc_verify_supervisor.sh from the SSH add-on (Protection
-  Mode off for the container-level facts, then back on) and paste the
-  output. This is the recorded D-21 decision's missing input and the
-  gate for section 2 above.
+- Re-run scripts/ha_soc_verify_supervisor.sh (or just its container
+  section) from the SSH add-on with Protection Mode off, at a moment the
+  Probe is not mid-update, and paste the output. The first run settled
+  everything above the container level; this retry is the remaining gate
+  for section 2.
 - Mark the CI checks (pytest, bundle-drift) required in branch
   protection; a workflow file cannot set that.
 - Review docs/UPSTREAM-CORE-PROPOSAL.md and decide whether to submit it
@@ -113,6 +121,21 @@ shaped and deliberately not widened mid-round:
   leaves the chain as-is (parity with the pre-existing missing-backup
   behavior); if that path ever fires in practice it deserves a finding
   of its own.
+
+Two observations from the first live run, filed here so they are not
+lost:
+
+- Every s6 service stop logs "exited with code 256, restarting" from
+  both run scripts' supervision loops before s6 finishes the stop, so a
+  routine add-on update reads like a crash loop in the log. The fix is
+  graceful TERM handling in both run scripts, designed together with
+  the finish script's recovery so a deliberate stop still reverts an
+  armed test exactly once.
+- The live install writes roughly 10 MB of audit records per day, which
+  reaches the 200 MB size cap in about three weeks. Verification
+  survives that now (the retention anchor), but the capture volume
+  itself deserves a look alongside the sprint 3 threshold work: what
+  category is producing the bulk, and whether it earns its space.
 
 
 - Repository-wide em-dash sweep of pre-existing prose (house style; new

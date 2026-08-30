@@ -393,13 +393,15 @@ lasts more than 30 minutes, `health.py` raises a Repairs issue
 (`probe_addon_not_reporting`) so a half-set-up pairing is visible in
 Home Assistant itself, not just the add-on's own log.
 
-The add-on's config.yaml/Dockerfile/run-script were written and reviewed
-against Home Assistant's official add-on documentation and real, current
-official add-ons, and its port-extraction logic was tested against a
-realistic `/proc/net/tcp` fixture — but unlike the integration itself
-(validated against a real `pytest-homeassistant-custom-component` harness),
-it has not yet been built and run against a real Supervisor. See
-[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md) for the same note.
+Since 2026-08-30 the add-on runs in production on the owner's Home
+Assistant OS install: the read-only verification pass (work plan
+decision D-21) confirmed it installs, scans, and reports on a real
+Supervisor 2026.08.0, that the hold-and-retry path recovers from a Core
+restart exactly as designed, and that the Supervisor rates it 1 as the
+privilege ledger states. The container-level facts (iptables backend,
+IPv6 support, effective capability set) still await a re-run of that
+script's last section; see the verified-facts list in
+[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
 
 ## Integration Security (provenance)
 
