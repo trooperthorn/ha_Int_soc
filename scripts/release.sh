@@ -8,11 +8,11 @@
 # shows up as "wrong version" or the dreaded
 # "custom_components/None/manifest.json" (an unresolved domain).
 #
-# This script bumps EVERY version in lockstep, commits, tags with a name
-# that exactly equals the manifest version (no "v" prefix, so CI's
-# tag==manifest check is trivial), and pushes. Pushing the tag triggers
-# .github/workflows/release.yml, which creates the GitHub Release HACS
-# installs from.
+# This script bumps EVERY version in lockstep, commits, tags as
+# v<manifest version> (matching the v-prefixed tag family already on the
+# remote; CI strips the v before its tag==manifest check), and pushes.
+# Pushing the tag triggers .github/workflows/release.yml, which creates
+# the GitHub Release HACS installs from.
 #
 # Usage:
 #   scripts/release.sh                # auto: YYYY.MM.DD.N (today, next N)
@@ -60,8 +60,9 @@ if ! echo "${VERSION}" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'; then
     exit 2
 fi
 
-if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null; then
-    echo "Tag ${VERSION} already exists — pick a higher revision." >&2
+if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null \
+    || git rev-parse -q --verify "refs/tags/v${VERSION}" >/dev/null; then
+    echo "Tag ${VERSION} (or v${VERSION}) already exists - pick a higher revision." >&2
     exit 2
 fi
 
@@ -109,15 +110,20 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 git add custom_components/ha_soc/manifest.json ha_soc_probe/config.yaml \
     ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
 git commit -m "Release ${VERSION}"
-git tag -a "${VERSION}" -m "HA SOC ${VERSION}"
+# Tag with the v prefix to match the tag family already on the remote
+# (v2026.08.21.2 onward, cut by hand from the GitHub UI). The Release
+# workflow strips a leading v before comparing against the manifest, so
+# either style verifies, but mixing styles risks the same version existing
+# twice (2026.08.30.1 AND v2026.08.30.1) with HACS picking one at random.
+git tag -a "v${VERSION}" -m "HA SOC ${VERSION}"
 
-echo "Pushing branch ${branch} and tag ${VERSION}…"
+echo "Pushing branch ${branch} and tag v${VERSION}…"
 git push origin "${branch}"
-git push origin "${VERSION}"
+git push origin "v${VERSION}"
 
 cat <<EOF
 
-Done. Tag ${VERSION} pushed — the Release workflow will create the GitHub
+Done. Tag v${VERSION} pushed — the Release workflow will create the GitHub
 Release HACS installs from.
 
 FIRST TIME ONLY (clears the stale 'domain: None' HACS cache):
