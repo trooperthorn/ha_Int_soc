@@ -1,12 +1,18 @@
 # Changelog
 
-## 2026.08.30.2
+## v2026.08.30.2
 
 - No functional add-on change. Version bump only, keeping the add-on in
   lockstep with the HA SOC integration release (audit capture expansion,
   UniFi in-memory enrichment, app/add-on log viewing, sortable tables).
+- Versioning standardized: `vYYYY.MM.DD.V` is now the canonical form
+  everywhere a person reads a version (git tags, GitHub Releases, HACS,
+  changelog headers like the ones in this file, the panel footer). The
+  machine-read `version:` field in `config.yaml` stays bare because the
+  Supervisor and the release workflow compare it with the prefix
+  stripped. See the repository README's Versioning section.
 
-## 2026.08.30.1
+## v2026.08.30.1
 
 - New optional feature: per-add-on resource hard caps. When the HA SOC
   Resource Watchdog proposes CPU/memory limits, the firewall poll cycle
@@ -23,7 +29,7 @@
 - This version supersedes the deleted 2026.08.29.x tags; their changes
   (blocking-I/O fix, watchdog groundwork) ship here.
 
-## 2026.08.23.4
+## v2026.08.23.4
 
 - Security: both add-on services now send a per-install secret (generated
   once and stored in the add-on's own `/data`) on every call into Home
@@ -39,7 +45,7 @@
   recommended non-root privilege drop (left un-applied pending validation
   against a real Supervisor) and a base-image digest pin.
 
-## 2026.08.23.3
+## v2026.08.23.3
 
 - Added: optional host firewall read/write, gated behind a new `NET_ADMIN`
   capability this add-on now requests in `config.yaml` (a documented -1 on
@@ -58,7 +64,7 @@
 - Changed: `iptables` and `iproute2` are now installed in the add-on image
   (previously `iproute2`'s presence was merely assumed).
 
-## 2026.08.23.2
+## v2026.08.23.2
 
 - Added: each reported open port now includes its bind address (e.g.
   `192.168.10.5`, or `0.0.0.0` for "every interface") and, for an IPv4
@@ -70,7 +76,7 @@
   `null` rather than risk decoding them incorrectly — see run.sh's
   comments for why.
 
-## 2026.08.23.1
+## v2026.08.23.1
 
 - Changed: version numbering switched from pre-1.0 semver (`0.1.x`) to
   calendar versioning, `YYYY.MM.DD.V` — the release date plus a same-day

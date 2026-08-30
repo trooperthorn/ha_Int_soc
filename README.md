@@ -162,16 +162,26 @@ placeholder instead — that's expected, not a bug here.
 
 ## Versioning
 
-Calendar versioning: `YYYY.MM.DD.V` — the release date plus a same-day
-revision counter starting at 1 (e.g. the first release on August 23, 2026
-is `2026.08.23.1`; a second release that same day would be `2026.08.23.2`).
-Applies to both the integration (`manifest.json`) and the optional HA SOC
-Probe add-on (`ha_soc_probe/config.yaml`), so a released version number is
-always an unambiguous, directly comparable release identifier across the
-whole project — never a pre-1.0 `0.x.y` number implying "still in
-development." The current version is shown at the bottom of the panel on
-every tab, and in HACS/Settings → Devices & Services → HA SOC the way any
-integration's version is.
+Calendar versioning, displayed as `vYYYY.MM.DD.V`: the release date plus a
+same-day revision counter starting at 1 (e.g. the first release on
+August 30, 2026 is `v2026.08.30.1`; a second release that same day is
+`v2026.08.30.2`). One version number covers the integration and the
+optional HA SOC Probe add-on together, so a release identifier is always
+unambiguous and directly comparable across the whole project, never a
+pre-1.0 `0.x.y` number implying "still in development."
+
+The `v` prefix is the canonical form everywhere a person reads a version:
+git tags, GitHub Releases, HACS (which displays and installs by the
+release tag name itself), this repo's changelogs, and the version footer
+at the bottom of every panel tab. Exactly three machine-read fields carry
+the bare number instead - `custom_components/ha_soc/manifest.json`
+`version`, `ha_soc_probe/config.yaml` `version`, and the probe's
+`SCANNER_VERSION` - because Home Assistant, the Supervisor, and the
+release workflow compare those values with the prefix stripped. The
+mapping is enforced, not remembered: the Release workflow refuses to cut
+a release unless the pushed tag (minus its `v`) equals the manifest
+version, and `scripts/release.sh` bumps all three fields and cuts the
+`v`-prefixed tag in one step.
 
 ### Cutting a release (and why HACS needs one)
 
@@ -185,13 +195,13 @@ HACS then quotes a version that matches no release (surfacing as
 One command keeps them in lockstep:
 
 ```bash
-scripts/release.sh              # auto: today's date, next same-day revision
-scripts/release.sh 2026.08.24.1 # or an explicit YYYY.MM.DD.N
+scripts/release.sh               # auto: today's date, next same-day revision
+scripts/release.sh v2026.08.30.2 # or an explicit version (bare form accepted too)
 ```
 
 It bumps the integration manifest, the add-on `config.yaml`, and the
 add-on's `SCANNER_VERSION` together, runs the test suite, commits, and
-pushes a tag **named exactly the version** (no `v`). Pushing that tag runs
+pushes the tag **`v<version>`** (e.g. `v2026.08.30.2`). Pushing that tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
 creates the GitHub Release HACS installs from — after first asserting the
 tag equals the manifest version, so they can never disagree again.

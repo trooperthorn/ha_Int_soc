@@ -8,19 +8,22 @@
 # shows up as "wrong version" or the dreaded
 # "custom_components/None/manifest.json" (an unresolved domain).
 #
-# This script bumps EVERY version in lockstep, commits, tags as
-# v<manifest version> (matching the v-prefixed tag family already on the
-# remote; CI strips the v before its tag==manifest check), and pushes.
+# This script bumps EVERY version in lockstep, commits, tags, and pushes.
 # Pushing the tag triggers .github/workflows/release.yml, which creates
 # the GitHub Release HACS installs from.
 #
 # Usage:
-#   scripts/release.sh                # auto: YYYY.MM.DD.N (today, next N)
-#   scripts/release.sh 2026.08.24.1   # explicit version
-#   scripts/release.sh --skip-tests   # skip the pytest gate (not advised)
+#   scripts/release.sh                 # auto: today's date, next revision
+#   scripts/release.sh v2026.08.30.2   # explicit version (bare form works too)
+#   scripts/release.sh --skip-tests    # skip the pytest gate (not advised)
 #
-# Calendar scheme: YYYY.MM.DD.V — the date plus a same-day revision counter
-# starting at 1.
+# Version format: vYYYY.MM.DD.V, the date plus a same-day revision counter
+# starting at 1. The v prefix is the canonical form everywhere a person
+# reads a version (tags, GitHub Releases, HACS, changelogs, the panel
+# footer). The three machine-read fields this script bumps (manifest.json,
+# the add-on config.yaml, SCANNER_VERSION) carry the bare number because
+# Home Assistant, the Supervisor, and the release workflow compare those
+# values with the prefix stripped; the workflow enforces tag == v+manifest.
 # ==============================================================================
 set -euo pipefail
 
@@ -55,8 +58,12 @@ if [ -z "${VERSION}" ]; then
     VERSION="${today}.${next}"
 fi
 
+# Accept the canonical v-prefixed form as input; everything internal works
+# on the bare number and the v is re-added exactly once, on the tag.
+VERSION="${VERSION#v}"
+
 if ! echo "${VERSION}" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'; then
-    echo "Version '${VERSION}' is not YYYY.MM.DD.N" >&2
+    echo "Version '${VERSION}' is not vYYYY.MM.DD.N (or bare YYYY.MM.DD.N)" >&2
     exit 2
 fi
 
@@ -66,7 +73,7 @@ if git rev-parse -q --verify "refs/tags/${VERSION}" >/dev/null \
     exit 2
 fi
 
-echo "Releasing version: ${VERSION}"
+echo "Releasing version: v${VERSION}"
 
 # --- Bump every version in lockstep ------------------------------------------
 python3 - "$VERSION" <<'PY'
@@ -110,12 +117,11 @@ branch="$(git rev-parse --abbrev-ref HEAD)"
 git add custom_components/ha_soc/manifest.json ha_soc_probe/config.yaml \
     ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
 git commit -m "Release ${VERSION}"
-# Tag with the v prefix to match the tag family already on the remote
-# (v2026.08.21.2 onward, cut by hand from the GitHub UI). The Release
-# workflow strips a leading v before comparing against the manifest, so
-# either style verifies, but mixing styles risks the same version existing
-# twice (2026.08.30.1 AND v2026.08.30.1) with HACS picking one at random.
-git tag -a "v${VERSION}" -m "HA SOC ${VERSION}"
+# The v-prefixed tag is the canonical release identifier: HACS displays
+# and installs by the release tag name itself, so this exact string is
+# what users see. Never also push a bare tag for the same version - two
+# tags for one version means two Releases with HACS picking one at random.
+git tag -a "v${VERSION}" -m "HA SOC v${VERSION}"
 
 echo "Pushing branch ${branch} and tag v${VERSION}…"
 git push origin "${branch}"
