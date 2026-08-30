@@ -280,6 +280,12 @@ read the module docstrings, they're written for exactly that.
   a human to confirm or dismiss, never an automatic verdict.
 - The audit log is **tamper-evident, not tamper-proof** — anyone with the
   filesystem access that reaches `.storage/` can rewrite the hash chain too.
+  Retention does not break this: when expired day files are deleted, the
+  newest expired record's sequence number and hash are kept as an anchor,
+  verification restarts from it, and the panel says "verified from record
+  N; records before D expired under retention" rather than pretending the
+  whole history was re-checked. Records before the anchor are attested by
+  the anchor's stored hash, not re-verified record by record.
 
 ## Optional: HA SOC Probe add-on
 
@@ -305,6 +311,22 @@ port + protocol only, never a process name (that would need `host_pid:
 true`, a second elevated privilege this add-on doesn't ask for) and never
 active scanning (it only reads the kernel's own connection table, so it
 never generates outbound traffic).
+
+**Who may call the two callback services.** The Supervisor's Core API
+proxy forwards every add-on call with the Supervisor's own token and no
+add-on identity, so Core sees each legitimate call as the Supervisor
+system user. HA SOC therefore accepts `ha_soc.ingest_probe_result` and
+`ha_soc.poll_firewall_command` only when the call carries that exact user
+context; anything else, including an automation with no user context, is
+rejected before the payload is read, audit-logged as
+`probe_auth_rejected`, and raised as a HIGH detection (at most one per
+caller per hour). The per-install shared secret remains as defense in
+depth behind that check: a call with no secret is always rejected, the
+comparison is constant-time, and the secret can only ever be pinned by a
+call that already passed the Supervisor check. The owner-only pairing
+reset in Settings still exists for reinstalling the add-on. On Home
+Assistant Core and Container installs the two services are not
+registered at all, since no Supervisor exists to legitimately call them.
 
 To install: Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
 this repository's URL, then install **HA SOC Probe** from the list. The

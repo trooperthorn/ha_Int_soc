@@ -690,7 +690,14 @@ export class HaSocScannerView extends LitElement {
               Last reported ${new Date(fw.known_rules_reported_at).toLocaleString()}
             </p>`
           : nothing}
-        ${fw.pending ? this._renderFirewallPending(fw.pending) : this._renderFirewallBuilder()}
+        ${fw.pending
+          ? html`
+              ${this._renderFirewallPending(fw.pending)}
+              ${this._renderFirewallBuilder(
+                "A proposed change is still pending. A new test can only be proposed once the add-on has reported the outcome of the current one."
+              )}
+            `
+          : this._renderFirewallBuilder(null)}
         ${this._fwError
           ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">${this._fwError}</p>`
           : nothing}
@@ -704,7 +711,12 @@ export class HaSocScannerView extends LitElement {
       testing: pending.applied_at ? "Testing — live on the host" : "Queued — waiting for the add-on to apply",
       confirmed: "Confirmed — waiting for the add-on to acknowledge",
       reverted: "Reverting — waiting for the add-on to acknowledge",
-      expired: "Window expired — reverting automatically",
+      // The window has closed but the add-on has not confirmed the revert
+      // yet; the record stays here (and blocks new proposals) until it does.
+      expired_unreported: "Window expired, the add-on has not confirmed the revert yet",
+      // Pre-rename spelling of the same state, possibly persisted by an
+      // older version of the integration.
+      expired: "Window expired, the add-on has not confirmed the revert yet",
     };
 
     return html`
@@ -754,9 +766,17 @@ export class HaSocScannerView extends LitElement {
     `;
   }
 
-  private _renderFirewallBuilder() {
+  // blockedReason is non-null while a pending test still occupies the
+  // one-at-a-time slot server-side; the builder stays visible so a next
+  // ruleset can be drafted, but the Test button is disabled and says why,
+  // matching the server's test_pending_unreported refusal instead of
+  // letting the click bounce off it.
+  private _renderFirewallBuilder(blockedReason: string | null) {
     const canSubmit =
-      this._fwBackupAck && this._fwDraftRules.length > 0 && this._fwDraftRules.every((r) => this._fwRuleValid(r));
+      blockedReason === null &&
+      this._fwBackupAck &&
+      this._fwDraftRules.length > 0 &&
+      this._fwDraftRules.every((r) => this._fwRuleValid(r));
 
     return html`
       <h4 class="fw-subhead">Propose a change</h4>
@@ -841,6 +861,9 @@ export class HaSocScannerView extends LitElement {
           Test
         </button>
       </div>
+      ${blockedReason
+        ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${blockedReason}</p>`
+        : nothing}
     `;
   }
 }

@@ -157,9 +157,11 @@ def default_store_data() -> StoreData:
             "known_rules_reported_at": None,
             "pending": None,
             "history": [],
-            # Trust-on-first-use secret shared with the add-on. Pinned to the
-            # first non-empty probe_secret Core sees; thereafter every
-            # ingest/poll call must present a match or it's rejected. See
+            # Shared secret with the add-on, defense in depth behind the
+            # Supervisor-context check in probe.py. Pinned to the first
+            # non-empty probe_secret presented on an already-authenticated
+            # call; thereafter every ingest/poll call must present a match
+            # (a missing secret is always rejected). See
             # firewall.async_verify_or_pin_secret.
             "addon_secret": None,
         },
@@ -215,6 +217,11 @@ class HaSocData:
             minor_version=STORAGE_VERSION_MINOR,
         )
         self.data: StoreData = default_store_data()
+        # Runtime-only cache of the Supervisor system user's id, resolved
+        # lazily by probe.py on the first inbound Probe call and never
+        # persisted: the id is core's to assign, and caching it here just
+        # spares the ~5s poll cadence a registry lookup per call.
+        self.supervisor_user_id: str | None = None
 
     async def async_load(self) -> bool:
         """Load persisted state. Returns True if a prior save existed.

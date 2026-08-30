@@ -16,7 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from homeassistant.core import HomeAssistant
+from homeassistant.auth.const import GROUP_ID_ADMIN
+from homeassistant.const import HASSIO_USER_NAME
+from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
 from custom_components.ha_soc.const import DOMAIN
@@ -29,12 +31,30 @@ from custom_components.ha_soc.store import HaSocData
 
 
 @pytest.fixture
-async def entry(hass: HomeAssistant) -> MockConfigEntry:
-    config_entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
-    config_entry.add_to_hass(hass)
-    assert await hass.config_entries.async_setup(config_entry.entry_id)
-    await hass.async_block_till_done()
+async def supervisor_user(hass: HomeAssistant):
+    """The Supervisor system user, needed because the two Probe callback
+    services now require its context (see probe.py)."""
+    return await hass.auth.async_create_system_user(
+        HASSIO_USER_NAME, group_ids=[GROUP_ID_ADMIN]
+    )
+
+
+@pytest.fixture
+async def entry(hass: HomeAssistant, supervisor_user) -> MockConfigEntry:
+    # Simulate a Supervisor install during setup so the Probe callback
+    # services register at all; the hard-cap plumbing under test rides on
+    # their poll channel.
+    with patch("custom_components.ha_soc.probe.is_hassio", return_value=True):
+        config_entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+        config_entry.add_to_hass(hass)
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
     return config_entry
+
+
+@pytest.fixture
+def supervisor_context(supervisor_user) -> Context:
+    return Context(user_id=supervisor_user.id)
 
 
 def _overview(containers):
@@ -213,11 +233,11 @@ async def test_limits_for_probe_and_report_roundtrip(hass: HomeAssistant) -> Non
 
 
 async def test_poll_response_carries_limits(
-    hass: HomeAssistant, entry: MockConfigEntry
+    hass: HomeAssistant, entry: MockConfigEntry, supervisor_context: Context
 ) -> None:
     """The firewall poll answer piggybacks the caps for the Probe."""
     store = entry.runtime_data.store
-    # Pin the TOFU secret so the poll is accepted.
+    # Pin the shared secret so the poll is accepted.
     store.data["firewall"]["addon_secret"] = "s3cret"
     store.data["resource_watchdog"]["hard_limits"] = {"ma": {"memory_mb": 512, "cpus": None}}
 
@@ -227,12 +247,13 @@ async def test_poll_response_carries_limits(
         {"probe_secret": "s3cret"},
         blocking=True,
         return_response=True,
+        context=supervisor_context,
     )
     assert response["resource_limits"] == {"limits": {"ma": {"memory_mb": 512, "cpus": None}}}
 
 
 async def test_ingest_stores_limit_report(
-    hass: HomeAssistant, entry: MockConfigEntry
+    hass: HomeAssistant, entry: MockConfigEntry, supervisor_context: Context
 ) -> None:
     store = entry.runtime_data.store
     store.data["firewall"]["addon_secret"] = "s3cret"
@@ -245,6 +266,7 @@ async def test_ingest_stores_limit_report(
             "resource_limit_state": {"ma": {"status": "denied", "detail": "protection on"}},
         },
         blocking=True,
+        context=supervisor_context,
     )
     state = store.data["resource_watchdog"]["hard_limit_state"]["ma"]
     assert state["status"] == "denied"

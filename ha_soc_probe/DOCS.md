@@ -38,6 +38,19 @@ If it stays in that state for more than 30 minutes, the HA SOC
 integration itself also raises a Repairs issue (Settings > Repairs) —
 visible even to someone who never opens the add-on's log at all.
 
+## How Home Assistant authenticates this add-on's calls
+
+Every call this add-on makes into Home Assistant goes through the
+Supervisor's Core API proxy, which forwards with the Supervisor's own
+token. HA SOC accepts the two callback services only when a call carries
+the Supervisor system user's context; any other caller is rejected
+before the payload is read, audit-logged, and raised as a HIGH
+detection. The per-install shared secret this add-on generates in its
+own `/data` is defense in depth behind that check, not the primary gate:
+a call without it is always rejected, and it can only be pinned by a
+call that already passed the Supervisor check. On installs without a
+Supervisor the services do not exist at all.
+
 ## Firewall rules (read and write)
 
 Starting with `2026.08.23.3` this add-on can also read and, if you choose

@@ -2,9 +2,23 @@
 
 ## v2026.08.30.2
 
-- No functional add-on change. Version bump only, keeping the add-on in
-  lockstep with the HA SOC integration release (audit capture expansion,
-  UniFi in-memory enrichment, app/add-on log viewing, sortable tables).
+- Security (from the 2026-08-30 security review, work plan sprint 0):
+  Home Assistant now accepts this add-on's two callback services only
+  from the Supervisor's own user context; the shared secret becomes
+  defense in depth behind that check, a call presenting no secret is
+  always rejected, and rejected calls are audited and raised as HIGH
+  detections. On Core and Container installs the services no longer
+  exist at all.
+- Firewall (same review): only one test can exist at a time, end to end.
+  The firewall service refuses to apply a new test while a previous one
+  is still armed, clears a timer-resolved test's state file before
+  reporting so a reverted test cannot wedge the channel, and Home
+  Assistant refuses new proposals until this add-on has reported the
+  previous test's fate.
+- Also in this release: audit capture expansion, UniFi in-memory
+  enrichment, app/add-on log viewing, sortable tables, CI test gates,
+  and the privilege ledger in DOCS.md (the add-on's Supervisor security
+  rating is 1 by deliberate choice; see the ledger).
 - Versioning standardized: `vYYYY.MM.DD.V` is now the canonical form
   everywhere a person reads a version (git tags, GitHub Releases, HACS,
   changelog headers like the ones in this file, the panel footer). The

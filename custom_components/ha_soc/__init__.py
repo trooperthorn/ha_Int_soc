@@ -138,7 +138,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
 
     async_register_websocket_api(hass)
-    async_register_probe_service(hass, store)
+    # The audit log is handed over so a rejected Probe callback can be
+    # recorded as probe_auth_rejected; on non-Supervisor installs the call
+    # registers nothing (see probe.py).
+    async_register_probe_service(hass, store, audit)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

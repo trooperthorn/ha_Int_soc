@@ -68,11 +68,12 @@ LIMITS_FILE="${STATE_DIR}/ha_soc_resource_limits.json"
 LIMIT_APPLY_EVERY=12  # x POLL_INTERVAL_SECONDS = ~60s
 
 # Create the per-install probe secret once (atomically, so the two services
-# racing to create it can't end up with two different values — noclobber
+# racing to create it can't end up with two different values; noclobber
 # makes the redirect fail for the loser, who then reads the winner's file),
-# then load it. Core pins the first secret it sees and rejects any inbound
-# call that can't present it (trust-on-first-use — see firewall.py), so a
-# forged local service call can't spoof a firewall report.
+# then load it. Core requires the Supervisor proxy's own user context AND
+# this secret on every inbound call: it pins the first secret presented on
+# an authenticated call and rejects any later call that can't present a
+# match, so a forged local service call can't spoof a firewall report.
 ensure_probe_secret() {
     if [ ! -s "${SECRET_FILE}" ]; then
         ( set -o noclobber
@@ -332,6 +333,17 @@ poll_counter=0
 while true; do
     current_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
 
+    # The poll's current_test_id means "the test this add-on is still armed
+    # for". The backgrounded revert timer resolves a test without clearing
+    # this file (it only creates the resolved marker), so a resolved id is
+    # cleared here before it is reported. Without this, Core's one-test-at-
+    # a-time gate would read the stale id as a still-armed test and refuse
+    # to hand over the next apply forever.
+    if [ -n "${current_test_id}" ] && [ -e "$(resolved_marker_for "${current_test_id}")" ]; then
+        : > "${CURRENT_TEST_FILE}"
+        current_test_id=""
+    fi
+
     payload=$(jq -n \
         --arg current_test_id "${current_test_id}" \
         --arg probe_secret "${PROBE_SECRET}" \
@@ -350,21 +362,33 @@ while true; do
             rules_json=$(echo "${response}" | jq -c '.service_response.rules')
             window_seconds=$(echo "${response}" | jq -r '.service_response.window_seconds')
 
-            bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
-            iptables-save > "$(backup_path_for "${test_id}")"
-            echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
-            if apply_ruleset "${rules_json}"; then
-                arm_revert_timer "${test_id}" "${window_seconds}"
+            # Belt and braces on top of Core's own one-test-at-a-time gate:
+            # a fresh read of the state file, because the armed timer may
+            # have resolved (or not) since this cycle's poll was sent. If a
+            # test is still armed without its resolved marker, applying a
+            # second one would put two rulesets' worth of uncertainty on
+            # the host with one shared revert path, so this refuses and
+            # keeps polling until the held test resolves.
+            held_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
+            if [ -n "${held_test_id}" ] && [ ! -e "$(resolved_marker_for "${held_test_id}")" ]; then
+                bashio::log.warning "Firewall: refusing to apply test B while test A is still armed (held ${held_test_id}, offered ${test_id})."
             else
-                # A rule failed to apply — don't leave a half-applied ruleset
-                # live. Restore the pre-test backup immediately and report the
-                # test as reverted (its net effect is the pre-test state), so
-                # the operator sees it failed rather than a silent partial.
-                bashio::log.error "Firewall test ${test_id} failed to apply cleanly — restoring the pre-test ruleset."
-                iptables-restore < "$(backup_path_for "${test_id}")" || true
-                touch "$(resolved_marker_for "${test_id}")"
-                report_resolution "${test_id}" "reverted"
-                : > "${CURRENT_TEST_FILE}"
+                bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
+                iptables-save > "$(backup_path_for "${test_id}")"
+                echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
+                if apply_ruleset "${rules_json}"; then
+                    arm_revert_timer "${test_id}" "${window_seconds}"
+                else
+                    # A rule failed to apply; don't leave a half-applied ruleset
+                    # live. Restore the pre-test backup immediately and report the
+                    # test as reverted (its net effect is the pre-test state), so
+                    # the operator sees it failed rather than a silent partial.
+                    bashio::log.error "Firewall test ${test_id} failed to apply cleanly; restoring the pre-test ruleset."
+                    iptables-restore < "$(backup_path_for "${test_id}")" || true
+                    touch "$(resolved_marker_for "${test_id}")"
+                    report_resolution "${test_id}" "reverted"
+                    : > "${CURRENT_TEST_FILE}"
+                fi
             fi
             ;;
         confirm)

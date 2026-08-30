@@ -37,6 +37,13 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _finding = false;
   @state() private _applying = false;
   @state() private _applyResult: EntityRemapApplyResult | null = null;
+  // Same acknowledgement pattern as the firewall card's _fwBackupAck: the
+  // server refuses an apply without backup_acknowledged, so the button stays
+  // disabled until the operator has confirmed they read the consequences.
+  @state() private _backupAck = false;
+  // A rejected apply (invalid_format, backup_not_acknowledged, ...) renders
+  // here instead of being swallowed by an unhandled promise rejection.
+  @state() private _applyError: string | null = null;
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
   @state() private _brokenFilter: string | null = null;
@@ -79,6 +86,7 @@ export class HaSocEntityRemapView extends LitElement {
     if (!this._oldEntityId) return;
     this._finding = true;
     this._applyResult = null;
+    this._applyError = null;
     try {
       this._report = await findEntityRemapReferences(this.hass, this._oldEntityId);
       this._brokenFilter = this._oldEntityId;
@@ -92,6 +100,7 @@ export class HaSocEntityRemapView extends LitElement {
     this._newEntityId = "";
     this._report = null;
     this._applyResult = null;
+    this._applyError = null;
     this._onFind();
   }
 
@@ -103,6 +112,7 @@ export class HaSocEntityRemapView extends LitElement {
     this._newEntityId = "";
     this._report = null;
     this._applyResult = null;
+    this._applyError = null;
     this.updateComplete.then(() => {
       this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
     });
@@ -134,14 +144,27 @@ export class HaSocEntityRemapView extends LitElement {
   private async _onApply() {
     if (!this._oldEntityId || !this._newEntityId) return;
     this._applying = true;
+    this._applyError = null;
     try {
-      const result = await applyEntityRemap(this.hass, this._oldEntityId, this._newEntityId);
-      // _onFind() clears _applyResult as part of a fresh search — refresh
+      const result = await applyEntityRemap(
+        this.hass,
+        this._oldEntityId,
+        this._newEntityId,
+        this._backupAck
+      );
+      // The acknowledgment covered THIS apply only; require a fresh one for
+      // the next run (the firewall card resets _fwBackupAck the same way).
+      this._backupAck = false;
+      // _onFind() clears _applyResult as part of a fresh search, so refresh
       // the report/broken list first, then set the result last so it isn't
       // wiped out before it ever gets a chance to render.
       await this._onFind();
       this._broken = await fetchBrokenEntityReferences(this.hass);
       this._applyResult = result;
+    } catch (err: any) {
+      // Surface the server's own rejection (invalid_format on a malformed
+      // entity_id, backup_not_acknowledged, ...) instead of swallowing it.
+      this._applyError = err?.message ?? err?.code ?? "Applying the remap failed.";
     } finally {
       this._applying = false;
     }
@@ -178,7 +201,11 @@ export class HaSocEntityRemapView extends LitElement {
   render() {
     const report = this._report;
     const canApply =
-      !!report && report.editable_count > 0 && !!this._newEntityId && this._newEntityId !== this._oldEntityId;
+      !!report &&
+      report.editable_count > 0 &&
+      !!this._newEntityId &&
+      this._newEntityId !== this._oldEntityId &&
+      this._backupAck;
 
     return html`
       <div class="card" id="remap-card">
@@ -263,13 +290,52 @@ export class HaSocEntityRemapView extends LitElement {
                       ${this._renderKind("helper", report.helper)}
                       ${this._renderKind("other", report.other)}
                     `}
-                <button class="ha-btn" ?disabled=${!canApply || this._applying} @click=${() => this._onApply()}>
+                ${report.editable_count > 0
+                  ? html`
+                      <!-- The server refuses the apply without backup_acknowledged, so this
+                           checkbox is the same required gate the firewall card's backup
+                           acknowledgment is, with the consequences spelled out honestly. -->
+                      <label
+                        style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer;"
+                      >
+                        <input
+                          type="checkbox"
+                          style="margin-top:2px;"
+                          .checked=${this._backupAck}
+                          @change=${(e: Event) => (this._backupAck = (e.target as HTMLInputElement).checked)}
+                        />
+                        <span>
+                          I understand that before their first rewrite,
+                          <code>automations.yaml</code>, <code>scripts.yaml</code>, and
+                          <code>scenes.yaml</code> are each copied aside as
+                          <code>&lt;file&gt;.ha_soc-&lt;timestamp&gt;.bak</code>; that
+                          storage-mode dashboards and helper entries are rewritten in place
+                          and are NOT yet backed up (backups for those land with a later
+                          work item); that comments and formatting in the YAML files do not
+                          survive the rewrite; and that automations, scripts, and scenes
+                          reload right after the write.
+                        </span>
+                      </label>
+                    `
+                  : nothing}
+                <button
+                  class="ha-btn"
+                  style="margin-top:12px;"
+                  ?disabled=${!canApply || this._applying}
+                  @click=${() => this._onApply()}
+                >
                   ${this._applying
                     ? "Applying…"
                     : `Apply remap (${report.editable_count} reference${report.editable_count === 1 ? "" : "s"})`}
                 </button>
               </div>
             `
+          : nothing}
+
+        ${this._applyError
+          ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">
+              Apply failed: ${this._applyError}
+            </p>`
           : nothing}
 
         ${this._applyResult

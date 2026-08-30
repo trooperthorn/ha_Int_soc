@@ -181,7 +181,11 @@ export interface FirewallRule {
   source?: string | null;
 }
 
-export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired";
+// "expired_unreported" is the display-only status a timed-out pending test
+// carries until the add-on's own report archives it; "expired" is the same
+// state's pre-rename spelling, kept so a record persisted by an older
+// version still type-checks.
+export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired" | "expired_unreported";
 
 export interface FirewallPendingTest {
   test_id: string;
@@ -687,7 +691,15 @@ export const queryAudit = (
 ) => ws<{ events: AuditEvent[] }>(hass, { type: "ha_soc/audit/query", ...params }).then((r) => r.events);
 
 export const verifyAuditChain = (hass: HomeAssistant) =>
-  ws<{ ok: boolean; records_checked: number; first_break_seq: number | null }>(hass, {
+  ws<{
+    ok: boolean;
+    records_checked: number;
+    first_break_seq: number | null;
+    // 1 when the whole chain was re-checked; greater when retention has
+    // expired the prefix and verification restarted at the stored anchor.
+    verified_from_seq: number;
+    expired_through: string | null;
+  }>(hass, {
     type: "ha_soc/audit/verify_chain",
   });
 
@@ -890,11 +902,21 @@ export const setPeripheralIgnored = (hass: HomeAssistant, key: string, ignored: 
 export const findEntityRemapReferences = (hass: HomeAssistant, entityId: string) =>
   ws<EntityRemapReport>(hass, { type: "ha_soc/entity_remap/find_references", entity_id: entityId });
 
-export const applyEntityRemap = (hass: HomeAssistant, oldEntityId: string, newEntityId: string) =>
+// backup_acknowledged is vol.Required server-side; omitting it made every
+// apply fail schema validation, so the whole feature was unreachable from
+// the panel (work plan item 0.4, UI-1). tests/test_ws_contract.py now
+// guards this whole class of missing-required-key bug.
+export const applyEntityRemap = (
+  hass: HomeAssistant,
+  oldEntityId: string,
+  newEntityId: string,
+  backupAcknowledged: boolean
+) =>
   ws<EntityRemapApplyResult>(hass, {
     type: "ha_soc/entity_remap/apply",
     old_entity_id: oldEntityId,
     new_entity_id: newEntityId,
+    backup_acknowledged: backupAcknowledged,
   });
 
 export const fetchBrokenEntityReferences = (hass: HomeAssistant) =>

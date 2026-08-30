@@ -134,21 +134,31 @@ Out of scope / structurally impossible from here:
   WebSocket/REST API. The Unauthorized error is raised and returned to the
   client; there is no bus event and no dedicated logger for it.
 - True tamper-*proof* storage. ``async_verify_chain`` proves the on-disk
-  hash chain is internally consistent, i.e. nothing in these files was
-  edited without recomputing every hash after it. It cannot prove the
-  files were never touched: anything with the same filesystem access that
-  reaches ``.storage/`` (an SSH/Terminal add-on, Samba, the File Editor
-  add-on, root on the host) can rewrite ``chain_head.json`` and every
-  record's hash to match. That makes this tamper-*evident*, not
-  tamper-proof. Real integrity guarantees require exporting the chain off
-  this box (e.g. to a remote syslog/SIEM) as it is written, which is out of
-  scope for this module.
+  hash chain is internally consistent from the retention anchor forward,
+  i.e. nothing in the surviving files was edited without recomputing every
+  hash after it. When retention has expired old day files, the anchor in
+  ``chain_head.json`` records the seq and hash of the newest expired
+  record, verification restarts the chain there, and the result reports
+  ``verified_from_seq`` (1 when nothing has ever expired) plus
+  ``expired_through`` so the operator can see exactly which prefix is
+  attested by the anchor rather than re-checked record by record. It
+  cannot prove the files were never touched: anything with the same
+  filesystem access that reaches ``.storage/`` (an SSH/Terminal add-on,
+  Samba, the File Editor add-on, root on the host) can rewrite
+  ``chain_head.json``, the anchor inside it, and every record's hash to
+  match. That makes this tamper-*evident*, not tamper-proof. Real
+  integrity guarantees require exporting the chain off this box (e.g. to a
+  remote syslog/SIEM) as it is written, which is out of scope for this
+  module.
 
 Storage: newline-delimited JSON, one file per UTC calendar day
 (``audit-YYYY-MM-DD.jsonl``) under ``.storage/<AUDIT_STORAGE_SUBDIR>/``,
 plus a tiny ``chain_head.json`` sidecar so the hash chain survives a
-restart. Records are only ever appended; nothing is rewritten in place.
-All file I/O runs in the executor - never on the event loop.
+restart. The sidecar also carries the retention anchor described above,
+written whenever retention deletes expired day files, so expiry does not
+break verification of everything that survives. Records are only ever
+appended; nothing is rewritten in place. All file I/O runs in the
+executor - never on the event loop.
 """
 from __future__ import annotations
 
@@ -413,6 +423,11 @@ class AuditLog:
         self._flush_lock = asyncio.Lock()
         self._seq = 0
         self._prev_hash = _GENESIS_PREV_HASH
+        # Retention anchor: the seq and hash of the newest record whose day
+        # file retention has deleted, plus when and through which day it
+        # expired. Kept in memory so every chain-head rewrite preserves it;
+        # None until retention first deletes something.
+        self._anchor: dict[str, Any] | None = None
 
         self._unsubs: list[Unsub] = []
         self._cancel_flush_timer: Unsub | None = None
@@ -964,6 +979,11 @@ class AuditLog:
                     data = json.load(handle)
                 self._prev_hash = data.get("prev_hash", _GENESIS_PREV_HASH)
                 self._seq = int(data.get("seq", 0))
+                # The retention anchor rides along in the head file and must
+                # be restored across restarts, or the next head rewrite
+                # would silently drop it and expiry would break the chain.
+                anchor = data.get("anchor")
+                self._anchor = anchor if isinstance(anchor, dict) else None
                 return
             except (OSError, ValueError, TypeError):
                 _LOGGER.warning(
@@ -973,11 +993,17 @@ class AuditLog:
                 )
         self._prev_hash = _GENESIS_PREV_HASH
         self._seq = 0
+        self._anchor = None
 
     def _sync_write_chain_head(self) -> None:
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         tmp_path = f"{path}.tmp"
-        payload = {"prev_hash": self._prev_hash, "seq": self._seq}
+        payload: dict[str, Any] = {"prev_hash": self._prev_hash, "seq": self._seq}
+        # Every head rewrite must carry the retention anchor forward. Losing
+        # it here would make a healthy log unverifiable from the first flush
+        # after retention expired anything.
+        if self._anchor is not None:
+            payload["anchor"] = self._anchor
         try:
             with open(tmp_path, "w", encoding="utf-8") as handle:
                 json.dump(payload, handle)
@@ -1055,9 +1081,27 @@ class AuditLog:
         retention_days = self._store.settings["audit_retention_days"]
         cutoff = dt_util.utcnow().date() - timedelta(days=retention_days)
 
+        # Every unlink below removes the front of the hash chain, so the
+        # tail (seq, hash) of each file is captured before removal and the
+        # highest one becomes the retention anchor that verification
+        # restarts the chain from. Only files that were actually removed
+        # count; a file that survived an unlink failure still verifies.
+        best_tail: tuple[int, str] | None = None
+        expired_through: date | None = None
+        deleted_any = False
+
+        def _note_deleted(file_date: date, tail: tuple[int, str] | None) -> None:
+            nonlocal best_tail, expired_through, deleted_any
+            deleted_any = True
+            if expired_through is None or file_date > expired_through:
+                expired_through = file_date
+            if tail is not None and (best_tail is None or tail[0] > best_tail[0]):
+                best_tail = tail
+
         kept: list[tuple[date, str, int]] = []
         for file_date, path in entries:
             if file_date < cutoff:
+                tail = self._sync_read_tail_seq_hash(path)
                 try:
                     os.remove(path)
                 except OSError:
@@ -1066,6 +1110,8 @@ class AuditLog:
                         path,
                         exc_info=True,
                     )
+                    continue
+                _note_deleted(file_date, tail)
                 continue
             try:
                 size = os.path.getsize(path)
@@ -1079,7 +1125,8 @@ class AuditLog:
         # if that alone exceeds the cap - losing the entire log is worse
         # than briefly going over budget.
         while total_size > max_bytes and len(kept) > 1:
-            _file_date, path, size = kept.pop(0)
+            file_date, path, size = kept.pop(0)
+            tail = self._sync_read_tail_seq_hash(path)
             try:
                 os.remove(path)
                 total_size -= size
@@ -1089,6 +1136,72 @@ class AuditLog:
                     path,
                     exc_info=True,
                 )
+                continue
+            _note_deleted(file_date, tail)
+
+        if not deleted_any:
+            return
+        if best_tail is None:
+            # Files were removed but none yielded a parseable tail record,
+            # so there is nothing truthful to anchor on. Any existing anchor
+            # is left in place and verification will honestly fail at the
+            # new front of the log rather than being papered over.
+            _LOGGER.warning(
+                "HA SOC audit log: expired files had no parseable tail "
+                "record; retention anchor not advanced"
+            )
+            return
+        if self._anchor is not None:
+            try:
+                existing_seq = int(self._anchor.get("seq"))
+            except (TypeError, ValueError):
+                existing_seq = None
+            # Deletions proceed oldest-first, so a new anchor should always
+            # be ahead of the old one; if it somehow is not, keeping the
+            # further-along anchor is the conservative choice.
+            if existing_seq is not None and existing_seq >= best_tail[0]:
+                return
+        self._anchor = {
+            "seq": best_tail[0],
+            "hash": best_tail[1],
+            "expired_through": expired_through.isoformat()
+            if expired_through is not None
+            else None,
+            "expired_at": dt_util.utcnow().isoformat(),
+        }
+        self._sync_write_chain_head()
+
+    @staticmethod
+    def _sync_read_tail_seq_hash(path: str) -> tuple[int, str] | None:
+        """Return (seq, hash) of a day file's last non-empty line.
+
+        Called on files retention is about to delete, so the chain can be
+        re-anchored where the deleted prefix ended. Returns None when the
+        file cannot be read or its tail is not a well-formed record; the
+        caller treats that as "nothing truthful to anchor on".
+        """
+        last_line: str | None = None
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if line:
+                        last_line = line
+        except OSError:
+            return None
+        if last_line is None:
+            return None
+        try:
+            record = json.loads(last_line)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        seq = record.get("seq")
+        record_hash = record.get("hash")
+        if not isinstance(seq, int) or not isinstance(record_hash, str) or not record_hash:
+            return None
+        return (seq, record_hash)
 
     @staticmethod
     def _read_jsonl(path: str):
@@ -1169,17 +1282,23 @@ class AuditLog:
     # -- Chain verification ---------------------------------------------
 
     async def async_verify_chain(self) -> dict[str, Any]:
-        """Recompute the hash chain from the first record and check it.
+        """Recompute the hash chain and check it end to end.
 
         This proves the on-disk log is internally consistent - i.e. every
-        record's hash still matches ``prev_hash`` plus its own content, all
-        the way from the first record ever written. It does NOT prove the
-        files were never tampered with: anyone who can reach ``.storage/``
-        with the same filesystem access this integration has (an SSH/
-        Terminal add-on, Samba, the File Editor add-on, root on the host)
-        can rewrite every hash to be self-consistent again. Tamper-evident,
-        not tamper-proof - real integrity needs an off-box export, which is
-        out of scope for this module.
+        surviving record's hash still matches ``prev_hash`` plus its own
+        content - starting from the retention anchor when old day files
+        have expired, or from the first record ever written when nothing
+        has. The result reports ``verified_from_seq`` (1 when there is no
+        anchor) and ``expired_through`` (the last expired day, or None) so
+        the caller can state exactly which range was re-checked; records at
+        or before the anchor are attested only by the anchor's stored hash.
+        It does NOT prove the files were never tampered with: anyone who
+        can reach ``.storage/`` with the same filesystem access this
+        integration has (an SSH/Terminal add-on, Samba, the File Editor
+        add-on, root on the host) can rewrite every hash, the head, and the
+        anchor to be self-consistent again. Tamper-evident, not
+        tamper-proof - real integrity needs an off-box export, which is out
+        of scope for this module.
         """
         # Flush first so the check covers everything logged so far and the
         # records-checked count matches what the query view shows. The
@@ -1189,33 +1308,60 @@ class AuditLog:
         return await self.hass.async_add_executor_job(self._sync_verify_chain)
 
     def _sync_verify_chain(self) -> dict[str, Any]:
-        prev_hash = _GENESIS_PREV_HASH
+        # The anchor is read from disk, not from memory, for the same
+        # reason the checkpoint below is: verification must judge what an
+        # attacker could have edited, not what this process remembers.
+        anchor_seq, anchor_hash, expired_through = self._sync_read_chain_head_anchor()
+        verified_from_seq = anchor_seq + 1 if anchor_seq is not None else 1
+
+        prev_hash = anchor_hash if anchor_seq is not None else _GENESIS_PREV_HASH
         checked = 0
-        last_seq = 0
+        # With an anchor, the missing prefix legitimately ends at the
+        # anchor's seq; starting last_seq there keeps the completeness
+        # check from reading expiry (possibly of every file) as truncation.
+        last_seq = anchor_seq if anchor_seq is not None else 0
+
+        def _fail(
+            reason: str, first_break_seq: int | None, **extra: Any
+        ) -> dict[str, Any]:
+            result: dict[str, Any] = {
+                "ok": False,
+                "records_checked": checked,
+                "first_break_seq": first_break_seq,
+                "reason": reason,
+                "verified_from_seq": verified_from_seq,
+                "expired_through": expired_through,
+            }
+            result.update(extra)
+            return result
 
         for _file_date, path in self._sync_list_day_files():
             for line in self._read_jsonl(path):
                 try:
                     record = json.loads(line)
                 except (ValueError, TypeError):
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": None,
-                        "reason": "corrupt_record",
-                    }
+                    return _fail("corrupt_record", None)
 
                 checked += 1
                 seq = record.get("seq")
                 stored_hash = record.get("hash")
 
+                if anchor_seq is not None and isinstance(seq, int):
+                    # No surviving record may sit at or before the anchor:
+                    # the anchor asserts everything through its seq was
+                    # expired, so such a record is either resurrected old
+                    # data or a forged anchor, and either way the log and
+                    # the anchor cannot both be telling the truth.
+                    if seq <= anchor_seq:
+                        return _fail("anchor_inconsistent", seq)
+                    # The first surviving record must be the anchor's
+                    # direct successor; a gap means records written after
+                    # the expired prefix are missing.
+                    if checked == 1 and seq != anchor_seq + 1:
+                        return _fail("anchor_inconsistent", seq)
+
                 if record.get("prev_hash") != prev_hash:
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": seq,
-                        "reason": "hash_mismatch",
-                    }
+                    return _fail("hash_mismatch", seq)
 
                 payload = {k: v for k, v in record.items() if k != "hash"}
                 recomputed = hashlib.sha256(
@@ -1223,12 +1369,7 @@ class AuditLog:
                 ).hexdigest()
 
                 if recomputed != stored_hash:
-                    return {
-                        "ok": False,
-                        "records_checked": checked,
-                        "first_break_seq": seq,
-                        "reason": "hash_mismatch",
-                    }
+                    return _fail("hash_mismatch", seq)
 
                 prev_hash = stored_hash
                 if isinstance(seq, int):
@@ -1247,33 +1388,71 @@ class AuditLog:
         # it closes the plain-truncation gap.
         head_seq, head_hash = self._sync_read_chain_head_checkpoint()
         if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):
-            return {
-                "ok": False,
-                "records_checked": checked,
-                "first_break_seq": None,
-                "reason": "tail_truncated",
-                "checkpoint_seq": head_seq,
-                "last_on_disk_seq": last_seq,
-            }
+            return _fail(
+                "tail_truncated",
+                None,
+                checkpoint_seq=head_seq,
+                last_on_disk_seq=last_seq,
+            )
 
         return {
             "ok": True,
             "records_checked": checked,
             "first_break_seq": None,
             "reason": None,
+            "verified_from_seq": verified_from_seq,
+            "expired_through": expired_through,
         }
 
-    def _sync_read_chain_head_checkpoint(self) -> tuple[int | None, str]:
-        """Read the persisted chain head (seq, prev_hash) straight from disk,
-        independent of the in-memory head, for the completeness check above.
-        Returns (None, "") when no checkpoint exists yet (fresh install).
+    def _sync_read_chain_head_file(self) -> dict[str, Any] | None:
+        """Read chain_head.json straight from disk, ignoring the in-memory
+        head, so the checks above judge what an attacker could have edited.
+        Returns None when the file is missing or unreadable.
         """
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         if not os.path.exists(path):
-            return (None, "")
+            return None
         try:
             with open(path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
-            return (int(data.get("seq", 0)), data.get("prev_hash", _GENESIS_PREV_HASH))
         except (OSError, ValueError, TypeError):
+            return None
+        return data if isinstance(data, dict) else None
+
+    def _sync_read_chain_head_checkpoint(self) -> tuple[int | None, str]:
+        """The persisted chain head (seq, prev_hash), for the completeness
+        check above. Returns (None, "") when no checkpoint exists yet (fresh
+        install) or the head file is unreadable.
+        """
+        data = self._sync_read_chain_head_file()
+        if data is None:
             return (None, "")
+        try:
+            return (int(data.get("seq", 0)), data.get("prev_hash", _GENESIS_PREV_HASH))
+        except (ValueError, TypeError):
+            return (None, "")
+
+    def _sync_read_chain_head_anchor(self) -> tuple[int | None, str, str | None]:
+        """The persisted retention anchor as (seq, hash, expired_through).
+
+        Returns (None, "", None) when no anchor exists or the stored one is
+        malformed; verification then starts at genesis, which fails loudly
+        (rather than silently passing) if records really did expire.
+        """
+        data = self._sync_read_chain_head_file()
+        anchor = data.get("anchor") if data is not None else None
+        if not isinstance(anchor, dict):
+            return (None, "", None)
+        try:
+            seq = int(anchor["seq"])
+            anchor_hash = anchor["hash"]
+        except (KeyError, ValueError, TypeError):
+            return (None, "", None)
+        if not isinstance(anchor_hash, str) or not anchor_hash:
+            return (None, "", None)
+        expired_through = anchor.get("expired_through")
+        return (
+            seq,
+            anchor_hash,
+            expired_through if isinstance(expired_through, str) else None,
+        )

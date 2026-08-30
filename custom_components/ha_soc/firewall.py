@@ -35,10 +35,30 @@ Core proposes and displays; the add-on is the only thing that ever
 actually touches iptables, and its own report is always the final word on
 what's really active — never Core's optimistic guess at what should have
 happened.
+
+One test at a time, enforced: while ``pending`` is occupied, whatever its
+status, a new proposal is refused with ``test_pending_unreported``. Only
+the add-on's own report (async_report_from_addon) ever clears ``pending``
+into history; the lazy expiry that runs on status reads is display-only
+and merely relabels a timed-out test ``expired_unreported``. When the
+add-on later polls while holding no current test, that poll is the
+evidence its local timer reverted the expired test, and the record is
+archived as ``reverted`` by ``addon_timer``. A poll that arrives holding a
+DIFFERENT test id than ``pending`` is answered ``none`` with reason
+``addon_holds_other_test`` so Core never asks the add-on to apply test B
+while test A is still armed on the host.
+
+Authentication of the add-on's inbound calls is two-layered as of the
+Supervisor-context change in probe.py: the service handlers there reject
+any call whose context user is not the Supervisor system user BEFORE this
+module's shared-secret check runs, so the secret here is defense in depth,
+not the only gate. A call that presents no secret is always rejected; the
+old "nothing pinned and nothing presented" acceptance is gone.
 """
 from __future__ import annotations
 
 from datetime import timedelta
+import hmac
 import ipaddress
 import logging
 from typing import Any
@@ -54,7 +74,7 @@ from .const import (
     FIREWALL_RULE_ACTIONS,
     FIREWALL_RULE_PROTOS,
     FIREWALL_TEST_CONFIRMED,
-    FIREWALL_TEST_EXPIRED,
+    FIREWALL_TEST_EXPIRED_UNREPORTED,
     FIREWALL_TEST_REVERTED,
     FIREWALL_TEST_TESTING,
 )
@@ -105,40 +125,42 @@ def _iso_now() -> str:
 
 
 def async_verify_or_pin_secret(store: HaSocData, presented: str | None) -> bool:
-    """Trust-on-first-use authentication for the add-on's inbound calls.
+    """Shared-secret check for the add-on's inbound calls, defense in depth.
 
     The add-on generates a random secret once, persists it in its own /data,
     and sends it on every ingest/poll call. Core pins the first non-empty
-    secret it sees, then requires an exact match forever after — so once the
-    real add-on has reported once (seconds after install, and it reuses the
-    same secret across restarts), a forged service call from any other
-    integration/automation on the instance is rejected because it can't
-    produce the secret.
+    secret it sees, then requires an exact match forever after. Since the
+    Supervisor-context change in probe.py, this is the SECOND gate, not the
+    only one: the service handlers reject any call that did not arrive with
+    the Supervisor system user's context before this function is ever
+    called, so pinning can only happen on a call that already passed that
+    check. The first-caller-pins race the old trust-on-first-use design had
+    is therefore closed to anything that cannot call through the Supervisor
+    proxy.
+
+    A missing secret is a rejection, always. The old branch that accepted a
+    call with nothing pinned and nothing presented is gone, because it let
+    any local caller through until the real add-on's first report. An
+    add-on build too old to send a secret is rejected until it is updated,
+    and the panel's pairing reset (async_reset_addon_secret) remains the
+    recovery for a lost or rotated secret.
 
     Returns True if the call is trusted (matches, or pins a fresh secret),
-    False if it should be rejected. A False return is a real signal worth
-    surfacing — either a misconfiguration or an active forgery attempt.
-
-    Known limitation: an attacker who can call the service in the narrow
-    window before the real add-on ever reports could pin their own secret
-    (a first-boot race / denial-of-service). Recover with the owner-only
-    reset (async_reset_addon_secret), which re-opens pinning. This is a
-    large improvement over the previous state (no authentication at all)
-    without a new listening socket or cross-container provisioning channel.
+    False if it must be rejected. The comparison uses hmac.compare_digest
+    so a forged caller cannot learn the pinned value byte by byte through
+    timing.
     """
     fw = store.data["firewall"]
     pinned = fw.get("addon_secret")
     presented = presented or None
+    if presented is None:
+        return False
     if pinned is None:
-        if presented is None:
-            # Nothing pinned yet and no secret offered — accept (an older
-            # add-on build, or the very first call), but don't pin an empty.
-            return True
         fw["addon_secret"] = presented
         store.async_schedule_save()
-        _LOGGER.info("HA SOC firewall: pinned the add-on's probe secret (trust-on-first-use).")
+        _LOGGER.info("HA SOC firewall: pinned the add-on's probe secret (first Supervisor-context call).")
         return True
-    return bool(presented) and presented == pinned
+    return hmac.compare_digest(presented, pinned)
 
 
 def async_reset_addon_secret(store: HaSocData) -> None:
@@ -165,17 +187,20 @@ async def async_get_status(hass: HomeAssistant, store: HaSocData) -> dict[str, A
 
 def _lazily_expire_if_stale(fw: dict[str, Any]) -> None:
     """A pending test whose window has passed with no confirm/revert
-    report yet is shown as "expired", not still "testing" — the add-on's
-    own local timer is what actually reverted it (or will, imminently);
-    this only keeps the UI honest about a countdown that's already hit
-    zero. Never itself touches iptables — display-only.
+    report yet is shown as "expired_unreported", not still "testing". The
+    add-on's own local timer is what actually reverted it (or will,
+    imminently), and the "unreported" half tells the panel to say the
+    add-on has not confirmed the revert yet. This only keeps the UI honest
+    about a countdown that's already hit zero; it is display-only, never
+    touches iptables, and never clears the pending slot. The slot is
+    cleared exclusively by async_report_from_addon.
     """
     pending = fw.get("pending")
     if not pending or pending.get("status") != FIREWALL_TEST_TESTING:
         return
     expires_at = dt_util.parse_datetime(pending["expires_at"])
     if expires_at is not None and dt_util.utcnow() >= expires_at:
-        pending["status"] = FIREWALL_TEST_EXPIRED
+        pending["status"] = FIREWALL_TEST_EXPIRED_UNREPORTED
 
 
 async def async_propose_test(
@@ -202,9 +227,14 @@ async def async_propose_test(
         return False, f"invalid_rules: {err}", None
 
     fw = store.data["firewall"]
-    existing = fw.get("pending")
-    if existing and existing.get("status") == FIREWALL_TEST_TESTING:
-        return False, "test_already_in_progress", None
+    if fw.get("pending") is not None:
+        # One test at a time, whatever its status. Even a pending record
+        # the lazy expiry has already relabeled expired_unreported keeps
+        # the slot occupied: until the add-on's own report (or the future
+        # owner discard) archives it, Core does not know what is actually
+        # live on the host, and proposing test B on top of an unaccounted
+        # test A is exactly the overlap this feature exists to prevent.
+        return False, "test_pending_unreported", None
 
     pending = {
         "test_id": uuid4().hex,
@@ -240,7 +270,7 @@ async def async_confirm_test(
     pending = fw.get("pending")
     if not pending or pending.get("test_id") != test_id:
         return False, "no_matching_test"
-    if pending.get("status") not in (FIREWALL_TEST_TESTING, FIREWALL_TEST_EXPIRED):
+    if pending.get("status") not in (FIREWALL_TEST_TESTING, FIREWALL_TEST_EXPIRED_UNREPORTED):
         return False, f"test_not_pending (status={pending.get('status')})"
 
     # Intent only — NOT archived here. The add-on's own report
@@ -266,7 +296,7 @@ async def async_cancel_test(
     pending = fw.get("pending")
     if not pending or pending.get("test_id") != test_id:
         return False, "no_matching_test"
-    if pending.get("status") not in (FIREWALL_TEST_TESTING, FIREWALL_TEST_EXPIRED):
+    if pending.get("status") not in (FIREWALL_TEST_TESTING, FIREWALL_TEST_EXPIRED_UNREPORTED):
         return False, f"test_not_pending (status={pending.get('status')})"
 
     pending["status"] = FIREWALL_TEST_REVERTED
@@ -285,6 +315,12 @@ async def async_next_addon_command(
     local revert-timer armed for (or None) — comparing against that,
     rather than blindly trusting Core's own pending record, is what keeps
     this correct even if a poll cycle was missed or arrived out of order.
+    Two consequences of that comparison are enforced here rather than left
+    to the add-on's goodwill: an "apply" is never issued while the poll
+    says a different test is still armed on the host, and an empty poll
+    arriving for a pending test the display has already marked
+    expired_unreported is treated as the add-on's evidence that its local
+    timer reverted the test, which archives it.
     """
     fw = store.data["firewall"]
     pending = fw.get("pending")
@@ -294,6 +330,27 @@ async def async_next_addon_command(
 
     test_id = pending["test_id"]
     status = pending.get("status")
+    addon_holds_test = current_test_id not in (None, "")
+
+    if addon_holds_test and current_test_id != test_id:
+        # The add-on is still armed for some OTHER test. Whatever Core
+        # wants done with the current pending record must wait until the
+        # add-on has resolved what it is holding; in particular, issuing
+        # "apply" here would put test B live while test A's revert timer
+        # is still running against the same chain.
+        return {"action": "none", "reason": "addon_holds_other_test"}
+
+    if not addon_holds_test and status == FIREWALL_TEST_EXPIRED_UNREPORTED:
+        # The window lapsed with no resolution report, and now the add-on
+        # itself says it holds no current test. That empty report after
+        # the window is the evidence the add-on's local timer ran (or its
+        # startup recovery reverted the leftover), so the record can be
+        # archived honestly as reverted by the timer. async_report_from_addon
+        # stays the single place a pending record moves into history.
+        await async_report_from_addon(
+            hass, store, known_rules=None, addon_reports_no_current_test=True
+        )
+        return {"action": "none"}
 
     if status == FIREWALL_TEST_TESTING and pending.get("applied_at") is None:
         pending["applied_at"] = _iso_now()
@@ -325,10 +382,18 @@ async def async_report_from_addon(
     known_rules: list[dict[str, Any]] | None,
     resolved_test_id: str | None = None,
     resolved_status: str | None = None,
+    addon_reports_no_current_test: bool = False,
 ) -> None:
     """The add-on's report is always the final word on what's actually
     active — this never gets second-guessed against Core's own optimistic
     pending-state updates.
+
+    This function is the ONLY place a pending test is ever cleared into
+    history. Two report shapes archive it: an explicit resolution for the
+    pending test's own id, and (via addon_reports_no_current_test, set by
+    async_next_addon_command) the add-on polling with an empty
+    current_test_id while the pending record has already aged into
+    expired_unreported, which is the timer-ran evidence described there.
     """
     fw = store.data["firewall"]
     if known_rules is not None:
@@ -353,6 +418,30 @@ async def async_report_from_addon(
         # A copy, not the live reference — fw["pending"] is about to be
         # cleared, but nothing should keep mutating a record that's
         # supposed to be a frozen point-in-time history entry from here on.
+        history = list(fw.get("history") or [])
+        history.append(dict(pending))
+        fw["history"] = history[-_MAX_HISTORY:]
+        fw["pending"] = None
+    elif (
+        pending
+        and addon_reports_no_current_test
+        and pending.get("status") == FIREWALL_TEST_EXPIRED_UNREPORTED
+    ):
+        # No explicit resolution ever arrived (the add-on's out-of-cycle
+        # report was lost, or the add-on restarted), but the add-on now
+        # reports it holds no test at all after the window lapsed. Its
+        # local timer, or its startup recovery, reverted the rules; the
+        # net effect on the host is the pre-test state, so the honest
+        # archive status is "reverted", attributed to the add-on's timer
+        # rather than to any person.
+        _LOGGER.info(
+            "Firewall test %s expired unreported and the add-on now polls "
+            "empty-handed; archiving it as reverted by the add-on timer.",
+            pending.get("test_id"),
+        )
+        pending["status"] = FIREWALL_TEST_REVERTED
+        pending.setdefault("resolved_at", _iso_now())
+        pending["resolved_by"] = "addon_timer"
         history = list(fw.get("history") or [])
         history.append(dict(pending))
         fw["history"] = history[-_MAX_HISTORY:]

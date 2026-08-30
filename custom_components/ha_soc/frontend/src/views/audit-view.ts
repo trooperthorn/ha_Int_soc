@@ -42,7 +42,12 @@ export class HaSocAuditView extends LitElement {
   @state() private _loading = true;
   @state() private _category = "";
   @state() private _userId = "";
-  @state() private _verifyResult: { ok: boolean; records_checked: number } | null = null;
+  @state() private _verifyResult: {
+    ok: boolean;
+    records_checked: number;
+    verified_from_seq?: number;
+    expired_through?: string | null;
+  } | null = null;
   @state() private _sort: SortState | null = null;
 
   connectedCallback(): void {
@@ -136,9 +141,17 @@ export class HaSocAuditView extends LitElement {
         </div>
         ${this._verifyResult
           ? html`<p class="${this._verifyResult.ok ? "muted" : ""}" style="font-size:12.5px;">
-              ${this._verifyResult.ok
-                ? `Chain intact — ${this._verifyResult.records_checked} records checked.`
-                : `Chain broken — see logs for the first mismatched record.`}
+              ${!this._verifyResult.ok
+                ? `Chain broken - see logs for the first mismatched record.`
+                : (this._verifyResult.verified_from_seq ?? 1) > 1
+                ? // A bare "intact" would overclaim here: records before the
+                  // retention anchor were deleted by design and are attested
+                  // by the anchor's stored hash, not re-checked.
+                  `Chain intact - ${this._verifyResult.records_checked} records checked. ` +
+                  `Verified from record ${this._verifyResult.verified_from_seq}; records ` +
+                  `before ${this._verifyResult.expired_through ?? "the retention cutoff"} ` +
+                  `expired under retention.`
+                : `Chain intact - ${this._verifyResult.records_checked} records checked.`}
             </p>`
           : null}
         ${this._loading

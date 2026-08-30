@@ -38,6 +38,13 @@ designed against:
     version (no bus event, no log hook) - this is a known coverage gap,
     not a silent omission.
 
+Beyond that 12-rule spec, one rule watches HA SOC's own attack surface:
+`probe_auth_rejected` (HIGH) fires from the audit category of the same
+name, which probe.py writes whenever a call to the Probe callback
+services fails the Supervisor-context or shared-secret check. At most one
+detection is opened per (caller, hour); every underlying rejection stays
+individually queryable in the audit log.
+
 Detection records are additive and explainable: every detection this
 engine writes down states plainly which rule fired and why (`detail`),
 and every rule's docstring below names its dominant false-positive shape
@@ -97,6 +104,7 @@ RULE_PRIVILEGE_ESCALATION = "privilege_escalation"
 RULE_MASS_ENTITY_BURST = "mass_entity_burst"
 RULE_TOKEN_MINTING_ANOMALY = "token_minting_anomaly"
 RULE_DISABLED_USER_ACTIVITY = "disabled_user_activity"
+RULE_PROBE_AUTH_REJECTED = "probe_auth_rejected"
 
 # -- Rule 2: brute_force_ip ----------------------------------------------
 BRUTE_FORCE_IP_LOOKBACK_DAYS = 7
@@ -152,6 +160,10 @@ TOKEN_MINTING_QUERY_LIMIT = 2000
 DISABLED_USER_ACTIVITY_LOOKBACK_HOURS = 24
 DISABLED_USER_ACTIVITY_CATEGORIES = ("login_ok", "service_call", "token_created")
 DISABLED_USER_ACTIVITY_QUERY_LIMIT = 5000
+
+# -- Extra rule: probe_auth_rejected ------------------------------------------
+PROBE_AUTH_REJECTED_LOOKBACK_HOURS = 24
+PROBE_AUTH_REJECTED_QUERY_LIMIT = 5000
 
 
 def _hour_bucket(moment: datetime) -> str:
@@ -223,6 +235,7 @@ class DetectionEngine:
             self._rule_mass_entity_burst,
             self._rule_token_minting_anomaly,
             self._rule_disabled_user_activity,
+            self._rule_probe_auth_rejected,
         ):
             try:
                 touched.extend(await rule(now, users, users_by_id))
@@ -823,4 +836,57 @@ class DetectionEngine:
                         now=now,
                     )
                 )
+        return results
+
+    # -- Extra rule: probe_auth_rejected --------------------------------------
+
+    async def _rule_probe_auth_rejected(self, now, users, users_by_id):
+        # False positive: an outdated Probe add-on build that predates the
+        # probe_secret field keeps reporting without one and is rejected
+        # with reason no_secret until it is updated - noisy, but honest,
+        # since Core genuinely cannot tell it from a forger.
+        since = now - timedelta(hours=PROBE_AUTH_REJECTED_LOOKBACK_HOURS)
+        events = await self.audit.async_query(
+            since=since,
+            category="probe_auth_rejected",
+            limit=PROBE_AUTH_REJECTED_QUERY_LIMIT,
+        )
+
+        # At most one detection per (caller, hour): the deterministic
+        # detection id already collapses re-runs of the pass onto the same
+        # row, and this in-pass set keeps a burst of rejections within one
+        # hour from inflating that row's recurrence_count per event.
+        emitted: set[tuple[str, str]] = set()
+        results = []
+        for ev in events:
+            detail_in = ev.get("detail") or {}
+            caller = detail_in.get("caller_user_id") or "no_user_context"
+            ts = dt_util.parse_datetime(ev["ts"]) if ev.get("ts") else None
+            if ts is None:
+                continue
+            bucket = _hour_bucket(ts)
+            if (caller, bucket) in emitted:
+                continue
+            emitted.add((caller, bucket))
+
+            caller_user_id = detail_in.get("caller_user_id")
+            name = users_by_id.get(caller_user_id, {}).get("name", caller)
+            detail = {
+                "service": detail_in.get("service"),
+                "caller_user_id": caller_user_id,
+                "reason": detail_in.get("reason"),
+            }
+            results.append(
+                self._upsert_detection(
+                    rule_id=RULE_PROBE_AUTH_REJECTED,
+                    subject=caller,
+                    bucket=bucket,
+                    severity=SEVERITY_HIGH,
+                    title=f"Probe callback rejected for {name}",
+                    user_id=caller_user_id,
+                    ip=None,
+                    detail=detail,
+                    now=now,
+                )
+            )
         return results

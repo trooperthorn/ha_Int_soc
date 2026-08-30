@@ -16,6 +16,7 @@ from custom_components.ha_soc import firewall
 from custom_components.ha_soc.const import (
     DOMAIN,
     FIREWALL_TEST_CONFIRMED,
+    FIREWALL_TEST_EXPIRED_UNREPORTED,
     FIREWALL_TEST_REVERTED,
     FIREWALL_TEST_TESTING,
 )
@@ -79,8 +80,34 @@ async def test_propose_while_already_testing_fails(hass: HomeAssistant, entry: M
         hass, store, rules=RULES, backup_acknowledged=True, user_id="u1"
     )
     assert ok2 is False
-    assert reason2 == "test_already_in_progress"
+    assert reason2 == "test_pending_unreported"
     assert pending2 is None
+
+
+async def test_second_proposal_refused_while_pending_unreported(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Guarantee (inverts the old overwrite defect): even after the test
+    window has lapsed and the display shows expired_unreported, the slot
+    stays occupied and a second proposal is refused until the add-on's own
+    report archives the first test. The first test can therefore never be
+    silently overwritten out of existence."""
+    store = entry.runtime_data.store
+    _, _, first = await firewall.async_propose_test(
+        hass, store, rules=RULES, backup_acknowledged=True, user_id="u1", window_seconds=-1
+    )
+
+    # The status read runs the display-only lazy expiry.
+    status = await firewall.async_get_status(hass, store)
+    assert status["pending"]["status"] == FIREWALL_TEST_EXPIRED_UNREPORTED
+
+    ok, reason, pending = await firewall.async_propose_test(
+        hass, store, rules=RULES, backup_acknowledged=True, user_id="u1"
+    )
+    assert ok is False
+    assert reason == "test_pending_unreported"
+    assert pending is None
+    assert store.data["firewall"]["pending"]["test_id"] == first["test_id"]
 
 
 async def test_next_addon_command_returns_apply_once(hass: HomeAssistant, entry: MockConfigEntry) -> None:
@@ -252,4 +279,4 @@ async def test_get_status_lazily_expires_stale_pending(hass: HomeAssistant, entr
         hass, store, rules=RULES, backup_acknowledged=True, user_id="u1", window_seconds=-1
     )
     status = await firewall.async_get_status(hass, store)
-    assert status["pending"]["status"] == "expired"
+    assert status["pending"]["status"] == "expired_unreported"
