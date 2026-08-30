@@ -45,6 +45,24 @@ entry):
   2026-08-30, including that this add-on and the host both use the
   nf_tables backend and that the host is IPv6-capable, which unblocks
   the dual-stack firewall work.
+- Dual-stack firewall (work plan 2.4, decision D-3): rules carry a
+  family (4, 6, or both; a source address pins it), the HA_SOC_RULES
+  chain and its INPUT jump exist in iptables and ip6tables alike,
+  backups and chain snapshots are taken and checked per family, applies
+  are atomic across families with both tables restored on any failure,
+  and a host without ip6tables is reported honestly instead of
+  succeeding IPv4-only in silence.
+- Hardening (work plan 2.5): a custom AppArmor profile in enforce mode
+  (pending live-load verification, stated in its header); the
+  port-scanner service runs as the unprivileged nobody account; the
+  base image is pinned by digest; every rule field, window bound, and
+  test id from Home Assistant is re-validated locally before any
+  iptables or Docker call; failure reasons now reach Home Assistant in
+  the report instead of living only in this log; and a deliberate stop
+  or update exits cleanly instead of logging a spurious restart
+  warning. Recorded answer on image signing: Cosign via the official
+  builder applies only to pre-built published images, so signed: false
+  remains structurally accurate for this locally built add-on.
 
 ## v2026.08.30.2
 

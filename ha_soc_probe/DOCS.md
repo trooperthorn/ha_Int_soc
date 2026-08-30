@@ -97,13 +97,21 @@ that chain (first, because a deny that lands below an accept is not a
 deny). Nothing Docker manages and no pre-existing rule is ever touched.
 A proposed ruleset is never permanent on arrival:
 
-1. This add-on takes two backups and checks both succeeded: a
-   full-table `iptables-save` kept for manual recovery, and a chain-only
-   snapshot (`iptables -S HA_SOC_RULES`) that reverts actually replay.
-   If either backup fails, nothing is applied and the test reports as
-   reverted. Reverts flush and replay only the `HA_SOC_RULES` chain,
-   never the whole table, so a revert can never disturb rules this
-   add-on does not own.
+1. Rules are dual-stack by default: each carries a family (`4`, `6`, or
+   `both`; a source address pins the family), and the chain plus its
+   `INPUT` jump exist in `iptables` and `ip6tables` alike. Before any
+   apply this add-on takes checked backups per family: a full-table
+   save kept for manual recovery (`ha_soc_fw_backup_*` / the `backup6`
+   twin) and the chain-only snapshot reverts actually replay
+   (`ha_soc_fw_chain_*` / `chain6`). If any backup fails, nothing is
+   applied and the test reports as reverted with reason
+   `backup_failed`. A rule failure in either table restores both.
+   Reverts flush and replay only the `HA_SOC_RULES` chains, never a
+   whole table, so a revert can never disturb rules this add-on does
+   not own. On a host without `ip6tables` every report says so
+   (`firewall_ipv6_supported: false`) and HA SOC shows dual-stack rules
+   as partially applied instead of pretending an IPv4-only apply was
+   complete.
 2. A confirmation window opens (roughly 30–60 seconds, set by HA SOC).
    The instant the rules are applied, this add-on arms a **local** revert
    timer — a plain backgrounded `sleep` inside this same process, not a
@@ -127,6 +135,22 @@ A proposed ruleset is never permanent on arrival:
    locally against a strict character pattern before it can appear in a
    Docker API path, so a compromised Core cannot turn this add-on into
    an arbitrary Docker client.
+
+**Hardening shipped with the dual-stack release.** A custom AppArmor
+profile (`apparmor.txt`, enforce mode, writes enumerated to `/data`,
+`/tmp`, and `/run`; loaded automatically by the Supervisor, and pending
+verification on a live install, which the file header states). The
+port-scanner service drops to the unprivileged `nobody` account; the
+pairing secret stays root-owned at 0600 and reaches the scanner through
+its environment, the same channel as the Supervisor token. The base
+image is pinned by digest (tag and digest move together; see the
+Dockerfile comment). Every rule field, window bound, and test id that
+Home Assistant sends is re-validated locally before any `iptables` call,
+so a compromised Core cannot use this add-on as an arbitrary firewall or
+Docker client. Failure reasons now travel to Home Assistant in the
+report (bounded to 200 characters) instead of living only in this log,
+and a deliberate stop or update no longer logs a spurious
+"exited, restarting" warning.
 
 **Uninstalling.** Cleanup is best-effort: no Supervisor-run uninstall
 hook is verified to exist, so an empty `HA_SOC_RULES` chain and its one

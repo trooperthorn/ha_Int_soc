@@ -52,17 +52,39 @@ imply otherwise.
   its length. Legitimate uses are acknowledged visibly in source with a
   reasoned `# ha-soc-allow` marker, never silently skipped, and a test
   holds HA SOC's own code to zero open findings from these rules.
+  Coverage is honest: the scanner records per domain what it scanned,
+  skipped, and failed to parse, a domain it never scanned reads "not
+  scanned" rather than "0 findings", findings absent on a rescan of
+  their file resolve themselves, and the rules are stated plainly to
+  detect unobfuscated instances only.
   Every finding is advisory, for the local instance owner only.
 - **Device Vulnerabilities** — device-registry inventory, firmware-currency
   via `update` entities, and best-effort CVE correlation (curated CPE table
   + NVD API 2.0 keyword fallback), with a confirm/dismiss workflow.
+  Disclosure: while `nvd_lookups_enabled` is on (the default, toggle in
+  Settings), device manufacturer and model strings are sent to NIST's
+  NVD service over HTTPS; nothing else leaves the instance for this
+  feature, and vendor-wide matches are reported as informational only.
 - **Integration Health & Misconfiguration** — config-entry error/retry/
   availability tracking, plus concrete hardening checks (cleartext HTTP,
-  `trusted_networks` permissiveness, disabled IP-ban, cleartext device admin
-  URLs, cloud-egress inventory), mirrored into HA's own Repairs UI.
+  `trusted_networks` permissiveness, reverse-proxy trust breadth,
+  disabled IP-ban, cleartext device admin URLs, cloud-egress inventory,
+  config-directory-mapping add-ons, backup protection), mirrored into
+  HA's own Repairs UI. The sweep waits out startup so half-loaded state
+  is never misread as misconfiguration, findings you confirmed survive a
+  pass that could not see their evidence, and a check that could not
+  evaluate says so instead of going quiet.
 - **Risk Scoring & Security Posture** — an explainable, additive per-user
   risk score (0–100) and an install-wide posture score/grade, both shown
-  with their contributing factors, never as an opaque number.
+  with their contributing factors, never as an opaque number. Every
+  factor carries its applied points so the list sums exactly to the
+  score, the posture grade is labeled provisional (with the missing
+  terms listed) until every term has computed from real data at least
+  once, and every detection threshold is owner-tunable in Settings with
+  the most-sensitive value as its default and a one-click reset. The
+  posture sensor's attributes expose the grade only; the full breakdown
+  stays behind the access-controlled API, since entity attributes are
+  readable by every authenticated user.
 - **SOC Dashboard** — the NOC/SOC end state: posture score, open detections,
   device status, issues-by-integration, risk/detection breakdowns, and a
   live suspicious-activity feed — every tile and row links straight to the
@@ -318,7 +340,11 @@ Samba shares of the config directory.
   Assistant core actually allows: deactivating an admin account that stays
   out of compliance past a configurable grace period (`auto_deactivate`
   policy, off by default). There is still no hook to require a second
-  factor at login itself.
+  factor at login itself. The policy assesses Home Assistant's own MFA
+  modules only: a user whose every credential comes from an external
+  provider (an SSO proxy, trusted networks) is exempt from
+  `auto_deactivate` and reported as **MFA not assessable**; an install
+  authenticating externally should keep `audit_only`.
 - Dashboard/view visibility is **cosmetic** — the real access-control
   boundary is a user's admin/non-admin group, nothing finer exists.
 - Failed-login telemetry is **IP-only** — Home Assistant never logs an
@@ -394,14 +420,16 @@ lasts more than 30 minutes, `health.py` raises a Repairs issue
 Home Assistant itself, not just the add-on's own log.
 
 Since 2026-08-30 the add-on runs in production on the owner's Home
-Assistant OS install: the read-only verification pass (work plan
+Assistant OS install: two read-only verification passes (work plan
 decision D-21) confirmed it installs, scans, and reports on a real
 Supervisor 2026.08.0, that the hold-and-retry path recovers from a Core
-restart exactly as designed, and that the Supervisor rates it 1 as the
-privilege ledger states. The container-level facts (iptables backend,
-IPv6 support, effective capability set) still await a re-run of that
-script's last section; see the verified-facts list in
-[`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
+restart exactly as designed, that the Supervisor rates it 1 as the
+privilege ledger states, and, at the container level, that both the
+add-on and the host use the nf_tables backend, that ip6tables works,
+that the container runs unprivileged with only NET_ADMIN added under
+the docker-default AppArmor profile, and that the Docker socket is
+genuinely unmounted under Protection Mode. The full verified-facts
+list lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
 
 ## Integration Security (provenance)
 
@@ -533,11 +561,18 @@ non-admin users.
   rule the add-on maintains at position 1 of `INPUT` into that chain; it
   sits first because a deny that lands below an accept is not a deny.
   Nothing Docker manages and no pre-existing rule is ever touched.
-  Before every apply the add-on takes two checked backups (a full-table
-  `iptables-save` for manual recovery, plus a chain-only snapshot it
-  actually reverts from); if either backup fails, nothing is applied. A
-  revert flushes and replays only the `HA_SOC_RULES` chain, never the
-  whole table.
+  Rules are **dual-stack by default**: each rule carries a family (`4`,
+  `6`, or `both`), a source address pins the family to its own and a
+  contradicting explicit value is rejected, and the add-on mirrors the
+  chain into `ip6tables` with the same jump. Before every apply the
+  add-on takes checked backups per family (a full-table save for manual
+  recovery plus the chain-only snapshot it actually reverts from); if
+  any backup fails, nothing is applied, and a failure in either table
+  restores both. A revert flushes and replays only the `HA_SOC_RULES`
+  chains, never a whole table. On a host without `ip6tables` the card
+  says "IPv6 rules not applied" and marks every dual-stack rule
+  partially applied, computed at read time so history is never
+  rewritten; a silent IPv4-only success does not exist.
 - A proposed ruleset is never permanent on arrival. Proposing one requires
   acknowledging that the current ruleset will be backed up first; the
   button that starts this reads **Test**, and relabels itself **Apply**
