@@ -7,6 +7,8 @@
     "lovelace",
     "proximity",
     "recorder",
+    "unifi",
+    "unifiprotect",
     "usb"
   ],
   "codeowners": [
@@ -19,10 +21,10 @@
     "websocket_api",
     "persistent_notification"
   ],
-  "documentation": "https://github.com/trooperthorn/ha_int_soc",
+  "documentation": "https://github.com/trooperthorn/ha_Int_soc",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/trooperthorn/ha_int_soc/issues",
+  "issue_tracker": "https://github.com/trooperthorn/ha_Int_soc/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "2026.08.30.1"
+  "version": "2026.08.30.2"
 }

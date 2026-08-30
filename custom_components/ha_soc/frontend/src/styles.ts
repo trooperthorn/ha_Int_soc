@@ -242,4 +242,44 @@ export const sharedStyles = css`
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
+  /* Accessible sortable column headers (see sortable.ts): the whole header
+     is a real button (keyboard focus + Enter/Space), aria-sort on the th
+     conveys state to assistive tech, the arrow is decorative only. */
+  th.sortable {
+    padding: 0;
+  }
+  th.sortable .sort-btn {
+    font: inherit;
+    font-size: 11px;
+    font-weight: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--secondary-text-color);
+    background: none;
+    border: none;
+    padding: 8px 10px;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  th.sortable.num .sort-btn {
+    justify-content: flex-end;
+    text-align: right;
+  }
+  th.sortable .sort-btn:hover,
+  th.sortable .sort-btn:focus-visible {
+    color: var(--primary-color);
+  }
+  th.sortable .sort-arrow {
+    opacity: 0.35;
+    font-size: 10px;
+  }
+  th.sortable .sort-arrow.active {
+    opacity: 1;
+    color: var(--primary-color);
+  }
 `;

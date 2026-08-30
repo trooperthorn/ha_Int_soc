@@ -2,6 +2,7 @@ import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   IntegrationSecurityOverview,
   IntegrationSecurityRow,
@@ -28,6 +29,14 @@ const TIER_TONE: Record<IntegrationTier, string> = {
   hacs: "medium",
   custom: "high",
 };
+// Sort rank for the Source column: ascending goes strongest-known to
+// weakest-known provenance (the same order as the tier pills up top), which
+// is more useful than the alphabetical core/custom/hacs.
+const TIER_RANK: Record<IntegrationTier, number> = {
+  core: 0,
+  hacs: 1,
+  custom: 2,
+};
 
 const FLAG_LABEL: Record<string, string> = {
   custom_repo: "Custom repo",
@@ -48,6 +57,8 @@ export class HaSocIntegrationSecurityView extends LitElement {
   @state() private _search = "";
   @state() private _tierFilter = "all";
   @state() private _limit = PAGE_SIZE;
+  @state() private _intSort: SortState | null = null;
+  @state() private _containerSort: SortState | null = null;
   @state() private _containers: ContainerResourceOverview | null = null;
   @state() private _containersLoading = true;
   @state() private _watchdog: WatchdogStatus | null = null;
@@ -113,13 +124,41 @@ export class HaSocIntegrationSecurityView extends LitElement {
     }
   }
 
+  // Accessors for sortRows on the Integration Security table. Nulls (no
+  // GitHub token, no repo discovered) always sink to the bottom, per the
+  // shared helper's contract: unknown is unknown, not smallest.
+  private static readonly INTEGRATION_SORT: Record<string, (r: IntegrationSecurityRow) => unknown> = {
+    name: (r) => r.name,
+    tier: (r) => TIER_RANK[r.tier],
+    quality: (r) => r.quality_scale,
+    license: (r) => r.license_present,
+    scanner: (r) => r.scanner_findings,
+    signed: (r) => r.github?.commit_verified ?? null,
+    // Composite for the Release cell: ascending is tagged release (0), then
+    // branch-HEAD installs (1), then archived repos (2). Unknown release
+    // status sinks with the not-collected rows.
+    release: (r) => {
+      const g = r.github;
+      if (!g) return null;
+      if (g.archived) return 2;
+      if (g.has_release === null) return null;
+      return g.has_release ? 0 : 1;
+    },
+    stars: (r) => r.github?.stars ?? null,
+    // ISO 8601 timestamps compare correctly as strings.
+    pushed: (r) => r.github?.pushed_at ?? null,
+  };
+
   private _filtered(): IntegrationSecurityRow[] {
     const rows = this._overview?.integrations ?? [];
     const q = this._search.trim().toLowerCase();
-    return rows
+    const filtered = rows
       .filter((r) => this._tierFilter === "all" || r.tier === this._tierFilter)
-      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.domain.toLowerCase().includes(q))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.domain.toLowerCase().includes(q));
+    // Name-ascending stays the default order until a header is clicked; from
+    // then on the shared sortable helper owns the order.
+    if (!this._intSort) return filtered.sort((a, b) => a.name.localeCompare(b.name));
+    return sortRows(filtered, this._intSort, HaSocIntegrationSecurityView.INTEGRATION_SORT);
   }
 
   render() {
@@ -127,6 +166,13 @@ export class HaSocIntegrationSecurityView extends LitElement {
     const o = this._overview;
     const filtered = this._filtered();
     const shown = filtered.slice(0, this._limit);
+    const s = this._intSort;
+    // A new sort order re-ranks the whole filtered set, so "Show more"
+    // pagination collapses back to the first page.
+    const on = (next: SortState) => {
+      this._intSort = next;
+      this._limit = PAGE_SIZE;
+    };
 
     return html`
       <div class="card">
@@ -212,15 +258,15 @@ export class HaSocIntegrationSecurityView extends LitElement {
                 <table>
                   <thead>
                     <tr>
-                      <th>Integration</th>
-                      <th>Source</th>
-                      <th>Quality</th>
-                      <th>License</th>
-                      <th>Scanner</th>
-                      <th>Signed</th>
-                      <th>Release</th>
-                      <th>Stars</th>
-                      <th>Last push</th>
+                      ${sortableTh("Integration", "name", s, on)}
+                      ${sortableTh("Source", "tier", s, on)}
+                      ${sortableTh("Quality", "quality", s, on)}
+                      ${sortableTh("License", "license", s, on)}
+                      ${sortableTh("Scanner", "scanner", s, on)}
+                      ${sortableTh("Signed", "signed", s, on)}
+                      ${sortableTh("Release", "release", s, on)}
+                      ${sortableTh("Stars", "stars", s, on)}
+                      ${sortableTh("Last push", "pushed", s, on)}
                     </tr>
                   </thead>
                   <tbody>
@@ -270,8 +316,28 @@ export class HaSocIntegrationSecurityView extends LitElement {
     >`;
   }
 
+  // Accessors for sortRows on the Container Resource Usage table. The
+  // backend pre-sorts suspicious containers first; that order is kept as the
+  // default because sortRows passes rows through untouched with a null state.
+  private static readonly CONTAINER_SORT: Record<string, (r: ContainerResource) => unknown> = {
+    name: (r) => r.name,
+    // Mirrors the State cell: Core and the Supervisor always render as
+    // "running", a stopped add-on falls back to "stopped".
+    state: (r) => (r.state === "started" || r.kind !== "addon" ? "running" : (r.state ?? "stopped")),
+    cpu: (r) => r.cpu_percent,
+    memory: (r) => r.memory_percent,
+    usage: (r) => r.memory_usage,
+    // Net and Disk sort by combined throughput; a row where the Supervisor
+    // reports neither direction stays unknown and sinks.
+    net: (r) => (r.network_rx == null && r.network_tx == null ? null : (r.network_rx ?? 0) + (r.network_tx ?? 0)),
+    disk: (r) => (r.blk_read == null && r.blk_write == null ? null : (r.blk_read ?? 0) + (r.blk_write ?? 0)),
+    flags: (r) => r.flags.length,
+  };
+
   private _renderContainers() {
     const c = this._containers;
+    const cs = this._containerSort;
+    const onC = (next: SortState) => (this._containerSort = next);
     return html`
       <div class="card">
         <div class="toolbar">
@@ -302,19 +368,23 @@ export class HaSocIntegrationSecurityView extends LitElement {
                     <table>
                       <thead>
                         <tr>
-                          <th>Container</th>
-                          <th>State</th>
-                          <th class="num">CPU</th>
-                          <th class="num">Memory</th>
-                          <th>Used / Limit</th>
-                          <th>Net ↓/↑</th>
-                          <th>Disk R/W</th>
-                          <th>Flags</th>
+                          ${sortableTh("Container", "name", cs, onC)}
+                          ${sortableTh("State", "state", cs, onC)}
+                          ${sortableTh("CPU", "cpu", cs, onC, { numeric: true })}
+                          ${sortableTh("Memory", "memory", cs, onC, { numeric: true })}
+                          ${sortableTh("Used / Limit", "usage", cs, onC)}
+                          ${sortableTh("Net ↓/↑", "net", cs, onC)}
+                          ${sortableTh("Disk R/W", "disk", cs, onC)}
+                          ${sortableTh("Flags", "flags", cs, onC)}
                           <th>Watchdog / Cap</th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${c.containers.map((row) => this._renderContainerRow(row))}
+                        ${sortRows(
+                          c.containers,
+                          cs,
+                          HaSocIntegrationSecurityView.CONTAINER_SORT
+                        ).map((row) => this._renderContainerRow(row))}
                       </tbody>
                     </table>
                   </div>

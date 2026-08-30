@@ -57,6 +57,17 @@ imply otherwise.
   as one panel-native form, backed by the exact same store as the native
   "Configure" dialog — change it from either place and the other reflects
   it immediately.
+- **Logs:** three log sources in one tab. Home Assistant's own captured
+  WARNING/ERROR/CRITICAL records (the same buffer as Settings > System >
+  Logs, deduplicated, filterable by integration and level, tracebacks
+  expandable in place); the `home-assistant.log.fault` crash dump,
+  surfaced read-only because a non-empty file means Core itself died at a
+  fatal signal at least once; and, on Supervisor installs, the full
+  container log of any app or add-on (Core, Supervisor, the host journal,
+  or any installed add-on) fetched through the Supervisor's journald
+  gateway, ANSI-stripped and tail-capped to the newest 128 KB. Add-on
+  targets are validated against the Supervisor's own installed-add-on
+  list before the slug ever reaches a URL.
 - **Access control** — the panel and every `ha_soc/*` command default to
   **account owner only**; a setting (Settings tab or the native Configure
   dialog) can open it to every administrator. Enforced server-side on each
@@ -121,6 +132,13 @@ imply otherwise.
   structurally out of reach for a regular integration, so it doesn't need
   one.
 
+Every data table in the panel sorts by any column. The header cells are
+real buttons (keyboard focusable, activatable with Enter or Space) and the
+`th` carries `aria-sort`, so the current order is announced by assistive
+technology rather than conveyed only by an arrow glyph. Unknown or empty
+values always sink to the bottom of a sort in either direction: an unknown
+value is not "smallest", it is unknown.
+
 ## Icon / branding
 
 `icon.png` (256×256), `icon@2x.png` (512×512), and the source `icon.svg`
@@ -144,16 +162,26 @@ placeholder instead — that's expected, not a bug here.
 
 ## Versioning
 
-Calendar versioning: `YYYY.MM.DD.V` — the release date plus a same-day
-revision counter starting at 1 (e.g. the first release on August 23, 2026
-is `2026.08.23.1`; a second release that same day would be `2026.08.23.2`).
-Applies to both the integration (`manifest.json`) and the optional HA SOC
-Probe add-on (`ha_soc_probe/config.yaml`), so a released version number is
-always an unambiguous, directly comparable release identifier across the
-whole project — never a pre-1.0 `0.x.y` number implying "still in
-development." The current version is shown at the bottom of the panel on
-every tab, and in HACS/Settings → Devices & Services → HA SOC the way any
-integration's version is.
+Calendar versioning, displayed as `vYYYY.MM.DD.V`: the release date plus a
+same-day revision counter starting at 1 (e.g. the first release on
+August 30, 2026 is `v2026.08.30.1`; a second release that same day is
+`v2026.08.30.2`). One version number covers the integration and the
+optional HA SOC Probe add-on together, so a release identifier is always
+unambiguous and directly comparable across the whole project, never a
+pre-1.0 `0.x.y` number implying "still in development."
+
+The `v` prefix is the canonical form everywhere a person reads a version:
+git tags, GitHub Releases, HACS (which displays and installs by the
+release tag name itself), this repo's changelogs, and the version footer
+at the bottom of every panel tab. Exactly three machine-read fields carry
+the bare number instead - `custom_components/ha_soc/manifest.json`
+`version`, `ha_soc_probe/config.yaml` `version`, and the probe's
+`SCANNER_VERSION` - because Home Assistant, the Supervisor, and the
+release workflow compare those values with the prefix stripped. The
+mapping is enforced, not remembered: the Release workflow refuses to cut
+a release unless the pushed tag (minus its `v`) equals the manifest
+version, and `scripts/release.sh` bumps all three fields and cuts the
+`v`-prefixed tag in one step.
 
 ### Cutting a release (and why HACS needs one)
 
@@ -167,13 +195,13 @@ HACS then quotes a version that matches no release (surfacing as
 One command keeps them in lockstep:
 
 ```bash
-scripts/release.sh              # auto: today's date, next same-day revision
-scripts/release.sh 2026.08.24.1 # or an explicit YYYY.MM.DD.N
+scripts/release.sh               # auto: today's date, next same-day revision
+scripts/release.sh v2026.08.30.2 # or an explicit version (bare form accepted too)
 ```
 
 It bumps the integration manifest, the add-on `config.yaml`, and the
 add-on's `SCANNER_VERSION` together, runs the test suite, commits, and
-pushes a tag **named exactly the version** (no `v`). Pushing that tag runs
+pushes the tag **`v<version>`** (e.g. `v2026.08.30.2`). Pushing that tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
 creates the GitHub Release HACS installs from — after first asserting the
 tag equals the manifest version, so they can never disagree again.
@@ -217,6 +245,13 @@ custom_components/ha_soc/
 ├── config_hygiene.py     — Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py    — lock/siren/valve entities + curated integration health (Dashboard)
+├── logs.py               — fault-log reader + Supervisor container/add-on log access (Logs tab)
+├── unifi.py              — UniFi Network/Protect data for the Network tab
+├── firewall.py           — host firewall read/test/confirm state machine (with the add-on)
+├── integration_security.py — per-integration provenance/trust signals (Integration Security tab)
+├── containers.py         — per-container CPU/memory usage via Supervisor stats
+├── resource_watchdog.py  — sustained-overuse watchdog + optional Docker hard caps
+├── diagnostics.py        — redacted config-entry diagnostics (safe to attach to an issue)
 ├── websocket_api.py      — the ha_soc/* command surface the panel calls
 ├── sensor.py / binary_sensor.py / repairs.py — entities + Repairs integration
 ├── panel.py              — sidebar panel registration

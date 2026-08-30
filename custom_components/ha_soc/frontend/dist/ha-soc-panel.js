@@ -4,23 +4,23 @@ function t(t,e,s,i){var a,n=arguments.length,o=n<3?e:null===i?i=Object.getOwnPro
  * Copyright 2019 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
  */
-const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"adoptedStyleSheets"in Document.prototype&&"replace"in CSSStyleSheet.prototype,i=Symbol(),a=new WeakMap;let n=class{constructor(t,e,s){if(this._$cssResult$=!0,s!==i)throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");this.cssText=t,this.t=e}get styleSheet(){let t=this.o;const e=this.t;if(s&&void 0===t){const s=void 0!==e&&1===e.length;s&&(t=a.get(e)),void 0===t&&((this.o=t=new CSSStyleSheet).replaceSync(this.cssText),s&&a.set(e,t))}return t}toString(){return this.cssText}};const o=(t,...e)=>{const s=1===t.length?t[0]:e.reduce((e,s,i)=>e+(t=>{if(!0===t._$cssResult$)return t.cssText;if("number"==typeof t)return t;throw Error("Value passed to 'css' function must be a 'css' function result: "+t+". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.")})(s)+t[i+1],t[0]);return new n(s,t,i)},r=s?t=>t:t=>t instanceof CSSStyleSheet?(t=>{let e="";for(const s of t.cssRules)e+=s.cssText;return(t=>new n("string"==typeof t?t:t+"",void 0,i))(e)})(t):t,{is:l,defineProperty:d,getOwnPropertyDescriptor:c,getOwnPropertyNames:h,getOwnPropertySymbols:p,getPrototypeOf:u}=Object,g=globalThis,v=g.trustedTypes,_=v?v.emptyScript:"",y=g.reactiveElementPolyfillSupport,m=(t,e)=>t,b={toAttribute(t,e){switch(e){case Boolean:t=t?_:null;break;case Object:case Array:t=null==t?t:JSON.stringify(t)}return t},fromAttribute(t,e){let s=t;switch(e){case Boolean:s=null!==t;break;case Number:s=null===t?null:Number(t);break;case Object:case Array:try{s=JSON.parse(t)}catch(t){s=null}}return s}},f=(t,e)=>!l(t,e),$={attribute:!0,type:String,converter:b,reflect:!1,useDefault:!1,hasChanged:f};
+const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"adoptedStyleSheets"in Document.prototype&&"replace"in CSSStyleSheet.prototype,i=Symbol(),a=new WeakMap;let n=class{constructor(t,e,s){if(this._$cssResult$=!0,s!==i)throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");this.cssText=t,this.t=e}get styleSheet(){let t=this.o;const e=this.t;if(s&&void 0===t){const s=void 0!==e&&1===e.length;s&&(t=a.get(e)),void 0===t&&((this.o=t=new CSSStyleSheet).replaceSync(this.cssText),s&&a.set(e,t))}return t}toString(){return this.cssText}};const o=(t,...e)=>{const s=1===t.length?t[0]:e.reduce((e,s,i)=>e+(t=>{if(!0===t._$cssResult$)return t.cssText;if("number"==typeof t)return t;throw Error("Value passed to 'css' function must be a 'css' function result: "+t+". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.")})(s)+t[i+1],t[0]);return new n(s,t,i)},r=s?t=>t:t=>t instanceof CSSStyleSheet?(t=>{let e="";for(const s of t.cssRules)e+=s.cssText;return(t=>new n("string"==typeof t?t:t+"",void 0,i))(e)})(t):t,{is:l,defineProperty:d,getOwnPropertyDescriptor:c,getOwnPropertyNames:h,getOwnPropertySymbols:p,getPrototypeOf:u}=Object,_=globalThis,g=_.trustedTypes,v=g?g.emptyScript:"",m=_.reactiveElementPolyfillSupport,y=(t,e)=>t,b={toAttribute(t,e){switch(e){case Boolean:t=t?v:null;break;case Object:case Array:t=null==t?t:JSON.stringify(t)}return t},fromAttribute(t,e){let s=t;switch(e){case Boolean:s=null!==t;break;case Number:s=null===t?null:Number(t);break;case Object:case Array:try{s=JSON.parse(t)}catch(t){s=null}}return s}},f=(t,e)=>!l(t,e),$={attribute:!0,type:String,converter:b,reflect:!1,useDefault:!1,hasChanged:f};
 /**
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */Symbol.metadata??=Symbol("metadata"),g.litPropertyMetadata??=new WeakMap;let w=class extends HTMLElement{static addInitializer(t){this._$Ei(),(this.l??=[]).push(t)}static get observedAttributes(){return this.finalize(),this._$Eh&&[...this._$Eh.keys()]}static createProperty(t,e=$){if(e.state&&(e.attribute=!1),this._$Ei(),this.prototype.hasOwnProperty(t)&&((e=Object.create(e)).wrapped=!0),this.elementProperties.set(t,e),!e.noAccessor){const s=Symbol(),i=this.getPropertyDescriptor(t,s,e);void 0!==i&&d(this.prototype,t,i)}}static getPropertyDescriptor(t,e,s){const{get:i,set:a}=c(this.prototype,t)??{get(){return this[e]},set(t){this[e]=t}};return{get:i,set(e){const n=i?.call(this);a?.call(this,e),this.requestUpdate(t,n,s)},configurable:!0,enumerable:!0}}static getPropertyOptions(t){return this.elementProperties.get(t)??$}static _$Ei(){if(this.hasOwnProperty(m("elementProperties")))return;const t=u(this);t.finalize(),void 0!==t.l&&(this.l=[...t.l]),this.elementProperties=new Map(t.elementProperties)}static finalize(){if(this.hasOwnProperty(m("finalized")))return;if(this.finalized=!0,this._$Ei(),this.hasOwnProperty(m("properties"))){const t=this.properties,e=[...h(t),...p(t)];for(const s of e)this.createProperty(s,t[s])}const t=this[Symbol.metadata];if(null!==t){const e=litPropertyMetadata.get(t);if(void 0!==e)for(const[t,s]of e)this.elementProperties.set(t,s)}this._$Eh=new Map;for(const[t,e]of this.elementProperties){const s=this._$Eu(t,e);void 0!==s&&this._$Eh.set(s,t)}this.elementStyles=this.finalizeStyles(this.styles)}static finalizeStyles(t){const e=[];if(Array.isArray(t)){const s=new Set(t.flat(1/0).reverse());for(const t of s)e.unshift(r(t))}else void 0!==t&&e.push(r(t));return e}static _$Eu(t,e){const s=e.attribute;return!1===s?void 0:"string"==typeof s?s:"string"==typeof t?t.toLowerCase():void 0}constructor(){super(),this._$Ep=void 0,this.isUpdatePending=!1,this.hasUpdated=!1,this._$Em=null,this._$Ev()}_$Ev(){this._$ES=new Promise(t=>this.enableUpdating=t),this._$AL=new Map,this._$E_(),this.requestUpdate(),this.constructor.l?.forEach(t=>t(this))}addController(t){(this._$EO??=new Set).add(t),void 0!==this.renderRoot&&this.isConnected&&t.hostConnected?.()}removeController(t){this._$EO?.delete(t)}_$E_(){const t=new Map,e=this.constructor.elementProperties;for(const s of e.keys())this.hasOwnProperty(s)&&(t.set(s,this[s]),delete this[s]);t.size>0&&(this._$Ep=t)}createRenderRoot(){const t=this.shadowRoot??this.attachShadow(this.constructor.shadowRootOptions);return((t,i)=>{if(s)t.adoptedStyleSheets=i.map(t=>t instanceof CSSStyleSheet?t:t.styleSheet);else for(const s of i){const i=document.createElement("style"),a=e.litNonce;void 0!==a&&i.setAttribute("nonce",a),i.textContent=s.cssText,t.appendChild(i)}})(t,this.constructor.elementStyles),t}connectedCallback(){this.renderRoot??=this.createRenderRoot(),this.enableUpdating(!0),this._$EO?.forEach(t=>t.hostConnected?.())}enableUpdating(t){}disconnectedCallback(){this._$EO?.forEach(t=>t.hostDisconnected?.())}attributeChangedCallback(t,e,s){this._$AK(t,s)}_$ET(t,e){const s=this.constructor.elementProperties.get(t),i=this.constructor._$Eu(t,s);if(void 0!==i&&!0===s.reflect){const a=(void 0!==s.converter?.toAttribute?s.converter:b).toAttribute(e,s.type);this._$Em=t,null==a?this.removeAttribute(i):this.setAttribute(i,a),this._$Em=null}}_$AK(t,e){const s=this.constructor,i=s._$Eh.get(t);if(void 0!==i&&this._$Em!==i){const t=s.getPropertyOptions(i),a="function"==typeof t.converter?{fromAttribute:t.converter}:void 0!==t.converter?.fromAttribute?t.converter:b;this._$Em=i;const n=a.fromAttribute(e,t.type);this[i]=n??this._$Ej?.get(i)??n,this._$Em=null}}requestUpdate(t,e,s,i=!1,a){if(void 0!==t){const n=this.constructor;if(!1===i&&(a=this[t]),s??=n.getPropertyOptions(t),!((s.hasChanged??f)(a,e)||s.useDefault&&s.reflect&&a===this._$Ej?.get(t)&&!this.hasAttribute(n._$Eu(t,s))))return;this.C(t,e,s)}!1===this.isUpdatePending&&(this._$ES=this._$EP())}C(t,e,{useDefault:s,reflect:i,wrapped:a},n){s&&!(this._$Ej??=new Map).has(t)&&(this._$Ej.set(t,n??e??this[t]),!0!==a||void 0!==n)||(this._$AL.has(t)||(this.hasUpdated||s||(e=void 0),this._$AL.set(t,e)),!0===i&&this._$Em!==t&&(this._$Eq??=new Set).add(t))}async _$EP(){this.isUpdatePending=!0;try{await this._$ES}catch(t){Promise.reject(t)}const t=this.scheduleUpdate();return null!=t&&await t,!this.isUpdatePending}scheduleUpdate(){return this.performUpdate()}performUpdate(){if(!this.isUpdatePending)return;if(!this.hasUpdated){if(this.renderRoot??=this.createRenderRoot(),this._$Ep){for(const[t,e]of this._$Ep)this[t]=e;this._$Ep=void 0}const t=this.constructor.elementProperties;if(t.size>0)for(const[e,s]of t){const{wrapped:t}=s,i=this[e];!0!==t||this._$AL.has(e)||void 0===i||this.C(e,void 0,s,i)}}let t=!1;const e=this._$AL;try{t=this.shouldUpdate(e),t?(this.willUpdate(e),this._$EO?.forEach(t=>t.hostUpdate?.()),this.update(e)):this._$EM()}catch(e){throw t=!1,this._$EM(),e}t&&this._$AE(e)}willUpdate(t){}_$AE(t){this._$EO?.forEach(t=>t.hostUpdated?.()),this.hasUpdated||(this.hasUpdated=!0,this.firstUpdated(t)),this.updated(t)}_$EM(){this._$AL=new Map,this.isUpdatePending=!1}get updateComplete(){return this.getUpdateComplete()}getUpdateComplete(){return this._$ES}shouldUpdate(t){return!0}update(t){this._$Eq&&=this._$Eq.forEach(t=>this._$ET(t,this[t])),this._$EM()}updated(t){}firstUpdated(t){}};w.elementStyles=[],w.shadowRootOptions={mode:"open"},w[m("elementProperties")]=new Map,w[m("finalized")]=new Map,y?.({ReactiveElement:w}),(g.reactiveElementVersions??=[]).push("2.1.2");
+ */Symbol.metadata??=Symbol("metadata"),_.litPropertyMetadata??=new WeakMap;let w=class extends HTMLElement{static addInitializer(t){this._$Ei(),(this.l??=[]).push(t)}static get observedAttributes(){return this.finalize(),this._$Eh&&[...this._$Eh.keys()]}static createProperty(t,e=$){if(e.state&&(e.attribute=!1),this._$Ei(),this.prototype.hasOwnProperty(t)&&((e=Object.create(e)).wrapped=!0),this.elementProperties.set(t,e),!e.noAccessor){const s=Symbol(),i=this.getPropertyDescriptor(t,s,e);void 0!==i&&d(this.prototype,t,i)}}static getPropertyDescriptor(t,e,s){const{get:i,set:a}=c(this.prototype,t)??{get(){return this[e]},set(t){this[e]=t}};return{get:i,set(e){const n=i?.call(this);a?.call(this,e),this.requestUpdate(t,n,s)},configurable:!0,enumerable:!0}}static getPropertyOptions(t){return this.elementProperties.get(t)??$}static _$Ei(){if(this.hasOwnProperty(y("elementProperties")))return;const t=u(this);t.finalize(),void 0!==t.l&&(this.l=[...t.l]),this.elementProperties=new Map(t.elementProperties)}static finalize(){if(this.hasOwnProperty(y("finalized")))return;if(this.finalized=!0,this._$Ei(),this.hasOwnProperty(y("properties"))){const t=this.properties,e=[...h(t),...p(t)];for(const s of e)this.createProperty(s,t[s])}const t=this[Symbol.metadata];if(null!==t){const e=litPropertyMetadata.get(t);if(void 0!==e)for(const[t,s]of e)this.elementProperties.set(t,s)}this._$Eh=new Map;for(const[t,e]of this.elementProperties){const s=this._$Eu(t,e);void 0!==s&&this._$Eh.set(s,t)}this.elementStyles=this.finalizeStyles(this.styles)}static finalizeStyles(t){const e=[];if(Array.isArray(t)){const s=new Set(t.flat(1/0).reverse());for(const t of s)e.unshift(r(t))}else void 0!==t&&e.push(r(t));return e}static _$Eu(t,e){const s=e.attribute;return!1===s?void 0:"string"==typeof s?s:"string"==typeof t?t.toLowerCase():void 0}constructor(){super(),this._$Ep=void 0,this.isUpdatePending=!1,this.hasUpdated=!1,this._$Em=null,this._$Ev()}_$Ev(){this._$ES=new Promise(t=>this.enableUpdating=t),this._$AL=new Map,this._$E_(),this.requestUpdate(),this.constructor.l?.forEach(t=>t(this))}addController(t){(this._$EO??=new Set).add(t),void 0!==this.renderRoot&&this.isConnected&&t.hostConnected?.()}removeController(t){this._$EO?.delete(t)}_$E_(){const t=new Map,e=this.constructor.elementProperties;for(const s of e.keys())this.hasOwnProperty(s)&&(t.set(s,this[s]),delete this[s]);t.size>0&&(this._$Ep=t)}createRenderRoot(){const t=this.shadowRoot??this.attachShadow(this.constructor.shadowRootOptions);return((t,i)=>{if(s)t.adoptedStyleSheets=i.map(t=>t instanceof CSSStyleSheet?t:t.styleSheet);else for(const s of i){const i=document.createElement("style"),a=e.litNonce;void 0!==a&&i.setAttribute("nonce",a),i.textContent=s.cssText,t.appendChild(i)}})(t,this.constructor.elementStyles),t}connectedCallback(){this.renderRoot??=this.createRenderRoot(),this.enableUpdating(!0),this._$EO?.forEach(t=>t.hostConnected?.())}enableUpdating(t){}disconnectedCallback(){this._$EO?.forEach(t=>t.hostDisconnected?.())}attributeChangedCallback(t,e,s){this._$AK(t,s)}_$ET(t,e){const s=this.constructor.elementProperties.get(t),i=this.constructor._$Eu(t,s);if(void 0!==i&&!0===s.reflect){const a=(void 0!==s.converter?.toAttribute?s.converter:b).toAttribute(e,s.type);this._$Em=t,null==a?this.removeAttribute(i):this.setAttribute(i,a),this._$Em=null}}_$AK(t,e){const s=this.constructor,i=s._$Eh.get(t);if(void 0!==i&&this._$Em!==i){const t=s.getPropertyOptions(i),a="function"==typeof t.converter?{fromAttribute:t.converter}:void 0!==t.converter?.fromAttribute?t.converter:b;this._$Em=i;const n=a.fromAttribute(e,t.type);this[i]=n??this._$Ej?.get(i)??n,this._$Em=null}}requestUpdate(t,e,s,i=!1,a){if(void 0!==t){const n=this.constructor;if(!1===i&&(a=this[t]),s??=n.getPropertyOptions(t),!((s.hasChanged??f)(a,e)||s.useDefault&&s.reflect&&a===this._$Ej?.get(t)&&!this.hasAttribute(n._$Eu(t,s))))return;this.C(t,e,s)}!1===this.isUpdatePending&&(this._$ES=this._$EP())}C(t,e,{useDefault:s,reflect:i,wrapped:a},n){s&&!(this._$Ej??=new Map).has(t)&&(this._$Ej.set(t,n??e??this[t]),!0!==a||void 0!==n)||(this._$AL.has(t)||(this.hasUpdated||s||(e=void 0),this._$AL.set(t,e)),!0===i&&this._$Em!==t&&(this._$Eq??=new Set).add(t))}async _$EP(){this.isUpdatePending=!0;try{await this._$ES}catch(t){Promise.reject(t)}const t=this.scheduleUpdate();return null!=t&&await t,!this.isUpdatePending}scheduleUpdate(){return this.performUpdate()}performUpdate(){if(!this.isUpdatePending)return;if(!this.hasUpdated){if(this.renderRoot??=this.createRenderRoot(),this._$Ep){for(const[t,e]of this._$Ep)this[t]=e;this._$Ep=void 0}const t=this.constructor.elementProperties;if(t.size>0)for(const[e,s]of t){const{wrapped:t}=s,i=this[e];!0!==t||this._$AL.has(e)||void 0===i||this.C(e,void 0,s,i)}}let t=!1;const e=this._$AL;try{t=this.shouldUpdate(e),t?(this.willUpdate(e),this._$EO?.forEach(t=>t.hostUpdate?.()),this.update(e)):this._$EM()}catch(e){throw t=!1,this._$EM(),e}t&&this._$AE(e)}willUpdate(t){}_$AE(t){this._$EO?.forEach(t=>t.hostUpdated?.()),this.hasUpdated||(this.hasUpdated=!0,this.firstUpdated(t)),this.updated(t)}_$EM(){this._$AL=new Map,this.isUpdatePending=!1}get updateComplete(){return this.getUpdateComplete()}getUpdateComplete(){return this._$ES}shouldUpdate(t){return!0}update(t){this._$Eq&&=this._$Eq.forEach(t=>this._$ET(t,this[t])),this._$EM()}updated(t){}firstUpdated(t){}};w.elementStyles=[],w.shadowRootOptions={mode:"open"},w[y("elementProperties")]=new Map,w[y("finalized")]=new Map,m?.({ReactiveElement:w}),(_.reactiveElementVersions??=[]).push("2.1.2");
 /**
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
  */
-const x=globalThis,k=t=>t,S=x.trustedTypes,A=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,C="$lit$",P=`lit$${Math.random().toFixed(9).slice(2)}$`,z="?"+P,E=`<${z}>`,F=document,R=()=>F.createComment(""),I=t=>null===t||"object"!=typeof t&&"function"!=typeof t,L=Array.isArray,U="[ \t\n\f\r]",N=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,D=/-->/g,H=/>/g,O=RegExp(`>|${U}(?:([^\\s"'>=/]+)(${U}*=${U}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),T=/'/g,M=/"/g,V=/^(?:script|style|textarea|title)$/i,B=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),W=Symbol.for("lit-noChange"),j=Symbol.for("lit-nothing"),q=new WeakMap,G=F.createTreeWalker(F,129);function K(t,e){if(!L(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==A?A.createHTML(e):e}const Y=(t,e)=>{const s=t.length-1,i=[];let a,n=2===e?"<svg>":3===e?"<math>":"",o=N;for(let e=0;e<s;e++){const s=t[e];let r,l,d=-1,c=0;for(;c<s.length&&(o.lastIndex=c,l=o.exec(s),null!==l);)c=o.lastIndex,o===N?"!--"===l[1]?o=D:void 0!==l[1]?o=H:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),o=O):void 0!==l[3]&&(o=O):o===O?">"===l[0]?(o=a??N,d=-1):void 0===l[1]?d=-2:(d=o.lastIndex-l[2].length,r=l[1],o=void 0===l[3]?O:'"'===l[3]?M:T):o===M||o===T?o=O:o===D||o===H?o=N:(o=O,a=void 0);const h=o===O&&t[e+1].startsWith("/>")?" ":"";n+=o===N?s+E:d>=0?(i.push(r),s.slice(0,d)+C+s.slice(d)+P+h):s+P+(-2===d?e:h)}return[K(t,n+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,n=0;const o=t.length-1,r=this.parts,[l,d]=Y(t,e);if(this.el=J.createElement(l,s),G.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=G.nextNode())&&r.length<o;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(C)){const e=d[n++],s=i.getAttribute(t).split(P),o=/([.?@])?(.*)/.exec(e);r.push({type:1,index:a,name:o[2],strings:s,ctor:"."===o[1]?et:"?"===o[1]?st:"@"===o[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(P)&&(r.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(P),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],R()),G.nextNode(),r.push({type:2,index:++a});i.append(t[e],R())}}}else if(8===i.nodeType)if(i.data===z)r.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(P,t+1));)r.push({type:7,index:a}),t+=P.length-1}a++}}static createElement(t,e){const s=F.createElement("template");return s.innerHTML=t,s}}function Z(t,e,s=t,i){if(e===W)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const n=I(e)?void 0:e._$litDirective$;return a?.constructor!==n&&(a?._$AO?.(!1),void 0===n?a=void 0:(a=new n(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Z(t,a._$AS(t,e.values),a,i)),e}class Q{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??F).importNode(e,!0);G.currentNode=i;let a=G.nextNode(),n=0,o=0,r=s[0];for(;void 0!==r;){if(n===r.index){let e;2===r.type?e=new X(a,a.nextSibling,this,t):1===r.type?e=new r.ctor(a,r.name,r.strings,this,t):6===r.type&&(e=new at(a,this,t)),this._$AV.push(e),r=s[++o]}n!==r?.index&&(a=G.nextNode(),n++)}return G.currentNode=F,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class X{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=j,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Z(this,t,e),I(t)?t===j||null==t||""===t?(this._$AH!==j&&this._$AR(),this._$AH=j):t!==this._$AH&&t!==W&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>L(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==j&&I(this._$AH)?this._$AA.nextSibling.data=t:this.T(F.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(K(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new Q(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=q.get(t.strings);return void 0===e&&q.set(t.strings,e=new J(t)),e}k(t){L(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new X(this.O(R()),this.O(R()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=j,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=j}_$AI(t,e=this,s,i){const a=this.strings;let n=!1;if(void 0===a)t=Z(this,t,e,0),n=!I(t)||t!==this._$AH&&t!==W,n&&(this._$AH=t);else{const i=t;let o,r;for(t=a[0],o=0;o<a.length-1;o++)r=Z(this,i[s+o],e,o),r===W&&(r=this._$AH[o]),n||=!I(r)||r!==this._$AH[o],r===j?t=j:t!==j&&(t+=(r??"")+a[o+1]),this._$AH[o]=r}n&&!i&&this.j(t)}j(t){t===j?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===j?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==j)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Z(this,t,e,0)??j)===W)return;const s=this._$AH,i=t===j&&s!==j||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==j&&(s===j||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Z(this,t)}}const nt=x.litHtmlPolyfillSupport;nt?.(J,X),(x.litHtmlVersions??=[]).push("3.3.3");const ot=globalThis;
+const x=globalThis,k=t=>t,S=x.trustedTypes,A=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,C="$lit$",P=`lit$${Math.random().toFixed(9).slice(2)}$`,R="?"+P,E=`<${R}>`,z=document,I=()=>z.createComment(""),F=t=>null===t||"object"!=typeof t&&"function"!=typeof t,L=Array.isArray,N="[ \t\n\f\r]",O=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,T=/-->/g,U=/>/g,D=RegExp(`>|${N}(?:([^\\s"'>=/]+)(${N}*=${N}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),H=/'/g,M=/"/g,V=/^(?:script|style|textarea|title)$/i,B=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),W=Symbol.for("lit-noChange"),j=Symbol.for("lit-nothing"),G=new WeakMap,q=z.createTreeWalker(z,129);function K(t,e){if(!L(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==A?A.createHTML(e):e}const Y=(t,e)=>{const s=t.length-1,i=[];let a,n=2===e?"<svg>":3===e?"<math>":"",o=O;for(let e=0;e<s;e++){const s=t[e];let r,l,d=-1,c=0;for(;c<s.length&&(o.lastIndex=c,l=o.exec(s),null!==l);)c=o.lastIndex,o===O?"!--"===l[1]?o=T:void 0!==l[1]?o=U:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),o=D):void 0!==l[3]&&(o=D):o===D?">"===l[0]?(o=a??O,d=-1):void 0===l[1]?d=-2:(d=o.lastIndex-l[2].length,r=l[1],o=void 0===l[3]?D:'"'===l[3]?M:H):o===M||o===H?o=D:o===T||o===U?o=O:(o=D,a=void 0);const h=o===D&&t[e+1].startsWith("/>")?" ":"";n+=o===O?s+E:d>=0?(i.push(r),s.slice(0,d)+C+s.slice(d)+P+h):s+P+(-2===d?e:h)}return[K(t,n+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,n=0;const o=t.length-1,r=this.parts,[l,d]=Y(t,e);if(this.el=J.createElement(l,s),q.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=q.nextNode())&&r.length<o;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(C)){const e=d[n++],s=i.getAttribute(t).split(P),o=/([.?@])?(.*)/.exec(e);r.push({type:1,index:a,name:o[2],strings:s,ctor:"."===o[1]?et:"?"===o[1]?st:"@"===o[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(P)&&(r.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(P),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],I()),q.nextNode(),r.push({type:2,index:++a});i.append(t[e],I())}}}else if(8===i.nodeType)if(i.data===R)r.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(P,t+1));)r.push({type:7,index:a}),t+=P.length-1}a++}}static createElement(t,e){const s=z.createElement("template");return s.innerHTML=t,s}}function Z(t,e,s=t,i){if(e===W)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const n=F(e)?void 0:e._$litDirective$;return a?.constructor!==n&&(a?._$AO?.(!1),void 0===n?a=void 0:(a=new n(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Z(t,a._$AS(t,e.values),a,i)),e}class Q{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??z).importNode(e,!0);q.currentNode=i;let a=q.nextNode(),n=0,o=0,r=s[0];for(;void 0!==r;){if(n===r.index){let e;2===r.type?e=new X(a,a.nextSibling,this,t):1===r.type?e=new r.ctor(a,r.name,r.strings,this,t):6===r.type&&(e=new at(a,this,t)),this._$AV.push(e),r=s[++o]}n!==r?.index&&(a=q.nextNode(),n++)}return q.currentNode=z,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class X{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=j,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Z(this,t,e),F(t)?t===j||null==t||""===t?(this._$AH!==j&&this._$AR(),this._$AH=j):t!==this._$AH&&t!==W&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>L(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==j&&F(this._$AH)?this._$AA.nextSibling.data=t:this.T(z.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(K(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new Q(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=G.get(t.strings);return void 0===e&&G.set(t.strings,e=new J(t)),e}k(t){L(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new X(this.O(I()),this.O(I()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=j,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=j}_$AI(t,e=this,s,i){const a=this.strings;let n=!1;if(void 0===a)t=Z(this,t,e,0),n=!F(t)||t!==this._$AH&&t!==W,n&&(this._$AH=t);else{const i=t;let o,r;for(t=a[0],o=0;o<a.length-1;o++)r=Z(this,i[s+o],e,o),r===W&&(r=this._$AH[o]),n||=!F(r)||r!==this._$AH[o],r===j?t=j:t!==j&&(t+=(r??"")+a[o+1]),this._$AH[o]=r}n&&!i&&this.j(t)}j(t){t===j?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===j?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==j)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Z(this,t,e,0)??j)===W)return;const s=this._$AH,i=t===j&&s!==j||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==j&&(s===j||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Z(this,t)}}const nt=x.litHtmlPolyfillSupport;nt?.(J,X),(x.litHtmlVersions??=[]).push("3.3.3");const ot=globalThis;
 /**
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */class rt extends w{constructor(){super(...arguments),this.renderOptions={host:this},this._$Do=void 0}createRenderRoot(){const t=super.createRenderRoot();return this.renderOptions.renderBefore??=t.firstChild,t}update(t){const e=this.render();this.hasUpdated||(this.renderOptions.isConnected=this.isConnected),super.update(t),this._$Do=((t,e,s)=>{const i=s?.renderBefore??e;let a=i._$litPart$;if(void 0===a){const t=s?.renderBefore??null;i._$litPart$=a=new X(e.insertBefore(R(),t),t,void 0,s??{})}return a._$AI(t),a})(e,this.renderRoot,this.renderOptions)}connectedCallback(){super.connectedCallback(),this._$Do?.setConnected(!0)}disconnectedCallback(){super.disconnectedCallback(),this._$Do?.setConnected(!1)}render(){return W}}rt._$litElement$=!0,rt.finalized=!0,ot.litElementHydrateSupport?.({LitElement:rt});const lt=ot.litElementPolyfillSupport;lt?.({LitElement:rt}),(ot.litElementVersions??=[]).push("4.2.2");
+ */class rt extends w{constructor(){super(...arguments),this.renderOptions={host:this},this._$Do=void 0}createRenderRoot(){const t=super.createRenderRoot();return this.renderOptions.renderBefore??=t.firstChild,t}update(t){const e=this.render();this.hasUpdated||(this.renderOptions.isConnected=this.isConnected),super.update(t),this._$Do=((t,e,s)=>{const i=s?.renderBefore??e;let a=i._$litPart$;if(void 0===a){const t=s?.renderBefore??null;i._$litPart$=a=new X(e.insertBefore(I(),t),t,void 0,s??{})}return a._$AI(t),a})(e,this.renderRoot,this.renderOptions)}connectedCallback(){super.connectedCallback(),this._$Do?.setConnected(!0)}disconnectedCallback(){super.disconnectedCallback(),this._$Do?.setConnected(!1)}render(){return W}}rt._$litElement$=!0,rt.finalized=!0,ot.litElementHydrateSupport?.({LitElement:rt});const lt=ot.litElementPolyfillSupport;lt?.({LitElement:rt}),(ot.litElementVersions??=[]).push("4.2.2");
 /**
  * @license
  * Copyright 2017 Google LLC
@@ -36,7 +36,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */function ut(t){return pt({...t,state:!0,attribute:!1})}const gt=(t,e)=>t.callWS(e),vt=t=>gt(t,{type:"ha_soc/users/list"}).then(t=>t.users),_t=t=>gt(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),yt=(t,e)=>gt(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),mt=(t,e,s)=>gt(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),bt=t=>gt(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),ft=t=>gt(t,{type:"ha_soc/logs/fault"}),$t=t=>gt(t,{type:"ha_soc/health/list"}),wt=t=>gt(t,{type:"ha_soc/dashboard/devices"}),xt=t=>gt(t,{type:"ha_soc/dashboard/integrations"}),kt=t=>gt(t,{type:"ha_soc/probe/status"}),St=t=>gt(t,{type:"ha_soc/firewall/status"}),At=t=>gt(t,{type:"ha_soc/peripherals/list"}),Ct=t=>gt(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),Pt=t=>gt(t,{type:"ha_soc/security_health/list"}),zt=o`
+ */function ut(t){return pt({...t,state:!0,attribute:!1})}const _t=(t,e)=>t.callWS(e),gt=t=>_t(t,{type:"ha_soc/users/list"}).then(t=>t.users),vt=t=>_t(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),mt=(t,e)=>_t(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),yt=(t,e,s)=>_t(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),bt=t=>_t(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),ft=t=>_t(t,{type:"ha_soc/logs/fault"}),$t=t=>_t(t,{type:"ha_soc/logs/targets"}),wt=t=>_t(t,{type:"ha_soc/health/list"}),xt=t=>_t(t,{type:"ha_soc/dashboard/devices"}),kt=t=>_t(t,{type:"ha_soc/dashboard/integrations"}),St=t=>_t(t,{type:"ha_soc/probe/status"}),At=t=>_t(t,{type:"ha_soc/firewall/status"}),Ct=t=>_t(t,{type:"ha_soc/peripherals/list"}),Pt=t=>_t(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),Rt=t=>_t(t,{type:"ha_soc/security_health/list"}),Et=o`
   :host {
     display: block;
     padding: 16px;
@@ -272,7 +272,58 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
     text-transform: uppercase;
     letter-spacing: 0.03em;
   }
-`;let Et=class extends rt{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._busyUserId=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[t,e]=await Promise.all([vt(this.hass),_t(this.hass)]);this._users=t,this._risk=e}finally{this._loading=!1}}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>gt(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>gt(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onResetPassword(t){const e=prompt("New password for this user (owner-only action):");if(e){this._busyUserId=t;try{const s=await((t,e,s)=>gt(t,{type:"ha_soc/users/set_password",user_id:e,password:s}))(this.hass,t,e);s&&!1===s.ok&&alert("Could not set password — only the account owner can reset another user's password.")}finally{this._busyUserId=null}}}render(){return this._loading?B`<div class="empty">Loading users…</div>`:this._users.length?B`
+  /* Accessible sortable column headers (see sortable.ts): the whole header
+     is a real button (keyboard focus + Enter/Space), aria-sort on the th
+     conveys state to assistive tech, the arrow is decorative only. */
+  th.sortable {
+    padding: 0;
+  }
+  th.sortable .sort-btn {
+    font: inherit;
+    font-size: 11px;
+    font-weight: inherit;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    color: var(--secondary-text-color);
+    background: none;
+    border: none;
+    padding: 8px 10px;
+    width: 100%;
+    text-align: left;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+  th.sortable.num .sort-btn {
+    justify-content: flex-end;
+    text-align: right;
+  }
+  th.sortable .sort-btn:hover,
+  th.sortable .sort-btn:focus-visible {
+    color: var(--primary-color);
+  }
+  th.sortable .sort-arrow {
+    opacity: 0.35;
+    font-size: 10px;
+  }
+  th.sortable .sort-arrow.active {
+    opacity: 1;
+    color: var(--primary-color);
+  }
+`;function zt(t,e,s){if(!e)return t;const i=s[e.key];return i?t.map((t,e)=>({row:t,i:e})).sort((t,s)=>{const a=i(t.row),n=i(s.row),o=null==a||""===a,r=null==n||""===n;if(o&&r)return t.i-s.i;if(o)return 1;if(r)return-1;let l;return l="number"==typeof a&&"number"==typeof n?a-n:"boolean"==typeof a&&"boolean"==typeof n?Number(a)-Number(n):String(a).localeCompare(String(n),void 0,{sensitivity:"base",numeric:!0}),0!==l?l*e.dir:t.i-s.i}).map(t=>t.row):t}function It(t,e,s,i,a={}){const n=s?.key===e,o=n?1===s.dir?"ascending":"descending":"none",r=n?1===s.dir?"▲":"▼":"⇅";return B`
+    <th class="sortable ${a.numeric?"num":""}" aria-sort=${o}>
+      <button
+        type="button"
+        class="sort-btn"
+        title="Sort by ${t}"
+        @click=${()=>i(function(t,e){return t?.key===e?{key:e,dir:1===t.dir?-1:1}:{key:e,dir:1}}(s,e))}
+      >
+        ${t}<span class="sort-arrow ${n?"active":""}" aria-hidden="true">${r}</span>
+      </button>
+    </th>
+  `}let Ft=class extends rt{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._busyUserId=null,this._sort=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[t,e]=await Promise.all([gt(this.hass),vt(this.hass)]);this._users=t,this._risk=e}finally{this._loading=!1}}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>_t(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>_t(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onResetPassword(t){const e=prompt("New password for this user (owner-only action):");if(e){this._busyUserId=t;try{const s=await((t,e,s)=>_t(t,{type:"ha_soc/users/set_password",user_id:e,password:s}))(this.hass,t,e);s&&!1===s.ok&&alert("Could not set password — only the account owner can reset another user's password.")}finally{this._busyUserId=null}}}render(){if(this._loading)return B`<div class="empty">Loading users…</div>`;if(!this._users.length)return B`<div class="empty">No users found.</div>`;const t=this._sort,e=t=>{this._sort=t},s=zt(this._users,t,{user:t=>t.name??t.id,role:t=>`${t.is_admin?"Admin":"User"}${t.local_only?" · local only":""}`,mfa:t=>t.mfa_enabled,risk:t=>this._risk[t.id]?.score??null,last_login:t=>t.last_login_at?Date.parse(t.last_login_at):null,tokens:t=>t.llat_count});return B`
       <div class="card">
         <h3>Users &amp; Access</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -283,17 +334,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <table>
           <thead>
             <tr>
-              <th>User</th>
-              <th>Role</th>
-              <th>MFA</th>
-              <th>Risk</th>
-              <th>Last login</th>
-              <th>Tokens</th>
+              ${It("User","user",t,e)}
+              ${It("Role","role",t,e)}
+              ${It("MFA","mfa",t,e)}
+              ${It("Risk","risk",t,e)}
+              ${It("Last login","last_login",t,e)}
+              ${It("Tokens","tokens",t,e)}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${this._users.map(t=>{const e=this._risk[t.id];return B`
+            ${s.map(t=>{const e=this._risk[t.id];return B`
                 <tr class=${t.is_active?"":"row-disabled"}>
                   <td>
                     <div>${t.name??t.id}</div>
@@ -346,7 +397,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </tbody>
         </table>
       </div>
-    `:B`<div class="empty">No users found.</div>`}};Et.styles=zt,t([pt({attribute:!1})],Et.prototype,"hass",void 0),t([ut()],Et.prototype,"_users",void 0),t([ut()],Et.prototype,"_risk",void 0),t([ut()],Et.prototype,"_loading",void 0),t([ut()],Et.prototype,"_busyUserId",void 0),Et=t([dt("ha-soc-users-view")],Et);const Ft=["","service_call","login_ok","login_fail","token_created","user_added","user_updated","user_removed","lovelace_change","entity_registry_change"];let Rt=class extends rt{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._category="",this._userId="",this._verifyResult=null}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await vt(this.hass)}async _load(){this._loading=!0;try{this._events=await((t,e={})=>gt(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,gt(t,{type:"ha_soc/audit/verify_chain"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){return B`
+    `}};Ft.styles=Et,t([pt({attribute:!1})],Ft.prototype,"hass",void 0),t([ut()],Ft.prototype,"_users",void 0),t([ut()],Ft.prototype,"_risk",void 0),t([ut()],Ft.prototype,"_loading",void 0),t([ut()],Ft.prototype,"_busyUserId",void 0),t([ut()],Ft.prototype,"_sort",void 0),Ft=t([dt("ha-soc-users-view")],Ft);const Lt=[["","All categories"],["service_call","Service call"],["login_ok","Login OK"],["login_fail","Login failed"],["token_created","Token created"],["session_seen","Session first seen"],["user_added","User added"],["user_updated","User updated"],["user_removed","User removed"],["lovelace_change","Dashboard edit"],["dashboard_panels_change","Panel set changed"],["entity_registry_change","Entity registry"],["device_registry_change","Device registry"],["area_registry_change","Area registry"],["floor_registry_change","Floor registry"],["label_registry_change","Label registry"],["category_registry_change","Category registry"],["config_entry_change","Config entry"],["core_config_change","Core config"],["watchdog_triggered","Watchdog triggered"],["soc_config_change","SOC config change"]];let Nt=class extends rt{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._category="",this._userId="",this._verifyResult=null,this._sort=null}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await gt(this.hass)}async _load(){this._loading=!0;try{this._events=await((t,e={})=>_t(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,_t(t,{type:"ha_soc/audit/verify_chain"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){const t=this._sort,e=t=>{this._sort=t},s=zt(this._events,t,{time:t=>Date.parse(t.ts),category:t=>t.category,user:t=>t.user_id?this._nameFor(t.user_id):null,action:t=>t.domain?`${t.domain}.${t.service}${t.entity_ids?.length?` (${t.entity_ids.join(", ")})`:""}`:null,source:t=>t.ip});return B`
       <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -356,7 +407,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         </p>
         <div class="toolbar">
           <select @change=${this._onCategoryChange}>
-            ${Ft.map(t=>B`<option value=${t} ?selected=${t===this._category}>${t||"All categories"}</option>`)}
+            ${Lt.map(([t,e])=>B`<option value=${t} ?selected=${t===this._category}>${e}</option>`)}
           </select>
           <select @change=${this._onUserChange}>
             <option value="" ?selected=${""===this._userId}>All users</option>
@@ -373,15 +424,15 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Category</th>
-                    <th>User</th>
-                    <th>Action</th>
-                    <th>Source</th>
+                    ${It("Time","time",t,e)}
+                    ${It("Category","category",t,e)}
+                    ${It("User","user",t,e)}
+                    ${It("Action","action",t,e)}
+                    ${It("Source","source",t,e)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._events.map(t=>B`
+                  ${s.map(t=>B`
                       <tr>
                         <td>${new Date(t.ts).toLocaleString()}</td>
                         <td><span class="tag cosmetic">${t.category}</span></td>
@@ -394,7 +445,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               </table>
             `:B`<div class="empty">No matching events.</div>`}
       </div>
-    `}};Rt.styles=zt,t([pt({attribute:!1})],Rt.prototype,"hass",void 0),t([ut()],Rt.prototype,"_events",void 0),t([ut()],Rt.prototype,"_users",void 0),t([ut()],Rt.prototype,"_loading",void 0),t([ut()],Rt.prototype,"_category",void 0),t([ut()],Rt.prototype,"_userId",void 0),t([ut()],Rt.prototype,"_verifyResult",void 0),Rt=t([dt("ha-soc-audit-view")],Rt);let It=class extends rt{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._drift=[],this._viewsError=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([vt(this.hass),(t=this.hass,gt(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,gt(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e){const s=t.visibleUserIds??this._users.map(t=>t.id),i=s.includes(e)?s.filter(t=>t!==e):[...s,e],a=i.length===this._users.length?[]:i;await((t,e,s,i)=>gt(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,t.path,a),await this._loadViews()}async _onToggleFlag(t,e,s){await((t,e,s)=>gt(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,t,{[e]:s}),await this._load()}async _onCheckDrift(){var t;this._drift=await(t=this.hass,gt(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}render(){if(this._loading)return B`<div class="empty">Loading dashboards…</div>`;const t=this._dashboards.find(t=>(t.url_path??null)===(this._selected??null));return B`
+    `}};Nt.styles=Et,t([pt({attribute:!1})],Nt.prototype,"hass",void 0),t([ut()],Nt.prototype,"_events",void 0),t([ut()],Nt.prototype,"_users",void 0),t([ut()],Nt.prototype,"_loading",void 0),t([ut()],Nt.prototype,"_category",void 0),t([ut()],Nt.prototype,"_userId",void 0),t([ut()],Nt.prototype,"_verifyResult",void 0),t([ut()],Nt.prototype,"_sort",void 0),Nt=t([dt("ha-soc-audit-view")],Nt);let Ot=class extends rt{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._drift=[],this._viewsError=null,this._sort=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([gt(this.hass),(t=this.hass,_t(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,_t(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e){const s=t.visibleUserIds??this._users.map(t=>t.id),i=s.includes(e)?s.filter(t=>t!==e):[...s,e],a=i.length===this._users.length?[]:i;await((t,e,s,i)=>_t(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,t.path,a),await this._loadViews()}async _onToggleFlag(t,e,s){await((t,e,s)=>_t(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,t,{[e]:s}),await this._load()}async _onCheckDrift(){var t;this._drift=await(t=this.hass,_t(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}render(){if(this._loading)return B`<div class="empty">Loading dashboards…</div>`;const t=this._dashboards.find(t=>(t.url_path??null)===(this._selected??null));return B`
       <div class="card">
         <h3>Permissions Matrix</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -436,16 +487,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               ${this._drift.length} view(s) no longer match the policy last applied here — likely edited directly in the dashboard editor.
             </p>`:j}
 
-        ${this._views.length?B`
+        ${this._views.length?(()=>{const t={view:t=>t.title};for(const e of this._users)t[`user:${e.id}`]=t=>null===t.visibleUserIds||t.visibleUserIds.includes(e.id);const e=zt(this._views,this._sort,t),s=this._sort,i=t=>this._sort=t;return B`
               <table>
                 <thead>
                   <tr>
-                    <th>View</th>
-                    ${this._users.map(t=>B`<th>${t.name??t.id}</th>`)}
+                    ${It("View","view",s,i)}
+                    ${this._users.map(t=>It(t.name??t.id,`user:${t.id}`,s,i))}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._views.map(t=>B`
+                  ${e.map(t=>B`
                       <tr>
                         <td>${t.title}</td>
                         ${this._users.map(e=>{const s=null===t.visibleUserIds||t.visibleUserIds.includes(e.id);return B`
@@ -461,28 +512,28 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     `)}
                 </tbody>
               </table>
-            `:B`<div class="empty">
+            `})():B`<div class="empty">
               ${this._viewsError??"This dashboard has no views, or is YAML-managed (read-only)."}
             </div>`}
       </div>
-    `}};It.styles=zt,t([pt({attribute:!1})],It.prototype,"hass",void 0),t([ut()],It.prototype,"_users",void 0),t([ut()],It.prototype,"_dashboards",void 0),t([ut()],It.prototype,"_selected",void 0),t([ut()],It.prototype,"_views",void 0),t([ut()],It.prototype,"_loading",void 0),t([ut()],It.prototype,"_drift",void 0),t([ut()],It.prototype,"_viewsError",void 0),It=t([dt("ha-soc-permissions-view")],It);const Lt=["new","confirmed","dismissed","resolved"],Ut=["critical","high","medium","low","info"];function Nt(t){const e=Ut.indexOf(t);return-1===e?Ut.length:e}function Dt(t){return"0.0.0.0"===t?{priority:0,label:"all interfaces",cls:"high"}:t?t.startsWith("127.")||t.startsWith("169.254.")?{priority:3,label:"loopback / link-local",cls:"good"}:function(t){const e=t.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);if(!e)return!1;const[s,i]=[Number(e[1]),Number(e[2])];return 10===s||172===s&&i>=16&&i<=31||192===s&&168===i}(t)?{priority:2,label:"private (RFC 1918)",cls:"low"}:{priority:1,label:"public / routable",cls:"high"}:{priority:4,label:"unresolved (IPv6)",cls:"info"}}let Ht=class extends rt{constructor(){super(...arguments),this._scannerFindings=[],this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._scanning=!1,this._firewall=null,this._fwDraftRules=[{action:"allow",proto:"tcp",port:0,source:""}],this._fwBackupAck=!1,this._fwSubmitting=!1,this._fwError=null,this._fwPollHandle=null}connectedCallback(){super.connectedCallback(),this._load()}disconnectedCallback(){super.disconnectedCallback(),null!==this._fwPollHandle&&(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _load(){this._loading=!0;try{const[e,s,i,a,n]=await Promise.all([(t=this.hass,gt(t,{type:"ha_soc/scanner/list"}).then(t=>t.findings)),bt(this.hass),$t(this.hass),kt(this.hass),St(this.hass)]);this._scannerFindings=e,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a,this._firewall=n,this._maybeManageFirewallPolling()}finally{this._loading=!1}var t}_maybeManageFirewallPolling(){const t=null!=this._firewall?.pending;t&&null===this._fwPollHandle?this._fwPollHandle=window.setInterval(()=>this._pollFirewallStatus(),2e3):t||null===this._fwPollHandle||(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _pollFirewallStatus(){this._applyFirewallStatus(await St(this.hass))}_applyFirewallStatus(t){const e=null!=this._firewall?.pending;this._firewall=t,e&&!t.pending&&(this._fwBackupAck=!1),this._maybeManageFirewallPolling()}_fwRuleValid(t){return Number.isInteger(t.port)&&t.port>=1&&t.port<=65535&&("allow"===t.action||"deny"===t.action)&&("tcp"===t.proto||"udp"===t.proto)}_fwUpdateRule(t,e){this._fwDraftRules=this._fwDraftRules.map((s,i)=>i===t?{...s,...e}:s)}_fwAddRule(){this._fwDraftRules=[...this._fwDraftRules,{action:"allow",proto:"tcp",port:0,source:""}]}_fwRemoveRule(t){this._fwDraftRules=this._fwDraftRules.filter((e,s)=>s!==t)}async _onProposeTest(){this._fwError=null,this._fwSubmitting=!0;try{const t=this._fwDraftRules.map(t=>({action:t.action,proto:t.proto,port:t.port,source:t.source?t.source:null}));await((t,e,s)=>gt(t,{type:"ha_soc/firewall/test",rules:e,backup_acknowledged:s}))(this.hass,t,this._fwBackupAck),this._applyFirewallStatus(await St(this.hass))}catch(t){this._fwError=t?.message??"Failed to propose the firewall change."}finally{this._fwSubmitting=!1}}async _onConfirmTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,gt(t,{type:"ha_soc/firewall/confirm",test_id:e})),this._applyFirewallStatus(await St(this.hass))}catch(t){this._fwError=t?.message??"Failed to confirm the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onCancelTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,gt(t,{type:"ha_soc/firewall/cancel",test_id:e})),this._applyFirewallStatus(await St(this.hass))}catch(t){this._fwError=t?.message??"Failed to cancel the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onScanIntegrations(){this._scanning=!0;try{await(t=this.hass,gt(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0;try{await(t=this.hass,gt(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){await((t,e,s,i)=>gt(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}async _onMisconfigStatus(t,e){await((t,e,s,i)=>gt(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}_groupedVulnFindings(){const t=new Map;for(const e of this._vulnFindings){const s=String(e.device_name??"Unknown device"),i=t.get(s);i?i.push(e):t.set(s,[e])}const e=Array.from(t.entries()).map(([t,e])=>({device_name:t,findings:[...e].sort((t,e)=>Nt(t.severity)-Nt(e.severity))}));return e.sort((t,e)=>Nt(t.findings[0].severity)-Nt(e.findings[0].severity)),e}_renderStatusSelect(t,e,s){return B`
+    `}};var Tt;Ot.styles=Et,t([pt({attribute:!1})],Ot.prototype,"hass",void 0),t([ut()],Ot.prototype,"_users",void 0),t([ut()],Ot.prototype,"_dashboards",void 0),t([ut()],Ot.prototype,"_selected",void 0),t([ut()],Ot.prototype,"_views",void 0),t([ut()],Ot.prototype,"_loading",void 0),t([ut()],Ot.prototype,"_drift",void 0),t([ut()],Ot.prototype,"_viewsError",void 0),t([ut()],Ot.prototype,"_sort",void 0),Ot=t([dt("ha-soc-permissions-view")],Ot);const Ut=["new","confirmed","dismissed","resolved"],Dt=["critical","high","medium","low","info"];function Ht(t){const e=Dt.indexOf(t);return-1===e?Dt.length:e}function Mt(t,e){const s=t.indexOf(String(e));return-1===s?null:s}const Vt=["high","medium","advisory"],Bt=["exact_cpe","curated_map","keyword","heuristic"];function Wt(t){return"0.0.0.0"===t?{priority:0,label:"all interfaces",cls:"high"}:t?t.startsWith("127.")||t.startsWith("169.254.")?{priority:3,label:"loopback / link-local",cls:"good"}:function(t){const e=t.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);if(!e)return!1;const[s,i]=[Number(e[1]),Number(e[2])];return 10===s||172===s&&i>=16&&i<=31||192===s&&168===i}(t)?{priority:2,label:"private (RFC 1918)",cls:"low"}:{priority:1,label:"public / routable",cls:"high"}:{priority:4,label:"unresolved (IPv6)",cls:"info"}}let jt=Tt=class extends rt{constructor(){super(...arguments),this._scannerFindings=[],this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._scanning=!1,this._firewall=null,this._fwDraftRules=[{action:"allow",proto:"tcp",port:0,source:""}],this._fwBackupAck=!1,this._fwSubmitting=!1,this._fwError=null,this._fwPollHandle=null,this._misconfigSort=null,this._scannerSort=null,this._vulnSort=null,this._portSort=null,this._fwRulesSort=null}connectedCallback(){super.connectedCallback(),this._load()}disconnectedCallback(){super.disconnectedCallback(),null!==this._fwPollHandle&&(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _load(){this._loading=!0;try{const[e,s,i,a,n]=await Promise.all([(t=this.hass,_t(t,{type:"ha_soc/scanner/list"}).then(t=>t.findings)),bt(this.hass),wt(this.hass),St(this.hass),At(this.hass)]);this._scannerFindings=e,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a,this._firewall=n,this._maybeManageFirewallPolling()}finally{this._loading=!1}var t}_maybeManageFirewallPolling(){const t=null!=this._firewall?.pending;t&&null===this._fwPollHandle?this._fwPollHandle=window.setInterval(()=>this._pollFirewallStatus(),2e3):t||null===this._fwPollHandle||(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _pollFirewallStatus(){this._applyFirewallStatus(await At(this.hass))}_applyFirewallStatus(t){const e=null!=this._firewall?.pending;this._firewall=t,e&&!t.pending&&(this._fwBackupAck=!1),this._maybeManageFirewallPolling()}_fwRuleValid(t){return Number.isInteger(t.port)&&t.port>=1&&t.port<=65535&&("allow"===t.action||"deny"===t.action)&&("tcp"===t.proto||"udp"===t.proto)}_fwUpdateRule(t,e){this._fwDraftRules=this._fwDraftRules.map((s,i)=>i===t?{...s,...e}:s)}_fwAddRule(){this._fwDraftRules=[...this._fwDraftRules,{action:"allow",proto:"tcp",port:0,source:""}]}_fwRemoveRule(t){this._fwDraftRules=this._fwDraftRules.filter((e,s)=>s!==t)}async _onProposeTest(){this._fwError=null,this._fwSubmitting=!0;try{const t=this._fwDraftRules.map(t=>({action:t.action,proto:t.proto,port:t.port,source:t.source?t.source:null}));await((t,e,s)=>_t(t,{type:"ha_soc/firewall/test",rules:e,backup_acknowledged:s}))(this.hass,t,this._fwBackupAck),this._applyFirewallStatus(await At(this.hass))}catch(t){this._fwError=t?.message??"Failed to propose the firewall change."}finally{this._fwSubmitting=!1}}async _onConfirmTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,_t(t,{type:"ha_soc/firewall/confirm",test_id:e})),this._applyFirewallStatus(await At(this.hass))}catch(t){this._fwError=t?.message??"Failed to confirm the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onCancelTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,_t(t,{type:"ha_soc/firewall/cancel",test_id:e})),this._applyFirewallStatus(await At(this.hass))}catch(t){this._fwError=t?.message??"Failed to cancel the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onScanIntegrations(){this._scanning=!0;try{await(t=this.hass,_t(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0;try{await(t=this.hass,_t(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){await((t,e,s,i)=>_t(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}async _onMisconfigStatus(t,e){await((t,e,s,i)=>_t(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e),await this._load()}_groupedVulnFindings(){const t=new Map;for(const e of this._vulnFindings){const s=String(e.device_name??"Unknown device"),i=t.get(s);i?i.push(e):t.set(s,[e])}const e=this._vulnSort,s=Array.from(t.entries()).map(([t,s])=>({device_name:t,worst:Math.min(...s.map(t=>Ht(t.severity))),findings:e?zt(s,e,Tt.VULN_SORT):[...s].sort((t,e)=>Ht(t.severity)-Ht(e.severity))}));return"cve"===e?.key?s.sort((t,s)=>t.device_name.localeCompare(s.device_name,void 0,{sensitivity:"base",numeric:!0})*e.dir):s.sort((t,e)=>t.worst-e.worst),s}_renderStatusSelect(t,e,s){return B`
       <select @change=${t=>s(t.target.value)}>
-        ${Lt.map(t=>B`<option value=${t} ?selected=${t===e}>${t}</option>`)}
+        ${Ut.map(t=>B`<option value=${t} ?selected=${t===e}>${t}</option>`)}
       </select>
-    `}render(){return this._loading?B`<div class="empty">Loading findings…</div>`:B`
+    `}_sortedMisconfigFindings(){return this._misconfigSort?zt(this._misconfigFindings,this._misconfigSort,Tt.MISCONFIG_SORT):[...this._misconfigFindings].sort((t,e)=>Ht(t.severity)-Ht(e.severity))}render(){return this._loading?B`<div class="empty">Loading findings…</div>`:B`
       <div class="card">
         <h3>Misconfiguration Findings</h3>
         ${this._misconfigFindings.length?B`
               <table>
                 <thead>
                   <tr>
-                    <th>Check</th>
-                    <th>Summary</th>
+                    ${It("Check","check",this._misconfigSort,t=>this._misconfigSort=t)}
+                    ${It("Summary","summary",this._misconfigSort,t=>this._misconfigSort=t)}
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._misconfigFindings.map(t=>B`
+                  ${this._sortedMisconfigFindings().map(t=>B`
                       <tr>
                         <td><span class="pill ${t.severity}"><span class="dot"></span>${t.check}</span></td>
                         <td>${t.summary}</td>
@@ -511,16 +562,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    <th>Domain</th>
-                    <th>Pattern</th>
-                    <th>Location</th>
-                    <th>Confidence</th>
-                    <th>CWE</th>
+                    ${It("Domain","domain",this._scannerSort,t=>this._scannerSort=t)}
+                    ${It("Pattern","pattern",this._scannerSort,t=>this._scannerSort=t)}
+                    ${It("Location","location",this._scannerSort,t=>this._scannerSort=t)}
+                    ${It("Confidence","confidence",this._scannerSort,t=>this._scannerSort=t)}
+                    ${It("CWE","cwe",this._scannerSort,t=>this._scannerSort=t)}
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._scannerFindings.map(t=>B`
+                  ${zt(this._scannerFindings,this._scannerSort,Tt.SCANNER_SORT).map(t=>B`
                       <tr>
                         <td>${t.domain}</td>
                         <td><span class="pill ${t.severity}"><span class="dot"></span>${t.pattern}</span></td>
@@ -551,9 +602,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    <th>CVE</th>
-                    <th>CVSS</th>
-                    <th>Confidence</th>
+                    ${It("CVE","cve",this._vulnSort,t=>this._vulnSort=t)}
+                    ${It("CVSS","cvss",this._vulnSort,t=>this._vulnSort=t)}
+                    ${It("Confidence","confidence",this._vulnSort,t=>this._vulnSort=t)}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -626,16 +677,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               ${e.open_ports.length?this._renderPortsByBindAddress(e.open_ports):B`<div class="empty">No listening ports reported.</div>`}
             `:B`<div class="empty">No scan reported yet.</div>`}
       </div>
-    `}_renderPortsByBindAddress(t){const e=new Map;for(const s of t){const t=s.address??"__unresolved__",i=e.get(t);i?i.push(s):e.set(t,[s])}const s=Array.from(e.entries()).sort((t,e)=>{const s=Dt("__unresolved__"===t[0]?null:t[0]),i=Dt("__unresolved__"===e[0]?null:e[0]);return s.priority!==i.priority?s.priority-i.priority:t[0].localeCompare(e[0])});return B`
+    `}_renderPortsByBindAddress(t){const e=new Map;for(const s of t){const t=s.address??"__unresolved__",i=e.get(t);i?i.push(s):e.set(t,[s])}const s=Array.from(e.entries()).sort((t,e)=>{const s=Wt("__unresolved__"===t[0]?null:t[0]),i=Wt("__unresolved__"===e[0]?null:e[0]);return s.priority!==i.priority?s.priority-i.priority:t[0].localeCompare(e[0])});return B`
       <table>
         <thead>
           <tr>
-            <th>Port</th>
-            <th>Protocol</th>
-            <th>Interface</th>
+            ${It("Port","port",this._portSort,t=>this._portSort=t)}
+            ${It("Protocol","proto",this._portSort,t=>this._portSort=t)}
+            ${It("Interface","interface",this._portSort,t=>this._portSort=t)}
           </tr>
         </thead>
-        ${s.map(([t,e])=>{const s="__unresolved__"===t?null:t,i=Dt(s);return B`
+        ${s.map(([t,e])=>{const s="__unresolved__"===t?null:t,i=Wt(s);return B`
             <tbody>
               <tr>
                 <td colspan="3" style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
@@ -648,7 +699,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   >
                 </td>
               </tr>
-              ${e.slice().sort((t,e)=>t.port-e.port).map(t=>B`
+              ${(this._portSort?zt(e,this._portSort,Tt.PORT_SORT):e.slice().sort((t,e)=>t.port-e.port)).map(t=>B`
                     <tr>
                       <td>${t.port}</td>
                       <td>${t.proto}</td>
@@ -676,14 +727,14 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    <th>Action</th>
-                    <th>Protocol</th>
-                    <th>Port</th>
-                    <th>Source</th>
+                    ${It("Action","action",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${It("Protocol","proto",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${It("Port","port",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${It("Source","source",this._fwRulesSort,t=>this._fwRulesSort=t)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${e.known_rules.map(t=>B`
+                  ${zt(e.known_rules,this._fwRulesSort,Tt.FW_RULE_SORT).map(t=>B`
                       <tr>
                         <td>
                           <span class="pill ${"allow"===t.action?"good":"critical"}"
@@ -826,7 +877,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           Test
         </button>
       </div>
-    `}};Ht.styles=zt,t([pt({attribute:!1})],Ht.prototype,"hass",void 0),t([ut()],Ht.prototype,"_scannerFindings",void 0),t([ut()],Ht.prototype,"_vulnFindings",void 0),t([ut()],Ht.prototype,"_misconfigFindings",void 0),t([ut()],Ht.prototype,"_probe",void 0),t([ut()],Ht.prototype,"_loading",void 0),t([ut()],Ht.prototype,"_scanning",void 0),t([ut()],Ht.prototype,"_firewall",void 0),t([ut()],Ht.prototype,"_fwDraftRules",void 0),t([ut()],Ht.prototype,"_fwBackupAck",void 0),t([ut()],Ht.prototype,"_fwSubmitting",void 0),t([ut()],Ht.prototype,"_fwError",void 0),Ht=t([dt("ha-soc-scanner-view")],Ht);function Ot(t,e){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:{tab:e},bubbles:!0,composed:!0}))}function Tt(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function Mt(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}const Vt={lock:"Locks",siren:"Sirens",valve:"Valves"},Bt=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],Wt=["critical","high","medium","low"],jt={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},qt={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},Gt=[20,50,100,"all"],Kt=[20,50,100,"all"];let Yt=class extends rt{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:"desc"},this._devicePageSize=20,this._integrationSearch="",this._integrationPageSize=20}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0;try{const[e,s,i,a,n,o,r,l]=await Promise.all([(t=this.hass,gt(t,{type:"ha_soc/dashboard/summary"})),wt(this.hass),xt(this.hass),At(this.hass),Pt(this.hass),yt(this.hass),_t(this.hass),vt(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=n,this._detections=o,this._risk=r,this._users=l}finally{this._loading=!1}var t}async _onAck(t){await mt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await mt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){Ot(this,t)}_donutGradient(t){const e=t.reduce((t,e)=>t+e.value,0)||1;let s=0;const i=t.map(t=>{const i=s/e*100;s+=t.value;const a=s/e*100;return`${t.color} ${i}% ${a}%`});return`conic-gradient(${i.join(", ")})`}_onSort(t){this._deviceSort=this._deviceSort.key===t?{key:t,dir:"asc"===this._deviceSort.dir?"desc":"asc"}:{key:t,dir:"name"===t||"vendor"===t?"asc":"desc"}}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e)))),{key:i,dir:a}=this._deviceSort,n=[...s].sort((t,e)=>{const s=t[i],n=e[i],o="string"==typeof s?s.localeCompare(n):s-n;return"asc"===a?o:-o});return n}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t}_statusDotColor(t){switch(t){case"unavailable":return"var(--status-critical)";case"partial":return"var(--status-warning)";case"disabled":return"var(--cat-other)";case"no_entities":return"var(--primary-color)";default:return"var(--status-good)"}}render(){if(this._loading||!this._summary||!this._deviceOverview||!this._integrationOverview)return B`<div class="empty">Loading dashboard…</div>`;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=this._detections.filter(t=>"open"===t.status),a=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),n=a.critical+a.high+a.medium+a.low,o=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:a.critical},{key:"high",label:"High",color:"var(--status-serious)",value:a.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:a.medium},{key:"low",label:"Low",color:"var(--status-good)",value:a.low}],r=Math.max(0,Math.min(100,e.combined_risk_score/10*100)),l=t.entity_state_counts??{unavailable:0,unknown:0},d=l.unavailable+l.unknown,c=[{key:"unavailable",label:"Failed (unavailable)",color:"var(--status-critical)",value:l.unavailable},{key:"unknown",label:"Unknown",color:"var(--status-warning)",value:l.unknown}],h=this._sortedFilteredDevices(),p="all"===this._devicePageSize?h:h.slice(0,this._devicePageSize),u=this._filteredIntegrations(),g="all"===this._integrationPageSize?u:u.slice(0,this._integrationPageSize),v=[{key:"low",color:"var(--status-good)",value:t.risk_band_counts.low??0},{key:"moderate",color:"var(--status-warning)",value:t.risk_band_counts.moderate??0},{key:"high",color:"var(--status-serious)",value:t.risk_band_counts.high??0},{key:"critical",color:"var(--status-critical)",value:t.risk_band_counts.critical??0}],_=[{key:"enabled",color:"var(--cat-1)",value:t.mfa_counts.enabled},{key:"disabled",color:"var(--cat-2)",value:t.mfa_counts.disabled}],y=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}];return B`
+    `}};jt.styles=Et,jt.MISCONFIG_SORT={check:t=>t.check,summary:t=>t.summary},jt.SCANNER_SORT={domain:t=>t.domain,pattern:t=>t.pattern,location:t=>`${t.file}:${t.line}`,confidence:t=>Mt(Vt,t.confidence),cwe:t=>t.cwe},jt.VULN_SORT={cve:t=>t.cve_id,cvss:t=>{if(null==t.cvss)return null;const e=Number(t.cvss);return Number.isNaN(e)?null:e},confidence:t=>Mt(Bt,t.confidence)},jt.PORT_SORT={port:t=>t.port,proto:t=>t.proto,interface:t=>t.interface},jt.FW_RULE_SORT={action:t=>t.action,proto:t=>t.proto,port:t=>t.port,source:t=>t.source??"any"},t([pt({attribute:!1})],jt.prototype,"hass",void 0),t([ut()],jt.prototype,"_scannerFindings",void 0),t([ut()],jt.prototype,"_vulnFindings",void 0),t([ut()],jt.prototype,"_misconfigFindings",void 0),t([ut()],jt.prototype,"_probe",void 0),t([ut()],jt.prototype,"_loading",void 0),t([ut()],jt.prototype,"_scanning",void 0),t([ut()],jt.prototype,"_firewall",void 0),t([ut()],jt.prototype,"_fwDraftRules",void 0),t([ut()],jt.prototype,"_fwBackupAck",void 0),t([ut()],jt.prototype,"_fwSubmitting",void 0),t([ut()],jt.prototype,"_fwError",void 0),t([ut()],jt.prototype,"_misconfigSort",void 0),t([ut()],jt.prototype,"_scannerSort",void 0),t([ut()],jt.prototype,"_vulnSort",void 0),t([ut()],jt.prototype,"_portSort",void 0),t([ut()],jt.prototype,"_fwRulesSort",void 0),jt=Tt=t([dt("ha-soc-scanner-view")],jt);function Gt(t,e){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:{tab:e},bubbles:!0,composed:!0}))}function qt(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function Kt(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}var Yt;const Jt={lock:"Locks",siren:"Sirens",valve:"Valves"},Zt=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],Qt=["critical","high","medium","low"],Xt={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},te={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},ee=Object.fromEntries(Object.keys(Xt).map((t,e)=>[t,e])),se=[20,50,100,"all"],ie=[20,50,100,"all"];let ae=Yt=class extends rt{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:-1},this._devicePageSize=20,this._integrationSearch="",this._integrationSort=null,this._integrationPageSize=20,this._detectionSort=null}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0;try{const[e,s,i,a,n,o,r,l]=await Promise.all([(t=this.hass,_t(t,{type:"ha_soc/dashboard/summary"})),xt(this.hass),kt(this.hass),Ct(this.hass),Rt(this.hass),mt(this.hass),vt(this.hass),gt(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=n,this._detections=o,this._risk=r,this._users=l}finally{this._loading=!1}var t}async _onAck(t){await yt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await yt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){Gt(this,t)}_donutGradient(t){const e=t.reduce((t,e)=>t+e.value,0)||1;let s=0;const i=t.map(t=>{const i=s/e*100;s+=t.value;const a=s/e*100;return`${t.color} ${i}% ${a}%`});return`conic-gradient(${i.join(", ")})`}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e))));return zt(s,this._deviceSort,Yt.DEVICE_SORT)}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return zt(e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t,this._integrationSort,Yt.INTEGRATION_SORT)}_statusDotColor(t){switch(t){case"unavailable":return"var(--status-critical)";case"partial":return"var(--status-warning)";case"disabled":return"var(--cat-other)";case"no_entities":return"var(--primary-color)";default:return"var(--status-good)"}}render(){if(this._loading||!this._summary||!this._deviceOverview||!this._integrationOverview)return B`<div class="empty">Loading dashboard…</div>`;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=zt(this._detections.filter(t=>"open"===t.status),this._detectionSort,{time:t=>t.last_seen,rule:t=>t.title,severity:t=>{const e=Qt.indexOf(t.severity);return-1===e?Qt.length:e},user:t=>this._nameFor(t.user_id)}),a=t=>{this._detectionSort=t},n=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),o=n.critical+n.high+n.medium+n.low,r=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:n.critical},{key:"high",label:"High",color:"var(--status-serious)",value:n.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:n.medium},{key:"low",label:"Low",color:"var(--status-good)",value:n.low}],l=Math.max(0,Math.min(100,e.combined_risk_score/10*100)),d=t.entity_state_counts??{unavailable:0,unknown:0},c=d.unavailable+d.unknown,h=[{key:"unavailable",label:"Failed (unavailable)",color:"var(--status-critical)",value:d.unavailable},{key:"unknown",label:"Unknown",color:"var(--status-warning)",value:d.unknown}],p=this._sortedFilteredDevices(),u="all"===this._devicePageSize?p:p.slice(0,this._devicePageSize),_=t=>{this._deviceSort=t},g=t=>{this._integrationSort=t},v=this._filteredIntegrations(),m="all"===this._integrationPageSize?v:v.slice(0,this._integrationPageSize),y=[{key:"low",color:"var(--status-good)",value:t.risk_band_counts.low??0},{key:"moderate",color:"var(--status-warning)",value:t.risk_band_counts.moderate??0},{key:"high",color:"var(--status-serious)",value:t.risk_band_counts.high??0},{key:"critical",color:"var(--status-critical)",value:t.risk_band_counts.critical??0}],b=[{key:"enabled",color:"var(--cat-1)",value:t.mfa_counts.enabled},{key:"disabled",color:"var(--cat-2)",value:t.mfa_counts.disabled}],f=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}];return B`
       ${this._renderSecurityCard()}
 
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
@@ -834,7 +885,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card device-status-card">
           <h3>Device Status</h3>
           <div class="status-tiles">
-            ${Bt.map(t=>B`
+            ${Zt.map(t=>B`
                 <div
                   class="status-tile clickable ${t.key} ${this._deviceStatusFilter===t.key?"active":""}"
                   title="Filter the devices table below"
@@ -850,11 +901,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("scanner")} title="View vulnerability findings">
           <h3>Vulnerability Count by Severity</h3>
           <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(o)}">
-              <div class="center">${n.toLocaleString()}</div>
+            <div class="donut" style="background:${this._donutGradient(r)}">
+              <div class="center">${o.toLocaleString()}</div>
             </div>
             <div class="legend">
-              ${o.map(t=>B`
+              ${r.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.label}
                     <span class="val">${t.value.toLocaleString()}</span>
@@ -868,7 +919,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           <h3>Risk Score</h3>
           <div class="gauge-value">${e.combined_risk_score.toFixed(1)}</div>
           <div class="gauge-track">
-            <div class="gauge-marker" style="left:${r}%"></div>
+            <div class="gauge-marker" style="left:${l}%"></div>
           </div>
           <div class="gauge-caption">
             Combined risk score of all devices — weighted so higher-severity CVEs count more.
@@ -878,11 +929,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("entity_remap")} title="Fix broken entity references">
           <h3>Failed / Unknown Entities</h3>
           <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(c)}">
-              <div class="center">${d.toLocaleString()}</div>
+            <div class="donut" style="background:${this._donutGradient(h)}">
+              <div class="center">${c.toLocaleString()}</div>
             </div>
             <div class="legend">
-              ${c.map(t=>B`
+              ${h.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.label}
                     <span class="val">${t.value.toLocaleString()}</span>
@@ -898,11 +949,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("users")} title="View users">
           <h3>Users by Risk Band</h3>
           <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(v)}">
+            <div class="donut" style="background:${this._donutGradient(y)}">
               <div class="center">${t.total_users_count}</div>
             </div>
             <div class="legend">
-              ${v.map(t=>B`
+              ${y.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.key}
                     <span class="val">${t.value}</span>
@@ -915,7 +966,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("users")} title="View users">
           <h3>MFA Adoption</h3>
           <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(_)}">
+            <div class="donut" style="background:${this._donutGradient(b)}">
               <div class="center">
                 ${t.mfa_counts.enabled+t.mfa_counts.disabled>0?`${Math.round(t.mfa_counts.enabled/(t.mfa_counts.enabled+t.mfa_counts.disabled)*100)}%`:"—"}
               </div>
@@ -930,11 +981,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("audit")} title="View audit / detections">
           <h3>Detections by Severity</h3>
           <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(y)}">
+            <div class="donut" style="background:${this._donutGradient(f)}">
               <div class="center">${this._detections.length}</div>
             </div>
             <div class="legend">
-              ${y.map(t=>B`
+              ${f.map(t=>B`
                   <div class="row">
                     <span class="sw" style="background:${t.color}"></span>${t.key}
                     <span class="val">${t.value}</span>
@@ -951,10 +1002,10 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Rule</th>
-                    <th>Severity</th>
-                    <th>User</th>
+                    ${It("Time","time",this._detectionSort,a)}
+                    ${It("Rule","rule",this._detectionSort,a)}
+                    ${It("Severity","severity",this._detectionSort,a)}
+                    ${It("User","user",this._detectionSort,a)}
                     <th></th>
                   </tr>
                 </thead>
@@ -982,7 +1033,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           <h3>All Devices</h3>
           ${this._deviceStatusFilter?B`
                 <div class="filter-chip" @click=${()=>this._deviceStatusFilter=null}>
-                  ${Bt.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
+                  ${Zt.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
                 </div>
               `:j}
           <div class="devices-toolbar">
@@ -993,33 +1044,25 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               @input=${t=>this._deviceSearch=t.target.value}
             />
           </div>
-          ${0===h.length?B`<div class="empty">No devices found.</div>`:B`
+          ${0===p.length?B`<div class="empty">No devices found.</div>`:B`
                 <div style="overflow-x:auto;">
                   <table>
                     <thead>
                       <tr>
-                        <th>Health</th>
-                        <th class="sortable" @click=${()=>this._onSort("name")}>
-                          Device${this._sortArrow("name")}
-                        </th>
-                        <th class="sortable" @click=${()=>this._onSort("vendor")}>
-                          Vendor${this._sortArrow("vendor")}
-                        </th>
-                        <th class="sortable" @click=${()=>this._onSort("risk_score")}>
-                          Risk Score${this._sortArrow("risk_score")}
-                        </th>
-                        <th class="sortable" @click=${()=>this._onSort("total_findings")}>
-                          Total${this._sortArrow("total_findings")}
-                        </th>
-                        <th>Severity</th>
+                        ${It("Health","status",this._deviceSort,_)}
+                        ${It("Device","name",this._deviceSort,_)}
+                        ${It("Vendor","vendor",this._deviceSort,_)}
+                        ${It("Risk Score","risk_score",this._deviceSort,_,{numeric:!0})}
+                        ${It("Total","total_findings",this._deviceSort,_,{numeric:!0})}
+                        ${It("Severity","severity",this._deviceSort,_)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${p.map(t=>B`
+                      ${u.map(t=>B`
                           <tr
                             class="clickable"
                             title="Open in Home Assistant's Devices page"
-                            @click=${()=>Tt(`/config/devices/device/${t.device_id}`)}
+                            @click=${()=>qt(`/config/devices/device/${t.device_id}`)}
                           >
                             <td><span class="health-dot" style="background:${this._statusDotColor(t.status)}"></span></td>
                             <td>${t.name}</td>
@@ -1028,7 +1071,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                             <td class="num">${t.total_findings}</td>
                             <td>
                               <span class="sev-cell">
-                                ${Wt.map(e=>B`
+                                ${Qt.map(e=>B`
                                     <span>
                                       <span
                                         class="sev-dot"
@@ -1046,13 +1089,13 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 </div>
                 <div class="devices-footer">
                   <span
-                    >Showing ${p.length} of ${h.length} device${1===h.length?"":"s"}</span
+                    >Showing ${u.length} of ${p.length} device${1===p.length?"":"s"}</span
                   >
                   <select
                     .value=${String(this._devicePageSize)}
                     @change=${t=>{const e=t.target.value;this._devicePageSize="all"===e?"all":Number(e)}}
                   >
-                    ${Gt.map(t=>B`
+                    ${se.map(t=>B`
                         <option value=${String(t)} ?selected=${t===this._devicePageSize}>
                           ${"all"===t?"Show all":`Show ${t}`}
                         </option>
@@ -1073,21 +1116,21 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     @input=${t=>this._integrationSearch=t.target.value}
                   />
                 </div>
-                ${0===u.length?B`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:B`
+                ${0===v.length?B`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:B`
                       <div style="overflow-x:auto;">
                         <table>
                           <thead>
                             <tr>
-                              <th>Integration</th>
-                              <th>Severity</th>
+                              ${It("Integration","title",this._integrationSort,g)}
+                              ${It("Severity","severity",this._integrationSort,g)}
                             </tr>
                           </thead>
                           <tbody>
-                            ${g.map(t=>{const e=qt[t.issue_category];return B`
+                            ${m.map(t=>{const e=te[t.issue_category];return B`
                                 <tr
                                   class="clickable"
-                                  title="${t.title} — ${jt[t.issue_category]}. Open in Home Assistant's Devices page"
-                                  @click=${()=>Tt(Mt(t.entry_id))}
+                                  title="${t.title} — ${Xt[t.issue_category]}. Open in Home Assistant's Devices page"
+                                  @click=${()=>qt(Kt(t.entry_id))}
                                 >
                                   <td>${t.title}</td>
                                   <td>
@@ -1104,13 +1147,13 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       </div>
                       <div class="devices-footer">
                         <span
-                          >Showing ${g.length} of ${u.length} integration${1===u.length?"":"s"}</span
+                          >Showing ${m.length} of ${v.length} integration${1===v.length?"":"s"}</span
                         >
                         <select
                           .value=${String(this._integrationPageSize)}
                           @change=${t=>{const e=t.target.value;this._integrationPageSize="all"===e?"all":Number(e)}}
                         >
-                          ${Kt.map(t=>B`
+                          ${ie.map(t=>B`
                               <option value=${String(t)} ?selected=${t===this._integrationPageSize}>
                                 ${"all"===t?"Show all":`Show ${t}`}
                               </option>
@@ -1121,7 +1164,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               `}
         </div>
       </div>
-    `}_sortArrow(t){return this._deviceSort.key!==t?j:B`<span class="arrow">${"asc"===this._deviceSort.dir?"▲":"▼"}</span>`}_renderSecurityCard(){const t=this._security;if(!t)return j;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return B`
+    `}_renderSecurityCard(){const t=this._security;if(!t)return j;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return B`
       <div class="card">
         <h3>
           Security Integrations Health
@@ -1136,11 +1179,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           Protect, Keymaster, Emporia Vue) moved to Settings — configurable there too.
         </p>
         <div class="security-health-grid">
-          ${Object.entries(Vt).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem).length,n=i.filter(t=>t.low_battery).length;return B`
+          ${Object.entries(Jt).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem).length,n=i.filter(t=>t.low_battery).length;return B`
                 <div
                   class="security-source-tile ${i.length?"clickable":""}"
                   title=${i.length?`View ${s.toLowerCase()} in Home Assistant's Devices page`:""}
-                  @click=${()=>i.length&&Tt(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
+                  @click=${()=>i.length&&qt(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
                 >
                   <div class="label">${s}</div>
                   <div class="value" style="color:${a?"var(--error-color,#db4437)":"inherit"}">
@@ -1168,7 +1211,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           ${t.total_count?`${t.total_count} total`:"no USB serial devices detected"}
         </div>
       </div>
-    `:j}};Yt.styles=[zt,o`
+    `:j}};var ne;ae.styles=[Et,o`
       h2.section-title {
         font-size: 13px;
         text-transform: uppercase;
@@ -1392,14 +1435,6 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         background: var(--card-background-color, #fff);
         color: var(--primary-text-color);
       }
-      th.sortable {
-        cursor: pointer;
-        user-select: none;
-      }
-      th.sortable .arrow {
-        opacity: 0.6;
-        margin-left: 3px;
-      }
       .health-dot {
         display: inline-block;
         width: 9px;
@@ -1463,11 +1498,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         color: var(--secondary-text-color);
         margin-top: 2px;
       }
-    `],t([pt({attribute:!1})],Yt.prototype,"hass",void 0),t([ut()],Yt.prototype,"_summary",void 0),t([ut()],Yt.prototype,"_deviceOverview",void 0),t([ut()],Yt.prototype,"_integrationOverview",void 0),t([ut()],Yt.prototype,"_peripherals",void 0),t([ut()],Yt.prototype,"_security",void 0),t([ut()],Yt.prototype,"_detections",void 0),t([ut()],Yt.prototype,"_risk",void 0),t([ut()],Yt.prototype,"_users",void 0),t([ut()],Yt.prototype,"_loading",void 0),t([ut()],Yt.prototype,"_deviceSearch",void 0),t([ut()],Yt.prototype,"_deviceStatusFilter",void 0),t([ut()],Yt.prototype,"_deviceSort",void 0),t([ut()],Yt.prototype,"_devicePageSize",void 0),t([ut()],Yt.prototype,"_integrationSearch",void 0),t([ut()],Yt.prototype,"_integrationPageSize",void 0),Yt=t([dt("ha-soc-dashboard-view")],Yt);const Jt=[25,50,100,"all"];let Zt=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._clientSearch="",this._clientPage=0,this._clientPageSize=25,this._clientVlanFilter="",this._clientSsidFilter="",this._deviceSearch="",this._devicePage=0,this._devicePageSize=25}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,gt(t,{type:"ha_soc/network/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}_fmtBytes(t){if(null==t)return"—";if(t<1024)return`${t} B`;const e=["KB","MB","GB","TB","PB"];let s=t/1024,i=0;for(;s>=1024&&i<e.length-1;)s/=1024,i++;return`${s.toFixed(s>=100?0:1)} ${e[i]}`}_fmtRate(t){if(null==t)return"—";const e=8*t;if(e<1e3)return`${e} bps`;const s=["kbps","Mbps","Gbps"];let i=e/1e3,a=0;for(;i>=1e3&&a<s.length-1;)i/=1e3,a++;return`${i.toFixed(i>=100?0:1)} ${s[a]}`}_fmtBandwidth(t){return t?`↓ ${this._fmtBytes(t.rx_bytes)} · ↑ ${this._fmtBytes(t.tx_bytes)}`:"—"}_fmtUptime(t){if(null==t)return"—";const e=Math.floor(t/86400),s=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return e>0?`${e}d ${s}h`:s>0?`${s}h ${i}m`:`${i}m`}_fmtLastSeen(t){if(null==t)return"—";const e=Date.now()/1e3,s=Math.max(0,e-t);return s<60?"just now":s<3600?`${Math.floor(s/60)}m ago`:s<86400?`${Math.floor(s/3600)}h ago`:s<2592e3?`${Math.floor(s/86400)}d ago`:new Date(1e3*t).toLocaleDateString()}_fmtVlan(t){return null==t||""===t?"—":String(t)}_renderMatch(t){const e=t.integration_match;if(!e)return B`<span class="muted">—</span>`;const s=e.failing?"failing":e.healthy?"healthy":"other",i=e.failing?"⚠":e.healthy?"●":"○",a=`${e.domain} — config entry state: ${e.state}. Click to open in Home Assistant.`;return B`
+    `],ae.DEVICE_SORT={status:t=>Zt.findIndex(e=>e.key===t.status),name:t=>t.name,vendor:t=>t.vendor,risk_score:t=>t.risk_score,total_findings:t=>t.total_findings,severity:t=>1e9*t.severity_counts.critical+1e6*t.severity_counts.high+1e3*t.severity_counts.medium+t.severity_counts.low},ae.INTEGRATION_SORT={title:t=>t.title,severity:t=>ee[t.issue_category]},t([pt({attribute:!1})],ae.prototype,"hass",void 0),t([ut()],ae.prototype,"_summary",void 0),t([ut()],ae.prototype,"_deviceOverview",void 0),t([ut()],ae.prototype,"_integrationOverview",void 0),t([ut()],ae.prototype,"_peripherals",void 0),t([ut()],ae.prototype,"_security",void 0),t([ut()],ae.prototype,"_detections",void 0),t([ut()],ae.prototype,"_risk",void 0),t([ut()],ae.prototype,"_users",void 0),t([ut()],ae.prototype,"_loading",void 0),t([ut()],ae.prototype,"_deviceSearch",void 0),t([ut()],ae.prototype,"_deviceStatusFilter",void 0),t([ut()],ae.prototype,"_deviceSort",void 0),t([ut()],ae.prototype,"_devicePageSize",void 0),t([ut()],ae.prototype,"_integrationSearch",void 0),t([ut()],ae.prototype,"_integrationSort",void 0),t([ut()],ae.prototype,"_integrationPageSize",void 0),t([ut()],ae.prototype,"_detectionSort",void 0),ae=Yt=t([dt("ha-soc-dashboard-view")],ae);const oe=[25,50,100,"all"];let re=ne=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._clientSearch="",this._clientPage=0,this._clientPageSize=25,this._clientVlanFilter="",this._clientSsidFilter="",this._clientSort=null,this._deviceSearch="",this._devicePage=0,this._devicePageSize=25,this._deviceSort=null,this._aclSort=null,this._protectSort=null,this._eventSort=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,_t(t,{type:"ha_soc/network/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}_fmtBytes(t){if(null==t)return"—";if(t<1024)return`${t} B`;const e=["KB","MB","GB","TB","PB"];let s=t/1024,i=0;for(;s>=1024&&i<e.length-1;)s/=1024,i++;return`${s.toFixed(s>=100?0:1)} ${e[i]}`}_fmtRate(t){if(null==t)return"—";const e=8*t;if(e<1e3)return`${e} bps`;const s=["kbps","Mbps","Gbps"];let i=e/1e3,a=0;for(;i>=1e3&&a<s.length-1;)i/=1e3,a++;return`${i.toFixed(i>=100?0:1)} ${s[a]}`}_fmtBandwidth(t){return t?`↓ ${this._fmtBytes(t.rx_bytes)} · ↑ ${this._fmtBytes(t.tx_bytes)}`:"—"}_fmtUptime(t){if(null==t)return"—";const e=Math.floor(t/86400),s=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return e>0?`${e}d ${s}h`:s>0?`${s}h ${i}m`:`${i}m`}_fmtLastSeen(t){if(null==t)return"—";const e=Date.now()/1e3,s=Math.max(0,e-t);return s<60?"just now":s<3600?`${Math.floor(s/60)}m ago`:s<86400?`${Math.floor(s/3600)}h ago`:s<2592e3?`${Math.floor(s/86400)}d ago`:new Date(1e3*t).toLocaleDateString()}_fmtVlan(t){return null==t||""===t?"—":String(t)}_renderMatch(t){const e=t.integration_match;if(!e)return B`<span class="muted">—</span>`;const s=e.failing?"failing":e.healthy?"healthy":"other",i=e.failing?"⚠":e.healthy?"●":"○",a=`${e.domain} — config entry state: ${e.state}. Click to open in Home Assistant.`;return B`
       <span
         class="match ${s}"
         title=${a}
-        @click=${()=>Tt(Mt(e.entry_id))}
+        @click=${()=>qt(Kt(e.entry_id))}
       >
         ${i} ${e.domain}${e.failing?" failing":""}
       </span>
@@ -1498,7 +1533,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             local one generated on the console under
             <em>Settings → Control Plane → Integrations</em>; nothing leaves your LAN.
           </p>
-          <button class="ha-btn" @click=${()=>Ot(this,"settings")}>
+          <button class="ha-btn" @click=${()=>Gt(this,"settings")}>
             Open Settings
           </button>
         </div>
@@ -1563,19 +1598,18 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             `)}
         </div>
       </div>
-    `}_colHeaders(t={}){return B`
+    `}_colHeaders(){const t=this._clientSort,e=t=>{this._clientSort=t,this._clientPage=0};return B`
       <tr>
-        <th>${t.model?"Device":"Client"}</th>
-        <th>IPv4</th>
-        <th>IPv6</th>
-        <th>MAC</th>
-        <th class="num">VLAN</th>
-        <th>SSID</th>
-        ${t.model?B`<th>Model</th>`:j}
-        <th class="num">Uptime</th>
-        <th>Bandwidth</th>
-        <th>Last Seen</th>
-        <th>Integration</th>
+        ${It("Client","name",t,e)}
+        ${It("IPv4","ipv4",t,e)}
+        ${It("IPv6","ipv6",t,e)}
+        ${It("MAC","mac",t,e)}
+        ${It("VLAN","vlan",t,e,{numeric:!0})}
+        ${It("SSID","ssid",t,e)}
+        ${It("Uptime","uptime",t,e,{numeric:!0})}
+        ${It("Bandwidth","bandwidth",t,e)}
+        ${It("Last Seen","last_seen",t,e)}
+        ${It("Integration","integration",t,e)}
       </tr>
     `}_renderRow(t,e={}){const s=t;return B`
       <tr>
@@ -1594,7 +1628,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <td>${this._fmtLastSeen(t.last_seen)}</td>
         <td>${this._renderMatch(t)}</td>
       </tr>
-    `}_renderClientsTable(t){const e=Array.from(new Set(t.clients.map(t=>null==t.vlan||""===t.vlan?null:String(t.vlan)).filter(Boolean))).sort((t,e)=>Number(t)-Number(e)),s=Array.from(new Set(t.clients.map(t=>t.ssid).filter(Boolean))).sort();let i=this._filter(t.clients,this._clientSearch);this._clientVlanFilter&&(i=i.filter(t=>String(t.vlan??"")===this._clientVlanFilter)),this._clientSsidFilter&&(i=i.filter(t=>t.ssid===this._clientSsidFilter));const a=this._paginate(i,this._clientPage,this._clientPageSize);return B`
+    `}_renderClientsTable(t){const e=Array.from(new Set(t.clients.map(t=>null==t.vlan||""===t.vlan?null:String(t.vlan)).filter(Boolean))).sort((t,e)=>Number(t)-Number(e)),s=Array.from(new Set(t.clients.map(t=>t.ssid).filter(Boolean))).sort();let i=this._filter(t.clients,this._clientSearch);this._clientVlanFilter&&(i=i.filter(t=>String(t.vlan??"")===this._clientVlanFilter)),this._clientSsidFilter&&(i=i.filter(t=>t.ssid===this._clientSsidFilter)),i=zt(i,this._clientSort,ne.CLIENT_SORT);const a=this._paginate(i,this._clientPage,this._clientPageSize);return B`
       <div class="card" id="clients-card">
         <h3>Clients (${i.length})</h3>
         <div class="filters">
@@ -1652,7 +1686,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           firmware/API version.
         </div>
       </div>
-    `}_renderDevicesTable(t){const e=this._filter(t.devices,this._deviceSearch),s=this._paginate(e,this._devicePage,this._devicePageSize);return B`
+    `}_renderDevicesTable(t){const e=zt(this._filter(t.devices,this._deviceSearch),this._deviceSort,ne.DEVICE_SORT),s=this._paginate(e,this._devicePage,this._devicePageSize),i=this._deviceSort,a=t=>{this._deviceSort=t,this._devicePage=0};return B`
       <div class="card">
         <h3>Network Devices (${e.length})</h3>
         <div class="toolbar">
@@ -1668,15 +1702,15 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 <table>
                   <thead>
                     <tr>
-                      <th>Device</th>
-                      <th>IPv4</th>
-                      <th>MAC</th>
-                      <th class="num">VLAN</th>
-                      <th>Model</th>
-                      <th>Firmware</th>
-                      <th>Bandwidth</th>
-                      <th>Last Seen</th>
-                      <th>Integration</th>
+                      ${It("Device","name",i,a)}
+                      ${It("IPv4","ipv4",i,a)}
+                      ${It("MAC","mac",i,a)}
+                      ${It("VLAN","vlan",i,a,{numeric:!0})}
+                      ${It("Model","model",i,a)}
+                      ${It("Firmware","firmware",i,a)}
+                      ${It("Bandwidth","bandwidth",i,a)}
+                      ${It("Last Seen","last_seen",i,a)}
+                      ${It("Integration","integration",i,a)}
                     </tr>
                   </thead>
                   <tbody>
@@ -1715,17 +1749,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   <table>
                     <thead>
                       <tr>
-                        <th class="num">#</th>
-                        <th>Name</th>
-                        <th>Action</th>
-                        <th>Networks</th>
-                        <th>Direction</th>
-                        <th>Protocol</th>
-                        <th>Enabled</th>
+                        ${It("#","order",this._aclSort,t=>this._aclSort=t,{numeric:!0})}
+                        ${It("Name","name",this._aclSort,t=>this._aclSort=t)}
+                        ${It("Action","action",this._aclSort,t=>this._aclSort=t)}
+                        ${It("Networks","networks",this._aclSort,t=>this._aclSort=t)}
+                        ${It("Direction","direction",this._aclSort,t=>this._aclSort=t)}
+                        ${It("Protocol","protocol",this._aclSort,t=>this._aclSort=t)}
+                        ${It("Enabled","enabled",this._aclSort,t=>this._aclSort=t)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${t.rules.map((t,e)=>B`
+                      ${zt(t.rules.slice(),this._aclSort,{order:t=>t.order,name:t=>t.name,action:t=>t.action,networks:t=>t.networks.join(", ")||null,direction:t=>t.direction,protocol:t=>t.protocol,enabled:t=>t.enabled}).map((t,e)=>B`
                           <tr>
                             <td class="num">${t.order??e+1}</td>
                             <td style="font-weight:600;">${t.name??"—"}</td>
@@ -1775,7 +1809,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <select
           @change=${t=>{const e=t.target.value;a("all"===e?"all":Number(e))}}
         >
-          ${Jt.map(t=>B`<option value=${String(t)} ?selected=${t===s}>${"all"===t?"All":`${t} / page`}</option>`)}
+          ${oe.map(t=>B`<option value=${String(t)} ?selected=${t===s}>${"all"===t?"All":`${t} / page`}</option>`)}
         </select>
       </div>
     `}_renderProtectCard(t){const e=t.protect;return e.configured?e.reachable?B`
@@ -1798,22 +1832,22 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             Configured but not reachable${e.error?B` — ${e.error}`:""}.
           </div>
         </div>
-      `:j}_renderProtectDevices(t){return t.length?B`
+      `:j}_renderProtectDevices(t){if(!t.length)return B`<div class="empty">No Protect devices reported.</div>`;const e=this._protectSort,s=t=>this._protectSort=t,i=zt(t.slice(),e,{name:t=>t.name,ip:t=>t.ip,mac:t=>t.mac,recording:t=>t.is_recording,last_ring:t=>t.last_ring,channels:t=>t.channel_count});return B`
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>IP</th>
-              <th>MAC</th>
-              <th>Recording</th>
-              <th>Last Ring</th>
-              <th>Channels</th>
+              ${It("Name","name",e,s)}
+              ${It("IP","ip",e,s)}
+              ${It("MAC","mac",e,s)}
+              ${It("Recording","recording",e,s)}
+              ${It("Last Ring","last_ring",e,s)}
+              ${It("Channels","channels",e,s)}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${t.map(t=>B`
+            ${i.map(t=>B`
                 <tr>
                   <td>
                     <div style="font-weight:600;">
@@ -1844,7 +1878,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         Device names link to that camera on the Protect console
         (<code>https://&lt;host&gt;/protect/dashboard/devices/&lt;id&gt;</code>).
       </div>
-    `:B`<div class="empty">No Protect devices reported.</div>`}_fmtDuration(t){if(null==t)return"—";if(t<60)return`${t}s`;const e=Math.floor(t/60);if(e<60)return`${e}m ${t%60}s`;return`${Math.floor(e/60)}h ${e%60}m`}_renderProtectEvents(t){return B`
+    `}_fmtDuration(t){if(null==t)return"—";if(t<60)return`${t}s`;const e=Math.floor(t/60);if(e<60)return`${e}m ${t%60}s`;return`${Math.floor(e/60)}h ${e%60}m`}_renderProtectEvents(t){return B`
       <div class="card">
         <h3>Events &amp; AI Smart Detections <span class="muted" style="font-weight:400;font-size:12px;">— last 24h</span></h3>
         ${t.events_error?B`<div class="note" style="font-size:13px;">${t.events_error}</div>`:t.events.length?B`
@@ -1852,17 +1886,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   <table>
                     <thead>
                       <tr>
-                        <th>Type</th>
-                        <th>Smart Detections</th>
-                        <th class="num">Score</th>
-                        <th>Start</th>
-                        <th class="num">Duration</th>
+                        ${It("Type","type",this._eventSort,t=>this._eventSort=t)}
+                        ${It("Smart Detections","detections",this._eventSort,t=>this._eventSort=t)}
+                        ${It("Score","score",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
+                        ${It("Start","start",this._eventSort,t=>this._eventSort=t)}
+                        ${It("Duration","duration",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
                         <th>Thumbnail</th>
-                        <th>License Plate</th>
+                        ${It("License Plate","plate",this._eventSort,t=>this._eventSort=t)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${t.events.map(t=>B`
+                      ${zt(t.events.slice(),this._eventSort,{type:t=>t.type,detections:t=>t.smart_detect_types.join(", ")||null,score:t=>t.score,start:t=>t.start,duration:t=>t.duration,plate:t=>t.license_plate}).map(t=>B`
                           <tr>
                             <td>${t.type??"—"}</td>
                             <td>
@@ -1886,7 +1920,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 </div>
               `:B`<div class="empty">No events in the last 24 hours.</div>`}
       </div>
-    `}};function Qt(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}Zt.styles=[zt,o`
+    `}};var le;function de(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}re.styles=[Et,o`
       .stat-row {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -2086,7 +2120,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         margin-top: 8px;
         line-height: 1.5;
       }
-    `],t([pt({attribute:!1})],Zt.prototype,"hass",void 0),t([ut()],Zt.prototype,"_overview",void 0),t([ut()],Zt.prototype,"_loading",void 0),t([ut()],Zt.prototype,"_error",void 0),t([ut()],Zt.prototype,"_clientSearch",void 0),t([ut()],Zt.prototype,"_clientPage",void 0),t([ut()],Zt.prototype,"_clientPageSize",void 0),t([ut()],Zt.prototype,"_clientVlanFilter",void 0),t([ut()],Zt.prototype,"_clientSsidFilter",void 0),t([ut()],Zt.prototype,"_deviceSearch",void 0),t([ut()],Zt.prototype,"_devicePage",void 0),t([ut()],Zt.prototype,"_devicePageSize",void 0),Zt=t([dt("ha-soc-network-view")],Zt);const Xt=["DEBUG","INFO","WARNING","ERROR","CRITICAL"];let te=class extends rt{constructor(){super(...arguments),this._entries=[],this._fault=null,this._loading=!0,this._domainFilter="",this._levelFilter="",this._expanded=new Set}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s]=await Promise.all([(t=this.hass,gt(t,{type:"system_log/list"})),ft(this.hass)]);this._entries=e,this._fault=s}finally{this._loading=!1}var t}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>Qt(t.name)))).sort()}get _levels(){const t=new Set(this._entries.map(t=>t.level.toUpperCase()));return Xt.filter(e=>t.has(e))}get _filtered(){return this._entries.filter(t=>(!this._domainFilter||Qt(t.name)===this._domainFilter)&&(!this._levelFilter||t.level.toUpperCase()===this._levelFilter))}_renderFaultLogCard(){const t=this._fault;return t?B`
+    `],re.CLIENT_SORT={name:t=>t.name,ipv4:t=>t.ipv4,ipv6:t=>t.ipv6,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),ssid:t=>t.ssid??(t.wired?"wired":null),uptime:t=>t.uptime,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},re.DEVICE_SORT={name:t=>t.name,ipv4:t=>t.ipv4,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),model:t=>t.model,firmware:t=>t.firmware_updatable,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},t([pt({attribute:!1})],re.prototype,"hass",void 0),t([ut()],re.prototype,"_overview",void 0),t([ut()],re.prototype,"_loading",void 0),t([ut()],re.prototype,"_error",void 0),t([ut()],re.prototype,"_clientSearch",void 0),t([ut()],re.prototype,"_clientPage",void 0),t([ut()],re.prototype,"_clientPageSize",void 0),t([ut()],re.prototype,"_clientVlanFilter",void 0),t([ut()],re.prototype,"_clientSsidFilter",void 0),t([ut()],re.prototype,"_clientSort",void 0),t([ut()],re.prototype,"_deviceSearch",void 0),t([ut()],re.prototype,"_devicePage",void 0),t([ut()],re.prototype,"_devicePageSize",void 0),t([ut()],re.prototype,"_deviceSort",void 0),t([ut()],re.prototype,"_aclSort",void 0),t([ut()],re.prototype,"_protectSort",void 0),t([ut()],re.prototype,"_eventSort",void 0),re=ne=t([dt("ha-soc-network-view")],re);const ce=["DEBUG","INFO","WARNING","ERROR","CRITICAL"];const he="system";let pe=le=class extends rt{constructor(){super(...arguments),this._entries=[],this._fault=null,this._loading=!0,this._domainFilter="",this._levelFilter="",this._expanded=new Set,this._sort=null,this._targets=null,this._source=he,this._containerLog=null,this._containerLoading=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{const[e,s,i]=await Promise.all([(t=this.hass,_t(t,{type:"system_log/list"})),ft(this.hass),$t(this.hass).catch(()=>null)]);this._entries=e,this._fault=s,this._targets=i}finally{this._loading=!1}var t}async _loadContainer(t){this._containerLoading=!0;try{this._containerLog=await((t,e)=>_t(t,{type:"ha_soc/logs/container",target:e}))(this.hass,t)}catch(e){this._containerLog={available:!1,target:t,content:null,truncated:!1,error:String(e),fetched_at:(new Date).toISOString()}}finally{this._containerLoading=!1}}_onSourceChange(t){const e=t.target.value;this._source=e,this._containerLog=null,e!==he&&this._loadContainer(e)}_refresh(){this._source===he?this._load():this._loadContainer(this._source)}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>de(t.name)))).sort()}get _levels(){const t=new Set(this._entries.map(t=>t.level.toUpperCase()));return ce.filter(e=>t.has(e))}get _filtered(){const t=this._entries.filter(t=>(!this._domainFilter||de(t.name)===this._domainFilter)&&(!this._levelFilter||t.level.toUpperCase()===this._levelFilter));return zt(t,this._sort,le.LOG_SORT)}_renderFaultLogCard(){const t=this._fault;return t?B`
       <div class="card fault-log">
         <h3>
           Home Assistant Crash Log
@@ -2109,41 +2143,66 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <pre>${t.content}</pre>
             `:B`<div class="empty">No crash detected.</div>`}
       </div>
-    `:j}render(){const t=this._filtered;return B`
+    `:j}_renderContainerLog(){const t=this._containerLog,e=this._targets?.targets.find(t=>t.id===this._source)?.name??this._source;return this._containerLoading&&!t?B`<div class="empty">Loading ${e} logs…</div>`:t?t.available?B`
+      <p class="muted" style="font-size:12px;">
+        Fetched ${new Date(t.fetched_at).toLocaleString()}${t.truncated?", showing the most recent 128 KB (older lines are in the add-on's own Log tab)":""}.
+        This is the container's live journald stream via Supervisor, point-in-time, use
+        Refresh for new lines.
+      </p>
+      <pre class="rawlog">${t.content?.trim()?t.content:"(log is empty)"}</pre>
+    `:B`<div class="empty">
+        Couldn't load ${e} logs${t.error?B`<br /><span class="muted">${t.error}</span>`:j}
+      </div>`:B`<div class="empty">Select a source.</div>`}render(){const t=this._filtered,e=this._sort,s=t=>{this._sort=t,this._expanded=new Set},i=this._source===he;return B`
       ${this._renderFaultLogCard()}
 
       <div class="card">
-        <h3>Home Assistant Logs</h3>
+        <h3>Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          The same WARNING/ERROR/CRITICAL buffer as Settings → System → Logs
-          (<code>/config/logs</code>) — deduplicated, most recent first. This shows Home
-          Assistant's own captured log records only;
-          <strong>add-on container logs aren't included</strong> — they're a separate
-          stream Supervisor captures per-container, not part of Home Assistant's Python
-          logging, so there's nothing for this view to filter. Check an add-on's own
-          Log tab (Settings → Add-ons → the add-on → Log) for those.
+          ${i?B`The same WARNING/ERROR/CRITICAL buffer as Settings → System → Logs
+                (<code>/config/logs</code>), deduplicated, most recent first. This shows Home
+                Assistant's own captured log records only. For an app or add-on's full
+                container output, pick it from the source selector.`:B`Raw container output captured by the Supervisor, the same stream as the
+                add-on's own Log tab. ANSI colors are stripped server-side.`}
         </p>
         <div class="toolbar">
-          <select @change=${t=>this._domainFilter=t.target.value}>
-            <option value="" ?selected=${""===this._domainFilter}>All integrations</option>
-            ${this._domains.map(t=>B`<option value=${t} ?selected=${t===this._domainFilter}>${t}</option>`)}
-          </select>
-          <select @change=${t=>this._levelFilter=t.target.value}>
-            <option value="" ?selected=${""===this._levelFilter}>All levels</option>
-            ${this._levels.map(t=>B`<option value=${t} ?selected=${t===this._levelFilter}>${t}</option>`)}
-          </select>
+          ${this._targets?.available?B`
+                <select @change=${this._onSourceChange} aria-label="Log source">
+                  <option value=${he} ?selected=${i}>
+                    Integration logs (captured records)
+                  </option>
+                  ${this._targets.targets.map(t=>B`<option value=${t.id} ?selected=${t.id===this._source}>${t.name}</option>`)}
+                </select>
+              `:j}
+          ${i?B`
+                <select
+                  aria-label="Filter by integration"
+                  @change=${t=>{this._domainFilter=t.target.value,this._expanded=new Set}}
+                >
+                  <option value="" ?selected=${""===this._domainFilter}>All integrations</option>
+                  ${this._domains.map(t=>B`<option value=${t} ?selected=${t===this._domainFilter}>${t}</option>`)}
+                </select>
+                <select
+                  aria-label="Filter by level"
+                  @change=${t=>{this._levelFilter=t.target.value,this._expanded=new Set}}
+                >
+                  <option value="" ?selected=${""===this._levelFilter}>All levels</option>
+                  ${this._levels.map(t=>B`<option value=${t} ?selected=${t===this._levelFilter}>${t}</option>`)}
+                </select>
+              `:j}
           <span class="spacer"></span>
-          <button class="ha-btn" @click=${this._load}>Refresh</button>
+          <button class="ha-btn" @click=${this._refresh} ?disabled=${this._containerLoading}>
+            ${this._containerLoading?"Loading…":"Refresh"}
+          </button>
         </div>
-        ${this._loading?B`<div class="empty">Loading…</div>`:t.length?B`
+        ${i?this._loading?B`<div class="empty">Loading…</div>`:t.length?B`
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Level</th>
-                    <th>Integration</th>
-                    <th>Message</th>
-                    <th>Count</th>
+                    ${It("Time","time",e,s)}
+                    ${It("Level","level",e,s)}
+                    ${It("Integration","integration",e,s)}
+                    ${It("Message","message",e,s)}
+                    ${It("Count","count",e,s,{numeric:!0})}
                   </tr>
                 </thead>
                 <tbody>
@@ -2155,11 +2214,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       >
                         <td>${new Date(1e3*t.first_occurred).toLocaleString()}</td>
                         <td>
-                          <span class="log-level ${function(t){const e=t.toUpperCase();return Xt.includes(e)?e.toLowerCase():"info"}(t.level)}"
+                          <span class="log-level ${function(t){const e=t.toUpperCase();return ce.includes(e)?e.toLowerCase():"info"}(t.level)}"
                             ><span class="dot"></span>${t.level}</span
                           >
                         </td>
-                        <td class="muted">${Qt(t.name)}</td>
+                        <td class="muted">${de(t.name)}</td>
                         <td>
                           ${t.message[t.message.length-1]}
                           ${t.source?B`<div class="muted" style="font-size:11px;">${t.source[0]}:${t.source[1]}</div>`:j}
@@ -2180,9 +2239,9 @@ ${t.exception}</pre
                     `})}
                 </tbody>
               </table>
-            `:B`<div class="empty">No matching log entries.</div>`}
+            `:B`<div class="empty">No matching log entries.</div>`:this._renderContainerLog()}
       </div>
-    `}};te.styles=[zt,o`
+    `}};var ue;pe.styles=[Et,o`
       .log-level {
         display: inline-flex;
         align-items: center;
@@ -2237,7 +2296,8 @@ ${t.exception}</pre
       :host(.dark) .log-level.warning {
         color: var(--status-warning, #fab219);
       }
-      .fault-log pre {
+      .fault-log pre,
+      .rawlog {
         white-space: pre-wrap;
         font-size: 11.5px;
         background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.04);
@@ -2247,7 +2307,11 @@ ${t.exception}</pre
         max-height: 400px;
         overflow-y: auto;
       }
-    `],t([pt({attribute:!1})],te.prototype,"hass",void 0),t([ut()],te.prototype,"_entries",void 0),t([ut()],te.prototype,"_fault",void 0),t([ut()],te.prototype,"_loading",void 0),t([ut()],te.prototype,"_domainFilter",void 0),t([ut()],te.prototype,"_levelFilter",void 0),t([ut()],te.prototype,"_expanded",void 0),te=t([dt("ha-soc-logs-view")],te);let ee=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._busyKey=null,this._showIgnored=!1}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._overview=await At(this.hass)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>gt(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return B`<div class="empty">Loading peripherals…</div>`;const t=this._overview;if(!t||!t.available)return B`
+      .rawlog {
+        max-height: 600px;
+        font-family: var(--code-font-family, monospace);
+      }
+    `],pe.LOG_SORT={time:t=>t.first_occurred,level:t=>{const e=ce.indexOf(t.level.toUpperCase());return-1===e?null:e},integration:t=>de(t.name),message:t=>t.message[t.message.length-1],count:t=>t.count},t([pt({attribute:!1})],pe.prototype,"hass",void 0),t([ut()],pe.prototype,"_entries",void 0),t([ut()],pe.prototype,"_fault",void 0),t([ut()],pe.prototype,"_loading",void 0),t([ut()],pe.prototype,"_domainFilter",void 0),t([ut()],pe.prototype,"_levelFilter",void 0),t([ut()],pe.prototype,"_expanded",void 0),t([ut()],pe.prototype,"_sort",void 0),t([ut()],pe.prototype,"_targets",void 0),t([ut()],pe.prototype,"_source",void 0),t([ut()],pe.prototype,"_containerLog",void 0),t([ut()],pe.prototype,"_containerLoading",void 0),pe=le=t([dt("ha-soc-logs-view")],pe);let _e=ue=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._busyKey=null,this._showIgnored=!1,this._sort=null,this._ignoredSort=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._overview=await Ct(this.hass)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>_t(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return B`<div class="empty">Loading peripherals…</div>`;const t=this._overview;if(!t||!t.available)return B`
         <div class="card">
           <h3>Local Peripherals</h3>
           <p class="muted" style="font-size:12.5px;">
@@ -2272,17 +2336,25 @@ ${t.exception}</pre
               <table>
                 <thead>
                   <tr>
-                    <th>Raw Name</th>
-                    <th>/dev/tty Path</th>
-                    <th>Assigned Integration</th>
+                    ${It("Raw Name","name",this._sort,t=>this._sort=t)}
+                    ${It("/dev/tty Path","tty",this._sort,t=>this._sort=t)}
+                    ${It("By-ID Path","by_id",this._sort,t=>this._sort=t)}
+                    ${It("VID:PID","vidpid",this._sort,t=>this._sort=t)}
+                    ${It("Serial","serial",this._sort,t=>this._sort=t)}
+                    ${It("Assigned Integration","integration",this._sort,t=>this._sort=t)}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${e.map(t=>B`
+                  ${zt(e,this._sort,ue.DEVICE_SORT).map(t=>B`
                       <tr>
                         <td>${t.raw_name}</td>
                         <td class="muted">${t.tty_path}</td>
+                        <td class="muted" style="font-size:12px;word-break:break-all;">
+                          ${t.by_id_path??"—"}
+                        </td>
+                        <td class="muted" style="font-size:12px;">${t.vid}:${t.pid}</td>
+                        <td class="muted" style="font-size:12px;">${t.serial_number??"—"}</td>
                         <td>
                           ${t.assigned_integration?B`${t.assigned_integration.title}
                                 <span class="muted">(${t.assigned_integration.domain})</span>`:B`<span class="pill medium"><span class="dot"></span>unassigned</span>`}
@@ -2319,13 +2391,13 @@ ${t.exception}</pre
                     <table>
                       <thead>
                         <tr>
-                          <th>Raw Name</th>
-                          <th>/dev/tty Path</th>
+                          ${It("Raw Name","name",this._ignoredSort,t=>this._ignoredSort=t)}
+                          ${It("/dev/tty Path","tty",this._ignoredSort,t=>this._ignoredSort=t)}
                           <th></th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${s.map(t=>B`
+                        ${zt(s,this._ignoredSort,ue.DEVICE_SORT).map(t=>B`
                             <tr class="row-disabled">
                               <td>${t.raw_name}</td>
                               <td class="muted">${t.tty_path}</td>
@@ -2345,10 +2417,10 @@ ${t.exception}</pre
                   `:j}
             </div>
           `:j}
-    `}};ee.styles=zt,t([pt({attribute:!1})],ee.prototype,"hass",void 0),t([ut()],ee.prototype,"_overview",void 0),t([ut()],ee.prototype,"_loading",void 0),t([ut()],ee.prototype,"_busyKey",void 0),t([ut()],ee.prototype,"_showIgnored",void 0),ee=t([dt("ha-soc-peripherals-view")],ee);const se={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let ie=class extends rt{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._broken=[],this._brokenLoading=!0,this._brokenFilter=null,this._filterSameType=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){const[t,e]=await Promise.all([(s=this.hass,gt(s,{type:"config/entity_registry/list"})),Ct(this.hass)]);var s;this._entities=t,this._broken=e,this._brokenLoading=!1}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null;try{this._report=await(t=this.hass,e=this._oldEntityId,gt(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._onFind()}_selectOld(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this.updateComplete.then(()=>{this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({behavior:"smooth",block:"start"})})}_domainOf(t){return t.includes(".")?t.split(".",1)[0]:""}_newEntityOptions(){const t=this._domainOf(this._oldEntityId);return this._filterSameType&&t?this._entities.filter(e=>this._domainOf(e.entity_id)===t):this._entities}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0;try{const i=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,gt(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s}));await this._onFind(),this._broken=await Ct(this.hass),this._applyResult=i}finally{this._applying=!1}var t,e,s}}_renderKind(t,e){return e.length?B`
+    `}};var ge;_e.styles=Et,_e.DEVICE_SORT={name:t=>t.raw_name,tty:t=>t.tty_path,by_id:t=>t.by_id_path,vidpid:t=>`${t.vid}:${t.pid}`,serial:t=>t.serial_number,integration:t=>t.assigned_integration?.title??null},t([pt({attribute:!1})],_e.prototype,"hass",void 0),t([ut()],_e.prototype,"_overview",void 0),t([ut()],_e.prototype,"_loading",void 0),t([ut()],_e.prototype,"_busyKey",void 0),t([ut()],_e.prototype,"_showIgnored",void 0),t([ut()],_e.prototype,"_sort",void 0),t([ut()],_e.prototype,"_ignoredSort",void 0),_e=ue=t([dt("ha-soc-peripherals-view")],_e);const ve={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let me=ge=class extends rt{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._broken=[],this._brokenLoading=!0,this._brokenFilter=null,this._brokenSort=null,this._filterSameType=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){const[t,e]=await Promise.all([(s=this.hass,_t(s,{type:"config/entity_registry/list"})),Pt(this.hass)]);var s;this._entities=t,this._broken=e,this._brokenLoading=!1}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null;try{this._report=await(t=this.hass,e=this._oldEntityId,_t(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._onFind()}_selectOld(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this.updateComplete.then(()=>{this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({behavior:"smooth",block:"start"})})}_domainOf(t){return t.includes(".")?t.split(".",1)[0]:""}_newEntityOptions(){const t=this._domainOf(this._oldEntityId);return this._filterSameType&&t?this._entities.filter(e=>this._domainOf(e.entity_id)===t):this._entities}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0;try{const i=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,_t(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s}));await this._onFind(),this._broken=await Pt(this.hass),this._applyResult=i}finally{this._applying=!1}var t,e,s}}_renderKind(t,e){return e.length?B`
       <div style="margin-bottom:12px;">
         <div style="font-size:12px;font-weight:600;color:var(--secondary-text-color);margin-bottom:4px;">
-          ${se[t]??t} (${e.length})
+          ${ve[t]??t} (${e.length})
         </div>
         <table>
           <tbody>
@@ -2452,7 +2524,7 @@ ${t.exception}</pre
 
         ${this._applyResult?B`
               <div class="card" style="margin-top:12px;background:rgba(67,160,71,0.08);">
-                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${se[t]??t}`).join(", ")||"Nothing needed changing."}
+                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${ve[t]??t}`).join(", ")||"Nothing needed changing."}
                 ${this._applyResult.errors.length?B`<div style="color:var(--error-color);margin-top:6px;">
                       ${this._applyResult.errors.length} error(s): ${this._applyResult.errors.join("; ")}
                     </div>`:j}
@@ -2482,13 +2554,13 @@ ${t.exception}</pre
                 <table>
                   <thead>
                     <tr>
-                      <th>Entity ID</th>
-                      <th>Referenced by</th>
+                      ${It("Entity ID","entity_id",this._brokenSort,t=>this._brokenSort=t)}
+                      ${It("Referenced by","referenced_by",this._brokenSort,t=>this._brokenSort=t)}
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._filteredBroken().map(t=>B`
+                    ${zt(this._filteredBroken(),this._brokenSort,ge.BROKEN_SORT).map(t=>B`
                         <tr>
                           <td>
                             <code
@@ -2510,7 +2582,7 @@ ${t.exception}</pre
                 </table>
               `:B`<div class="empty">No broken reference matches <code>${this._brokenFilter}</code>.</div>`:B`<div class="empty">Nothing found — no dangling entity references detected.</div>`}
       </div>
-    `}};ie.styles=zt,t([pt({attribute:!1})],ie.prototype,"hass",void 0),t([ut()],ie.prototype,"_entities",void 0),t([ut()],ie.prototype,"_oldEntityId",void 0),t([ut()],ie.prototype,"_newEntityId",void 0),t([ut()],ie.prototype,"_report",void 0),t([ut()],ie.prototype,"_finding",void 0),t([ut()],ie.prototype,"_applying",void 0),t([ut()],ie.prototype,"_applyResult",void 0),t([ut()],ie.prototype,"_broken",void 0),t([ut()],ie.prototype,"_brokenLoading",void 0),t([ut()],ie.prototype,"_brokenFilter",void 0),t([ut()],ie.prototype,"_filterSameType",void 0),ie=t([dt("ha-soc-entity-remap-view")],ie);const ae={core:"Core",hacs:"HACS",custom:"Custom"},ne={core:"good",hacs:"medium",custom:"high"},oe={custom_repo:"Custom repo",custom_source_list:"Custom source-list"};let re=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._refreshing=!1,this._search="",this._tierFilter="all",this._limit=25,this._containers=null,this._containersLoading=!0,this._watchdog=null,this._editSlug=null,this._wdError=null}connectedCallback(){super.connectedCallback(),this._load(),this._loadContainers(),this._loadWatchdog()}async _loadWatchdog(){try{this._watchdog=await(t=this.hass,gt(t,{type:"ha_soc/watchdog/status"}))}catch{this._watchdog=null}var t}async _setWatchdog(t){this._wdError=null;try{this._watchdog=await((t,e)=>gt(t,{type:"ha_soc/watchdog/set",...e}))(this.hass,t)}catch(t){this._wdError=t&&"object"==typeof t&&"code"in t&&"unauthorized"===t.code?"Watchdog and cap configuration are available to the account owner only.":`Could not save: ${t instanceof Error?t.message:JSON.stringify(t)}`}}async _load(){this._loading=!0;try{this._overview=await(t=this.hass,gt(t,{type:"ha_soc/integration_security/list"}))}finally{this._loading=!1}var t}async _loadContainers(){this._containersLoading=!0;try{this._containers=await(t=this.hass,gt(t,{type:"ha_soc/containers/resources"}))}catch{this._containers=null}finally{this._containersLoading=!1}var t}async _onRefresh(){this._refreshing=!0;try{await(t=this.hass,gt(t,{type:"ha_soc/integration_security/refresh"})),await this._load()}finally{this._refreshing=!1}var t}_filtered(){const t=this._overview?.integrations??[],e=this._search.trim().toLowerCase();return t.filter(t=>"all"===this._tierFilter||t.tier===this._tierFilter).filter(t=>!e||t.name.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)).sort((t,e)=>t.name.localeCompare(e.name))}render(){if(this._loading||!this._overview)return B`<div class="empty">Loading integrations…</div>`;const t=this._overview,e=this._filtered(),s=e.slice(0,this._limit);return B`
+    `}};var ye;me.styles=Et,me.BROKEN_SORT={entity_id:t=>t.entity_id,referenced_by:t=>t.referenced_by[0]?.name??null},t([pt({attribute:!1})],me.prototype,"hass",void 0),t([ut()],me.prototype,"_entities",void 0),t([ut()],me.prototype,"_oldEntityId",void 0),t([ut()],me.prototype,"_newEntityId",void 0),t([ut()],me.prototype,"_report",void 0),t([ut()],me.prototype,"_finding",void 0),t([ut()],me.prototype,"_applying",void 0),t([ut()],me.prototype,"_applyResult",void 0),t([ut()],me.prototype,"_broken",void 0),t([ut()],me.prototype,"_brokenLoading",void 0),t([ut()],me.prototype,"_brokenFilter",void 0),t([ut()],me.prototype,"_brokenSort",void 0),t([ut()],me.prototype,"_filterSameType",void 0),me=ge=t([dt("ha-soc-entity-remap-view")],me);const be={core:"Core",hacs:"HACS",custom:"Custom"},fe={core:"good",hacs:"medium",custom:"high"},$e={core:0,hacs:1,custom:2},we={custom_repo:"Custom repo",custom_source_list:"Custom source-list"};let xe=ye=class extends rt{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._refreshing=!1,this._search="",this._tierFilter="all",this._limit=25,this._intSort=null,this._containerSort=null,this._containers=null,this._containersLoading=!0,this._watchdog=null,this._editSlug=null,this._wdError=null}connectedCallback(){super.connectedCallback(),this._load(),this._loadContainers(),this._loadWatchdog()}async _loadWatchdog(){try{this._watchdog=await(t=this.hass,_t(t,{type:"ha_soc/watchdog/status"}))}catch{this._watchdog=null}var t}async _setWatchdog(t){this._wdError=null;try{this._watchdog=await((t,e)=>_t(t,{type:"ha_soc/watchdog/set",...e}))(this.hass,t)}catch(t){this._wdError=t&&"object"==typeof t&&"code"in t&&"unauthorized"===t.code?"Watchdog and cap configuration are available to the account owner only.":`Could not save: ${t instanceof Error?t.message:JSON.stringify(t)}`}}async _load(){this._loading=!0;try{this._overview=await(t=this.hass,_t(t,{type:"ha_soc/integration_security/list"}))}finally{this._loading=!1}var t}async _loadContainers(){this._containersLoading=!0;try{this._containers=await(t=this.hass,_t(t,{type:"ha_soc/containers/resources"}))}catch{this._containers=null}finally{this._containersLoading=!1}var t}async _onRefresh(){this._refreshing=!0;try{await(t=this.hass,_t(t,{type:"ha_soc/integration_security/refresh"})),await this._load()}finally{this._refreshing=!1}var t}_filtered(){const t=this._overview?.integrations??[],e=this._search.trim().toLowerCase(),s=t.filter(t=>"all"===this._tierFilter||t.tier===this._tierFilter).filter(t=>!e||t.name.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e));return this._intSort?zt(s,this._intSort,ye.INTEGRATION_SORT):s.sort((t,e)=>t.name.localeCompare(e.name))}render(){if(this._loading||!this._overview)return B`<div class="empty">Loading integrations…</div>`;const t=this._overview,e=this._filtered(),s=e.slice(0,this._limit),i=this._intSort,a=t=>{this._intSort=t,this._limit=25};return B`
       <div class="card">
         <h3>Integration Security</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -2580,15 +2652,15 @@ ${t.exception}</pre
                 <table>
                   <thead>
                     <tr>
-                      <th>Integration</th>
-                      <th>Source</th>
-                      <th>Quality</th>
-                      <th>License</th>
-                      <th>Scanner</th>
-                      <th>Signed</th>
-                      <th>Release</th>
-                      <th>Stars</th>
-                      <th>Last push</th>
+                      ${It("Integration","name",i,a)}
+                      ${It("Source","tier",i,a)}
+                      ${It("Quality","quality",i,a)}
+                      ${It("License","license",i,a)}
+                      ${It("Scanner","scanner",i,a)}
+                      ${It("Signed","signed",i,a)}
+                      ${It("Release","release",i,a)}
+                      ${It("Stars","stars",i,a)}
+                      ${It("Last push","pushed",i,a)}
                     </tr>
                   </thead>
                   <tbody>
@@ -2610,7 +2682,7 @@ ${t.exception}</pre
       </div>
     `}_notCollected(){return B`<span class="muted" title="No GitHub token, or no repo URL discovered">—</span>`}_fmtBytes(t){if(null==t)return"—";if(t<1024)return`${t} B`;const e=["KB","MB","GB","TB"];let s=t/1024,i=0;for(;s>=1024&&i<e.length-1;)s/=1024,i++;return`${s.toFixed(s>=100?0:1)} ${e[i]}`}_pctCell(t,e){if(null==t)return B`<span class="muted">—</span>`;return B`<span style="font-weight:600;color:${e?"var(--status-critical)":t>=60?"var(--status-warning)":"inherit"};font-variant-numeric:tabular-nums;"
       >${t.toFixed(1)}%</span
-    >`}_renderContainers(){const t=this._containers;return B`
+    >`}_renderContainers(){const t=this._containers,e=this._containerSort,s=t=>this._containerSort=t;return B`
       <div class="card">
         <div class="toolbar">
           <h3 style="margin:0;flex:1;">Container Resource Usage</h3>
@@ -2630,19 +2702,19 @@ ${t.exception}</pre
                     <table>
                       <thead>
                         <tr>
-                          <th>Container</th>
-                          <th>State</th>
-                          <th class="num">CPU</th>
-                          <th class="num">Memory</th>
-                          <th>Used / Limit</th>
-                          <th>Net ↓/↑</th>
-                          <th>Disk R/W</th>
-                          <th>Flags</th>
+                          ${It("Container","name",e,s)}
+                          ${It("State","state",e,s)}
+                          ${It("CPU","cpu",e,s,{numeric:!0})}
+                          ${It("Memory","memory",e,s,{numeric:!0})}
+                          ${It("Used / Limit","usage",e,s)}
+                          ${It("Net ↓/↑","net",e,s)}
+                          ${It("Disk R/W","disk",e,s)}
+                          ${It("Flags","flags",e,s)}
                           <th>Watchdog / Cap</th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${t.containers.map(t=>this._renderContainerRow(t))}
+                        ${zt(t.containers,e,ye.CONTAINER_SORT).map(t=>this._renderContainerRow(t))}
                       </tbody>
                     </table>
                   </div>
@@ -2843,11 +2915,11 @@ ${t.exception}</pre
             ${t.domain}${t.version?B` · v${t.version}`:""}
           </div>
           ${t.flags.length?B`<div class="chips" style="margin-top:3px;">
-                ${t.flags.map(t=>B`<span class="pill high"><span class="dot"></span>${oe[t]??t}</span>`)}
+                ${t.flags.map(t=>B`<span class="pill high"><span class="dot"></span>${we[t]??t}</span>`)}
               </div>`:j}
         </td>
         <td>
-          <span class="pill ${ne[t.tier]}"><span class="dot"></span>${ae[t.tier]}</span>
+          <span class="pill ${fe[t.tier]}"><span class="dot"></span>${be[t.tier]}</span>
         </td>
         <td class="muted">${t.quality_scale??"—"}</td>
         <td>
@@ -2871,7 +2943,7 @@ ${t.exception}</pre
           ${e?e.pushed_at?new Date(e.pushed_at).toLocaleDateString():"—":this._notCollected()}
         </td>
       </tr>
-    `}};re.styles=zt,t([pt({attribute:!1})],re.prototype,"hass",void 0),t([ut()],re.prototype,"_overview",void 0),t([ut()],re.prototype,"_loading",void 0),t([ut()],re.prototype,"_refreshing",void 0),t([ut()],re.prototype,"_search",void 0),t([ut()],re.prototype,"_tierFilter",void 0),t([ut()],re.prototype,"_limit",void 0),t([ut()],re.prototype,"_containers",void 0),t([ut()],re.prototype,"_containersLoading",void 0),t([ut()],re.prototype,"_watchdog",void 0),t([ut()],re.prototype,"_editSlug",void 0),t([ut()],re.prototype,"_wdError",void 0),re=t([dt("ha-soc-integration-security-view")],re);const le=1048576,de=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],ce=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}];let he=class extends rt{constructor(){super(...arguments),this._settings=null,this._security=null,this._loading=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._settings=await(t=this.hass,gt(t,{type:"ha_soc/settings/get"}));try{this._security=await Pt(this.hass)}catch{this._security=null}}finally{this._loading=!1}var t}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await(i=this.hass,a={[t]:e},gt(i,{type:"ha_soc/settings/set",...a}))}catch(t){throw this._settings=s,t}var i,a}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderSecretField(t,e,s){return B`
+    `}};xe.styles=Et,xe.INTEGRATION_SORT={name:t=>t.name,tier:t=>$e[t.tier],quality:t=>t.quality_scale,license:t=>t.license_present,scanner:t=>t.scanner_findings,signed:t=>t.github?.commit_verified??null,release:t=>{const e=t.github;return e?e.archived?2:null===e.has_release?null:e.has_release?0:1:null},stars:t=>t.github?.stars??null,pushed:t=>t.github?.pushed_at??null},xe.CONTAINER_SORT={name:t=>t.name,state:t=>"started"===t.state||"addon"!==t.kind?"running":t.state??"stopped",cpu:t=>t.cpu_percent,memory:t=>t.memory_percent,usage:t=>t.memory_usage,net:t=>null==t.network_rx&&null==t.network_tx?null:(t.network_rx??0)+(t.network_tx??0),disk:t=>null==t.blk_read&&null==t.blk_write?null:(t.blk_read??0)+(t.blk_write??0),flags:t=>t.flags.length},t([pt({attribute:!1})],xe.prototype,"hass",void 0),t([ut()],xe.prototype,"_overview",void 0),t([ut()],xe.prototype,"_loading",void 0),t([ut()],xe.prototype,"_refreshing",void 0),t([ut()],xe.prototype,"_search",void 0),t([ut()],xe.prototype,"_tierFilter",void 0),t([ut()],xe.prototype,"_limit",void 0),t([ut()],xe.prototype,"_intSort",void 0),t([ut()],xe.prototype,"_containerSort",void 0),t([ut()],xe.prototype,"_containers",void 0),t([ut()],xe.prototype,"_containersLoading",void 0),t([ut()],xe.prototype,"_watchdog",void 0),t([ut()],xe.prototype,"_editSlug",void 0),t([ut()],xe.prototype,"_wdError",void 0),xe=ye=t([dt("ha-soc-integration-security-view")],xe);const ke=1048576,Se=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],Ae=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}];let Ce=class extends rt{constructor(){super(...arguments),this._settings=null,this._security=null,this._loading=!0}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0;try{this._settings=await(t=this.hass,_t(t,{type:"ha_soc/settings/get"}));try{this._security=await Rt(this.hass)}catch{this._security=null}}finally{this._loading=!1}var t}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await(i=this.hass,a={[t]:e},_t(i,{type:"ha_soc/settings/set",...a}))}catch(t){throw this._settings=s,t}var i,a}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderSecretField(t,e,s){return B`
       <label class="settings-row">
         <span>${t}</span>
         <input
@@ -2887,7 +2959,7 @@ ${t.exception}</pre
           class="muted ${a&&o?"clickable":""}"
           style="font-size:12px;${n?"color:var(--error-color,#db4437);":""}"
           title=${a&&o?"View in Home Assistant's Devices page":""}
-          @click=${()=>a&&o&&Tt(Mt(o))}
+          @click=${()=>a&&o&&qt(Kt(o))}
           >${r}</span
         >
         <input
@@ -3114,8 +3186,8 @@ ${t.exception}</pre
           <input
             type="number"
             min="1"
-            .value=${String(Math.round(t.audit_max_bytes/le))}
-            @change=${t=>this._update("audit_max_bytes",Math.round(Number(t.target.value)*le))}
+            .value=${String(Math.round(t.audit_max_bytes/ke))}
+            @change=${t=>this._update("audit_max_bytes",Math.round(Number(t.target.value)*ke))}
           />
         </label>
       </div>
@@ -3128,7 +3200,7 @@ ${t.exception}</pre
           installed" rather than being hidden, and turning a toggle off here only affects
           this dashboard section, nothing else.
         </p>
-        ${de.map(({domain:e,label:s})=>B`
+        ${Se.map(({domain:e,label:s})=>B`
             <label class="settings-row">
               <span>${s}</span>
               <input
@@ -3141,7 +3213,7 @@ ${t.exception}</pre
         <h4 style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);">
           Integrations Loaded
         </h4>
-        ${ce.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
+        ${Ae.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
       </div>
 
       <div class="card">
@@ -3154,10 +3226,10 @@ ${t.exception}</pre
           add-on Configuration tab.
         </p>
       </div>
-    `}};he.styles=zt,t([pt({attribute:!1})],he.prototype,"hass",void 0),t([ut()],he.prototype,"_settings",void 0),t([ut()],he.prototype,"_security",void 0),t([ut()],he.prototype,"_loading",void 0),he=t([dt("ha-soc-settings-view")],he);const pe=[{id:"dashboard",label:"Dashboard"},{id:"network",label:"Network"},{id:"entity_remap",label:"Entity ReMap"},{id:"integration_security",label:"Integration Security"},{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"},{id:"audit",label:"Audit Log"},{id:"peripherals",label:"Local Peripherals"},{id:"scanner",label:"Scanner"},{id:"logs",label:"Logs"},{id:"settings",label:"Settings",ownerOnly:!0}];let ue=class extends rt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await(t=this.hass,gt(t,{type:"ha_soc/access/info"}))}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}var t}async _loadFooterInfo(){try{this._version=(await(t=this.hass,gt(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await kt(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return B``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return B`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){return null===this._access?B`<div class="header">🛡️ HA SOC</div>`:this._access.allowed?B`
+    `}};Ce.styles=Et,t([pt({attribute:!1})],Ce.prototype,"hass",void 0),t([ut()],Ce.prototype,"_settings",void 0),t([ut()],Ce.prototype,"_security",void 0),t([ut()],Ce.prototype,"_loading",void 0),Ce=t([dt("ha-soc-settings-view")],Ce);const Pe=[{id:"dashboard",label:"Dashboard"},{id:"network",label:"Network"},{id:"entity_remap",label:"Entity ReMap"},{id:"integration_security",label:"Integration Security"},{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"},{id:"audit",label:"Audit Log"},{id:"peripherals",label:"Local Peripherals"},{id:"scanner",label:"Scanner"},{id:"logs",label:"Logs"},{id:"settings",label:"Settings",ownerOnly:!0}];let Re=class extends rt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await(t=this.hass,_t(t,{type:"ha_soc/access/info"}))}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}var t}async _loadFooterInfo(){try{this._version=(await(t=this.hass,_t(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await St(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return B``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return B`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){return null===this._access?B`<div class="header">🛡️ HA SOC</div>`:this._access.allowed?B`
       <div class="header">🛡️ HA SOC</div>
       <div class="tabs">
-        ${pe.map(t=>!!t.ownerOnly&&!this._access?.is_owner?B`
+        ${Pe.map(t=>!!t.ownerOnly&&!this._access?.is_owner?B`
               <div class="tab disabled" title="Only available to the account owner">
                 ${t.label}<span class="lock">🔒</span>
               </div>
@@ -3186,7 +3258,7 @@ ${t.exception}</pre
         </div>
         ${this._renderFooter()}
       `}_onNavigate(t){this._tab=t.detail.tab}_renderTab(){switch(this._tab){case"users":return B`<ha-soc-users-view .hass=${this.hass}></ha-soc-users-view>`;case"audit":return B`<ha-soc-audit-view .hass=${this.hass}></ha-soc-audit-view>`;case"permissions":return B`<ha-soc-permissions-view .hass=${this.hass}></ha-soc-permissions-view>`;case"scanner":return B`<ha-soc-scanner-view .hass=${this.hass}></ha-soc-scanner-view>`;case"logs":return B`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;case"peripherals":return B`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;case"network":return B`<ha-soc-network-view .hass=${this.hass}></ha-soc-network-view>`;case"entity_remap":return B`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;case"integration_security":return B`<ha-soc-integration-security-view .hass=${this.hass}></ha-soc-integration-security-view>`;case"settings":return this._access?.is_owner?B`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`:B`<div class="denied"><div class="icon">🔒</div><h2>Owner only</h2>
-            <p>The Settings tab is available to the account owner only.</p></div>`;default:return B`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`}}};ue.styles=o`
+            <p>The Settings tab is available to the account owner only.</p></div>`;default:return B`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`}}};Re.styles=o`
     :host {
       display: block;
       background: var(--primary-background-color);
@@ -3256,4 +3328,4 @@ ${t.exception}</pre
       color: var(--secondary-text-color);
       text-align: center;
     }
-  `,t([pt({attribute:!1})],ue.prototype,"hass",void 0),t([pt({attribute:!1})],ue.prototype,"narrow",void 0),t([pt({attribute:!1})],ue.prototype,"panel",void 0),t([ut()],ue.prototype,"_tab",void 0),t([ut()],ue.prototype,"_access",void 0),t([ut()],ue.prototype,"_version",void 0),t([ut()],ue.prototype,"_probe",void 0),ue=t([dt("ha-soc-panel")],ue);export{ue as HaSocPanel};
+  `,t([pt({attribute:!1})],Re.prototype,"hass",void 0),t([pt({attribute:!1})],Re.prototype,"narrow",void 0),t([pt({attribute:!1})],Re.prototype,"panel",void 0),t([ut()],Re.prototype,"_tab",void 0),t([ut()],Re.prototype,"_access",void 0),t([ut()],Re.prototype,"_version",void 0),t([ut()],Re.prototype,"_probe",void 0),Re=t([dt("ha-soc-panel")],Re);export{Re as HaSocPanel};

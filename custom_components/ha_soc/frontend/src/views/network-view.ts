@@ -3,6 +3,7 @@ import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import { navigate, navigateToHaPath, devicesForIntegrationPath } from "../nav";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   NetworkOverview,
   NetworkClientRow,
@@ -237,9 +238,14 @@ export class HaSocNetworkView extends LitElement {
   @state() private _clientPageSize: number | "all" = 25;
   @state() private _clientVlanFilter = "";
   @state() private _clientSsidFilter = "";
+  @state() private _clientSort: SortState | null = null;
   @state() private _deviceSearch = "";
   @state() private _devicePage = 0;
   @state() private _devicePageSize: number | "all" = 25;
+  @state() private _deviceSort: SortState | null = null;
+  @state() private _aclSort: SortState | null = null;
+  @state() private _protectSort: SortState | null = null;
+  @state() private _eventSort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -500,20 +506,39 @@ export class HaSocNetworkView extends LitElement {
     `;
   }
 
-  private _colHeaders(extra: { model?: boolean } = {}) {
+  // Accessors shared by sortRows for the clients table. IP addresses sort
+  // via localeCompare with numeric:true (so 10.0.0.9 < 10.0.0.10).
+  private static readonly CLIENT_SORT: Record<string, (r: NetworkClientRow) => unknown> = {
+    name: (r) => r.name,
+    ipv4: (r) => r.ipv4,
+    ipv6: (r) => r.ipv6,
+    mac: (r) => r.mac,
+    vlan: (r) => (r.vlan == null || r.vlan === "" ? null : Number(r.vlan)),
+    ssid: (r) => r.ssid ?? (r.wired ? "wired" : null),
+    uptime: (r) => r.uptime,
+    bandwidth: (r) => r.bandwidth?.total_bytes ?? null,
+    last_seen: (r) => r.last_seen,
+    integration: (r) => r.integration_match?.domain ?? null,
+  };
+
+  private _colHeaders() {
+    const s = this._clientSort;
+    const on = (next: SortState) => {
+      this._clientSort = next;
+      this._clientPage = 0;
+    };
     return html`
       <tr>
-        <th>${extra.model ? "Device" : "Client"}</th>
-        <th>IPv4</th>
-        <th>IPv6</th>
-        <th>MAC</th>
-        <th class="num">VLAN</th>
-        <th>SSID</th>
-        ${extra.model ? html`<th>Model</th>` : nothing}
-        <th class="num">Uptime</th>
-        <th>Bandwidth</th>
-        <th>Last Seen</th>
-        <th>Integration</th>
+        ${sortableTh("Client", "name", s, on)}
+        ${sortableTh("IPv4", "ipv4", s, on)}
+        ${sortableTh("IPv6", "ipv6", s, on)}
+        ${sortableTh("MAC", "mac", s, on)}
+        ${sortableTh("VLAN", "vlan", s, on, { numeric: true })}
+        ${sortableTh("SSID", "ssid", s, on)}
+        ${sortableTh("Uptime", "uptime", s, on, { numeric: true })}
+        ${sortableTh("Bandwidth", "bandwidth", s, on)}
+        ${sortableTh("Last Seen", "last_seen", s, on)}
+        ${sortableTh("Integration", "integration", s, on)}
       </tr>
     `;
   }
@@ -557,6 +582,7 @@ export class HaSocNetworkView extends LitElement {
     if (this._clientVlanFilter)
       filtered = filtered.filter((c) => String(c.vlan ?? "") === this._clientVlanFilter);
     if (this._clientSsidFilter) filtered = filtered.filter((c) => c.ssid === this._clientSsidFilter);
+    filtered = sortRows(filtered, this._clientSort, HaSocNetworkView.CLIENT_SORT);
 
     const page = this._paginate(filtered, this._clientPage, this._clientPageSize);
     return html`
@@ -644,9 +670,30 @@ export class HaSocNetworkView extends LitElement {
     `;
   }
 
+  private static readonly DEVICE_SORT: Record<string, (r: NetworkDeviceRow) => unknown> = {
+    name: (r) => r.name,
+    ipv4: (r) => r.ipv4,
+    mac: (r) => r.mac,
+    vlan: (r) => (r.vlan == null || r.vlan === "" ? null : Number(r.vlan)),
+    model: (r) => r.model,
+    firmware: (r) => r.firmware_updatable,
+    bandwidth: (r) => r.bandwidth?.total_bytes ?? null,
+    last_seen: (r) => r.last_seen,
+    integration: (r) => r.integration_match?.domain ?? null,
+  };
+
   private _renderDevicesTable(o: NetworkOverview) {
-    const filtered = this._filter(o.devices, this._deviceSearch);
+    const filtered = sortRows(
+      this._filter(o.devices, this._deviceSearch),
+      this._deviceSort,
+      HaSocNetworkView.DEVICE_SORT
+    );
     const page = this._paginate(filtered, this._devicePage, this._devicePageSize);
+    const s = this._deviceSort;
+    const on = (next: SortState) => {
+      this._deviceSort = next;
+      this._devicePage = 0;
+    };
     return html`
       <div class="card">
         <h3>Network Devices (${filtered.length})</h3>
@@ -668,15 +715,15 @@ export class HaSocNetworkView extends LitElement {
                 <table>
                   <thead>
                     <tr>
-                      <th>Device</th>
-                      <th>IPv4</th>
-                      <th>MAC</th>
-                      <th class="num">VLAN</th>
-                      <th>Model</th>
-                      <th>Firmware</th>
-                      <th>Bandwidth</th>
-                      <th>Last Seen</th>
-                      <th>Integration</th>
+                      ${sortableTh("Device", "name", s, on)}
+                      ${sortableTh("IPv4", "ipv4", s, on)}
+                      ${sortableTh("MAC", "mac", s, on)}
+                      ${sortableTh("VLAN", "vlan", s, on, { numeric: true })}
+                      ${sortableTh("Model", "model", s, on)}
+                      ${sortableTh("Firmware", "firmware", s, on)}
+                      ${sortableTh("Bandwidth", "bandwidth", s, on)}
+                      ${sortableTh("Last Seen", "last_seen", s, on)}
+                      ${sortableTh("Integration", "integration", s, on)}
                     </tr>
                   </thead>
                   <tbody>
@@ -763,17 +810,25 @@ export class HaSocNetworkView extends LitElement {
                   <table>
                     <thead>
                       <tr>
-                        <th class="num">#</th>
-                        <th>Name</th>
-                        <th>Action</th>
-                        <th>Networks</th>
-                        <th>Direction</th>
-                        <th>Protocol</th>
-                        <th>Enabled</th>
+                        ${sortableTh("#", "order", this._aclSort, (n) => (this._aclSort = n), { numeric: true })}
+                        ${sortableTh("Name", "name", this._aclSort, (n) => (this._aclSort = n))}
+                        ${sortableTh("Action", "action", this._aclSort, (n) => (this._aclSort = n))}
+                        ${sortableTh("Networks", "networks", this._aclSort, (n) => (this._aclSort = n))}
+                        ${sortableTh("Direction", "direction", this._aclSort, (n) => (this._aclSort = n))}
+                        ${sortableTh("Protocol", "protocol", this._aclSort, (n) => (this._aclSort = n))}
+                        ${sortableTh("Enabled", "enabled", this._aclSort, (n) => (this._aclSort = n))}
                       </tr>
                     </thead>
                     <tbody>
-                      ${acl.rules.map(
+                      ${sortRows(acl.rules.slice(), this._aclSort, {
+                        order: (r) => r.order,
+                        name: (r) => r.name,
+                        action: (r) => r.action,
+                        networks: (r) => r.networks.join(", ") || null,
+                        direction: (r) => r.direction,
+                        protocol: (r) => r.protocol,
+                        enabled: (r) => r.enabled,
+                      }).map(
                         (r, i) => html`
                           <tr>
                             <td class="num">${r.order ?? i + 1}</td>
@@ -878,22 +933,32 @@ export class HaSocNetworkView extends LitElement {
 
   private _renderProtectDevices(cameras: ProtectCamera[]) {
     if (!cameras.length) return html`<div class="empty">No Protect devices reported.</div>`;
+    const s = this._protectSort;
+    const on = (n: SortState) => (this._protectSort = n);
+    const rows = sortRows(cameras.slice(), s, {
+      name: (c) => c.name,
+      ip: (c) => c.ip,
+      mac: (c) => c.mac,
+      recording: (c) => c.is_recording,
+      last_ring: (c) => c.last_ring,
+      channels: (c) => c.channel_count,
+    });
     return html`
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>IP</th>
-              <th>MAC</th>
-              <th>Recording</th>
-              <th>Last Ring</th>
-              <th>Channels</th>
+              ${sortableTh("Name", "name", s, on)}
+              ${sortableTh("IP", "ip", s, on)}
+              ${sortableTh("MAC", "mac", s, on)}
+              ${sortableTh("Recording", "recording", s, on)}
+              ${sortableTh("Last Ring", "last_ring", s, on)}
+              ${sortableTh("Channels", "channels", s, on)}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${cameras.map(
+            ${rows.map(
               (c) => html`
                 <tr>
                   <td>
@@ -964,17 +1029,24 @@ export class HaSocNetworkView extends LitElement {
                   <table>
                     <thead>
                       <tr>
-                        <th>Type</th>
-                        <th>Smart Detections</th>
-                        <th class="num">Score</th>
-                        <th>Start</th>
-                        <th class="num">Duration</th>
+                        ${sortableTh("Type", "type", this._eventSort, (n) => (this._eventSort = n))}
+                        ${sortableTh("Smart Detections", "detections", this._eventSort, (n) => (this._eventSort = n))}
+                        ${sortableTh("Score", "score", this._eventSort, (n) => (this._eventSort = n), { numeric: true })}
+                        ${sortableTh("Start", "start", this._eventSort, (n) => (this._eventSort = n))}
+                        ${sortableTh("Duration", "duration", this._eventSort, (n) => (this._eventSort = n), { numeric: true })}
                         <th>Thumbnail</th>
-                        <th>License Plate</th>
+                        ${sortableTh("License Plate", "plate", this._eventSort, (n) => (this._eventSort = n))}
                       </tr>
                     </thead>
                     <tbody>
-                      ${p.events.map(
+                      ${sortRows(p.events.slice(), this._eventSort, {
+                        type: (e) => e.type,
+                        detections: (e) => e.smart_detect_types.join(", ") || null,
+                        score: (e) => e.score,
+                        start: (e) => e.start,
+                        duration: (e) => e.duration,
+                        plate: (e) => e.license_plate,
+                      }).map(
                         (e) => html`
                           <tr>
                             <td>${e.type ?? "—"}</td>

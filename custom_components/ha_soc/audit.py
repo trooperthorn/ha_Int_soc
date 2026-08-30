@@ -2,29 +2,83 @@
 
 This module is the closest thing HA SOC has to a security camera pointed at
 Home Assistant's own auth/service/registry surface. It is intentionally
-narrow: it only listens to bus events and log records that Home Assistant
-core already emits, and it never touches ``state_changed`` or a
-``MATCH_ALL`` listener. What follows is an honest accounting of what is
-actually captured, what is inferred/best-effort, and what is structurally
-impossible from inside an integration - overclaiming any of this in a
-security product is worse than not having the feature.
+narrow: it only listens to bus events, one dispatcher signal, and log
+records that Home Assistant core already emits, and it never touches
+``state_changed`` or a ``MATCH_ALL`` listener. What follows is an honest
+accounting of what is actually captured, what is inferred/best-effort, and
+what is structurally impossible from inside an integration - overclaiming
+any of this in a security product is worse than not having the feature.
 
-Captured directly (one bus event per record):
+Captured directly (one bus event or dispatcher signal per record):
 
 - ``service_call`` - every ``call_service`` event. This fires *before*
   permission checks and *before* the service actually runs, so it records
   an attempted call, not its outcome or even whether it was authorized.
   Obviously-sensitive ``service_data`` keys (``password``, ``token``,
   ``code``, and ``message`` for ``notify``/``tts`` domains) are redacted to
-  ``"[redacted]"`` before anything touches disk.
+  ``"[redacted]"`` before anything touches disk. Core merges a call's
+  target block into ``service_data``, so non-entity targets (``area_id``,
+  ``device_id``, ``label_id``, ``floor_id``) are extracted into
+  ``detail["targets"]`` alongside the top-level ``entity_ids``.
 - ``user_added`` / ``user_updated`` / ``user_removed`` - the three
-  ``homeassistant.auth`` lifecycle events.
-- ``lovelace_change`` - ``lovelace_updated`` (a dashboard was edited).
-- ``entity_registry_change`` - ``entity_registry_updated`` (create/update/
-  remove on the entity registry).
+  ``homeassistant.auth`` lifecycle events. SEMANTICS NOTE: ``user_id`` on
+  these records is the best-effort ACTING user (the admin who made the
+  change, recovered as described under "Actor attribution" below), and the
+  user who was added/updated/removed is ``detail["target_user_id"]``.
+  Earlier releases stored the subject in ``user_id``, which made the
+  panel's per-user filter conflate "acted" with "was acted upon".
+- ``lovelace_change`` - ``lovelace_updated`` (a dashboard's config was
+  saved).
+- ``entity_registry_change`` / ``device_registry_change`` /
+  ``area_registry_change`` / ``floor_registry_change`` /
+  ``label_registry_change`` / ``category_registry_change`` - the six
+  ``*_registry_updated`` bus events. For ``update`` actions core puts the
+  OLD values of the changed fields in ``changes``, never the new ones, so
+  a rename records only the previous name; the new value must be read from
+  the registry itself.
+- ``config_entry_change`` - integration config entries added, removed, or
+  updated (including enable/disable). Core exposes this only as the
+  ``config_entry_changed`` dispatcher signal, not a bus event, so there is
+  no Event and no Context here at all; actor attribution is ambient-only.
+- ``core_config_change`` - ``core_config_updated`` (location, name, unit
+  system, timezone, URLs). Core also fires this event twice during startup
+  with an empty payload; those fires carry no configuration change and are
+  skipped as noise.
+- ``dashboard_panels_change`` - ``panels_updated``. The event payload is
+  empty, so this is a tripwire only: it records that the frontend panel
+  set changed (a dashboard was created or deleted, a panel registered or
+  removed), not which panel or by how much.
+
+Actor attribution (``detail["actor_source"]`` on records that use it):
+
+Nearly every mutation event above is fired by core WITHOUT a Context, so
+``event.context.user_id`` is ``None`` even when an admin clicked the
+button in the UI or an agent issued the WebSocket command. Records that go
+through ``_resolve_actor`` label how the actor was recovered:
+
+- ``event_context`` - ``event.context.user_id`` was populated by core.
+  This is the only AUTHORITATIVE source.
+- ``ws_connection`` - the ``websocket_api.current_connection`` contextvar
+  identified the WebSocket connection whose command handler this listener
+  ran inside. Correlational, not authoritative: a contextvar snapshot can
+  leak into unrelated work scheduled downstream of a request, so read it
+  as "this change happened during this user's session", not as proof that
+  this user made the change.
+- ``http_request`` - the same idea via ``helpers.http.current_request``,
+  which covers the REST config views (automation/script/scene editors,
+  core config). Correlational, same caveat.
+- ``system`` - no ambient signal at all; the change came from core itself,
+  an integration, or a code path that dropped the context.
+
+- ``session_seen`` - a synthetic record emitted once per refresh token per
+  runtime, the first time a WebSocket connection is observed through the
+  contextvar above. It exists because long-lived access token bearer usage
+  is otherwise invisible (see below); it marks the first OBSERVED activity
+  of a session, not its login time, and its absence does not mean the
+  session does not exist.
 
 Best-effort / inferred (no bus event exists for these - confirmed against
-home-assistant/core's dev branch - so they are reconstructed indirectly):
+the installed core source - so they are reconstructed indirectly):
 
 - ``login_fail`` - a ``logging.Handler`` attached to
   ``homeassistant.components.http.ban`` catches the WARNING it logs for
@@ -39,14 +93,46 @@ home-assistant/core's dev branch - so they are reconstructed indirectly):
   login through this API, so this is best read as "this user's session was
   active", not "this user just typed a password".
 - ``token_created`` - same poll loop; a brand-new
-  ``long_lived_access_token`` id.
+  ``long_lived_access_token`` id. For long-lived tokens this is the ONLY
+  signal the poll will ever produce: core updates ``last_used_at`` and
+  ``last_used_ip`` only on the ``/auth/token`` grant path, which a bearer
+  request with a long-lived token never touches, so after creation the
+  poll is permanently blind to that token's activity. The ``session_seen``
+  record above is the best available substitute for WebSocket sessions.
 
 Out of scope / structurally impossible from here:
 
+- The AUTHORITATIVE acting user behind registry, dashboard, and config
+  mutations. Core fires every ``*_registry_updated`` event, the lovelace
+  events, the user lifecycle events, and ``core_config_updated`` without
+  threading the caller's Context through, so ``context.user_id`` is always
+  ``None`` there and nothing an integration can subscribe to carries the
+  actor. The contextvar correlation described above is the ceiling;
+  anything stronger requires a change in core itself.
+- The content delta of an automation, script, or scene edit. The REST
+  config views write the submitted YAML/JSON straight to storage and fire
+  nothing but a context-less reload service call, and an integration
+  cannot see the request body, so only the fact of a reload is observable.
+- Which script was reloaded. Core has no ``script_reloaded`` event, and
+  the script config view calls ``script.reload`` with no id in the service
+  data, so a script edit is indistinguishable from any other script edit.
+- Config-only updates to helpers (``input_boolean``, ``input_number``,
+  ``counter``, ``timer``, ``schedule``, and friends) and lovelace resource
+  add/remove. The storage collections behind both emit no bus event; their
+  in-process change listeners are reachable only through per-integration
+  ``hass.data`` keys that are not a stable API, so this module
+  deliberately does not hook them. Helper create/delete still surfaces
+  indirectly as ``entity_registry_change``, and renaming a helper's entity
+  does too; changing a helper's min/max/step/icon fires nothing at all.
+- Whether a request bearing a long-lived access token succeeded. Token
+  validation in core is a pure callback with no side effects, no event,
+  and no log line; only failures are observable (through the ban logger,
+  as ``login_fail``).
 - The username behind a failed login attempt - Home Assistant does not
   record it anywhere an integration can reach.
-- Permission-denied errors raised inside a service call or over the REST
-  API - there is no bus event or log hook for these at all.
+- Permission-denied errors raised inside a service call or over the
+  WebSocket/REST API. The Unauthorized error is raised and returned to the
+  client; there is no bus event and no dedicated logger for it.
 - True tamper-*proof* storage. ``async_verify_chain`` proves the on-disk
   hash chain is internally consistent, i.e. nothing in these files was
   edited without recomputing every hash after it. It cannot prove the
@@ -68,6 +154,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import date, datetime, timedelta
+from functools import partial
 import hashlib
 import json
 import logging
@@ -81,9 +168,12 @@ from homeassistant.const import (
     ATTR_SERVICE,
     ATTR_SERVICE_DATA,
     EVENT_CALL_SERVICE,
+    EVENT_CORE_CONFIG_UPDATE,
     EVENT_HOMEASSISTANT_STOP,
+    EVENT_PANELS_UPDATED,
 )
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
 import homeassistant.util.dt as dt_util
 
@@ -123,6 +213,51 @@ except ImportError:  # pragma: no cover - older/newer core layout fallback
         TOKEN_TYPE_SYSTEM = "system"
         TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN = "long_lived_access_token"
 
+# The five registries beyond the entity registry each fire their own
+# "<name>_registry_updated" bus event (homeassistant/helpers/*_registry.py).
+# As above, the literal strings are what core actually fires, so an import
+# failure falls back to the stable literal instead of breaking setup.
+try:
+    from homeassistant.helpers.area_registry import EVENT_AREA_REGISTRY_UPDATED
+    from homeassistant.helpers.category_registry import (
+        EVENT_CATEGORY_REGISTRY_UPDATED,
+    )
+    from homeassistant.helpers.device_registry import EVENT_DEVICE_REGISTRY_UPDATED
+    from homeassistant.helpers.floor_registry import EVENT_FLOOR_REGISTRY_UPDATED
+    from homeassistant.helpers.label_registry import EVENT_LABEL_REGISTRY_UPDATED
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    EVENT_AREA_REGISTRY_UPDATED = "area_registry_updated"
+    EVENT_CATEGORY_REGISTRY_UPDATED = "category_registry_updated"
+    EVENT_DEVICE_REGISTRY_UPDATED = "device_registry_updated"
+    EVENT_FLOOR_REGISTRY_UPDATED = "floor_registry_updated"
+    EVENT_LABEL_REGISTRY_UPDATED = "label_registry_updated"
+
+# Config entries have no bus event at all; core announces add/remove/update
+# only on this dispatcher signal. SignalType subclasses str, so the literal
+# fallback still reaches the same dispatcher slot.
+try:
+    from homeassistant.config_entries import SIGNAL_CONFIG_ENTRY_CHANGED
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    SIGNAL_CONFIG_ENTRY_CHANGED = "config_entry_changed"
+
+# Ambient actor recovery (see _resolve_actor for the honesty caveats). Core
+# fires nearly every mutation event without a Context, so these two
+# contextvars are the only signal an integration can read for "who did
+# this". An import failure degrades to no ambient recovery, never to a
+# broken setup.
+try:
+    from homeassistant.components.websocket_api import current_connection
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    current_connection = None  # type: ignore[assignment]
+try:
+    from homeassistant.helpers.http import current_request
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    current_request = None  # type: ignore[assignment]
+try:
+    from homeassistant.components.http.const import KEY_HASS_USER
+except ImportError:  # pragma: no cover - older/newer core layout fallback
+    KEY_HASS_USER = "hass_user"
+
 _LOGGER = logging.getLogger(__name__)
 
 Unsub = Callable[[], None]
@@ -150,11 +285,13 @@ _REDACTED_SERVICE_DATA_KEYS = frozenset({"password", "token", "code"})
 _REDACTED_MESSAGE_DOMAINS = frozenset({"notify", "tts"})
 
 _BAN_LOGGER_NAME = "homeassistant.components.http.ban"
-# Real message (see homeassistant/components/http/ban.py):
-#   "Login attempt or request with invalid authentication from %s (%s)."
-#   record.args == (remote_host, remote_addr)
-# The regex is a fallback only, in case that internal message ever changes
-# shape without a matching args tuple.
+# On core 2026.2, http/ban.py builds the invalid-auth warning as a fully
+# formatted f-string ("Login attempt or request with invalid authentication
+# from <host> (<addr>). Requested URL: ...") and logs it with NO args, so
+# record.args is empty and this regex on the formatted message is what
+# actually extracts the address. The structured-args branch in _extract_ip
+# is kept only as a compatibility path in case core ever goes back to
+# passing (remote_host, remote_addr) as logging args.
 _BAN_MESSAGE_RE = re.compile(r"from\s+(?P<host>\S+)\s+\((?P<addr>[^)]+)\)")
 
 
@@ -187,8 +324,8 @@ def _redact_service_data(domain: str | None, service_data: Any) -> dict[str, Any
 def _redact_secrets_deep(value: Any) -> Any:
     """Recursively mask any dict value stored under a known secret key.
 
-    Applied to every ``detail`` payload inside ``async_log`` itself — not
-    at individual call sites — so a credential-shaped setting (e.g.
+    Applied to every ``detail`` payload inside ``async_log`` itself, not
+    at individual call sites, so a credential-shaped setting (e.g.
     ``nvd_api_key``, ``github_token``) can never reach the append-only,
     long-retention audit files verbatim, no matter which code path logged
     it or how deeply it's nested (settings changes log under
@@ -243,8 +380,10 @@ class _FailedLoginLogHandler(logging.Handler):
     @staticmethod
     def _extract_ip(record: logging.LogRecord) -> str | None:
         args = record.args
-        # Prefer the structured args tuple - (remote_host, remote_addr) -
-        # over regexing the formatted message.
+        # A (remote_host, remote_addr) args tuple is used when present, but
+        # on current core the message arrives preformatted with no args, so
+        # the regex below is the branch that actually runs (see the comment
+        # at _BAN_MESSAGE_RE).
         if isinstance(args, tuple) and len(args) >= 2 and args[1]:
             return str(args[1])
         try:
@@ -285,6 +424,13 @@ class AuditLog:
         self._token_snapshot: dict[str, tuple[datetime | None, str | None]] = {}
         self._first_poll_done = False
 
+        # Refresh-token ids whose WebSocket connection has already produced a
+        # session_seen record this runtime. Deliberately not persisted:
+        # after a restart the first observed activity of each still-live
+        # session is announced once more, which is cheap and errs toward
+        # visibility rather than silence.
+        self._seen_ws_token_ids: set[str] = set()
+
     # -- Lifecycle ----------------------------------------------------------
 
     async def async_start(self) -> None:
@@ -312,6 +458,46 @@ class AuditLog:
         self._unsubs.append(
             self.hass.bus.async_listen(
                 "entity_registry_updated", self._handle_entity_registry_updated
+            )
+        )
+        # The other five registries share one handler, parameterized with the
+        # record category and the payload key that names the changed item.
+        # functools.partial is safe here: HassJob unwraps partials before
+        # checking for the @callback marker, so these still dispatch inline
+        # on the event loop like a plain @callback listener.
+        for event_type, category, id_key in (
+            (EVENT_DEVICE_REGISTRY_UPDATED, "device_registry_change", "device_id"),
+            (EVENT_AREA_REGISTRY_UPDATED, "area_registry_change", "area_id"),
+            (EVENT_FLOOR_REGISTRY_UPDATED, "floor_registry_change", "floor_id"),
+            (EVENT_LABEL_REGISTRY_UPDATED, "label_registry_change", "label_id"),
+            (
+                EVENT_CATEGORY_REGISTRY_UPDATED,
+                "category_registry_change",
+                "category_id",
+            ),
+        ):
+            self._unsubs.append(
+                self.hass.bus.async_listen(
+                    event_type,
+                    partial(self._handle_registry_updated, category, id_key),
+                )
+            )
+        self._unsubs.append(
+            self.hass.bus.async_listen(
+                EVENT_CORE_CONFIG_UPDATE, self._handle_core_config_updated
+            )
+        )
+        self._unsubs.append(
+            self.hass.bus.async_listen(
+                EVENT_PANELS_UPDATED, self._handle_panels_updated
+            )
+        )
+        # Config entries announce changes on a dispatcher signal, not the
+        # bus; async_dispatcher_connect returns an unsubscribe callable just
+        # like async_listen does.
+        self._unsubs.append(
+            async_dispatcher_connect(
+                self.hass, SIGNAL_CONFIG_ENTRY_CHANGED, self._handle_config_entry_changed
             )
         )
         self._unsubs.append(
@@ -349,19 +535,113 @@ class AuditLog:
 
         await self._async_flush()
 
+    # -- Actor recovery -------------------------------------------------
+
+    @callback
+    def _resolve_actor(self, event: Event) -> tuple[str | None, str]:
+        """Best-effort acting user for an event, plus how it was recovered.
+
+        Returns ``(user_id, source)`` where source is one of
+        ``event_context``, ``ws_connection``, ``http_request``, or
+        ``system``. Only ``event_context`` is authoritative. The contextvar
+        sources are correlational (see the module docstring), and
+        ``system`` means there was no signal at all.
+        """
+        user_id = event.context.user_id
+        if user_id is not None:
+            return user_id, "event_context"
+        return self._resolve_actor_ambient()
+
+    @callback
+    def _resolve_actor_ambient(self) -> tuple[str | None, str]:
+        """Ambient-only actor recovery, for signals that carry no Event.
+
+        This works only because @callback listeners run inline in the same
+        asyncio context as the WebSocket command or HTTP request whose
+        handler caused the mutation, and coroutine listeners inherit a copy
+        of that context when their task is created during the fire. A
+        contextvar snapshot can leak into unrelated work scheduled
+        downstream of a request, so a hit here is correlation with the
+        active session, never proof of who acted.
+        """
+        if current_connection is not None:
+            conn = current_connection.get()
+            if conn is not None:
+                self._note_ws_session(conn)
+                user = getattr(conn, "user", None)
+                return getattr(user, "id", None), "ws_connection"
+        if current_request is not None:
+            request = current_request.get()
+            if request is not None:
+                user = request.get(KEY_HASS_USER)
+                if user is not None:
+                    return user.id, "http_request"
+        return None, "system"
+
+    @callback
+    def _note_ws_session(self, conn: Any) -> None:
+        """Emit one synthetic session_seen record per refresh token.
+
+        Core updates a token's ``last_used_at`` only on the ``/auth/token``
+        grant path, which a long-lived access token bearer never touches,
+        so the token poll loop is permanently blind to a LLAT session. The
+        first time any audited change correlates to a WebSocket connection
+        this runtime, record that the session exists at all. The caveat is
+        stored in the record itself so an export stays honest on its own.
+        """
+        token_id = getattr(conn, "refresh_token_id", None)
+        if token_id is None or token_id in self._seen_ws_token_ids:
+            return
+        self._seen_ws_token_ids.add(token_id)
+        user = getattr(conn, "user", None)
+        self.async_log(
+            "session_seen",
+            user_id=getattr(user, "id", None),
+            detail={
+                "refresh_token_id": token_id,
+                "note": (
+                    "first audited activity observed for this WebSocket "
+                    "session this runtime; long-lived access token bearer "
+                    "usage is otherwise invisible to this module, so the "
+                    "absence of a session_seen record does not mean the "
+                    "absence of a session"
+                ),
+            },
+        )
+
     # -- Event handlers -------------------------------------------------
 
+    @callback
     def _handle_call_service(self, event: Event) -> None:
         # Fires before permission checks and before the service runs - this
         # is an attempted call, not a confirmed outcome. See module
         # docstring; do not let a future edit here imply otherwise.
+        #
+        # No ambient fallback here on purpose: call_service is the one
+        # event where core threads the caller's real Context through, and
+        # applying contextvar recovery to the None case would mostly
+        # re-attribute automation-driven calls to whichever user's session
+        # happened to be upstream, which is exactly the overclaim this
+        # module refuses to make.
         domain = event.data.get(ATTR_DOMAIN)
         service = event.data.get(ATTR_SERVICE)
-        service_data = event.data.get(ATTR_SERVICE_DATA) or {}
-        entity_ids = _normalize_entity_ids(
-            service_data.get("entity_id") if isinstance(service_data, dict) else None
-        )
+        service_data = event.data.get(ATTR_SERVICE_DATA)
+        if not isinstance(service_data, dict):
+            service_data = {}
+        entity_ids = _normalize_entity_ids(service_data.get("entity_id"))
         detail = _redact_service_data(domain, service_data)
+        # Core merges a call's target block into service_data before firing
+        # the event, so area/device/label/floor targets arrive as plain
+        # keys here. Normalize them into detail["targets"] so an
+        # area-targeted call does not audit as if it touched nothing (its
+        # entity_ids list is empty).
+        targets = {
+            key: _normalize_entity_ids(service_data.get(key))
+            for key in ("area_id", "device_id", "label_id", "floor_id")
+            if service_data.get(key) is not None
+        }
+        if targets:
+            detail["targets"] = targets
         context = event.context
         self.async_log(
             "service_call",
@@ -375,20 +655,49 @@ class AuditLog:
         )
 
     async def _handle_user_added(self, event: Event) -> None:
-        user_id = event.data.get("user_id")
-        name = await self._async_resolve_user_name(user_id)
-        self.async_log("user_added", user_id=user_id, detail={"name": name})
+        await self._async_log_user_lifecycle("user_added", event)
 
     async def _handle_user_updated(self, event: Event) -> None:
-        user_id = event.data.get("user_id")
-        name = await self._async_resolve_user_name(user_id)
-        self.async_log("user_updated", user_id=user_id, detail={"name": name})
+        await self._async_log_user_lifecycle("user_updated", event)
 
+    async def _async_log_user_lifecycle(self, category: str, event: Event) -> None:
+        # event.data["user_id"] names the user being added/updated (the
+        # SUBJECT), not whoever performed the change: core fires these
+        # events with no Context at all. The acting admin is recovered
+        # ambiently; the auth events fire inline in the acting admin's
+        # WebSocket command task, and this coroutine listener's task is
+        # created during that fire with a copy of the task's contextvars,
+        # so ws_connection recovery usually works here. The copied context
+        # survives awaits, but the actor is resolved before the first await
+        # anyway so the ordering is obvious.
+        actor_id, source = self._resolve_actor(event)
+        target_user_id = event.data.get("user_id")
+        name = await self._async_resolve_user_name(target_user_id)
+        self.async_log(
+            category,
+            user_id=actor_id,
+            detail={
+                "target_user_id": target_user_id,
+                "target_name": name,
+                "actor_source": source,
+            },
+        )
+
+    @callback
     def _handle_user_removed(self, event: Event) -> None:
-        # The user is already gone by the time this fires - nothing left to
-        # resolve, just log the id core gave us.
-        user_id = event.data.get("user_id")
-        self.async_log("user_removed", user_id=user_id, detail={})
+        # The removed user is already gone by the time this fires, so there
+        # is no name left to resolve. As with the other user lifecycle
+        # events, event.data["user_id"] is the SUBJECT; the actor is
+        # recovered ambiently.
+        actor_id, source = self._resolve_actor(event)
+        self.async_log(
+            "user_removed",
+            user_id=actor_id,
+            detail={
+                "target_user_id": event.data.get("user_id"),
+                "actor_source": source,
+            },
+        )
 
     async def _async_resolve_user_name(self, user_id: str | None) -> str | None:
         if user_id is None:
@@ -399,29 +708,129 @@ class AuditLog:
             return None
         return user.name if user is not None else None
 
+    @callback
     def _handle_lovelace_updated(self, event: Event) -> None:
-        url_path = event.data.get("url_path")
+        # Core fires lovelace_updated without a Context, so the actor is
+        # recovered ambiently (a dashboard save arrives over the WebSocket,
+        # so ws_connection recovery usually works).
+        user_id, source = self._resolve_actor(event)
         context = event.context
         self.async_log(
             "lovelace_change",
-            user_id=context.user_id,
+            user_id=user_id,
             context_id=context.id,
             context_parent_id=context.parent_id,
-            detail={"url_path": url_path},
+            detail={"url_path": event.data.get("url_path"), "actor_source": source},
         )
 
+    @callback
     def _handle_entity_registry_updated(self, event: Event) -> None:
         action = event.data.get("action")
         entity_id = event.data.get("entity_id")
+        # Core puts the OLD values of the changed fields in "changes"; the
+        # new values are not in the event and must be read from the
+        # registry itself.
         changes = event.data.get("changes") or {}
+        user_id, source = self._resolve_actor(event)
         context = event.context
         self.async_log(
             "entity_registry_change",
-            user_id=context.user_id,
+            user_id=user_id,
             entity_ids=[entity_id] if entity_id else [],
             context_id=context.id,
             context_parent_id=context.parent_id,
-            detail={"action": action, "changes": changes},
+            detail={"action": action, "changes": changes, "actor_source": source},
+        )
+
+    @callback
+    def _handle_registry_updated(
+        self, category: str, id_key: str, event: Event
+    ) -> None:
+        """Shared handler for the device/area/floor/label/category registries.
+
+        All five fire the same shape of event, differing only in the key
+        that names the changed item. Like the entity registry, core fires
+        them without a Context, so the actor is recovered ambiently. Note
+        that "changes" (present on update actions only) carries the OLD
+        values of the changed fields, never the new ones; that is core
+        behavior, not a choice made here. The device registry (like the
+        entity registry) also fires in bulk during integration setup and
+        teardown; those fires resolve to actor_source "system", which is
+        how an operator separates them from interactive edits.
+        """
+        user_id, source = self._resolve_actor(event)
+        context = event.context
+        self.async_log(
+            category,
+            user_id=user_id,
+            context_id=context.id,
+            context_parent_id=context.parent_id,
+            detail={
+                "action": event.data.get("action"),
+                id_key: event.data.get(id_key),
+                "changes": event.data.get("changes") or {},
+                "actor_source": source,
+            },
+        )
+
+    @callback
+    def _handle_config_entry_changed(self, change: Any, entry: Any) -> None:
+        """Log a config entry being added, removed, or updated.
+
+        This arrives on the config_entry_changed dispatcher signal, not the
+        bus, so there is no Event and no Context here at all; only ambient
+        recovery is possible. ``change`` is core's ConfigEntryChange
+        StrEnum (added/removed/updated).
+        """
+        user_id, source = self._resolve_actor_ambient()
+        disabled_by = getattr(entry, "disabled_by", None)
+        self.async_log(
+            "config_entry_change",
+            user_id=user_id,
+            domain=getattr(entry, "domain", None),
+            detail={
+                "change": str(change),
+                "entry_id": getattr(entry, "entry_id", None),
+                "title": getattr(entry, "title", None),
+                "disabled_by": str(disabled_by) if disabled_by is not None else None,
+                "actor_source": source,
+            },
+        )
+
+    @callback
+    def _handle_core_config_updated(self, event: Event) -> None:
+        # Core fires core_config_updated twice during startup with an empty
+        # payload (once entering the starting state, once entering
+        # running). Those fires carry no configuration change, so they are
+        # skipped rather than logged as noise. A real update passes the
+        # changed keys and their NEW values as the event data.
+        if not event.data:
+            return
+        user_id, source = self._resolve_actor(event)
+        context = event.context
+        self.async_log(
+            "core_config_change",
+            user_id=user_id,
+            context_id=context.id,
+            context_parent_id=context.parent_id,
+            detail={"changes": dict(event.data), "actor_source": source},
+        )
+
+    @callback
+    def _handle_panels_updated(self, event: Event) -> None:
+        # Tripwire only. panels_updated fires with an EMPTY payload whenever
+        # the frontend panel set changes (a dashboard created or deleted,
+        # any panel registered or removed), and core has no per-dashboard
+        # CRUD event to subscribe to instead. The honest record is
+        # therefore "the panel set changed", plus a best-effort actor.
+        user_id, source = self._resolve_actor(event)
+        context = event.context
+        self.async_log(
+            "dashboard_panels_change",
+            user_id=user_id,
+            context_id=context.id,
+            context_parent_id=context.parent_id,
+            detail={"actor_source": source},
         )
 
     def _on_failed_login(self, ip: str) -> None:
@@ -710,6 +1119,10 @@ class AuditLog:
         ``dt_util.utcnow()``). Defaults to the last 7 days if ``since`` is
         not given.
         """
+        # Flush first so a change made seconds ago is visible immediately;
+        # _sync_query reads only what is on disk, and without this the
+        # panel would lag up to _FLUSH_INTERVAL behind reality.
+        await self._async_flush()
         return await self.hass.async_add_executor_job(
             self._sync_query, since, until, user_id, category, ip, limit
         )
@@ -768,6 +1181,11 @@ class AuditLog:
         not tamper-proof - real integrity needs an off-box export, which is
         out of scope for this module.
         """
+        # Flush first so the check covers everything logged so far and the
+        # records-checked count matches what the query view shows. The
+        # chain-head checkpoint is only written on flush, so this also
+        # keeps the completeness check consistent with the buffer.
+        await self._async_flush()
         return await self.hass.async_add_executor_job(self._sync_verify_chain)
 
     def _sync_verify_chain(self) -> dict[str, Any]:
@@ -822,10 +1240,10 @@ class AuditLog:
         # record). Cross-check the last record actually seen against the
         # separately-stored chain-head checkpoint. If the checkpoint is
         # ahead of what's on disk, the tail was truncated/removed since the
-        # last flush — the cheapest way to hide one's own recent actions,
+        # last flush - the cheapest way to hide one's own recent actions,
         # and invisible to a consistency-only check. This still can't catch
         # an attacker who rewrites BOTH the log and chain_head.json (that
-        # needs an off-box anchor — see async_verify_chain's docstring), but
+        # needs an off-box anchor - see async_verify_chain's docstring), but
         # it closes the plain-truncation gap.
         head_seq, head_hash = self._sync_read_chain_head_checkpoint()
         if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):

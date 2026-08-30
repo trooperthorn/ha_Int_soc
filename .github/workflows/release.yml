@@ -9,9 +9,10 @@ name: Release
 on:
   push:
     tags:
-      # YYYY.MM.DD.N (the project's calendar scheme), with or without a
-      # leading v for older tags.
-      - "[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
+      # vYYYY.MM.DD.N, the project's canonical release-tag form. Only the
+      # v-prefixed pattern triggers on purpose: a bare tag for the same
+      # version would otherwise create a second Release, and HACS installs
+      # by tag name, so one version must never exist as two tags.
       - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
 
 permissions:

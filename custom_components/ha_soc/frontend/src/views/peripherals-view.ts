@@ -2,7 +2,13 @@ import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
-import { PeripheralOverview, fetchPeripherals, setPeripheralIgnored } from "../data/ha-soc-ws";
+import { SortState, sortRows, sortableTh } from "../sortable";
+import {
+  PeripheralDevice,
+  PeripheralOverview,
+  fetchPeripherals,
+  setPeripheralIgnored,
+} from "../data/ha-soc-ws";
 
 @customElement("ha-soc-peripherals-view")
 export class HaSocPeripheralsView extends LitElement {
@@ -14,6 +20,24 @@ export class HaSocPeripheralsView extends LitElement {
   @state() private _loading = true;
   @state() private _busyKey: string | null = null;
   @state() private _showIgnored = false;
+  // Independent sort state for the active and the ignored table (see
+  // sortable.ts); null keeps the discovery order the backend reported.
+  @state() private _sort: SortState | null = null;
+  @state() private _ignoredSort: SortState | null = null;
+
+  // One accessor map serves both tables; keys not present as columns in a
+  // table are simply never requested by it. VID/PID sorts as the combined
+  // vid:pid string the cell displays; the assigned-integration accessor
+  // returns the integration title, with unassigned devices sinking to the
+  // bottom the way sortRows treats any absent value.
+  private static readonly DEVICE_SORT: Record<string, (d: PeripheralDevice) => unknown> = {
+    name: (d) => d.raw_name,
+    tty: (d) => d.tty_path,
+    by_id: (d) => d.by_id_path,
+    vidpid: (d) => `${d.vid}:${d.pid}`,
+    serial: (d) => d.serial_number,
+    integration: (d) => d.assigned_integration?.title ?? null,
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -82,18 +106,26 @@ export class HaSocPeripheralsView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Raw Name</th>
-                    <th>/dev/tty Path</th>
-                    <th>Assigned Integration</th>
+                    ${sortableTh("Raw Name", "name", this._sort, (n) => (this._sort = n))}
+                    ${sortableTh("/dev/tty Path", "tty", this._sort, (n) => (this._sort = n))}
+                    ${sortableTh("By-ID Path", "by_id", this._sort, (n) => (this._sort = n))}
+                    ${sortableTh("VID:PID", "vidpid", this._sort, (n) => (this._sort = n))}
+                    ${sortableTh("Serial", "serial", this._sort, (n) => (this._sort = n))}
+                    ${sortableTh("Assigned Integration", "integration", this._sort, (n) => (this._sort = n))}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${active.map(
+                  ${sortRows(active, this._sort, HaSocPeripheralsView.DEVICE_SORT).map(
                     (d) => html`
                       <tr>
                         <td>${d.raw_name}</td>
                         <td class="muted">${d.tty_path}</td>
+                        <td class="muted" style="font-size:12px;word-break:break-all;">
+                          ${d.by_id_path ?? "—"}
+                        </td>
+                        <td class="muted" style="font-size:12px;">${d.vid}:${d.pid}</td>
+                        <td class="muted" style="font-size:12px;">${d.serial_number ?? "—"}</td>
                         <td>
                           ${d.assigned_integration
                             ? html`${d.assigned_integration.title}
@@ -132,13 +164,13 @@ export class HaSocPeripheralsView extends LitElement {
                     <table>
                       <thead>
                         <tr>
-                          <th>Raw Name</th>
-                          <th>/dev/tty Path</th>
+                          ${sortableTh("Raw Name", "name", this._ignoredSort, (n) => (this._ignoredSort = n))}
+                          ${sortableTh("/dev/tty Path", "tty", this._ignoredSort, (n) => (this._ignoredSort = n))}
                           <th></th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${ignored.map(
+                        ${sortRows(ignored, this._ignoredSort, HaSocPeripheralsView.DEVICE_SORT).map(
                           (d) => html`
                             <tr class="row-disabled">
                               <td>${d.raw_name}</td>

@@ -766,6 +766,34 @@ export interface FaultLogOverview {
 export const fetchFaultLog = (hass: HomeAssistant) =>
   ws<FaultLogOverview>(hass, { type: "ha_soc/logs/fault" });
 
+// Container (app/add-on) logs, served by the Supervisor's journald gateway
+// through logs.py. available=false on a non-Supervisor install, in which case
+// the Logs tab simply doesn't offer the selector.
+export interface ContainerLogTarget {
+  id: string; // "core" | "supervisor" | "host" | "addon:<slug>"
+  name: string;
+}
+
+export interface ContainerLogTargets {
+  available: boolean;
+  targets: ContainerLogTarget[];
+}
+
+export interface ContainerLog {
+  available: boolean;
+  target: string;
+  content: string | null;
+  truncated: boolean;
+  error: string | null;
+  fetched_at: string;
+}
+
+export const fetchLogTargets = (hass: HomeAssistant) =>
+  ws<ContainerLogTargets>(hass, { type: "ha_soc/logs/targets" });
+
+export const fetchContainerLog = (hass: HomeAssistant, target: string) =>
+  ws<ContainerLog>(hass, { type: "ha_soc/logs/container", target });
+
 // Real core command, called directly for the same reason fetchSystemLog is:
 // a genuine, already-admin-gated core command, not something worth proxying
 // through ha_soc/* just to relabel it.
