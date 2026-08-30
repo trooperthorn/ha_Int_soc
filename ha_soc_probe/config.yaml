@@ -1,5 +1,5 @@
 name: HA SOC Probe
-version: "2026.08.26.2"
+version: "2026.08.29.2"
 slug: ha_soc_probe
 description: >-
   Optional host-level companion for the HA SOC integration. Reports the
