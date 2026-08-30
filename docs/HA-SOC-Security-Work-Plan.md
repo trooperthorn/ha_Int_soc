@@ -6,6 +6,8 @@ Companion files: `HA-SOC-Security-Review-2026-08-30.md` (the review, with the ev
 
 Revision 2, 2026-08-30: decisions D-1, D-2, D-3, D-4, D-5, D-7, D-8, D-9, and D-21 are recorded in section 2 and the affected items are rewritten; section 2A (secrets at rest) and item 3.0 (tunable thresholds) are new; section 6 reflects seven facts that were verified after the first revision.
 
+Revision 3, 2026-08-30: the owner directed "implement all recommendations"; every remaining decision (D-6, D-10 through D-20, D-22, D-23) is recorded in section 2 with the recommendation from the decision register report as the choice, and the five intent statements below the register are settled the same way. Sprint 0 shipped in full. Work now proceeds in plan order; docs/HA-SOC-Sprint-Next-Open-Items.md carries every item deferred to the next sprint and why.
+
 ## 0. How to work this plan
 
 1. Read `README.md`, the module docstrings of every file you touch, and this section before changing anything. The docstrings are the contract; when a change alters a documented behavior, update the docstring in the same commit.
@@ -90,7 +92,7 @@ Decision: recorded 2026-08-30 together with D-4: owner-only `firewall/discard_pe
 Audit files default to 90 days or 200 MB; detections, findings, and firewall history have no retention at all. Options: (a) add `evidence_retention_days` (default 365) governing detections, findings, and firewall history, keep `audit_retention_days` for the log; (b) one retention setting for everything; (c) leave findings unbounded and prune only resolved detections.
 
 Safe default: (a) with 365 days, pruning only `resolved` and `dismissed` records past the period.
-Decision: pending.
+Decision: recorded 2026-08-30 (owner: implement all recommendations): option (a), `evidence_retention_days` default 365, pruning only `resolved` and `dismissed` records; open items never expire. Item 3.3 is unblocked.
 
 ### D-7  Mirroring settings into `entry.options`
 
@@ -125,77 +127,77 @@ Decision: recorded 2026-08-30: every detection threshold is modifiable from the 
 When any posture term has never computed, show: (a) the grade with a "provisional" badge and the missing terms listed; (b) no grade, only the terms that exist. "Computed once ever" versus "computed within the last 24 hours" also needs a call.
 
 Safe default: (a), computed-once-ever.
-Decision: pending.
+Decision: recorded 2026-08-30: option (a), computed-once-ever. A hidden grade reads as a broken tile; a labeled provisional grade is honest and useful on day one. Item 3.4 is unblocked.
 
 ### D-11  Severity recalibration
 
 Proposed: `addon_unprotected` HIGH, CRITICAL when the add-on also has `host_network`; `notify_coverage_gaps` LOW for an untracked source and MEDIUM for a source the operator toggled off; unknown severities map to WARNING not CRITICAL in Repairs; `alert_unknown_references` stays HIGH. Confirm or amend.
 
 Safe default: as proposed.
-Decision: pending.
+Decision: recorded 2026-08-30: as proposed. Note for operators: while the D-21 verification script runs with the SSH add-on's Protection Mode off, that add-on trips the CRITICAL case by design; it clears on re-enable. Item 4.4 is unblocked.
 
 ### D-12  Outbound lookups (NVD today, OSV later)
 
 Device manufacturer and model strings go to NIST today with no disclosure or toggle. Options: (a) on by default with a disclosure in the docstring, README, and next to the key field, plus a toggle; (b) off by default (opt-in). The same choice applies to the sprint 6 `requirements` lookup.
 
 Safe default: (a) for NVD (existing behavior, now disclosed), (b) for the new OSV lookup.
-Decision: pending.
+Decision: recorded 2026-08-30: option (a) for NVD (stays on, now disclosed in docs and Settings with an off toggle), opt-in for the new OSV lookup. Items 4.9 and 6.2 are unblocked.
 
 ### D-13  Entity ReMap and YAML fidelity
 
 The YAML round-trip drops comments, anchors, and key order, and would inline `!include` and either fail or resolve `!secret` (UNVERIFIED which). Options: (a) accept comment loss as core's own editor does, state it in the consequence text, back everything up; (b) refuse to rewrite a file that contains `!secret` or `!include` and report "manual edit required" for it; (c) adopt a round-trip YAML library that preserves comments (new dependency).
 
 Safe default: (a) plus (b).
-Decision: pending.
+Decision: recorded 2026-08-30: (a) plus (b) together; comment loss is accepted and stated, files carrying `!secret` or `!include` are refused with "manual edit required". A round-trip YAML dependency is rejected for now as supply-chain surface; revisit only if the refusals hit files that genuinely need remapping. Item 1.9 is unblocked as written.
 
 ### D-14  Audit logging of privileged reads
 
 Logging reads of the host journal, Supervisor and add-on logs, and a user's token list adds volume. Options: (a) log those reads and nothing else; (b) log every `ha_soc/*` read; (c) log nothing new. The review recommends (a).
 
 Safe default: (a).
-Decision: pending.
+Decision: recorded 2026-08-30: option (a), privileged reads only (host/Supervisor/add-on logs, the crash log, a user's token list). Item 1.4 is unblocked as written.
 
 ### D-15  Off-box export target
 
 Syslog (RFC 5424) over TLS, CEF, and a generic HTTPS webhook are all reasonable; the first one to build depends on the SIEM the owner actually runs. Name it.
 
 Safe default: syslog over TLS first, webhook second.
-Decision: pending.
+Decision: recorded 2026-08-30: the safe default stands as the recorded choice; syslog (RFC 5424) over TLS first, generic HTTPS webhook second. If the owner later names the SIEM actually in use, the first exporter gains a tested config example for it; the order itself is settled.
 
 ### D-16  CI matrix and minimum core version
 
 `hacs.json` says 2025.1.0; the suite was run on 2026.2.3; sibling repositories target 2026.5 and later. Options: (a) test the minimum in `hacs.json` and the latest harness release; (b) raise the minimum and test only that and latest.
 
 Safe default: test latest only until decided, and record the version tested in the README.
-Decision: pending.
+Decision: recorded 2026-08-30: option (b); the `hacs.json` minimum is raised to 2026.2.0, the core version the suite actually runs against, and CI tests latest only. The stated minimum must remain a tested fact; a second minimum-version CI job is added only if support for older cores is ever actually wanted.
 
 ### D-17  Frontend test approach
 
 Options: (a) a Python contract test that extracts each `type: "ha_soc/..."` payload from `frontend/src/data/ha-soc-ws.ts` and asserts the keys satisfy the server's voluptuous schema; (b) Vitest with a mocked `hass`; (c) both. (a) is cheap and would have caught UI-1.
 
 Safe default: (a).
-Decision: pending.
+Decision: recorded 2026-08-30: option (a), already shipped in sprint 0 item 0.4 (`tests/test_ws_contract.py`, all 58 panel payloads checked). Vitest is revisited only if visual or state-handling regressions recur.
 
 ### D-18  MFA policy and external authentication
 
 `auto_deactivate` judges HA-native MFA only. An install fronted by a header-auth SSO proxy with upstream MFA would deactivate compliant admins. Options: (a) exempt users whose only credentials are from a non-`homeassistant` provider and report them as "MFA not assessable"; (b) leave as is and document.
 
 Safe default: (b) with the documentation line added now.
-Decision: pending.
+Decision: recorded 2026-08-30: option (a); users whose only credentials come from a non-`homeassistant` auth provider are exempt from `auto_deactivate` and reported as "MFA not assessable". Implemented with sprint 3 (item 3.11 grows the code half); the documentation line lands with it.
 
 ### D-19  Entity attribute exposure
 
 `sensor.ha_soc_posture` exposes the full breakdown to every user. Options: (a) grade only, breakdown stays behind `ha_soc/risk/posture`; (b) keep for automations. Also decide the per-user risk sensor naming (user name versus user id in the entity id; names change, ids do not).
 
 Safe default: (a); entity id from the user id.
-Decision: pending.
+Decision: recorded 2026-08-30: option (a); the posture sensor exposes the grade only and per-user risk entity ids derive from the user id. Owner note: any automation reading the breakdown attributes must move to the grade or the WS data when item 3.10 lands.
 
 ### D-20  Add-on rating threshold and the Probe's self-flag
 
 The new add-on privilege inventory needs a rating threshold that raises a finding (proposed: below 3). The `addon_unprotected` check flags the Probe itself whenever hard caps require protection off. Options: exempt the Probe only while hard caps are configured; never exempt; always exempt.
 
 Safe default: exempt only while hard caps are configured.
-Decision: pending.
+Decision: recorded 2026-08-30: threshold as proposed (finding below 3), and for the Probe itself a third path replaces the exemption options: its inventory row renders as "acknowledged by design", linked to the privilege ledger, instead of an open finding, while every other low-rated add-on still gets the finding. A silent exemption is a blind spot and a permanent alarm trains alarm fatigue; a visible documented exception is the honest middle. Item 7.1 implements it this way.
 
 ### D-21  Verification on a real Supervisor
 
@@ -207,14 +209,14 @@ Decision: recorded 2026-08-30: the owner runs the read-only script `ha_soc_verif
 
 Attempted-username on failed login, permission-denied events, and long-lived-token success signals are unobservable without core changes. Decide whether to draft an architecture proposal (an `auth_failed` bus event carrying provider and a hashed username; a `permission_denied` event). Not implementation work in this repository.
 
-Decision: pending.
+Decision: recorded 2026-08-30: option (a), draft the proposal. The draft lives at docs/UPSTREAM-CORE-PROPOSAL.md for owner review before anything is filed upstream; nothing is sent anywhere by the repository itself.
 
 ### D-23  Owner-only for the other destructive commands
 
 D-4 makes the firewall owner-only to prevent a takeover by another admin. The same reasoning applies to commands that can lock out or disable the platform through HA SOC: deactivating, deleting, or revoking the sessions of a user in the admin group; `entity_remap/apply`; `sidebar/push`. Options: (a) owner-only when the target is an admin-group user or when the action rewrites configuration, admins keep the rest; (b) owner-only for all mutations, `owner_and_admins` becomes read-only plus finding triage; (c) leave as is.
 
 Safe default: (a).
-Decision: pending.
+Decision: recorded 2026-08-30: option (a); owner-only whenever the target is an admin-group user or the action rewrites configuration (`entity_remap/apply`, `sidebar/push`), while admins keep routine management of non-admin users. Consistent with D-4's takeover reasoning without making the admins tier pointless.
 
 ### Ambiguities in existing intent (not defects, need a statement)
 
@@ -223,6 +225,8 @@ Decision: pending.
 - `expires_at` is set at propose time while the add-on's timer starts at apply time. Confirm that the display countdown may run up to one poll interval ahead of the real timer, or move `expires_at` to `applied_at` (sprint 0 item 0.3 leaves it as is).
 - `notify_coverage_gaps` was written as HIGH; the review reads it as near-universal on real installs. Confirm the intent behind the severity.
 - `risk_learning_period_days` exists in Settings but is read nowhere; confirm it was meant to be the maturity gate for the behavioral rules.
+
+Statements recorded 2026-08-30 with the decisions above: the `login_ok` to `session_activity` rename happens at the sprint 8 schema-versioning step, once, with a migration note; the `owner_and_admins` meaning is settled by D-23 option (a); the firewall countdown is re-anchored at apply confirmation in the sprint 2 firewall work rather than documented as drift; the `notify_coverage_gaps` downgrade to the D-11 LOW/MEDIUM split is confirmed; `risk_learning_period_days` needs no further statement, D-9 already replaced it with per-rule learning periods.
 
 
 ## 2A. Secrets at rest: research, options, and the design (D-7, D-8)
