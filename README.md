@@ -23,9 +23,16 @@ imply otherwise.
   activity, since Home Assistant fires no login event), MFA status, and
   session/token management including revocation.
 - **Audit Log** — a tamper-evident (hash-chained), rotating record of
-  service calls, user/dashboard changes, and best-effort login signals.
-  Failed logins are IP-only: Home Assistant never logs an attempted
-  username anywhere.
+  service calls, user/dashboard changes, registry and config-entry
+  changes, best-effort login signals, and HA SOC's own actions,
+  including privileged reads (host and add-on logs, the crash log, a
+  user's token list). Failed logins are IP-only: Home Assistant never
+  logs an attempted username anywhere. High-value records (user
+  changes, firewall actions, rejected probe calls, privileged reads)
+  flush to disk immediately rather than waiting for the periodic timer,
+  and deleting or rolling back the on-disk chain is detected against a
+  head mirrored in the main store, raising a Repairs issue and chaining
+  the discontinuity itself.
 - **Permissions Matrix** — one grid for per-user dashboard/view visibility
   across every dashboard, labeled `enforced` or `cosmetic` on every toggle —
   because `lovelace/config` has no permission check at all; visibility
@@ -36,6 +43,15 @@ imply otherwise.
   `eval`/`exec`, insecure deserialization, hardcoded credentials, sensitive
   logging) — the exact gap `hassfest` structurally can't fill, since it only
   validates manifests/docs and never touches `custom_components` at all.
+  Four rules target the cross-integration extraction patterns no design
+  can prevent in Home Assistant's shared process: indiscriminate or
+  foreign config-entry reads consumed wholesale, `.storage` and
+  `secrets.yaml` file access, foreign `hass.data` reads, and storage
+  keys outside the integration's own namespace. A matched credential
+  literal is never stored or exported, only a masked placeholder with
+  its length. Legitimate uses are acknowledged visibly in source with a
+  reasoned `# ha-soc-allow` marker, never silently skipped, and a test
+  holds HA SOC's own code to zero open findings from these rules.
   Every finding is advisory, for the local instance owner only.
 - **Device Vulnerabilities** — device-registry inventory, firmware-currency
   via `update` entities, and best-effort CVE correlation (curated CPE table
@@ -93,7 +109,12 @@ imply otherwise.
   exact string and silently breaks. Every reference found is labeled
   honestly editable or not — a reference living only inside a Jinja
   template is detected but never auto-rewritten, since a text edit there
-  risks corrupting the template or missing a dynamic reference. A
+  risks corrupting the template or missing a dynamic reference. Applying
+  a remap backs everything up first: YAML files are copied aside and
+  storage dashboards and helpers get JSON snapshots under
+  `.storage/ha_soc_remap/` (kept 30 days), and a YAML file containing
+  `!secret` or `!include` is refused as "manual edit required" because a
+  rewrite would inline the include destructively. A
   Spook-inspired proactive sweep also surfaces broken references as a
   dashboard donut and a Repairs issue without anyone needing to search
   for a specific entity first — see below for the full sweep, which now
@@ -265,6 +286,32 @@ Every backend module is independently documented with what it captures,
 what's enforced vs. cosmetic vs. best-effort, and its known coverage gaps —
 read the module docstrings, they're written for exactly that.
 
+## Secrets at rest
+
+Every credential HA SOC holds (the NVD and GitHub keys, the UniFi API
+keys, the Probe pairing secret) lives in one dedicated private store,
+`.storage/ha_soc.secrets`, written 0o600 and atomically, the same
+primitive Home Assistant core uses for its own password hashes and
+refresh tokens. Nothing else carries a value: settings hold only
+"configured" booleans, `entry.options` is scrubbed and never reseeded,
+audit records and diagnostics redact at their chokepoints, and callers
+fetch a key immediately before the request that needs it and drop it
+with the response. Existing installs migrate automatically on first
+load, logged with key names only.
+
+Two honest limits, stated because pretending otherwise would be the real
+defect. First, Home Assistant runs every integration in one Python
+process: any integration can reach this store's contents in memory, and
+no arrangement inside Core changes that. What HA SOC does instead is
+shrink the number of places a secret exists, read only location-shaped
+keys (`INTEGRATION_LOCATOR_KEYS`) out of other integrations' entries so
+it is itself the model citizen, and detect the extraction patterns it
+cannot prevent (the four scanner rules above). Second, file modes
+protect against other uids, not against root or anything with the
+config directory mapped; the misconfiguration sweep now flags add-ons
+that widen that boundary, unprotected backups, and unauthenticated
+Samba shares of the config directory.
+
 ## Honesty, briefly
 
 - MFA can be **audited** always, and **enforced** only in the one way Home
@@ -275,7 +322,9 @@ read the module docstrings, they're written for exactly that.
 - Dashboard/view visibility is **cosmetic** — the real access-control
   boundary is a user's admin/non-admin group, nothing finer exists.
 - Failed-login telemetry is **IP-only** — Home Assistant never logs an
-  attempted username on a failed login, anywhere.
+  attempted username on a failed login, anywhere. Capturing even the IP
+  depends on the `homeassistant.components.http.ban` logger staying at
+  WARNING or lower; a health check flags an install that has silenced it.
 - Every vulnerability/scanner finding is **advisory** — a starting point for
   a human to confirm or dismiss, never an automatic verdict.
 - The audit log is **tamper-evident, not tamper-proof** — anyone with the
