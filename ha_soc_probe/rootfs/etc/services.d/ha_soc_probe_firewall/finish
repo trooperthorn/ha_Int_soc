@@ -1,7 +1,136 @@
 #!/usr/bin/with-contenv bashio
-# The poll loop should never exit on its own — this only fires if it
-# crashed. s6 restarts the service automatically after this script
-# returns; the next run's startup check (see run's "Startup" section)
-# is what actually protects an in-flight test across that restart.
+# ==============================================================================
+# HA SOC Probe firewall poller stop/crash recovery (work item 2.6).
+#
+# s6 runs this after the run script's process dies, for BOTH a crash and a
+# deliberate stop of the add-on. The run script's backgrounded revert
+# timer dies with that process, so an unresolved test would otherwise stay
+# live until the next start's recovery block runs, and for a deliberate
+# stop that next start never comes. This script therefore performs the same
+# recovery the run script performs at startup: if a test is still armed
+# and unresolved, revert it NOW, so stopping the add-on mid-test restores
+# the pre-test chain immediately instead of leaving unconfirmed rules
+# live on a host with no watchdog for them.
+#
+# The recovery block below mirrors the run script's revert machinery
+# (chain_backup_path_for / resolved_marker_for / replay_chain_backup /
+# revert_test / report_resolution) and MUST change in lockstep with it;
+# the two scripts stay self-contained because s6 executes each on its own.
+# The revert is chain-scoped exactly like the run script's (work item
+# 2.3): flush HA_SOC_RULES and replay the pre-test chain snapshot, never
+# iptables-restore the whole table. Reporting the revert to Core is
+# best-effort here: on a deliberate add-on stop the Supervisor proxy may
+# already be tearing this container down, and Core's own expired-
+# unreported archival handles a report that never arrives.
+# ==============================================================================
+set -uo pipefail
+
+CHAIN="HA_SOC_RULES"
+STATE_DIR="/data"
+CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
+SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+
+chain_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain_${1}.rules"; }
+resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
+
+# Same shape as the run script's known_rules_json: the chain's real
+# contents, so the resolution report also refreshes Core's known_rules.
+known_rules_json() {
+    local lines
+    lines=$(
+        iptables -S "${CHAIN}" 2>/dev/null | awk -v chain="${CHAIN}" '
+            $1 == "-A" && $2 == chain {
+                proto = ""; port = ""; source = ""; target = "ACCEPT"
+                for (i = 3; i <= NF; i++) {
+                    if ($i == "-p") { proto = $(i + 1) }
+                    else if ($i == "-s") { source = $(i + 1) }
+                    else if ($i == "--dport") { port = $(i + 1) }
+                    else if ($i == "-j") { target = $(i + 1) }
+                }
+                action = (target == "ACCEPT") ? "allow" : "deny"
+                src_json = (source == "") ? "null" : "\"" source "\""
+                printf "{\"action\":\"%s\",\"proto\":\"%s\",\"port\":%s,\"source\":%s}\n", action, proto, port, src_json
+            }
+        '
+    )
+    if [ -z "${lines}" ]; then
+        echo "[]"
+    else
+        echo "${lines}" | jq -s -c '.'
+    fi
+}
+
+report_resolution() {
+    local test_id="$1" status="$2" payload
+    payload=$(jq -n \
+        --argjson known_rules "$(known_rules_json)" \
+        --arg test_id "${test_id}" \
+        --arg status "${status}" \
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{firewall_known_rules: $known_rules, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status, probe_secret: $probe_secret}')
+    curl -sS -o /dev/null \
+        -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${INGEST_URL}" 2>/dev/null || true
+}
+
+replay_chain_backup() {
+    local chain_backup_path="$1" line
+    iptables -F "${CHAIN}" || true
+    while IFS= read -r line; do
+        case "${line}" in
+            "-A ${CHAIN} "*)
+                # Unquoted expansion is deliberate, for the run script's
+                # reason: the line is iptables' own -S output for a rule
+                # this add-on wrote, and none of its arguments can contain
+                # whitespace.
+                # shellcheck disable=SC2086
+                if ! iptables ${line}; then
+                    bashio::log.error "Firewall (finish): could not replay snapshot line '${line}'."
+                fi
+                ;;
+            *)
+                :
+                ;;
+        esac
+    done < "${chain_backup_path}"
+}
+
+revert_test() {
+    local test_id="$1" chain_backup_path resolved_marker
+    chain_backup_path=$(chain_backup_path_for "${test_id}")
+    resolved_marker=$(resolved_marker_for "${test_id}")
+
+    if [ -e "${resolved_marker}" ]; then
+        return 0
+    fi
+    touch "${resolved_marker}"
+
+    if [ -r "${chain_backup_path}" ]; then
+        replay_chain_backup "${chain_backup_path}"
+        bashio::log.warning "Firewall test ${test_id} was still armed when the poller stopped; reverted the ${CHAIN} chain to its pre-test contents."
+    else
+        bashio::log.error "Firewall test ${test_id} needs reverting but its chain snapshot (${chain_backup_path}) is missing; leaving the chain as-is rather than guessing."
+    fi
+    report_resolution "${test_id}" "reverted"
+}
+
 EXIT_CODE="${1:-0}"
-bashio::log.warning "HA SOC Probe firewall poller exited with code ${EXIT_CODE} — restarting."
+
+if [ -s "${CURRENT_TEST_FILE}" ]; then
+    stale_test_id=$(cat "${CURRENT_TEST_FILE}")
+    if [ ! -e "$(resolved_marker_for "${stale_test_id}")" ]; then
+        bashio::log.warning "Firewall poller stopping with test ${stale_test_id} unresolved; reverting it now instead of leaving it to a timer that just died."
+        revert_test "${stale_test_id}"
+        : > "${CURRENT_TEST_FILE}"
+    fi
+fi
+
+# On a crash, s6 restarts the service after this script returns; the next
+# run's own startup check is a second, redundant net behind the recovery
+# above (the resolved marker makes both idempotent).
+bashio::log.warning "HA SOC Probe firewall poller exited with code ${EXIT_CODE}."

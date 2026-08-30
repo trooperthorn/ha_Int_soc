@@ -15,6 +15,21 @@
   reporting so a reverted test cannot wedge the channel, and Home
   Assistant refuses new proposals until this add-on has reported the
   previous test's fate.
+- Firewall safety (work plan sprint 2): applies now take two checked
+  backups (full table for manual recovery, chain-only snapshot for
+  reverts) and refuse to apply if either fails; reverts flush and
+  replay only the `HA_SOC_RULES` chain, never the whole table; the
+  service's `finish` script reverts an unresolved test on a deliberate
+  stop; and every cap slug from HA SOC is re-validated locally before
+  it can reach a Docker API path.
+- On the Home Assistant side of the same sprint: the firewall is
+  owner-only in its entirety with an owner-only, audited discard for a
+  test the add-on never reported; the panel countdown re-anchors to the
+  moment this add-on actually applies; admin-account lifecycle actions,
+  entity remap applies, and sidebar pushes are owner-only per the
+  recorded D-23 decision; and every HA SOC credential moved into a
+  dedicated private secret store with fetch-at-use callers, extraction
+  pattern detection, and expanded audit capture.
 - Also in this release: audit capture expansion, UniFi in-memory
   enrichment, app/add-on log viewing, sortable tables, CI test gates,
   and the privilege ledger in DOCS.md (the add-on's Supervisor security

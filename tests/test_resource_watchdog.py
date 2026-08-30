@@ -291,18 +291,25 @@ async def test_ws_set_owner_only(hass: HomeAssistant, entry: MockConfigEntry) ->
         ws_watchdog_set(hass, _connection(owner=False), {"id": 1, "enabled": True})
 
     connection = _connection(owner=True)
-    ws_watchdog_set(
-        hass,
-        connection,
-        {
-            "id": 2,
-            "enabled": True,
-            "default_memory_percent": 70,
-            "override": {"slug": "ma", "action": "alert"},
-            "hard_limit": {"slug": "ma", "memory_mb": 1024},
-        },
-    )
-    await hass.async_block_till_done(wait_background_tasks=True)
+    # The stored slugs must name installed add-ons since work item 2.2;
+    # this test is about the owner gate and the write path, so the
+    # Supervisor lookup is stubbed to report "ma" as installed.
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.async_installed_addon_slugs",
+        return_value={"ma"},
+    ):
+        ws_watchdog_set(
+            hass,
+            connection,
+            {
+                "id": 2,
+                "enabled": True,
+                "default_memory_percent": 70,
+                "override": {"slug": "ma", "action": "alert"},
+                "hard_limit": {"slug": "ma", "memory_mb": 1024},
+            },
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
 
     connection.send_error.assert_not_called()
     cfg = entry.runtime_data.store.data["resource_watchdog"]
@@ -316,6 +323,10 @@ async def test_ws_set_owner_only(hass: HomeAssistant, entry: MockConfigEntry) ->
 
 
 async def test_ws_clear_hard_limit(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    # Deliberately NO installed-add-on stub and no Supervisor here: a clear
+    # is exempt from the work-item-2.2 installed check, precisely so a cap
+    # left behind by a since-uninstalled add-on (or set before a move off
+    # Supervisor) stays removable.
     from custom_components.ha_soc.websocket_api import ws_watchdog_set
 
     cfg = entry.runtime_data.store.data["resource_watchdog"]
@@ -329,3 +340,75 @@ async def test_ws_clear_hard_limit(hass: HomeAssistant, entry: MockConfigEntry) 
     connection.send_error.assert_not_called()
     assert "ma" not in cfg["hard_limits"]
     assert "ma" not in cfg["hard_limit_state"]  # stale "applied" state dropped too
+
+
+async def test_watchdog_slug_validation(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Work item 2.2, Core half: the slug schema regex, the installed-add-on
+    requirement, and the not_supervisor refusal, end to end at the WS layer."""
+    import voluptuous as vol
+
+    from custom_components.ha_soc.websocket_api import ws_watchdog_set
+
+    # Schema shape: the registered command schema refuses anything outside
+    # ^[a-z0-9][a-z0-9_-]{0,63}$ for both override.slug and hard_limit.slug.
+    schema = ws_watchdog_set._ws_schema
+    for bad_slug in ("Bad Slug", "UPPER", "../etc", "a" * 65, "", "-leading", "a?b"):
+        with pytest.raises(vol.Invalid):
+            schema(
+                {"id": 1, "type": "ha_soc/watchdog/set", "override": {"slug": bad_slug}}
+            )
+        with pytest.raises(vol.Invalid):
+            schema(
+                {
+                    "id": 1,
+                    "type": "ha_soc/watchdog/set",
+                    "hard_limit": {"slug": bad_slug, "memory_mb": 512},
+                }
+            )
+    schema(
+        {
+            "id": 1,
+            "type": "ha_soc/watchdog/set",
+            "override": {"slug": "a0d7b954_zwavejs", "action": "alert"},
+        }
+    )
+
+    cfg = entry.runtime_data.store.data["resource_watchdog"]
+
+    # Not a Supervisor install (the harness never is one at handler time):
+    # storing an override or cap is refused as not_supervisor.
+    connection = _connection(owner=True)
+    ws_watchdog_set(
+        hass, connection, {"id": 2, "override": {"slug": "ma", "action": "alert"}}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args[0][1] == "not_supervisor"
+    assert "ma" not in (cfg.get("overrides") or {})
+
+    # Supervisor install, but the slug names no installed add-on: refused,
+    # and nothing is stored.
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.async_installed_addon_slugs",
+        return_value={"core_mosquitto"},
+    ):
+        connection = _connection(owner=True)
+        ws_watchdog_set(
+            hass, connection, {"id": 3, "hard_limit": {"slug": "ma", "memory_mb": 512}}
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        connection.send_error.assert_called_once()
+        assert connection.send_error.call_args[0][1] == "addon_not_installed"
+        assert "ma" not in (cfg.get("hard_limits") or {})
+
+        # The same slug installed: stored normally.
+        connection = _connection(owner=True)
+        ws_watchdog_set(
+            hass,
+            connection,
+            {"id": 4, "hard_limit": {"slug": "core_mosquitto", "memory_mb": 512}},
+        )
+        await hass.async_block_till_done(wait_background_tasks=True)
+        connection.send_error.assert_not_called()
+        assert cfg["hard_limits"]["core_mosquitto"] == {"memory_mb": 512, "cpus": None}
+    entry.runtime_data.watchdog.async_stop()

@@ -102,6 +102,19 @@ versioning step, with a migration note.
 
 ## 5. Hygiene carried forward
 
+Two small gaps surfaced while shipping sprint 2, both add-on protocol
+shaped and deliberately not widened mid-round:
+
+- The ingest protocol carries a status but no failure reason, so a
+  `backup_failed` refusal reports to Home Assistant as a plain
+  `reverted`; the reason lives only in the add-on's log. Adding a
+  bounded reason field is a small next-sprint item.
+- A revert that finds its chain snapshot missing logs an error and
+  leaves the chain as-is (parity with the pre-existing missing-backup
+  behavior); if that path ever fires in practice it deserves a finding
+  of its own.
+
+
 - Repository-wide em-dash sweep of pre-existing prose (house style; new
   and rewritten lines already comply). Best done as its own mechanical
   commit so functional diffs stay reviewable.

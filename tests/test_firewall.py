@@ -139,6 +139,35 @@ async def test_next_addon_command_none_when_no_pending(hass: HomeAssistant, entr
     assert command == {"action": "none"}
 
 
+async def test_expires_at_reanchored_on_apply(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Recorded intent statement (work plan section 2): the propose-time
+    expires_at is only the staleness bound for a proposal the add-on never
+    picks up; the moment the apply is handed out (applied_at set), the
+    countdown is re-anchored to applied_at + window_seconds so the panel
+    tracks the add-on's real local timer instead of running up to one poll
+    interval ahead of it."""
+    import homeassistant.util.dt as dt_util
+
+    store = entry.runtime_data.store
+    _, _, pending = await firewall.async_propose_test(
+        hass, store, rules=RULES, backup_acknowledged=True, user_id="u1", window_seconds=45
+    )
+    requested_at = dt_util.parse_datetime(pending["requested_at"])
+    pre_apply_expires = dt_util.parse_datetime(pending["expires_at"])
+    # Before the apply: the proposal-staleness bound, propose time + window.
+    assert (pre_apply_expires - requested_at).total_seconds() == pytest.approx(45, abs=1)
+
+    command = await firewall.async_next_addon_command(hass, store, current_test_id=None)
+    assert command["action"] == "apply"
+
+    live = store.data["firewall"]["pending"]
+    applied_at = dt_util.parse_datetime(live["applied_at"])
+    reanchored_expires = dt_util.parse_datetime(live["expires_at"])
+    # After the apply: exactly applied_at + window_seconds, to the second.
+    assert (reanchored_expires - applied_at).total_seconds() == pytest.approx(45, abs=1)
+    assert reanchored_expires >= pre_apply_expires
+
+
 async def test_confirm_updates_status_without_touching_history(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:

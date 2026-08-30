@@ -8,6 +8,17 @@ exception is `ha_soc/access/info`, which stays on plain
 `@websocket_api.require_admin` so an admin currently blocked by
 access_level can still ask why.
 
+Above that baseline sit two owner-only tiers. `@require_owner` gates the
+commands that can take the platform over or rewrite configuration
+outright: Settings, the watchdog/hard-cap configuration, every firewall
+command including status (D-4, D-5), `entity_remap/apply`, and
+`permissions/sidebar/push` (D-23). Additionally, the four user-management
+commands that can cut a user off (`users/deactivate`, `users/delete`,
+`users/revoke_token`, `users/revoke_all_sessions`) become owner-only
+whenever the TARGET is an admin-group user, resolved server-side from
+hass.auth (D-23 option (a)); a non-owner admin keeps them for non-admin
+targets, so the admins tier still means routine user management.
+
 Command namespace is `ha_soc/*`. Mutating/PII-bearing commands never return
 raw refresh-token secrets or JWT material to the frontend — only metadata
 (ids, timestamps, client names).
@@ -64,6 +75,7 @@ from .const import (
     SIGNAL_UPDATE,
     WATCHDOG_ACTIONS,
 )
+from .resource_watchdog import ADDON_SLUG_PATTERN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,10 +122,23 @@ def require_soc_access(func):
 def require_owner(func):
     """Owner-only gate — stricter than require_soc_access, ignoring access_level.
 
-    Settings carry the security-sensitive controls (the access level itself,
-    API credentials), so they are reachable by the account owner ONLY,
-    regardless of whether access_level has been opened up to other admins.
-    A non-owner admin is refused here even under owner_and_admins.
+    A non-owner admin is refused here even under owner_and_admins. What
+    carries this gate, and why (decisions D-4, D-5, D-23):
+
+    - Settings: they hold the security-sensitive controls, including the
+      access level itself and the API credentials.
+    - Every firewall command, status included (D-4): a firewall change can
+      end with the platform unreachable, and reading the ruleset maps the
+      attack surface, so no account but the owner may even look.
+    - The watchdog/hard-cap configuration: enforcement controls that
+      restart add-ons and change host containers.
+    - entity_remap/apply and permissions/sidebar/push (D-23): both rewrite
+      configuration or per-user policy, the same takeover surface D-4
+      closes for the firewall.
+
+    Commands that act on a TARGET user apply a second, conditional owner
+    gate inside their handlers instead (see _async_target_is_admin), so
+    admins keep routine management of non-admin users.
     """
 
     @wraps(func)
@@ -124,6 +149,33 @@ def require_owner(func):
         func(hass, connection, msg)
 
     return with_owner
+
+
+async def _async_target_is_admin(hass: HomeAssistant, user_id: str) -> bool:
+    """True when the TARGET of a user-management command is the owner or a
+    member of the admin group, resolved server-side from hass.auth.
+
+    Decision D-23 option (a): deactivating, deleting, or revoking the
+    sessions or tokens of an admin-group user is owner-only, because an
+    admin who can cut off other admins (or the owner) through HA SOC can
+    take the platform over; admins keep those commands for non-admin
+    targets. The check never trusts anything the client sent beyond the
+    user id, and it looks at group membership directly rather than
+    User.is_admin because is_admin is False for a DEACTIVATED admin-group
+    user, and a deactivated admin is still exactly the kind of account
+    this gate protects (deleting one, or clearing its tokens, stays an
+    owner call). An unknown user id returns False so the command's own
+    not-found handling answers, which discloses nothing beyond the id's
+    absence.
+    """
+    from homeassistant.auth.const import GROUP_ID_ADMIN
+
+    target = await hass.auth.async_get_user(user_id)
+    if target is None:
+        return False
+    return bool(
+        target.is_owner or any(group.id == GROUP_ID_ADMIN for group in target.groups)
+    )
 
 
 def async_register_websocket_api(hass: HomeAssistant) -> None:
@@ -179,6 +231,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_test,
         ws_firewall_confirm,
         ws_firewall_cancel,
+        ws_firewall_discard_pending,
         ws_firewall_reset_pairing,
         ws_integration_security_list,
         ws_integration_security_refresh,
@@ -342,6 +395,10 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # D-23: deactivating an admin-group user is owner-only; a non-owner
+    # admin keeps this command for non-admin targets.
+    if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
+        raise Unauthorized
     ok, reason = await runtime.users.async_deactivate_user(msg["user_id"])
     if not ok:
         connection.send_error(msg["id"], reason or "deactivate_failed", "Could not deactivate user")
@@ -361,6 +418,9 @@ async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.async_response
 async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # D-23: deleting an admin-group user is owner-only.
+    if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
+        raise Unauthorized
     ok, reason = await runtime.users.async_delete_user(
         msg["user_id"], requesting_user_id=connection.user.id
     )
@@ -387,6 +447,10 @@ async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # D-23: revoking an admin-group user's token is owner-only; cutting an
+    # admin's session or automation token off is a takeover primitive.
+    if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
+        raise Unauthorized
     ok = await runtime.users.async_revoke_token(msg["user_id"], msg["token_id"])
     if not ok:
         connection.send_error(msg["id"], "not_found", "Token not found for this user")
@@ -406,6 +470,9 @@ async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # D-23: revoking an admin-group user's sessions wholesale is owner-only.
+    if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
+        raise Unauthorized
     revoked = await runtime.users.async_revoke_all_sessions(msg["user_id"])
     runtime.audit.async_log(
         "user_updated",
@@ -613,7 +680,11 @@ async def ws_permissions_dashboard_flags_set(hass: HomeAssistant, connection, ms
     connection.send_result(msg["id"], {"ok": True})
 
 
-@require_soc_access
+# Owner-only (D-23): this rewrites another user's stored sidebar policy,
+# and configuration/policy rewrites carry the same takeover reasoning D-4
+# applied to the firewall. Non-owner admins get the standard unauthorized
+# error; the command's existing lovelace_change audit record is unchanged.
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/permissions/sidebar/push",
@@ -1098,7 +1169,11 @@ async def ws_entity_remap_find_references(hass: HomeAssistant, connection, msg: 
     connection.send_result(msg["id"], report)
 
 
-@require_soc_access
+# Owner-only (D-23): applying a remap rewrites YAML configuration files,
+# stored dashboards, and helper entries, and a configuration rewrite is the
+# same takeover surface D-4 closed for the firewall. Finding references
+# stays open to admins; only the write is gated.
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/entity_remap/apply",
@@ -1172,10 +1247,17 @@ async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) ->
 # command here is audit-logged since this is the one control in the project
 # that actually changes a host security setting rather than just reporting
 # on one.
+#
+# The ENTIRE feature is owner-only, status included (decision D-4),
+# regardless of access_level: a firewall change can end with the platform
+# unreachable and is therefore a takeover primitive, and even the read-only
+# status maps the attack surface. The panel hides the card from non-owner
+# admins for the same reason; this gate is the one that actually enforces
+# it.
 # ----------------------------------------------------------------------------
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/status"})
 @websocket_api.async_response
 async def ws_firewall_status(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -1185,7 +1267,7 @@ async def ws_firewall_status(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], await async_get_status(hass, runtime.store))
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/firewall/test",
@@ -1221,7 +1303,7 @@ async def ws_firewall_test(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], pending)
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/firewall/confirm", vol.Required("test_id"): str}
 )
@@ -1266,7 +1348,7 @@ async def ws_firewall_reset_pairing(hass: HomeAssistant, connection, msg: dict) 
     connection.send_result(msg["id"], {"ok": True})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/firewall/cancel", vol.Required("test_id"): str}
 )
@@ -1287,6 +1369,31 @@ async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None
         user_id=connection.user.id,
         detail={"action": "firewall_test_cancelled", "test_id": msg["test_id"]},
     )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/discard_pending"})
+@websocket_api.async_response
+async def ws_firewall_discard_pending(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only escape hatch (decision D-5): archive a pending test whose
+    report will never arrive because the add-on went silent mid-test. The
+    server refuses the discard while the countdown is still running
+    (window_not_lapsed) so it can never race a report that is merely late;
+    the panel offers the button under the same condition. The archive and
+    the firewall_pending_discarded audit record (flushed immediately) are
+    written by firewall.async_discard_pending so the state machine stays
+    the single owner of the pending slot.
+    """
+    from .firewall import async_discard_pending
+
+    runtime = _runtime(hass)
+    ok, reason = await async_discard_pending(
+        hass, runtime.store, user_id=connection.user.id
+    )
+    if not ok:
+        connection.send_error(msg["id"], "firewall_discard_rejected", reason)
+        return
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -1362,9 +1469,11 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
         vol.Optional("interval_seconds"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
         # Per-container override — slug + any subset of the fields; passing
         # clear=True removes the override entirely (back to defaults).
+        # Both slugs are shape-validated here (work item 2.2) and checked
+        # against the Supervisor's installed add-on list in the handler.
         vol.Optional("override"): vol.Schema(
             {
-                vol.Required("slug"): str,
+                vol.Required("slug"): vol.All(str, vol.Match(ADDON_SLUG_PATTERN)),
                 vol.Optional("cpu_percent"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=10, max=100))),
                 vol.Optional("memory_percent"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=10, max=100))),
                 vol.Optional("action"): vol.In(WATCHDOG_ACTIONS),
@@ -1376,7 +1485,7 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
         # missing) clears the cap. Applied by the Probe, not by Core.
         vol.Optional("hard_limit"): vol.Schema(
             {
-                vol.Required("slug"): str,
+                vol.Required("slug"): vol.All(str, vol.Match(ADDON_SLUG_PATTERN)),
                 vol.Optional("memory_mb"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=64, max=1_048_576))),
                 vol.Optional("cpus"): vol.Any(None, vol.All(vol.Coerce(float), vol.Range(min=0.1, max=64.0))),
             }
@@ -1386,6 +1495,42 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
 @websocket_api.async_response
 async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+
+    # Work item 2.2: a slug that is about to be STORED must name an add-on
+    # the Supervisor itself reports as installed, and on a non-Supervisor
+    # install (where no add-on exists at all) the request is refused as
+    # not_supervisor. Clears are deliberately exempt from the installed
+    # check: an override or cap left behind by a since-uninstalled add-on
+    # must stay removable, and a clear never sends the slug anywhere (the
+    # Probe resets removed caps from its own previously-applied list). The
+    # slug's shape is schema-enforced above for clears too.
+    from .resource_watchdog import async_installed_addon_slugs
+
+    stored_slugs: list[str] = []
+    if "override" in msg and not msg["override"].get("clear"):
+        stored_slugs.append(msg["override"]["slug"])
+    if "hard_limit" in msg and (
+        msg["hard_limit"].get("memory_mb") or msg["hard_limit"].get("cpus")
+    ):
+        stored_slugs.append(msg["hard_limit"]["slug"])
+    if stored_slugs:
+        installed = async_installed_addon_slugs(hass)
+        if installed is None:
+            connection.send_error(
+                msg["id"],
+                "not_supervisor",
+                "Per-add-on overrides and hard caps need a Supervisor-based install.",
+            )
+            return
+        for slug in stored_slugs:
+            if slug not in installed:
+                connection.send_error(
+                    msg["id"],
+                    "addon_not_installed",
+                    f"No installed add-on has the slug '{slug}'.",
+                )
+                return
+
     cfg = runtime.store.data["resource_watchdog"]
     changes: dict[str, Any] = {}
 

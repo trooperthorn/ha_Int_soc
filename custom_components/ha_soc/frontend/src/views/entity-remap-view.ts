@@ -10,6 +10,7 @@ import {
   EntityRemapReferenceItem,
   EntityRemapReport,
   applyEntityRemap,
+  fetchAccessInfo,
   fetchBrokenEntityReferences,
   fetchEntityRegistry,
   findEntityRemapReferences,
@@ -55,6 +56,11 @@ export class HaSocEntityRemapView extends LitElement {
   // Column sort for the "referenced but not found" table (see sortable.ts);
   // null keeps the sweep's reported order.
   @state() private _brokenSort: SortState | null = null;
+  // Applying a remap is owner-only server-side (D-23: it rewrites
+  // configuration), while finding references stays open to admins. False
+  // by default and on a failed lookup, so the apply controls fail closed
+  // like the WS gate underneath.
+  @state() private _isOwner = false;
 
   private static readonly BROKEN_SORT: Record<string, (b: BrokenEntityReference) => unknown> = {
     entity_id: (b) => b.entity_id,
@@ -72,12 +78,14 @@ export class HaSocEntityRemapView extends LitElement {
   }
 
   private async _load() {
-    const [entities, broken] = await Promise.all([
+    const [entities, broken, access] = await Promise.all([
       fetchEntityRegistry(this.hass),
       fetchBrokenEntityReferences(this.hass),
+      fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
     ]);
     this._entities = entities;
     this._broken = broken;
+    this._isOwner = !!access.is_owner;
     this._brokenLoading = false;
   }
 
@@ -295,47 +303,58 @@ export class HaSocEntityRemapView extends LitElement {
                       ${this._renderKind("helper", report.helper)}
                       ${this._renderKind("other", report.other)}
                     `}
-                ${report.editable_count > 0
+                ${!this._isOwner
                   ? html`
-                      <!-- The server refuses the apply without backup_acknowledged, so this
-                           checkbox is the same required gate the firewall card's backup
-                           acknowledgment is, with the consequences spelled out honestly. -->
-                      <label
-                        style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer;"
-                      >
-                        <input
-                          type="checkbox"
-                          style="margin-top:2px;"
-                          .checked=${this._backupAck}
-                          @change=${(e: Event) => (this._backupAck = (e.target as HTMLInputElement).checked)}
-                        />
-                        <span>
-                          I understand that before their first rewrite,
-                          <code>automations.yaml</code>, <code>scripts.yaml</code>, and
-                          <code>scenes.yaml</code> are each copied aside as
-                          <code>&lt;file&gt;.ha_soc-&lt;timestamp&gt;.bak</code>; that
-                          storage-mode dashboards and helper entries get a JSON snapshot of
-                          their previous state under <code>.storage/ha_soc_remap/</code>
-                          (kept for 30 days) before being rewritten in place; that a YAML
-                          file containing <code>!secret</code> or <code>!include</code> is
-                          refused entirely and reported as "manual edit required"; that
-                          comments and formatting in the YAML files do not survive the
-                          rewrite; and that automations, scripts, and scenes reload right
-                          after the write.
-                        </span>
-                      </label>
+                      <!-- Applying is owner-only server-side (D-23), so a non-owner
+                           admin gets the Settings tab's one-line note instead of an
+                           apply button that could only ever bounce off the gate. -->
+                      <p class="muted" style="font-size:12.5px;margin-top:12px;">
+                        Applying a remap is available to the account owner only.
+                      </p>
                     `
-                  : nothing}
-                <button
-                  class="ha-btn"
-                  style="margin-top:12px;"
-                  ?disabled=${!canApply || this._applying}
-                  @click=${() => this._onApply()}
-                >
-                  ${this._applying
-                    ? "Applying…"
-                    : `Apply remap (${report.editable_count} reference${report.editable_count === 1 ? "" : "s"})`}
-                </button>
+                  : html`
+                      ${report.editable_count > 0
+                        ? html`
+                            <!-- The server refuses the apply without backup_acknowledged, so this
+                                 checkbox is the same required gate the firewall card's backup
+                                 acknowledgment is, with the consequences spelled out honestly. -->
+                            <label
+                              style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer;"
+                            >
+                              <input
+                                type="checkbox"
+                                style="margin-top:2px;"
+                                .checked=${this._backupAck}
+                                @change=${(e: Event) => (this._backupAck = (e.target as HTMLInputElement).checked)}
+                              />
+                              <span>
+                                I understand that before their first rewrite,
+                                <code>automations.yaml</code>, <code>scripts.yaml</code>, and
+                                <code>scenes.yaml</code> are each copied aside as
+                                <code>&lt;file&gt;.ha_soc-&lt;timestamp&gt;.bak</code>; that
+                                storage-mode dashboards and helper entries get a JSON snapshot of
+                                their previous state under <code>.storage/ha_soc_remap/</code>
+                                (kept for 30 days) before being rewritten in place; that a YAML
+                                file containing <code>!secret</code> or <code>!include</code> is
+                                refused entirely and reported as "manual edit required"; that
+                                comments and formatting in the YAML files do not survive the
+                                rewrite; and that automations, scripts, and scenes reload right
+                                after the write.
+                              </span>
+                            </label>
+                          `
+                        : nothing}
+                      <button
+                        class="ha-btn"
+                        style="margin-top:12px;"
+                        ?disabled=${!canApply || this._applying}
+                        @click=${() => this._onApply()}
+                      >
+                        ${this._applying
+                          ? "Applying…"
+                          : `Apply remap (${report.editable_count} reference${report.editable_count === 1 ? "" : "s"})`}
+                      </button>
+                    `}
               </div>
             `
           : nothing}

@@ -20,11 +20,13 @@ import {
   setVulnStatus,
   setMisconfigStatus,
   fetchHealth,
+  fetchAccessInfo,
   fetchProbeStatus,
   fetchFirewallStatus,
   proposeFirewallTest,
   confirmFirewallTest,
   cancelFirewallTest,
+  discardFirewallPending,
 } from "../data/ha-soc-ws";
 
 const STATUS_OPTIONS = ["new", "confirmed", "dismissed", "resolved"];
@@ -99,6 +101,12 @@ export class HaSocScannerView extends LitElement {
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
   private _fwPollHandle: number | null = null;
+  // The whole firewall feature is owner-only server-side (D-4), status
+  // command included, so the card renders for the owner alone and a
+  // non-owner admin sees the owner-only note instead. Defaults to false
+  // and stays false when the access lookup fails: fail closed, exactly
+  // like the WS gate underneath.
+  @state() private _isOwner = false;
 
   // Column sort state, one per table (see sortable.ts). null means "no
   // user choice yet", in which case each table keeps its original default
@@ -165,18 +173,25 @@ export class HaSocScannerView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [scanner, vulns, health, probe, firewall] = await Promise.all([
+      const [scanner, vulns, health, probe, access] = await Promise.all([
         fetchScannerFindings(this.hass),
         fetchVulns(this.hass),
         fetchHealth(this.hass),
         fetchProbeStatus(this.hass),
-        fetchFirewallStatus(this.hass),
+        // A failed access lookup reads as "not the owner" rather than
+        // failing the whole tab; the server gate is what actually enforces.
+        fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
       ]);
       this._scannerFindings = scanner;
       this._vulnFindings = vulns;
       this._misconfigFindings = health.misconfig_findings;
       this._probe = probe;
-      this._firewall = firewall;
+      this._isOwner = !!access.is_owner;
+      // ha_soc/firewall/status is owner-only (D-4); asking as a non-owner
+      // would just bounce off the gate, so it is not asked at all.
+      this._firewall = this._isOwner
+        ? await fetchFirewallStatus(this.hass).catch(() => null)
+        : null;
       this._maybeManageFirewallPolling();
     } finally {
       this._loading = false;
@@ -278,6 +293,32 @@ export class HaSocScannerView extends LitElement {
       this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
     } catch (err: any) {
       this._fwError = err?.message ?? "Failed to cancel the firewall change.";
+    } finally {
+      this._fwSubmitting = false;
+    }
+  }
+
+  // Owner-only escape hatch for an add-on gone silent mid-test: archives
+  // the pending record as discarded_unreported. Offered only once the
+  // countdown has lapsed (the server refuses it earlier), and it never
+  // unblocks anything automatically; this click is the deliberate act.
+  private async _onDiscardPending() {
+    if (!this._firewall?.pending) return;
+    const ok = confirm(
+      "Discard this unreported firewall test?\n\n" +
+        "The add-on never reported its outcome, so HA SOC does not know " +
+        "what is live on the host. The record is archived as " +
+        "'discarded_unreported' and new tests become possible again. " +
+        "Nothing is changed on the host by discarding."
+    );
+    if (!ok) return;
+    this._fwError = null;
+    this._fwSubmitting = true;
+    try {
+      await discardFirewallPending(this.hass);
+      this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
+    } catch (err: any) {
+      this._fwError = err?.message ?? "Failed to discard the pending firewall test.";
     } finally {
       this._fwSubmitting = false;
     }
@@ -686,7 +727,22 @@ export class HaSocScannerView extends LitElement {
     // Same prerequisite as Host Probe: without the add-on actually
     // running, there is nothing that could apply these rules — the Host
     // Probe card above already explains why in that case.
-    if (!probe?.supervisor || !probe?.installed || !fw) return nothing;
+    if (!probe?.supervisor || !probe?.installed) return nothing;
+    // Owner-only in its entirety (D-4), the same one-line note treatment
+    // the Settings tab gets: the server refuses every firewall command,
+    // status included, for a non-owner admin, so rendering anything more
+    // here would only be a card full of dead controls.
+    if (!this._isOwner) {
+      return html`
+        <div class="card">
+          <h3>Firewall Rules <span class="tag cosmetic">owner only</span></h3>
+          <p class="muted" style="font-size:12.5px;">
+            The firewall is available to the account owner only.
+          </p>
+        </div>
+      `;
+    }
+    if (!fw) return nothing;
 
     return html`
       <div class="card">
@@ -754,6 +810,13 @@ export class HaSocScannerView extends LitElement {
 
   private _renderFirewallPending(pending: FirewallPendingTest) {
     const remaining = Math.max(0, Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 1000));
+    // The discard escape hatch appears only once the countdown has lapsed
+    // (which is also exactly when the server stops refusing it): before
+    // that, the add-on's report or its local timer may still resolve the
+    // test the honest way. expires_at is re-anchored to applied_at server-
+    // side, so "lapsed" here means the add-on's own timer has fired too,
+    // if the add-on is alive at all.
+    const countdownLapsed = Date.now() >= new Date(pending.expires_at).getTime();
     const statusLabel: Record<string, string> = {
       testing: pending.applied_at ? "Testing — live on the host" : "Queued — waiting for the add-on to apply",
       confirmed: "Confirmed — waiting for the add-on to acknowledge",
@@ -809,6 +872,18 @@ export class HaSocScannerView extends LitElement {
         >
           Cancel now
         </button>
+        ${countdownLapsed
+          ? html`
+              <button
+                class="ha-btn danger"
+                ?disabled=${this._fwSubmitting}
+                title="The add-on never reported this test's outcome. Discard archives it as 'discarded_unreported' so a new test can be proposed; nothing on the host is changed."
+                @click=${this._onDiscardPending}
+              >
+                Discard unreported test
+              </button>
+            `
+          : nothing}
       </div>
     `;
   }

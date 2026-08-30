@@ -516,9 +516,26 @@ same ledger lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
 The design exists to answer one question safely: change which ports are
 reachable from where without risking a lockout.
 
+**The firewall is owner-only in its entirety**, `firewall/status`
+included, whatever `access_level` says: no other account can attempt a
+takeover or a change that ends with the platform unreachable. A
+non-owner admin sees a one-line "owner only" note where the card would
+be. The same reasoning (recorded decision D-23) makes
+`entity_remap/apply` and sidebar policy pushes owner-only outright, and
+makes deactivating, deleting, or revoking the sessions of an
+admin-group account owner-only, while admins keep routine management of
+non-admin users.
+
 - Every rule this project ever applies lives in one dedicated iptables
-  chain (`HA_SOC_RULES`) the add-on owns outright — never the host's raw
-  `INPUT` chain, never anything Docker itself manages.
+  chain (`HA_SOC_RULES`) the add-on owns outright, plus exactly one jump
+  rule the add-on maintains at position 1 of `INPUT` into that chain; it
+  sits first because a deny that lands below an accept is not a deny.
+  Nothing Docker manages and no pre-existing rule is ever touched.
+  Before every apply the add-on takes two checked backups (a full-table
+  `iptables-save` for manual recovery, plus a chain-only snapshot it
+  actually reverts from); if either backup fails, nothing is applied. A
+  revert flushes and replays only the `HA_SOC_RULES` chain, never the
+  whole table.
 - A proposed ruleset is never permanent on arrival. Proposing one requires
   acknowledging that the current ruleset will be backed up first; the
   button that starts this reads **Test**, and relabels itself **Apply**
@@ -531,7 +548,22 @@ reachable from where without risking a lockout.
   that path. If you don't click Apply in time (or the add-on itself
   crashes mid-test), the pre-change ruleset is restored automatically —
   an interrupted test is always treated as failed, never as "probably
-  still fine."
+  still fine." The countdown the panel shows re-anchors the moment the
+  add-on actually applies the rules, so it tracks the add-on's real
+  local revert timer instead of running up to one poll interval ahead.
+- A deliberate stop of the add-on reverts an unresolved test immediately
+  (the service's `finish` script runs the same recovery). A host reboot
+  with the add-on disabled leaves the pre-test ruleset only if the timer
+  or `finish` ran; otherwise the next start reverts it. If the add-on
+  goes silent mid-test, nothing ever unblocks automatically: the owner,
+  and only the owner, can discard the unreported test once its window
+  has lapsed, which archives it as `discarded_unreported` and is
+  audit-logged.
+- Uninstalling the add-on is best-effort cleanup: no Supervisor
+  uninstall hook is verified to exist, so an empty `HA_SOC_RULES` chain
+  and its one `INPUT` jump can remain. Manual removal is
+  `iptables -D INPUT -j HA_SOC_RULES` followed by
+  `iptables -X HA_SOC_RULES`.
 - Core only ever proposes and displays; the add-on is the only thing that
   actually touches iptables, and its own report is always the final word
   on what's really active.

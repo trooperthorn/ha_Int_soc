@@ -223,6 +223,15 @@ FIREWALL_TEST_REVERTED = "reverted"
 # occupied and no new test may be proposed. Replaces the old bare
 # "expired" string so the panel can say exactly that.
 FIREWALL_TEST_EXPIRED_UNREPORTED = "expired_unreported"
+# Terminal status for a pending test the account owner explicitly discarded
+# (decision D-5): the add-on went silent mid-test (stopped, reinstalled, or
+# crashed without recovering) and never reported the outcome, so the owner
+# cleared the slot by hand. "Unreported" is again the honest half: Core
+# never learned from the add-on what actually happened on the host, and the
+# archived record says exactly that. Nothing ever clears the slot
+# automatically; this owner action and the add-on's own report are the only
+# two ways out (see firewall.async_discard_pending).
+FIREWALL_TEST_DISCARDED_UNREPORTED = "discarded_unreported"
 
 # Window a proposed ruleset stays live before the add-on reverts it
 # automatically if nobody confirms — the whole safety mechanism this

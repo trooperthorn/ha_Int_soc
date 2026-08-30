@@ -91,12 +91,19 @@ Each row is checkable against the shipped scripts.
 | Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
 
 **How the safety mechanism works.** Every rule this add-on ever applies
-lives in one dedicated chain, `HA_SOC_RULES`, which it owns outright —
-never the host's raw `INPUT` chain, never anything Docker itself manages.
+lives in one dedicated chain, `HA_SOC_RULES`, which it owns outright,
+plus exactly one jump rule it maintains at position 1 of `INPUT` into
+that chain (first, because a deny that lands below an accept is not a
+deny). Nothing Docker manages and no pre-existing rule is ever touched.
 A proposed ruleset is never permanent on arrival:
 
-1. HA SOC takes a full ruleset backup (`iptables-save`) and applies the
-   proposed rules to `HA_SOC_RULES`.
+1. This add-on takes two backups and checks both succeeded: a
+   full-table `iptables-save` kept for manual recovery, and a chain-only
+   snapshot (`iptables -S HA_SOC_RULES`) that reverts actually replay.
+   If either backup fails, nothing is applied and the test reports as
+   reverted. Reverts flush and replay only the `HA_SOC_RULES` chain,
+   never the whole table, so a revert can never disturb rules this
+   add-on does not own.
 2. A confirmation window opens (roughly 30–60 seconds, set by HA SOC).
    The instant the rules are applied, this add-on arms a **local** revert
    timer — a plain backgrounded `sleep` inside this same process, not a
@@ -112,7 +119,20 @@ A proposed ruleset is never permanent on arrival:
    unconfirmed (the local timer from step 2 dies with the old process),
    the next startup finds the leftover unresolved test and restores its
    backup immediately, rather than assuming it's still safely "in
-   progress." An interrupted test is always treated as failed.
+   progress." An interrupted test is always treated as failed. A
+   deliberate stop behaves the same way: the service's `finish` script
+   runs the identical recovery before exiting, so stopping the add-on
+   mid-test reverts immediately instead of waiting for the next start.
+5. Every add-on slug HA SOC sends for a resource cap is re-validated
+   locally against a strict character pattern before it can appear in a
+   Docker API path, so a compromised Core cannot turn this add-on into
+   an arbitrary Docker client.
+
+**Uninstalling.** Cleanup is best-effort: no Supervisor-run uninstall
+hook is verified to exist, so an empty `HA_SOC_RULES` chain and its one
+`INPUT` jump can remain after removal. Manual cleanup from the host is
+`iptables -D INPUT -j HA_SOC_RULES` followed by
+`iptables -X HA_SOC_RULES`.
 
 ## Resource hard caps (optional, off by default)
 

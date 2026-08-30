@@ -6,12 +6,20 @@ import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   HaSocUser,
   RiskResult,
+  fetchAccessInfo,
   fetchUsers,
   fetchRisk,
   deactivateUser,
   revokeAllSessions,
   setPassword,
 } from "../data/ha-soc-ws";
+
+// Core's admin group id (homeassistant.auth.const.GROUP_ID_ADMIN). The
+// server's D-23 gate keys on admin-GROUP membership, not the is_admin
+// flag, because is_admin reads false for a deactivated admin; matching
+// that here keeps the disabled buttons aligned with what the server will
+// actually refuse.
+const ADMIN_GROUP_ID = "system-admin";
 
 @customElement("ha-soc-users-view")
 export class HaSocUsersView extends LitElement {
@@ -24,6 +32,10 @@ export class HaSocUsersView extends LitElement {
   @state() private _loading = true;
   @state() private _busyUserId: string | null = null;
   @state() private _sort: SortState | null = null;
+  // Whether the viewer is the account owner (from ha_soc/access/info).
+  // Defaults to false and stays false when the lookup fails, so the
+  // admin-target buttons below fail closed like the server gate they mirror.
+  @state() private _isOwner = false;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -33,12 +45,24 @@ export class HaSocUsersView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [users, risk] = await Promise.all([fetchUsers(this.hass), fetchRisk(this.hass)]);
+      const [users, risk, access] = await Promise.all([
+        fetchUsers(this.hass),
+        fetchRisk(this.hass),
+        fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
+      ]);
       this._users = users;
       this._risk = risk;
+      this._isOwner = !!access.is_owner;
     } finally {
       this._loading = false;
     }
+  }
+
+  // D-23: acting on an admin-group user (deactivate, revoke sessions) is
+  // owner-only server-side. The server resolves the target from hass.auth
+  // and enforces regardless; disabling here only stops dead clicks.
+  private _adminTargetLocked(u: HaSocUser): boolean {
+    return !this._isOwner && (u.is_owner || u.groups.includes(ADMIN_GROUP_ID));
   }
 
   private _fmtDate(iso: string | null): string {
@@ -166,14 +190,20 @@ export class HaSocUsersView extends LitElement {
                       </button>
                       <button
                         class="ha-btn"
-                        ?disabled=${this._busyUserId === u.id}
+                        ?disabled=${this._busyUserId === u.id || this._adminTargetLocked(u)}
+                        title=${this._adminTargetLocked(u)
+                          ? "This user is in the admin group; only the account owner can revoke an administrator's sessions."
+                          : ""}
                         @click=${() => this._onRevokeAll(u.id)}
                       >
                         Revoke sessions
                       </button>
                       <button
                         class="ha-btn danger"
-                        ?disabled=${this._busyUserId === u.id || u.is_owner}
+                        ?disabled=${this._busyUserId === u.id || u.is_owner || this._adminTargetLocked(u)}
+                        title=${this._adminTargetLocked(u)
+                          ? "This user is in the admin group; only the account owner can deactivate an administrator."
+                          : ""}
                         @click=${() => this._onDeactivate(u.id)}
                       >
                         Deactivate

@@ -184,8 +184,17 @@ export interface FirewallRule {
 // "expired_unreported" is the display-only status a timed-out pending test
 // carries until the add-on's own report archives it; "expired" is the same
 // state's pre-rename spelling, kept so a record persisted by an older
-// version still type-checks.
-export type FirewallTestStatus = "testing" | "confirmed" | "reverted" | "expired" | "expired_unreported";
+// version still type-checks. "discarded_unreported" is the terminal status
+// of a history entry the owner discarded after the add-on went silent
+// mid-test (ha_soc/firewall/discard_pending); it never appears on a live
+// pending record.
+export type FirewallTestStatus =
+  | "testing"
+  | "confirmed"
+  | "reverted"
+  | "expired"
+  | "expired_unreported"
+  | "discarded_unreported";
 
 export interface FirewallPendingTest {
   test_id: string;
@@ -196,6 +205,12 @@ export interface FirewallPendingTest {
   // null until the add-on's poll actually picks this up and applies it —
   // still "testing" but not live on the host yet.
   applied_at: string | null;
+  // Until the apply is handed to the add-on this is propose time plus the
+  // window (the staleness bound for a proposal never picked up); the
+  // moment applied_at is set the server re-anchors it to applied_at plus
+  // window_seconds, so the countdown rendered from it tracks the add-on's
+  // real local revert timer instead of running up to one poll interval
+  // ahead of it.
   expires_at: string;
   window_seconds: number;
   resolved_at?: string;
@@ -878,6 +893,13 @@ export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
 
 export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
+
+// Owner-only escape hatch for an add-on gone silent mid-test: archives the
+// pending record as discarded_unreported and clears the slot. The server
+// refuses it while the countdown is still running, so the panel only
+// offers the button once the countdown has lapsed.
+export const discardFirewallPending = (hass: HomeAssistant) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/discard_pending" });
 
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });

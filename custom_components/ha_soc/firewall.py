@@ -38,18 +38,32 @@ happened.
 
 One test at a time, enforced: while ``pending`` is occupied, whatever its
 status, a new proposal is refused with ``test_pending_unreported``. Only
-the add-on's own report (async_report_from_addon) ever clears ``pending``
-into history; the lazy expiry that runs on status reads is display-only
-and merely relabels a timed-out test ``expired_unreported``. When the
-add-on later polls while holding no current test, that poll is the
-evidence its local timer reverted the expired test, and the record is
-archived as ``reverted`` by ``addon_timer``. A poll that arrives holding a
-DIFFERENT test id than ``pending`` is answered ``none`` with reason
+two paths ever clear ``pending`` into history: the add-on's own report
+(async_report_from_addon), and the owner's explicit discard
+(async_discard_pending, decision D-5). The lazy expiry that runs on
+status reads is display-only and merely relabels a timed-out test
+``expired_unreported``. When the add-on later polls while holding no
+current test, that poll is the evidence its local timer reverted the
+expired test, and the record is archived as ``reverted`` by
+``addon_timer``. When the add-on instead goes silent for good (stopped,
+reinstalled, crashed), the owner, and only the owner, can archive the
+record as ``discarded_unreported`` once the countdown has lapsed; nothing
+ever unblocks automatically. A poll that arrives holding a DIFFERENT test
+id than ``pending`` is answered ``none`` with reason
 ``addon_holds_other_test`` so Core never asks the add-on to apply test B
 while test A is still armed on the host. Whenever a test moves to history,
-a ``firewall_resolved`` audit record is written with actor_source
-``addon`` (work item 1.4), because the add-on's report is the event that
-actually settled host firewall state.
+an audit record is written: ``firewall_resolved`` with actor_source
+``addon`` for the report path (work item 1.4), because the add-on's
+report is the event that actually settled host firewall state, and
+``firewall_pending_discarded`` naming the owner for the discard path.
+
+The countdown is re-anchored at apply time (recorded intent statement,
+work plan section 2): ``expires_at`` starts as propose time plus the
+window, which bounds a stale proposal the add-on never picks up, and is
+recomputed to ``applied_at`` plus the window the moment the apply command
+is handed to the add-on, because that is when the add-on arms its own
+local revert timer. The panel countdown therefore tracks the add-on's
+real timer instead of running up to one poll interval ahead of it.
 
 Authentication of the add-on's inbound calls is two-layered as of the
 Supervisor-context change in probe.py: the service handlers there reject
@@ -80,6 +94,7 @@ from .const import (
     FIREWALL_RULE_ACTIONS,
     FIREWALL_RULE_PROTOS,
     FIREWALL_TEST_CONFIRMED,
+    FIREWALL_TEST_DISCARDED_UNREPORTED,
     FIREWALL_TEST_EXPIRED_UNREPORTED,
     FIREWALL_TEST_REVERTED,
     FIREWALL_TEST_TESTING,
@@ -265,10 +280,11 @@ async def async_propose_test(
     if fw.get("pending") is not None:
         # One test at a time, whatever its status. Even a pending record
         # the lazy expiry has already relabeled expired_unreported keeps
-        # the slot occupied: until the add-on's own report (or the future
-        # owner discard) archives it, Core does not know what is actually
-        # live on the host, and proposing test B on top of an unaccounted
-        # test A is exactly the overlap this feature exists to prevent.
+        # the slot occupied: until the add-on's own report (or the owner's
+        # async_discard_pending) archives it, Core does not know what is
+        # actually live on the host, and proposing test B on top of an
+        # unaccounted test A is exactly the overlap this feature exists to
+        # prevent.
         return False, "test_pending_unreported", None
 
     pending = {
@@ -281,9 +297,11 @@ async def async_propose_test(
         # it (async_next_addon_command below) — None means "queued, not
         # yet applied by the add-on".
         "applied_at": None,
-        # Started at propose time, not at confirmed-applied time: the
-        # add-on polls every ~5s, so the gap is small and this avoids an
-        # extra round trip before the countdown can even start.
+        # Starts at propose time as the staleness bound for a proposal the
+        # add-on never picks up, then gets re-anchored to applied_at plus
+        # the window the moment async_next_addon_command hands the apply
+        # out, because that is when the add-on arms its real local timer
+        # (recorded intent statement, work plan section 2).
         "expires_at": (dt_util.utcnow() + timedelta(seconds=window_seconds)).isoformat(),
         "window_seconds": window_seconds,
     }
@@ -388,13 +406,27 @@ async def async_next_addon_command(
         return {"action": "none"}
 
     if status == FIREWALL_TEST_TESTING and pending.get("applied_at") is None:
+        window_seconds = pending.get(
+            "window_seconds", DEFAULT_FIREWALL_TEST_WINDOW_SECONDS
+        )
         pending["applied_at"] = _iso_now()
+        # Re-anchor the countdown (recorded intent statement, work plan
+        # section 2): the add-on arms its local revert timer only when it
+        # actually applies the rules, so from this hand-off onward the
+        # honest expiry is applied_at plus the window. The propose-time
+        # expires_at that stood until now remains the staleness bound for
+        # a proposal the add-on never picked up; recomputing here is what
+        # keeps the panel countdown aligned with the add-on's real local
+        # timer instead of up to one poll interval ahead of it.
+        pending["expires_at"] = (
+            dt_util.utcnow() + timedelta(seconds=window_seconds)
+        ).isoformat()
         store.async_schedule_save()
         return {
             "action": "apply",
             "test_id": test_id,
             "rules": pending["proposed_rules"],
-            "window_seconds": pending.get("window_seconds", DEFAULT_FIREWALL_TEST_WINDOW_SECONDS),
+            "window_seconds": window_seconds,
         }
 
     if current_test_id != test_id:
@@ -423,12 +455,15 @@ async def async_report_from_addon(
     active — this never gets second-guessed against Core's own optimistic
     pending-state updates.
 
-    This function is the ONLY place a pending test is ever cleared into
-    history. Two report shapes archive it: an explicit resolution for the
-    pending test's own id, and (via addon_reports_no_current_test, set by
-    async_next_addon_command) the add-on polling with an empty
-    current_test_id while the pending record has already aged into
-    expired_unreported, which is the timer-ran evidence described there.
+    This function is where the REPORT path clears a pending test into
+    history; the only other path is the owner's explicit
+    async_discard_pending below (decision D-5), which exists precisely for
+    the case where no report will ever arrive. Two report shapes archive
+    it here: an explicit resolution for the pending test's own id, and
+    (via addon_reports_no_current_test, set by async_next_addon_command)
+    the add-on polling with an empty current_test_id while the pending
+    record has already aged into expired_unreported, which is the
+    timer-ran evidence described there.
     Every archive writes a firewall_resolved audit record with
     actor_source "addon" (work item 1.4): the add-on's report - not any
     person's click - is what actually moved host firewall state to its
@@ -511,3 +546,75 @@ async def async_report_from_addon(
             )
 
     store.async_schedule_save()
+
+
+async def async_discard_pending(
+    hass: HomeAssistant, store: HaSocData, *, user_id: str
+) -> tuple[bool, str | None]:
+    """Owner-only escape hatch for an add-on gone silent mid-test (D-5).
+
+    If the add-on is stopped, reinstalled, or crashes without recovering,
+    its resolution report never arrives and the pending slot would stay
+    occupied forever, blocking every future proposal. This is the one
+    deliberate way out: the OWNER (enforced at the WS layer) archives the
+    record into history as ``discarded_unreported`` with themselves as
+    ``resolved_by``, which clears the slot. The status is honest about
+    what Core knows: the outcome on the host was never reported, so the
+    record does not claim the rules were reverted, only that the owner
+    gave up waiting.
+
+    Two refusals keep this from becoming an accidental bypass of the
+    one-test-at-a-time rule:
+
+    - ``no_pending_test`` when there is nothing to discard.
+    - ``window_not_lapsed`` while the countdown is still running. Because
+      expires_at is re-anchored to applied_at plus the window when the
+      apply is handed out (see async_next_addon_command), a lapsed
+      countdown here means the add-on's own local revert timer has also
+      already fired if the add-on is alive at all; discarding earlier
+      would race a report that may still arrive seconds later.
+
+    A pending record without a parseable expires_at cannot be waited out,
+    so it is discardable immediately rather than wedging the slot forever,
+    which would defeat the escape hatch this function exists to be.
+
+    Nothing here touches iptables and nothing ever calls this
+    automatically; the add-on's report path (async_report_from_addon) and
+    this owner action are the only two ways ``pending`` is ever cleared.
+    Every discard writes a ``firewall_pending_discarded`` audit record
+    (flushed immediately via the ``firewall_`` prefix).
+    """
+    fw = store.data["firewall"]
+    _lazily_expire_if_stale(fw)
+    pending = fw.get("pending")
+    if not pending:
+        return False, "no_pending_test"
+
+    expires_at = dt_util.parse_datetime(pending.get("expires_at") or "")
+    if expires_at is not None and dt_util.utcnow() < expires_at:
+        return False, "window_not_lapsed"
+
+    previous_status = pending.get("status")
+    pending["status"] = FIREWALL_TEST_DISCARDED_UNREPORTED
+    pending["resolved_at"] = _iso_now()
+    pending["resolved_by"] = user_id
+    # A copy, not the live reference, for the same aliasing reason as the
+    # archive in async_report_from_addon: history entries are frozen.
+    history = list(fw.get("history") or [])
+    history.append(dict(pending))
+    fw["history"] = history[-_MAX_HISTORY:]
+    fw["pending"] = None
+
+    audit = _async_runtime_audit(hass)
+    if audit is not None:
+        audit.async_log(
+            "firewall_pending_discarded",
+            user_id=user_id,
+            detail={
+                "test_id": pending.get("test_id"),
+                "previous_status": previous_status,
+                "requested_by": pending.get("requested_by"),
+            },
+        )
+    store.async_schedule_save()
+    return True, None

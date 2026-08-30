@@ -42,6 +42,16 @@ Everything runtime (breach counters, usage history ring buffers, action
 timestamps) lives in memory only — it's diagnostic, and persisting a
 time series through the debounced Store on every sample would churn it
 for no configuration value.
+
+Slug validation (work item 2.2): every override and hard-cap slug is
+validated end to end. The WS schema restricts the slug to
+ADDON_SLUG_PATTERN below, and the handler additionally requires the slug
+to name an add-on the Supervisor itself reports as installed
+(async_installed_addon_slugs, reusing logs.py's cache-backed lookup),
+rejecting with not_supervisor on installs that have no Supervisor at all.
+The Probe applies the same regex again locally before building any Docker
+URL, so a compromised Core still cannot steer the add-on's Docker client
+at an arbitrary container name.
 """
 from __future__ import annotations
 
@@ -75,6 +85,29 @@ _LOGGER = logging.getLogger(__name__)
 # Ring-buffer depth per container: at the default 60s interval this is one
 # hour of samples — enough to show a leak's growth curve in the panel.
 _HISTORY_SAMPLES = 60
+
+# The shape of a Supervisor add-on slug (work item 2.2). Enforced on the
+# WS schema for override.slug and hard_limit.slug, and re-checked by the
+# Probe's run script before any Docker URL is built from a slug, so both
+# ends of the channel refuse a value that could smuggle path or query
+# syntax into "http://localhost/containers/addon_<slug>/update".
+ADDON_SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+
+
+def async_installed_addon_slugs(hass: HomeAssistant) -> set[str] | None:
+    """Slugs of the add-ons the Supervisor reports as installed, or None
+    on a non-Supervisor install (where the question has no answer at all,
+    as opposed to an empty set meaning "Supervisor, but nothing
+    installed"). Reuses logs.py's cache-backed lookup so a watchdog config
+    change costs no Supervisor round trip (work item 2.2).
+    """
+    from homeassistant.helpers.hassio import is_hassio
+
+    from .logs import _addons_by_slug
+
+    if not is_hassio(hass):
+        return None
+    return set(_addons_by_slug(hass))
 
 
 def _iso_now() -> str:

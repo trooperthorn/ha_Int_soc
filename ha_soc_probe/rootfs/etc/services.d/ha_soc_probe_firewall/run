@@ -8,15 +8,21 @@
 #
 #   1. Poll ha_soc.poll_firewall_command every POLL_INTERVAL_SECONDS for a
 #      pending apply/confirm/revert instruction.
-#   2. On "apply": back up the full ruleset (iptables-save), replace the
-#      contents of the dedicated HA_SOC_RULES chain with the proposed
-#      rules, and arm a LOCAL, self-contained revert timer — a plain
-#      `sleep N` backgrounded from this same process, not a cron job or a
-#      call back out to Home Assistant. This is the one property that
-#      actually matters: if the new rules break the very network path this
-#      add-on (or Home Assistant Core) needs to reach anything else, the
-#      revert still has to happen, and nothing here depends on that broken
-#      path working again to make it happen.
+#   2. On "apply": take TWO backups and check both succeeded (work item
+#      2.3): a full filter-table dump (iptables-save -t filter, kept for
+#      manual recovery only) and a chain-only snapshot (iptables -S
+#      HA_SOC_RULES, the one the revert actually replays). If either
+#      backup fails, the test is refused outright: nothing is applied and
+#      the test is reported back as reverted (the reason, backup_failed,
+#      lives in this log because the report protocol carries a status
+#      only). Otherwise replace the contents of the dedicated HA_SOC_RULES
+#      chain with the proposed rules and arm a LOCAL, self-contained
+#      revert timer, a plain `sleep N` backgrounded from this same
+#      process, not a cron job or a call back out to Home Assistant. This
+#      is the one property that actually matters: if the new rules break
+#      the very network path this add-on (or Home Assistant Core) needs to
+#      reach anything else, the revert still has to happen, and nothing
+#      here depends on that broken path working again to make it happen.
 #   3. On "confirm"/"revert": mark the test resolved (making the armed
 #      timer from step 2 a no-op when it wakes) and report back
 #      immediately via ha_soc.ingest_probe_result, rather than waiting for
@@ -32,9 +38,13 @@
 #
 # Every rule this ever applies lives in one chain this project owns
 # outright (HA_SOC_RULES) — never the raw INPUT chain, never anything
-# Docker itself manages. A full `iptables-save` backup is still taken
-# before every apply as defense in depth, even though day to day this
-# script's real footprint is exactly one chain.
+# Docker itself manages. A revert is chain-scoped for the same reason
+# (work item 2.3): it flushes HA_SOC_RULES and replays the chain snapshot
+# into it, and never runs `iptables-restore` over the whole table, because
+# a whole-table restore would also roll back every rule Docker or the host
+# changed since the snapshot was taken. The full filter-table dump that is
+# still written before every apply exists purely so a human has something
+# to recover from by hand if everything else fails.
 # ==============================================================================
 set -uo pipefail
 
@@ -50,8 +60,21 @@ INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
 POLL_INTERVAL_SECONDS=5
 PROBE_SECRET=""
 
+# Full filter-table dump, kept for MANUAL recovery only; no code path
+# ever feeds it back to iptables-restore (see the header and work item 2.3).
 backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup_${1}.rules"; }
+# Chain-only snapshot (iptables -S HA_SOC_RULES), the thing a revert replays.
+chain_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain_${1}.rules"; }
 resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
+
+# The add-on's local copy of the integration's add-on slug schema (work
+# item 2.2, resource_watchdog.ADDON_SLUG_PATTERN). Core validates slugs at
+# its WS layer too, but this end revalidates before building any Docker
+# URL from one, so a compromised or buggy Core still cannot smuggle path
+# or query syntax into "http://localhost/containers/addon_<slug>/update".
+valid_slug() {
+    printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$'
+}
 
 # --- Resource hard caps (Docker) ----------------------------------------------
 # Owner-configured per-add-on Docker limits (--memory / --cpus equivalents),
@@ -85,6 +108,19 @@ ensure_probe_secret() {
 
 # --- Chain management --------------------------------------------------------
 
+# Creates the dedicated chain if needed and jumps INPUT into it. The jump
+# is inserted at POSITION 1 of INPUT (`iptables -I` with no index inserts
+# at the top), ahead of Docker's rules and anything the host already had,
+# and that position is the point: a deny that sits below an accept is not
+# a deny, because iptables stops at the first matching rule. If the jump
+# sat after a broad accept, every deny this feature applies would be
+# cosmetic while the panel claimed it was enforced.
+#
+# Uninstall: the Supervisor offers no verified hook that runs on add-on
+# uninstall (work plan section 6.2, UNVERIFIED), so removal of the chain
+# and this jump is best-effort only. A clean uninstall leaves an empty
+# HA_SOC_RULES chain and one INPUT jump behind, which is inert; the add-on
+# documentation describes the two-command manual cleanup.
 ensure_chain() {
     iptables -N "${CHAIN}" 2>/dev/null || true
     if ! iptables -C INPUT -j "${CHAIN}" 2>/dev/null; then
@@ -186,23 +222,40 @@ apply_resource_limits() {
     prev_slugs=$(cat "${LIMITS_FILE}.applied" 2>/dev/null || echo "[]")
     state_entries="{}"
 
+    # Every slug loop below is a quoted `while IFS= read -r` over jq output
+    # (work item 2.2), never an unquoted `for $(...)`: an unquoted loop
+    # word-splits and glob-expands whatever a compromised Core put in the
+    # delivered JSON, and each slug is additionally revalidated against the
+    # shared slug regex before any Docker URL is built from it.
     if [ ! -S "${DOCKER_SOCK}" ]; then
         # Socket not mapped at all — docker_api not granted (or old config).
-        for slug in $(echo "${limits}" | jq -r 'keys[]'); do
+        while IFS= read -r slug; do
+            if ! valid_slug "${slug}"; then
+                bashio::log.error "Resource caps: ignoring invalid add-on slug in delivered limits."
+                continue
+            fi
             state_entries=$(echo "${state_entries}" | jq -c --arg s "${slug}" \
                 '. + {($s): {status: "denied", detail: "Docker socket not available — enable docker_api and disable Protection Mode on the HA SOC Probe add-on."}}')
-        done
+        done < <(echo "${limits}" | jq -r 'keys[]')
     else
         # Reset any container whose cap was removed since the last pass —
         # 0 for Memory/MemorySwap/NanoCpus means "unlimited" to Docker.
-        for slug in $(echo "${prev_slugs}" | jq -r '.[]'); do
+        while IFS= read -r slug; do
+            if ! valid_slug "${slug}"; then
+                bashio::log.error "Resource caps: ignoring invalid add-on slug in the previously-applied list."
+                continue
+            fi
             if [ "$(echo "${limits}" | jq --arg s "${slug}" 'has($s)')" = "false" ]; then
                 docker_update "addon_${slug}" '{"Memory":0,"MemorySwap":0,"NanoCpus":0,"CpuShares":0}' >/dev/null
                 bashio::log.info "Resource caps removed for addon_${slug} — reset to unlimited."
             fi
-        done
+        done < <(echo "${prev_slugs}" | jq -r '.[]')
 
-        for slug in $(echo "${limits}" | jq -r 'keys[]'); do
+        while IFS= read -r slug; do
+            if ! valid_slug "${slug}"; then
+                bashio::log.error "Resource caps: ignoring invalid add-on slug in delivered limits."
+                continue
+            fi
             entry=$(echo "${limits}" | jq -c --arg s "${slug}" '.[$s]')
             memory_mb=$(echo "${entry}" | jq -r '.memory_mb // empty')
             cpus=$(echo "${entry}" | jq -r '.cpus // empty')
@@ -225,7 +278,7 @@ apply_resource_limits() {
             esac
             state_entries=$(echo "${state_entries}" | jq -c --arg s "${slug}" --arg st "${status}" --arg d "${detail}" \
                 '. + {($s): {status: $st, detail: (if $d == "" then null else $d end)}}')
-        done
+        done < <(echo "${limits}" | jq -r 'keys[]')
     fi
 
     echo "${limits}" | jq -c 'keys' > "${LIMITS_FILE}.applied"
@@ -263,14 +316,43 @@ report_resolution() {
     bashio::log.info "Reported firewall test ${test_id} as ${status} to HA SOC (HTTP $(cat /tmp/ha_soc_fw_report_code 2>/dev/null || echo '?'))."
 }
 
-# Restores the pre-test backup for a test_id and marks it resolved, unless
-# something else (a "confirm", or an earlier revert) already resolved it —
-# checked right before restoring, since this is called both from the
-# armed local timer AND from the startup crash-recovery check below, and
-# both must be safe to call on an already-resolved test (a no-op).
+# Chain-scoped revert (work item 2.3): flush HA_SOC_RULES, then replay the
+# pre-test chain snapshot into it, one `-A HA_SOC_RULES ...` line at a
+# time; the snapshot's `-N` line is skipped because the chain already
+# exists. Never `iptables-restore` here: a whole-table restore would also
+# roll back every rule Docker or the host changed since the snapshot.
+replay_chain_backup() {
+    local chain_backup_path="$1" line
+    iptables -F "${CHAIN}" || true
+    while IFS= read -r line; do
+        case "${line}" in
+            "-A ${CHAIN} "*)
+                # Unquoted expansion is deliberate: the line is iptables'
+                # own -S output for a rule this script itself wrote
+                # (action/proto/port/source only), so splitting it on
+                # whitespace reconstructs exactly the arguments to append,
+                # and none of those arguments can contain whitespace.
+                # shellcheck disable=SC2086
+                if ! iptables ${line}; then
+                    bashio::log.error "Firewall: could not replay snapshot line '${line}'."
+                fi
+                ;;
+            *)
+                :
+                ;;
+        esac
+    done < "${chain_backup_path}"
+}
+
+# Reverts the chain to the pre-test snapshot for a test_id and marks it
+# resolved, unless something else (a "confirm", or an earlier revert)
+# already resolved it, checked right before restoring, since this is
+# called from the armed local timer, from the startup crash-recovery check
+# below, AND from the finish script's stop-time recovery, and all of them
+# must be safe to call on an already-resolved test (a no-op).
 revert_test() {
-    local test_id="$1" backup_path resolved_marker
-    backup_path=$(backup_path_for "${test_id}")
+    local test_id="$1" chain_backup_path resolved_marker
+    chain_backup_path=$(chain_backup_path_for "${test_id}")
     resolved_marker=$(resolved_marker_for "${test_id}")
 
     if [ -e "${resolved_marker}" ]; then
@@ -278,11 +360,11 @@ revert_test() {
     fi
     touch "${resolved_marker}"
 
-    if [ -r "${backup_path}" ]; then
-        iptables-restore < "${backup_path}"
-        bashio::log.warning "Firewall test ${test_id} was not confirmed in time — reverted to the pre-test ruleset."
+    if [ -r "${chain_backup_path}" ]; then
+        replay_chain_backup "${chain_backup_path}"
+        bashio::log.warning "Firewall test ${test_id} was not confirmed in time; reverted the ${CHAIN} chain to its pre-test contents."
     else
-        bashio::log.error "Firewall test ${test_id} needs reverting but its backup (${backup_path}) is missing — leaving the chain as-is. This should not happen."
+        bashio::log.error "Firewall test ${test_id} needs reverting but its chain snapshot (${chain_backup_path}) is missing; leaving the chain as-is rather than guessing. This should not happen; the full-table dump next to it, if present, is available for manual recovery."
     fi
     report_resolution "${test_id}" "reverted"
 }
@@ -374,20 +456,37 @@ while true; do
                 bashio::log.warning "Firewall: refusing to apply test B while test A is still armed (held ${held_test_id}, offered ${test_id})."
             else
                 bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
-                iptables-save > "$(backup_path_for "${test_id}")"
-                echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
-                if apply_ruleset "${rules_json}"; then
-                    arm_revert_timer "${test_id}" "${window_seconds}"
-                else
-                    # A rule failed to apply; don't leave a half-applied ruleset
-                    # live. Restore the pre-test backup immediately and report the
-                    # test as reverted (its net effect is the pre-test state), so
-                    # the operator sees it failed rather than a silent partial.
-                    bashio::log.error "Firewall test ${test_id} failed to apply cleanly; restoring the pre-test ruleset."
-                    iptables-restore < "$(backup_path_for "${test_id}")" || true
+                # Both backups, both checked (work item 2.3): the full
+                # filter-table dump for manual recovery, and the chain-only
+                # snapshot the revert replays. A test whose revert path
+                # cannot be guaranteed must never be applied, so a failure
+                # of either write refuses the whole test: nothing touched
+                # the chain yet, the net effect is the pre-test state, and
+                # the honest report status is therefore "reverted" (the
+                # protocol carries a status only; the backup_failed reason
+                # lives in this log line).
+                backups_ok=1
+                iptables-save -t filter > "$(backup_path_for "${test_id}")" || backups_ok=0
+                iptables -S "${CHAIN}" > "$(chain_backup_path_for "${test_id}")" || backups_ok=0
+                if [ "${backups_ok}" -ne 1 ]; then
+                    bashio::log.error "Firewall test ${test_id}: pre-test backup failed (backup_failed); refusing to apply. The live ruleset is untouched."
                     touch "$(resolved_marker_for "${test_id}")"
                     report_resolution "${test_id}" "reverted"
-                    : > "${CURRENT_TEST_FILE}"
+                else
+                    echo -n "${test_id}" > "${CURRENT_TEST_FILE}"
+                    if apply_ruleset "${rules_json}"; then
+                        arm_revert_timer "${test_id}" "${window_seconds}"
+                    else
+                        # A rule failed to apply; don't leave a half-applied
+                        # ruleset live. This rollback is a revert, so it is
+                        # chain-scoped like every other revert: replay the
+                        # chain snapshot, never iptables-restore the table.
+                        bashio::log.error "Firewall test ${test_id} failed to apply cleanly; replaying the pre-test chain snapshot."
+                        replay_chain_backup "$(chain_backup_path_for "${test_id}")" || true
+                        touch "$(resolved_marker_for "${test_id}")"
+                        report_resolution "${test_id}" "reverted"
+                        : > "${CURRENT_TEST_FILE}"
+                    fi
                 fi
             fi
             ;;
