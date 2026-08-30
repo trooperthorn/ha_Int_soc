@@ -65,6 +65,22 @@ is handed to the add-on, because that is when the add-on arms its own
 local revert timer. The panel countdown therefore tracks the add-on's
 real timer instead of running up to one poll interval ahead of it.
 
+Rules are dual-stack by default (work item 2.4, decision D-3): every rule
+carries a ``family`` of "4", "6", or "both". A rule with a source address
+is pinned to that address's family (derived by the schema; a
+contradicting explicit value is rejected), a rule with no source defaults
+to "both", and the add-on writes family 4 with iptables, 6 with
+ip6tables, and both with both, into a chain named HA_SOC_RULES in each
+table, with per-family backups and an atomic apply: a failure in either
+table reverts both. The add-on's reports carry two additions for this:
+``firewall_ipv6_supported`` (whether ``ip6tables -S`` works on the host,
+stored here and returned by async_get_status; when False, every "6" and
+"both" rule is surfaced ``partially_applied`` so an IPv4-only apply is
+never shown as a clean success) and a bounded free-text
+``firewall_resolved_reason`` (carried protocol item), stored on the
+archived record so ``backup_failed`` and per-family apply failures are
+visible in the panel instead of only in the add-on log.
+
 Authentication of the add-on's inbound calls is two-layered as of the
 Supervisor-context change in probe.py: the service handlers there reject
 any call whose context user is not the Supervisor system user BEFORE this
@@ -92,6 +108,10 @@ import homeassistant.util.dt as dt_util
 from .const import (
     DEFAULT_FIREWALL_TEST_WINDOW_SECONDS,
     FIREWALL_RULE_ACTIONS,
+    FIREWALL_RULE_FAMILIES,
+    FIREWALL_RULE_FAMILY_BOTH,
+    FIREWALL_RULE_FAMILY_V4,
+    FIREWALL_RULE_FAMILY_V6,
     FIREWALL_RULE_PROTOS,
     FIREWALL_TEST_CONFIRMED,
     FIREWALL_TEST_DISCARDED_UNREPORTED,
@@ -126,17 +146,60 @@ def _valid_source(value: Any) -> Any:
     return value
 
 
-RULE_SCHEMA = vol.Schema(
-    {
-        vol.Required("action"): vol.In(FIREWALL_RULE_ACTIONS),
-        vol.Required("proto"): vol.In(FIREWALL_RULE_PROTOS),
-        vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
-        # None/omitted = applies to traffic from any source. Set to scope
-        # a rule to one VLAN/subnet — the natural pairing with the Host
-        # Probe's per-interface bind-address visibility. Validated as a real
-        # IP/CIDR, not just any string (see _valid_source).
-        vol.Optional("source"): _valid_source,
-    }
+def _derive_rule_family(rule: dict[str, Any]) -> dict[str, Any]:
+    """Settle a validated rule's address family (work item 2.4, D-3).
+
+    A rule with a source address can only ever match traffic of that
+    address's own family, so the family is DERIVED from the source and an
+    explicit value that contradicts it is rejected outright rather than
+    silently corrected: a rule that claims family 6 with an IPv4 source
+    is a misunderstanding the operator needs to see, not a value to guess
+    around. A rule with no source defaults to "both", because the verified
+    host's LAN and VLAN carry global IPv6 (recorded D-21 facts) and an
+    IPv4-only deny on a dual-stack host silently leaves the IPv6 path
+    open. Runs after field validation, so ``source`` is already a real
+    IP/CIDR (or None) here.
+    """
+    source = rule.get("source")
+    if source is not None:
+        derived = (
+            FIREWALL_RULE_FAMILY_V6
+            if ipaddress.ip_network(source, strict=False).version == 6
+            else FIREWALL_RULE_FAMILY_V4
+        )
+        explicit = rule.get("family")
+        if explicit is not None and explicit != derived:
+            raise vol.Invalid(
+                f"family {explicit!r} contradicts the source's address "
+                f"family (source {source!r} is IPv{derived})"
+            )
+        rule["family"] = derived
+    else:
+        rule.setdefault("family", FIREWALL_RULE_FAMILY_BOTH)
+    return rule
+
+
+RULE_SCHEMA = vol.All(
+    vol.Schema(
+        {
+            vol.Required("action"): vol.In(FIREWALL_RULE_ACTIONS),
+            vol.Required("proto"): vol.In(FIREWALL_RULE_PROTOS),
+            vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+            # None/omitted = applies to traffic from any source. Set to scope
+            # a rule to one VLAN/subnet, the natural pairing with the Host
+            # Probe's per-interface bind-address visibility. Validated as a real
+            # IP/CIDR, not just any string (see _valid_source).
+            vol.Optional("source"): _valid_source,
+            # "4" = iptables, "6" = ip6tables, "both" = mirrored into both
+            # tables' HA_SOC_RULES chain. Optional on the wire; settled by
+            # _derive_rule_family above, which also validates it against
+            # the source's own address family. known_rules entries reported
+            # by the add-on carry "4" or "6" per chain the rule was read
+            # from, through this same schema.
+            vol.Optional("family"): vol.In(FIREWALL_RULE_FAMILIES),
+        }
+    ),
+    _derive_rule_family,
 )
 
 RULES_SCHEMA = vol.All([RULE_SCHEMA], vol.Length(max=200))
@@ -220,17 +283,58 @@ async def async_reset_addon_secret(secrets: HaSocSecretStore) -> None:
     await secrets.async_set(PROBE_PAIRING_SECRET_KEY, None)
 
 
+def _mark_rules_partial_ipv6(rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Copies of the given rules with every "6" and "both" rule flagged
+    ``partially_applied`` (work item 2.4). Called only when the add-on has
+    reported ``ipv6_supported: false``: on such a host the IPv6 half of a
+    dual-stack rule (and the whole of a family-6 rule) was never written,
+    and the card must show that instead of a silent IPv4-only success.
+    This is the only surviving use of the old D-3 "IPv4 only" label.
+    Copies, not the stored dicts, because the flag is a statement about the
+    host's CURRENT capability, computed at read time, not part of the
+    frozen record.
+    """
+    marked = []
+    for rule in rules:
+        rule = dict(rule)
+        if rule.get("family", FIREWALL_RULE_FAMILY_BOTH) in (
+            FIREWALL_RULE_FAMILY_V6,
+            FIREWALL_RULE_FAMILY_BOTH,
+        ):
+            rule["partially_applied"] = True
+        marked.append(rule)
+    return marked
+
+
 async def async_get_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
     """Everything the Firewall Rules card needs: what's actually active
     (per the add-on's last report — the only source of truth for that),
-    and any in-flight test.
+    any in-flight test, and whether the host kernel supports ip6tables at
+    all (``ipv6_supported``: True/False as last reported by the add-on,
+    None until any report has carried the field). When the add-on has
+    reported False, every "6" and "both" rule in known_rules and in the
+    pending test's proposed rules is returned with ``partially_applied``
+    set, so the panel can never show a dual-stack rule as cleanly live on
+    a host that only applied its IPv4 half.
     """
     fw = store.data["firewall"]
     _lazily_expire_if_stale(fw)
+    ipv6_supported = fw.get("ipv6_supported")
+    known_rules = fw.get("known_rules")
+    pending = fw.get("pending")
+    if ipv6_supported is False:
+        if known_rules:
+            known_rules = _mark_rules_partial_ipv6(known_rules)
+        if pending:
+            pending = dict(pending)
+            pending["proposed_rules"] = _mark_rules_partial_ipv6(
+                pending.get("proposed_rules") or []
+            )
     return {
-        "known_rules": fw.get("known_rules"),
+        "known_rules": known_rules,
         "known_rules_reported_at": fw.get("known_rules_reported_at"),
-        "pending": fw.get("pending"),
+        "ipv6_supported": ipv6_supported,
+        "pending": pending,
         "history": list(fw.get("history") or [])[-10:],
     }
 
@@ -449,11 +553,23 @@ async def async_report_from_addon(
     known_rules: list[dict[str, Any]] | None,
     resolved_test_id: str | None = None,
     resolved_status: str | None = None,
+    resolved_reason: str | None = None,
+    ipv6_supported: bool | None = None,
     addon_reports_no_current_test: bool = False,
 ) -> None:
     """The add-on's report is always the final word on what's actually
     active — this never gets second-guessed against Core's own optimistic
     pending-state updates.
+
+    ``resolved_reason`` is the add-on's bounded free-text explanation for
+    a resolution (carried protocol item): ``backup_failed`` when a
+    pre-test backup could not be written, or the failing rule and family
+    when an apply failed in either table. It is stored on the archived
+    record (and echoed in the audit detail) so the operator sees WHY a
+    test came back ``reverted`` instead of having to read the add-on log.
+    ``ipv6_supported`` is the add-on's per-cycle statement of whether
+    ``ip6tables -S`` works on this host; it is stored whenever present so
+    async_get_status can render partial IPv6 state honestly (item 2.4).
 
     This function is where the REPORT path clears a pending test into
     history; the only other path is the owner's explicit
@@ -473,6 +589,8 @@ async def async_report_from_addon(
     if known_rules is not None:
         fw["known_rules"] = known_rules
         fw["known_rules_reported_at"] = _iso_now()
+    if ipv6_supported is not None:
+        fw["ipv6_supported"] = ipv6_supported
 
     archived = False
     pending = fw.get("pending")
@@ -490,6 +608,12 @@ async def async_report_from_addon(
             )
         pending["status"] = resolved_status
         pending.setdefault("resolved_at", _iso_now())
+        if resolved_reason:
+            # The add-on's own explanation of the outcome (already
+            # length-bounded by the ingest schema); stored on the record
+            # the panel's history shows so a backup_failed or a per-family
+            # apply failure is visible where the operator looks first.
+            pending["reason"] = resolved_reason
         # A copy, not the live reference — fw["pending"] is about to be
         # cleared, but nothing should keep mutating a record that's
         # supposed to be a frozen point-in-time history entry from here on.
@@ -539,6 +663,7 @@ async def async_report_from_addon(
                     "actor_source": "addon",
                     "test_id": pending.get("test_id"),
                     "status": pending.get("status"),
+                    "reason": pending.get("reason"),
                     "reported_rule_count": len(known_rules)
                     if known_rules is not None
                     else None,

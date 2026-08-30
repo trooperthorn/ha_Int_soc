@@ -56,6 +56,7 @@ import homeassistant.util.dt as dt_util
 
 from .const import (
     DOMAIN,
+    FIREWALL_REPORT_REASON_MAX,
     PROBE_ADDON_NAME,
     SERVICE_INGEST_PROBE_RESULT,
     SERVICE_POLL_FIREWALL_COMMAND,
@@ -121,6 +122,18 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
         vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
         vol.Optional("firewall_resolved_status"): vol.Any(None, str),
+        # Bounded free-text reason for the resolution (carried protocol
+        # item): backup_failed, or the failing rule and family when an
+        # apply failed in either table. Length-bounded because it is
+        # add-on-supplied text that gets stored and rendered; the add-on
+        # truncates to the same bound before sending.
+        vol.Optional("firewall_resolved_reason"): vol.Any(
+            None, vol.All(str, vol.Length(max=FIREWALL_REPORT_REASON_MAX))
+        ),
+        # Whether ip6tables works on the host, reported once per cycle
+        # from `ip6tables -S` succeeding (work item 2.4). Optional so an
+        # add-on build predating the dual-stack feature keeps reporting.
+        vol.Optional("firewall_ipv6_supported"): vol.Any(None, bool),
         # Hard-cap application state from the resource-limit applier:
         # {slug: {"status": applied|failed|denied, "detail": str|None}}.
         # Optional so a Probe build predating the feature reports normally.
@@ -327,6 +340,8 @@ def async_register_probe_service(
             known_rules=call.data.get("firewall_known_rules"),
             resolved_test_id=call.data.get("firewall_resolved_test_id"),
             resolved_status=call.data.get("firewall_resolved_status"),
+            resolved_reason=call.data.get("firewall_resolved_reason"),
+            ipv6_supported=call.data.get("firewall_ipv6_supported"),
         )
         if call.data.get("resource_limit_state") is not None:
             from .resource_watchdog import async_store_limit_report

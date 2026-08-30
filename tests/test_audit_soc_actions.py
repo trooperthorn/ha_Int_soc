@@ -203,6 +203,10 @@ async def test_audit_covers_soc_own_actions(
         "actor_source": "addon",
         "test_id": "t1",
         "status": FIREWALL_TEST_CONFIRMED,
+        # None on a clean resolution; carries the add-on's bounded failure
+        # reason (backup_failed, per-family apply failure) when one was
+        # reported (work item 2.4 and the carried protocol item).
+        "reason": None,
         "reported_rule_count": 1,
     }
 

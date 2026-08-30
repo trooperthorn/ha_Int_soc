@@ -28,6 +28,10 @@ from custom_components.ha_soc.websocket_api import (
 )
 
 RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": None}]
+# The same rules after RULE_SCHEMA settles the family: no source means the
+# dual-stack default "both" (work item 2.4); stored and returned records
+# carry this normalized shape.
+RULES_NORMALIZED = [{**RULES[0], "family": "both"}]
 
 
 def _connection(*, owner: bool = True) -> MagicMock:
@@ -78,7 +82,7 @@ async def test_test_happy_path_returns_pending_and_audits(
     connection.send_error.assert_not_called()
     result = connection.send_result.call_args[0][1]
     assert result["status"] == "testing"
-    assert result["proposed_rules"] == RULES
+    assert result["proposed_rules"] == RULES_NORMALIZED
 
     runtime = entry.runtime_data
     assert runtime.store.data["firewall"]["pending"]["test_id"] == result["test_id"]

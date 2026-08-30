@@ -1,16 +1,16 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-dockerfile
-# `3.23` is a MOVING tag — its contents change as the base image is
-# rebuilt, so a build today and a build next month can differ. For
-# reproducible builds, also pin the image by its immutable digest:
-#
-#     ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23@sha256:<digest>
-#
-# Fill <digest> in from the REAL published image at build time (e.g.
-# `docker buildx imagetools inspect ghcr.io/home-assistant/base:3.23`, or
-# `docker pull ... && docker inspect --format='{{index .RepoDigests 0}}' ...`).
-# Left un-pinned here on purpose: the digest must come from the actual
-# published image, never a guessed/placeholder value.
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23
+# `3.23` is a MOVING tag: its contents change as the base image is
+# rebuilt, so a build today and a build next month can differ. The image
+# is therefore pinned by its immutable digest (work item 2.5): the digest
+# below is the multi-arch OCI index for tag 3.23, resolved on 2026-08-30
+# from ghcr.io's registry API (anonymous token flow, Docker-Content-Digest
+# of the tag's manifest index, which covers linux/amd64 and linux/arm64,
+# the two architectures config.yaml declares). The tag stays in the
+# reference so a human can still see which release the digest froze; the
+# digest is what the build actually resolves. To bump: re-resolve with
+# `docker buildx imagetools inspect ghcr.io/home-assistant/base:<tag>`
+# and replace both the tag and the digest together, never the tag alone.
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23@sha256:1c7a8c7321c15cdc327c264232a76e6fbfdaf7f2b1734a8d8da6fcc994f66015
 FROM ${BUILD_FROM}
 
 # iptables: the firewall read/write feature (config.yaml's `privileged:

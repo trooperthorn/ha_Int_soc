@@ -12,6 +12,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 
+import voluptuous as vol
+
 from custom_components.ha_soc import firewall
 from custom_components.ha_soc.const import (
     DOMAIN,
@@ -22,6 +24,10 @@ from custom_components.ha_soc.const import (
 )
 
 RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": "192.168.10.0/24"}]
+# What RULES looks like after RULE_SCHEMA settles the family: an IPv4
+# source pins family "4" (work item 2.4). Proposed rules are stored and
+# handed to the add-on in this normalized shape.
+RULES_NORMALIZED = [{**RULES[0], "family": "4"}]
 
 
 @pytest.fixture
@@ -64,7 +70,7 @@ async def test_propose_happy_path(hass: HomeAssistant, entry: MockConfigEntry) -
     assert reason is None
     assert pending["status"] == FIREWALL_TEST_TESTING
     assert pending["applied_at"] is None
-    assert pending["proposed_rules"] == RULES
+    assert pending["proposed_rules"] == RULES_NORMALIZED
     assert pending["window_seconds"] == 45
     assert store.data["firewall"]["pending"] is pending
 
@@ -121,7 +127,7 @@ async def test_next_addon_command_returns_apply_once(hass: HomeAssistant, entry:
     assert command == {
         "action": "apply",
         "test_id": test_id,
-        "rules": RULES,
+        "rules": RULES_NORMALIZED,
         "window_seconds": 45,
     }
     # applied_at is now set on the live pending record.
@@ -309,3 +315,108 @@ async def test_get_status_lazily_expires_stale_pending(hass: HomeAssistant, entr
     )
     status = await firewall.async_get_status(hass, store)
     assert status["pending"]["status"] == "expired_unreported"
+
+
+async def test_rule_family_derivation(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Work item 2.4 (D-3): a rule's family is derived from its source's
+    address family, an explicit value that contradicts the source is
+    rejected, an explicit family without a source is honored as the
+    operator's scoping choice, and no source at all defaults to both."""
+    store = entry.runtime_data.store
+
+    # No source, no explicit family: dual-stack default.
+    rule = firewall.RULE_SCHEMA({"action": "deny", "proto": "tcp", "port": 22})
+    assert rule["family"] == "both"
+
+    # An IPv4 source pins family 4; an IPv6 source pins family 6.
+    rule = firewall.RULE_SCHEMA(
+        {"action": "deny", "proto": "tcp", "port": 22, "source": "192.168.10.0/24"}
+    )
+    assert rule["family"] == "4"
+    rule = firewall.RULE_SCHEMA(
+        {"action": "deny", "proto": "tcp", "port": 22, "source": "fd00::/8"}
+    )
+    assert rule["family"] == "6"
+
+    # A matching explicit value passes; a contradicting one is rejected.
+    rule = firewall.RULE_SCHEMA(
+        {"action": "deny", "proto": "tcp", "port": 22, "source": "fd00::/8", "family": "6"}
+    )
+    assert rule["family"] == "6"
+    with pytest.raises(vol.Invalid):
+        firewall.RULE_SCHEMA(
+            {"action": "deny", "proto": "tcp", "port": 22, "source": "192.168.10.0/24", "family": "6"}
+        )
+
+    # An explicit family with no source stands as given.
+    rule = firewall.RULE_SCHEMA({"action": "deny", "proto": "tcp", "port": 22, "family": "6"})
+    assert rule["family"] == "6"
+
+    # End to end: the propose path surfaces the mismatch as invalid_rules,
+    # exactly like any other schema failure.
+    ok, reason, pending = await firewall.async_propose_test(
+        hass,
+        store,
+        rules=[
+            {"action": "deny", "proto": "tcp", "port": 22, "source": "192.168.10.0/24", "family": "6"}
+        ],
+        backup_acknowledged=True,
+        user_id="u1",
+    )
+    assert ok is False
+    assert reason.startswith("invalid_rules")
+    assert pending is None
+
+
+async def test_partial_ipv6_is_visible(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    """Work item 2.4: when the add-on reports ipv6_supported false, every
+    "6" and "both" rule (in the pending test and in known_rules, an absent
+    family counting as both) is surfaced partially_applied and the status
+    carries ipv6_supported for the card's banner, never a silent
+    IPv4-only success. The marking is computed at read time on copies; the
+    stored records stay unflagged."""
+    store = entry.runtime_data.store
+    mixed = [
+        {"action": "deny", "proto": "tcp", "port": 22},  # derives family both
+        {"action": "deny", "proto": "tcp", "port": 23, "source": "192.168.1.0/24"},  # family 4
+        {"action": "deny", "proto": "udp", "port": 53, "family": "6"},  # explicit 6
+    ]
+    _, _, pending = await firewall.async_propose_test(
+        hass, store, rules=mixed, backup_acknowledged=True, user_id="u1"
+    )
+
+    await firewall.async_report_from_addon(
+        hass,
+        store,
+        known_rules=[
+            {"action": "deny", "proto": "tcp", "port": 22, "source": None, "family": "4"},
+            # A record persisted before the dual-stack change carries no
+            # family at all; that reads as "both" and must be marked too.
+            {"action": "deny", "proto": "tcp", "port": 8123, "source": None},
+        ],
+        ipv6_supported=False,
+    )
+
+    status = await firewall.async_get_status(hass, store)
+    assert status["ipv6_supported"] is False
+
+    proposed = status["pending"]["proposed_rules"]
+    assert proposed[0]["partially_applied"] is True  # both
+    assert "partially_applied" not in proposed[1]  # pure IPv4 is fully live
+    assert proposed[2]["partially_applied"] is True  # IPv6-only
+
+    known = status["known_rules"]
+    assert "partially_applied" not in known[0]  # family 4
+    assert known[1]["partially_applied"] is True  # legacy record, reads as both
+
+    # Read-time marking only: the stored records are untouched.
+    stored = store.data["firewall"]
+    assert all("partially_applied" not in r for r in stored["pending"]["proposed_rules"])
+    assert all("partially_applied" not in r for r in stored["known_rules"])
+
+    # A later report that IPv6 works again clears the marking entirely.
+    await firewall.async_report_from_addon(hass, store, known_rules=None, ipv6_supported=True)
+    status = await firewall.async_get_status(hass, store)
+    assert status["ipv6_supported"] is True
+    assert all("partially_applied" not in r for r in status["pending"]["proposed_rules"])
+    assert all("partially_applied" not in r for r in status["known_rules"])

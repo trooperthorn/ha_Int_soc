@@ -37,6 +37,22 @@ privileged:
 # panel spells out before anything is applied. Users who don't use hard
 # caps lose nothing by leaving Protection Mode on.
 docker_api: true
+# Image signing, investigated 2026-08-30 (work item 2.5, recorded here as
+# the answer, not implemented): per the current developer documentation
+# (developers.home-assistant docs source at commit 186ad06,
+# docs/apps/security.md and docs/apps/publishing.md), image signing for
+# add-ons is done with Cosign through the official builder GitHub Actions
+# workflow, and it applies to PRE-BUILT images published to a container
+# registry under an `image:` key in this file. This add-on ships as a
+# locally built add-on (no `image:` key; the Supervisor builds it on the
+# user's machine from the Dockerfile), so a signed image is structurally
+# unavailable in its current publishing mode - the live install records
+# `signed: false`, and that is accurate, not an oversight. Moving to
+# signed pre-built images means publishing through the official builder
+# actions with Cosign and adding `image:`; the older CodeNotary mechanism
+# no longer appears in the configuration documentation at all. The
+# Dockerfile's base-image digest pin is the compensating supply-chain
+# control while the add-on remains locally built.
 options:
   scan_interval_hours: 6
 schema:

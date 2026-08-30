@@ -212,6 +212,31 @@ SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
 FIREWALL_RULE_ACTIONS = ["allow", "deny"]
 FIREWALL_RULE_PROTOS = ["tcp", "udp"]
 
+# Address families a rule can target (work item 2.4, decision D-3). "4" is
+# written with iptables, "6" with ip6tables, "both" with both, always into
+# a chain named HA_SOC_RULES in each table. A rule with a source address is
+# pinned to that address's own family (firewall.RULE_SCHEMA derives it and
+# rejects a mismatching explicit value); a rule with no source defaults to
+# "both", because the verified host carries global IPv6 on its LAN and
+# VLAN, and an IPv4-only deny on such a host is not a deny.
+FIREWALL_RULE_FAMILY_V4 = "4"
+FIREWALL_RULE_FAMILY_V6 = "6"
+FIREWALL_RULE_FAMILY_BOTH = "both"
+FIREWALL_RULE_FAMILIES = [
+    FIREWALL_RULE_FAMILY_V4,
+    FIREWALL_RULE_FAMILY_V6,
+    FIREWALL_RULE_FAMILY_BOTH,
+]
+
+# Upper bound on the optional free-text reason the add-on may attach to a
+# resolution report (carried protocol item, open-items report section 5),
+# so failure reasons like backup_failed or a per-family apply failure reach
+# Home Assistant instead of living only in the add-on log. Bounded because
+# it is add-on-supplied text that gets stored and rendered; the add-on
+# truncates to this same length before sending (head -c in the run script)
+# so an honest long reason is cut short rather than rejected wholesale.
+FIREWALL_REPORT_REASON_MAX = 200
+
 # Pending-test state machine (HaSocData.data["firewall"]["pending"]).
 FIREWALL_TEST_TESTING = "testing"
 FIREWALL_TEST_CONFIRMED = "confirmed"
