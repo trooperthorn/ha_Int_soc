@@ -1,0 +1,81 @@
+# Both services exist as the transport between the optional HA SOC Probe
+# add-on and this integration. They are not intended to be called by hand:
+# every call must present the trust-on-first-use probe secret (pinned on
+# first contact, see firewall.py), and a call without a valid secret is
+# rejected and audit-logged. They are documented here because hassfest
+# requires registered services to be described, and honestly labeling an
+# internal surface beats hiding it.
+
+ingest_probe_result:
+  name: Ingest probe result
+  description: >-
+    Internal. Called by the HA SOC Probe add-on to report the host's
+    listening TCP ports, the live firewall chain contents, firewall
+    test resolutions, and resource hard-cap application state. Calls
+    without the pinned probe secret are rejected.
+  fields:
+    open_ports:
+      name: Open ports
+      description: Listening TCP ports observed on the host (port, proto, address, interface).
+      required: false
+      example: '[{"port": 8123, "proto": "tcp", "address": "0.0.0.0", "interface": "(all interfaces)"}]'
+      selector:
+        object:
+    scanner_version:
+      name: Scanner version
+      description: The add-on's own version string, shown in the panel footer.
+      required: false
+      example: "2026.08.30.1"
+      selector:
+        text:
+    firewall_known_rules:
+      name: Firewall known rules
+      description: The actual current contents of the HA_SOC_RULES iptables chain.
+      required: false
+      selector:
+        object:
+    firewall_resolved_test_id:
+      name: Firewall resolved test id
+      description: Id of a firewall test the add-on just confirmed or reverted.
+      required: false
+      selector:
+        text:
+    firewall_resolved_status:
+      name: Firewall resolved status
+      description: How that test resolved (confirmed or reverted).
+      required: false
+      selector:
+        text:
+    resource_limit_state:
+      name: Resource limit state
+      description: Per-add-on Docker hard-cap application state (applied, failed, or denied).
+      required: false
+      selector:
+        object:
+    probe_secret:
+      name: Probe secret
+      description: Trust-on-first-use shared secret proving the call came from the add-on.
+      required: false
+      selector:
+        text:
+
+poll_firewall_command:
+  name: Poll firewall command
+  description: >-
+    Internal. Polled every few seconds by the HA SOC Probe add-on for
+    pending firewall apply/confirm/revert work and the current resource
+    hard-cap set. Returns the next instruction as a service response.
+    Calls without the pinned probe secret receive no work.
+  fields:
+    current_test_id:
+      name: Current test id
+      description: The firewall test the add-on currently has a local revert timer armed for.
+      required: false
+      selector:
+        text:
+    probe_secret:
+      name: Probe secret
+      description: Trust-on-first-use shared secret proving the call came from the add-on.
+      required: false
+      selector:
+        text:
