@@ -1,5 +1,28 @@
 # Changelog
 
+## 2026.08.30.2
+
+- No functional add-on change. Version bump only, keeping the add-on in
+  lockstep with the HA SOC integration release (audit capture expansion,
+  UniFi in-memory enrichment, app/add-on log viewing, sortable tables).
+
+## 2026.08.30.1
+
+- New optional feature: per-add-on resource hard caps. When the HA SOC
+  Resource Watchdog proposes CPU/memory limits, the firewall poll cycle
+  now carries them and the add-on applies real Docker `--cpus` /
+  `--memory` limits through the Docker socket (`docker_api: true` is new
+  in this release). With Protection Mode ON, the default, the socket is
+  read-only and every application honestly reports "denied": actually
+  applying caps requires deliberately disabling Protection Mode on this
+  add-on, which the HA SOC panel spells out as the root-equivalent grant
+  it is before anything is applied. Installs that never use hard caps
+  lose nothing by leaving Protection Mode on.
+- Limits are re-asserted periodically (every 12th poll) because a
+  container recreated by an add-on update silently loses its caps.
+- This version supersedes the deleted 2026.08.29.x tags; their changes
+  (blocking-I/O fix, watchdog groundwork) ship here.
+
 ## 2026.08.23.4
 
 - Security: both add-on services now send a per-install secret (generated

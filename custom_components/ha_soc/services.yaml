@@ -25,7 +25,7 @@ ingest_probe_result:
       name: Scanner version
       description: The add-on's own version string, shown in the panel footer.
       required: false
-      example: "2026.08.30.1"
+      example: "2026.08.30.2"
       selector:
         text:
     firewall_known_rules:

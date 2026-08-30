@@ -43,6 +43,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.util.dt as dt_util
 
+from . import unifi_core
 from .const import (
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
@@ -817,9 +818,15 @@ async def _fetch_acl_rules(
 
 async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
     """Everything the Network tab renders in one snapshot: status, WAN, the
-    clients table, the network-devices table, and the ACL-rules audit report —
+    clients table, the network-devices table, and the ACL-rules audit report,
     plus a compact Protect status. Never raises: a connection problem comes
     back as reachable=False with a human-readable ``error``.
+
+    Two data sources feed the snapshot. The direct X-API-KEY Integration API
+    is fetched first and always wins where it produced a value; afterwards
+    the core ``unifi`` integration's in-memory state (when the user runs it)
+    fills whatever the API left blank, and stands in entirely when the API is
+    unconfigured or down.
     """
     result: dict[str, Any] = {
         "configured": False,
@@ -841,14 +848,34 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         "protect": await async_protect_status(hass, store),
     }
 
-    conn = _network_conn(store)
-    if conn is None:
-        return result
-    result["configured"] = True
-
     endpoints = _integration_endpoints(hass)
     now_ts = int(dt_util.utcnow().timestamp())
 
+    # The core snapshot is taken up front so the API path can borrow its WLAN
+    # and network name maps as endpoint fallbacks, and the rows it produced
+    # can be enriched afterwards.
+    core_snap = _core_network_snapshot(hass)
+
+    conn = _network_conn(store)
+    if conn is not None:
+        result["configured"] = True
+        await _fill_network_from_api(hass, conn, result, endpoints, now_ts, core_snap)
+
+    _apply_core_network_data(result, core_snap, endpoints, now_ts)
+    return result
+
+
+async def _fill_network_from_api(
+    hass: HomeAssistant,
+    conn: _Conn,
+    result: dict[str, Any],
+    endpoints: dict[str, dict[str, Any]],
+    now_ts: int,
+    core_snap: dict[str, Any] | None,
+) -> None:
+    """The direct-to-console fetch path, mutating ``result`` in place. Kept
+    separate from the overview assembly so the core in-memory enrichment can
+    run whether or not this path succeeded."""
     try:
         site_id = await _resolve_site_id(hass, conn)
         result["site_id"] = site_id
@@ -856,17 +883,23 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         devices_raw = await _get_paginated(hass, conn, f"/sites/{site_id}/devices")
     except UniFiError as err:
         result["error"] = str(err)
-        return result
+        return
     except Exception as err:  # noqa: BLE001 - never let the panel see a raw trace
         _LOGGER.exception("Unexpected UniFi Network error")
         result["error"] = f"Unexpected error: {err}"
-        return result
+        return
 
     # SSID names live in /wifi/broadcasts; enrich devices from their detail
-    # endpoint; resolve network names for the ACL report. All best-effort.
+    # endpoint; resolve network names for the ACL report. All best-effort,
+    # and when a console endpoint returns nothing the same map is built from
+    # the core unifi integration's in-memory WLAN / VLAN inventory instead.
     broadcast_map = await _fetch_broadcast_map(hass, conn, site_id)
+    if not broadcast_map and core_snap is not None:
+        broadcast_map = unifi_core.wlan_ssid_map(core_snap)
     devices_raw = await _fetch_device_details(hass, conn, site_id, devices_raw)
     network_map = await _fetch_network_map(hass, conn, site_id)
+    if not network_map and core_snap is not None:
+        network_map = unifi_core.network_name_map(core_snap["networks"])
     result["acl"] = await _fetch_acl_rules(hass, conn, site_id, network_map)
 
     clients = [_normalize_client(r, endpoints, broadcast_map, now_ts) for r in clients_raw]
@@ -875,12 +908,6 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     gateway = next((d for d in devices_raw if _is_gateway(d)), None)
     wan = _derive_wan(gateway)
 
-    wireless = [c for c in clients if not c["wired"]]
-    per_ssid: dict[str, int] = {}
-    for c in wireless:
-        ssid = c["ssid"] or "(unknown SSID)"
-        per_ssid[ssid] = per_ssid.get(ssid, 0) + 1
-
     gateway_online = None
     if gateway is not None:
         gstate = str(_first(gateway, "state", "status", default="")).upper()
@@ -888,7 +915,7 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
             gateway_online = False
         else:
             # A gateway that's present in the devices list and not explicitly
-            # offline is treated as online — so "Internet" resolves to
+            # offline is treated as online, so "Internet" resolves to
             # Connected (best-effort) instead of Unknown when the console
             # doesn't expose an explicit WAN up/down flag.
             gateway_online = True
@@ -899,6 +926,26 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
             "status": "online" if gateway_online in (True, None) else "offline",
             "internet_connected": wan["up"] if wan["up"] is not None else gateway_online,
             "wan": wan,
+            "clients": clients,
+            "devices": devices,
+        }
+    )
+    _recompute_client_stats(result)
+
+
+def _recompute_client_stats(result: dict[str, Any]) -> None:
+    """Aggregates derived from the client rows (counts, the per-SSID card,
+    the failing-integration banner count). Recomputed after core enrichment
+    as well, because enrichment can add rows or resolve SSIDs that move
+    clients between buckets."""
+    clients = result["clients"]
+    wireless = [c for c in clients if not c["wired"]]
+    per_ssid: dict[str, int] = {}
+    for c in wireless:
+        ssid = c["ssid"] or "(unknown SSID)"
+        per_ssid[ssid] = per_ssid.get(ssid, 0) + 1
+    result.update(
+        {
             "wireless_client_count": len(wireless),
             "wired_client_count": len(clients) - len(wireless),
             "total_client_count": len(clients),
@@ -907,8 +954,6 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
                 key=lambda x: x["count"],
                 reverse=True,
             ),
-            "clients": clients,
-            "devices": devices,
             "failing_endpoint_count": sum(
                 1
                 for c in clients
@@ -916,7 +961,207 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
             ),
         }
     )
-    return result
+
+
+# ---------------------------------------------------------------------------
+# Enrichment from the core `unifi` integration's in-memory state
+# ---------------------------------------------------------------------------
+
+
+def _core_network_snapshot(hass: HomeAssistant) -> dict[str, Any] | None:
+    """The core unifi in-memory snapshot, or None when the core integration
+    is not loaded or anything about reading it went wrong. The guard exists
+    so a private-API shape change can never take the Network tab down."""
+    try:
+        snap = unifi_core.network_snapshot(hass)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Core unifi snapshot unavailable", exc_info=True)
+        return None
+    return snap if snap.get("available") else None
+
+
+def _apply_core_network_data(
+    result: dict[str, Any],
+    snap: dict[str, Any] | None,
+    endpoints: dict[str, dict[str, Any]],
+    now_ts: int,
+) -> None:
+    """Fill the overview's blanks from the core unifi integration. Direct-API
+    values always win; core memory only fills what is empty, and supplies the
+    rows outright when the API produced none. Failure-isolated: any surprise
+    in the core data leaves the API-only payload as it was."""
+    if snap is None:
+        return
+    try:
+        _enrich_clients_from_core(result, snap, endpoints, now_ts)
+        _enrich_devices_from_core(result, snap, endpoints)
+        _enrich_wan_from_core(result, snap)
+        _recompute_client_stats(result)
+        # Rows built or completed from core memory are real data even when
+        # the direct API is unconfigured or unreachable, so the panel is told
+        # it has something to render. Any API error string stays in the
+        # payload for honesty.
+        if result["clients"] or result["devices"]:
+            result["configured"] = True
+            result["reachable"] = True
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Core unifi enrichment failed", exc_info=True)
+
+
+def _enrich_clients_from_core(
+    result: dict[str, Any],
+    snap: dict[str, Any],
+    endpoints: dict[str, dict[str, Any]],
+    now_ts: int,
+) -> None:
+    core_clients: dict[str, dict[str, Any]] = snap["clients"]
+    if not core_clients:
+        return
+    networks = snap["networks"]
+    if result["clients"]:
+        for row in result["clients"]:
+            cc = core_clients.get(unifi_core.normalize_mac(row.get("mac")) or "")
+            if cc is not None:
+                _fill_client_row_from_core(row, cc, networks, now_ts)
+    else:
+        result["clients"] = [
+            _client_row_from_core(cc, networks, endpoints, now_ts)
+            for cc in core_clients.values()
+        ]
+
+
+def _fill_client_row_from_core(
+    row: dict[str, Any],
+    cc: dict[str, Any],
+    networks: list[dict[str, Any]],
+    now_ts: int,
+) -> None:
+    """Fill one API client row's blanks from its core in-memory twin. A value
+    the direct API already produced is never overwritten. Bandwidth is the
+    exception in spirit only: the Integration API never returns it, so core
+    memory is its primary source rather than a fallback."""
+    if row.get("ssid") in (None, "") and cc.get("essid"):
+        row["ssid"] = str(cc["essid"])
+    if row.get("vlan") in (None, ""):
+        vlan = unifi_core.resolve_client_vlan(cc, networks)
+        if vlan not in (None, ""):
+            row["vlan"] = vlan
+    if row.get("uptime") is None:
+        row["uptime"] = unifi_core.uptime_to_seconds(cc.get("uptime"), now_ts)
+    if row.get("last_seen") is None and cc.get("last_seen") is not None:
+        row["last_seen"] = cc["last_seen"]
+    if row.get("bandwidth") is None:
+        row["bandwidth"] = unifi_core.client_bandwidth(cc)
+
+
+def _client_row_from_core(
+    cc: dict[str, Any],
+    networks: list[dict[str, Any]],
+    endpoints: dict[str, dict[str, Any]],
+    now_ts: int,
+) -> dict[str, Any]:
+    """A full client row assembled from core in-memory data and pushed
+    through the same _normalize_client pipeline the direct API uses, so both
+    sources produce an identical shape. ``origin`` marks the provenance."""
+    raw: dict[str, Any] = {
+        "name": cc.get("name"),
+        "hostname": cc.get("hostname"),
+        "ip": cc.get("ip"),
+        "mac": cc.get("mac"),
+        "essid": cc.get("essid"),
+        "type": "WIRED" if cc.get("is_wired") else "WIRELESS",
+        "vlan": unifi_core.resolve_client_vlan(cc, networks),
+        "uptime": unifi_core.uptime_to_seconds(cc.get("uptime"), now_ts),
+        "last_seen": cc.get("last_seen"),
+    }
+    row = _normalize_client(raw, endpoints, {}, now_ts)
+    row["bandwidth"] = unifi_core.client_bandwidth(cc)
+    row["origin"] = unifi_core.NETWORK_ORIGIN
+    return row
+
+
+def _enrich_devices_from_core(
+    result: dict[str, Any],
+    snap: dict[str, Any],
+    endpoints: dict[str, dict[str, Any]],
+) -> None:
+    core_devices: dict[str, dict[str, Any]] = snap["devices"]
+    if not core_devices:
+        return
+    if result["devices"]:
+        for row in result["devices"]:
+            cd = core_devices.get(unifi_core.normalize_mac(row.get("mac")) or "")
+            if cd is not None:
+                _fill_device_row_from_core(row, cd)
+    else:
+        result["devices"] = [
+            _device_row_from_core(cd, endpoints) for cd in core_devices.values()
+        ]
+
+
+def _fill_device_row_from_core(row: dict[str, Any], cd: dict[str, Any]) -> None:
+    if row.get("state") in (None, "") and cd.get("state"):
+        row["state"] = str(cd["state"]).upper()
+    if row.get("last_seen") is None and cd.get("last_seen") is not None:
+        row["last_seen"] = cd["last_seen"]
+    if row.get("firmware_updatable") is None and cd.get("upgradable") is not None:
+        row["firmware_updatable"] = bool(cd["upgradable"])
+    if row.get("model") in (None, "") and cd.get("model"):
+        row["model"] = str(cd["model"])
+    if row.get("bandwidth") is None:
+        row["bandwidth"] = unifi_core.device_bandwidth(cd)
+
+
+def _device_row_from_core(
+    cd: dict[str, Any], endpoints: dict[str, dict[str, Any]]
+) -> dict[str, Any]:
+    """A full device row from core in-memory data, through _normalize_device
+    for shape parity with the API path."""
+    raw: dict[str, Any] = {
+        "name": cd.get("name"),
+        "model": cd.get("model"),
+        "ip": cd.get("ip"),
+        "mac": cd.get("mac"),
+        "state": cd.get("state"),
+        "updateAvailable": cd.get("upgradable"),
+        "last_seen": cd.get("last_seen"),
+    }
+    uplink = cd.get("uplink") or {}
+    if uplink.get("rx_bytes") is not None or uplink.get("tx_bytes") is not None:
+        raw["uplink"] = {
+            "rx_bytes": uplink.get("rx_bytes"),
+            "tx_bytes": uplink.get("tx_bytes"),
+        }
+    row = _normalize_device(raw, endpoints)
+    row["origin"] = unifi_core.NETWORK_ORIGIN
+    return row
+
+
+def _enrich_wan_from_core(result: dict[str, Any], snap: dict[str, Any]) -> None:
+    """Resolve "Internet - Unknown" and "WAN Bandwidth - Unknown" from the
+    gateway device the core integration tracks. Only blanks are filled; the
+    direct API's own WAN readings always win."""
+    gateway = snap.get("gateway")
+    if not gateway:
+        return
+    core_wan = unifi_core.wan_from_gateway(gateway)
+    wan = result["wan"]
+    for key in ("port", "up", "rx_rate_bps", "tx_rate_bps", "ip"):
+        if wan.get(key) is None and core_wan.get(key) is not None:
+            wan[key] = core_wan[key]
+    # availability is additive: the direct API has no equivalent reading and
+    # the frontend ignores payload keys it does not render, so surfacing the
+    # controller's own WAN-probe percentage costs nothing.
+    if wan.get("availability") is None and core_wan.get("availability") is not None:
+        wan["availability"] = core_wan["availability"]
+    if result.get("internet_connected") is None:
+        if core_wan.get("internet") is not None:
+            result["internet_connected"] = core_wan["internet"]
+        elif wan.get("up") is not None:
+            result["internet_connected"] = wan["up"]
+    if result.get("status") == "unknown" and gateway.get("state"):
+        offline = str(gateway["state"]).upper() in unifi_core.OFFLINE_DEVICE_STATES
+        result["status"] = "offline" if offline else "online"
 
 
 def _is_online_state(value: Any) -> bool:
@@ -1049,9 +1294,14 @@ def _normalize_event(raw: dict[str, Any], origin: str) -> dict[str, Any]:
 async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
     """UniFi Protect status for the Network tab: reachable + camera counts,
     the full devices table (with console deep-links), and recent events / AI
-    smart detections. Best-effort, never raises — a failure comes back as
+    smart detections. Best-effort, never raises; a failure comes back as
     reachable=False with a reason, and the events call failing on its own
-    still returns the cameras."""
+    still returns the cameras.
+
+    Like the Network overview, the direct X-API-KEY readings win, and the
+    core ``unifiprotect`` integration's in-memory bootstrap fills whatever
+    they left blank, most importantly the recent events that many Protect
+    firmwares refuse to serve over REST."""
     out: dict[str, Any] = {
         "configured": False,
         "reachable": False,
@@ -1064,21 +1314,30 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
         "events_error": None,
     }
     conn = _protect_conn(store)
-    if conn is None:
-        return out
-    out["configured"] = True
-    out["host"] = conn.origin
+    if conn is not None:
+        out["configured"] = True
+        out["host"] = conn.origin
+        await _fill_protect_from_api(hass, conn, out)
+    _apply_core_protect_data(hass, out)
+    return out
 
+
+async def _fill_protect_from_api(
+    hass: HomeAssistant, conn: _Conn, out: dict[str, Any]
+) -> None:
+    """The direct-to-console Protect fetch path, mutating ``out`` in place.
+    Kept separate so the core in-memory enrichment can run whether or not
+    this path succeeded."""
     try:
         # VERIFY: Protect Integration API camera collection path.
         payload = await _get_paginated(hass, conn, "/cameras")
     except UniFiError as err:
         out["error"] = str(err)
-        return out
+        return
     except Exception as err:  # noqa: BLE001
         _LOGGER.exception("Unexpected UniFi Protect error")
         out["error"] = f"Unexpected error: {err}"
-        return out
+        return
 
     cameras = [_normalize_camera(c, conn.origin) for c in payload]
     out.update(
@@ -1137,4 +1396,109 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
             "can't consume."
         )
 
-    return out
+
+# ---------------------------------------------------------------------------
+# Enrichment from the core `unifiprotect` integration's in-memory bootstrap
+# ---------------------------------------------------------------------------
+
+
+def _apply_core_protect_data(hass: HomeAssistant, out: dict[str, Any]) -> None:
+    """Fill the Protect status from the core unifiprotect integration's
+    in-memory bootstrap: camera details the REST probe missed, and the recent
+    events the REST /events endpoint refuses to serve on many firmwares.
+    Failure-isolated the same way the Network enrichment is: any surprise in
+    the private core objects leaves the API-only payload untouched."""
+    try:
+        snap = unifi_core.protect_snapshot(hass)
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Core unifiprotect snapshot unavailable", exc_info=True)
+        return
+    if not snap.get("available"):
+        return
+    try:
+        origin = out.get("host") or snap.get("origin") or ""
+        if out["cameras"]:
+            by_id = {c["id"]: c for c in out["cameras"] if c.get("id")}
+            by_mac = {
+                unifi_core.normalize_mac(c.get("mac")): c
+                for c in out["cameras"]
+                if c.get("mac")
+            }
+            for cam in snap["cameras"]:
+                row = by_id.get(cam["id"]) or by_mac.get(cam.get("mac"))
+                if row is not None:
+                    _fill_camera_row_from_core(row, cam, origin)
+        else:
+            out["cameras"] = [_camera_row_from_core(c, origin) for c in snap["cameras"]]
+        out["camera_count"] = len(out["cameras"])
+        out["cameras_online"] = sum(1 for c in out["cameras"] if c["online"])
+
+        if not out["events"]:
+            now_ts = int(dt_util.utcnow().timestamp())
+            cutoff = now_ts - 24 * 3600
+            # The panel's events card is captioned "last 24h", so the
+            # bootstrap's recent-events buffer is filtered to that window.
+            events = [
+                _event_row_from_core(e, origin)
+                for e in snap["events"]
+                if e.get("start") is not None and e["start"] >= cutoff
+            ]
+            events.sort(key=lambda e: e["start"] or 0, reverse=True)
+            out["events"] = events
+            # The core bootstrap is now the events source, so a message about
+            # the REST probe failing would be stale and misleading.
+            out["events_error"] = None
+
+        # Data straight out of core memory is real even when the direct API
+        # is unconfigured or down, so the panel is told it can render it.
+        if out["cameras"] or out["events"]:
+            out["configured"] = True
+            out["reachable"] = True
+            if not out.get("host") and snap.get("origin"):
+                out["host"] = snap["origin"]
+    except Exception:  # noqa: BLE001
+        _LOGGER.debug("Core unifiprotect enrichment failed", exc_info=True)
+
+
+def _camera_row_from_core(cam: dict[str, Any], origin: str) -> dict[str, Any]:
+    """A full camera row from the core bootstrap, through _normalize_camera
+    for shape parity with the API path."""
+    row = _normalize_camera(cam, origin)
+    if not origin:
+        # Without a known console origin the deep link would be relative and
+        # point at the Home Assistant host instead of the Protect console.
+        row["link"] = None
+    row["origin"] = unifi_core.PROTECT_ORIGIN
+    return row
+
+
+def _fill_camera_row_from_core(
+    row: dict[str, Any], cam: dict[str, Any], origin: str
+) -> None:
+    """Fill one REST camera row's blanks from its bootstrap twin. The
+    bootstrap dict is normalized through the same pipeline first so the fill
+    values arrive in payload form, then only genuinely missing fields are
+    taken from it; REST values always win."""
+    core_row = _camera_row_from_core(cam, origin)
+    for key in ("ip", "is_recording", "last_ring", "state", "online"):
+        if row.get(key) is None and core_row.get(key) is not None:
+            row[key] = core_row[key]
+    if not row.get("channels") and core_row.get("channels"):
+        row["channels"] = core_row["channels"]
+        row["channel_count"] = core_row["channel_count"]
+    if row.get("name") in (None, "unknown") and core_row.get("name") not in (None, "unknown"):
+        row["name"] = core_row["name"]
+
+
+def _event_row_from_core(event: dict[str, Any], origin: str) -> dict[str, Any]:
+    """One event row from the core bootstrap, through _normalize_event. The
+    normalizer is fed the camera id because the console deep link needs it;
+    the payload's camera field is then swapped to the resolved camera name,
+    which is what a human reading the events table needs."""
+    row = _normalize_event(event, origin)
+    if not origin:
+        row["thumbnail_link"] = None
+    if event.get("camera_name"):
+        row["camera"] = str(event["camera_name"])
+    row["origin"] = unifi_core.PROTECT_ORIGIN
+    return row
