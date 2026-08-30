@@ -8,6 +8,9 @@ with what payload) is documented in audit.py's module docstring.
 """
 from __future__ import annotations
 
+import json
+import logging
+import os
 from typing import Any
 
 import pytest
@@ -215,3 +218,175 @@ async def test_config_entry_change_is_ambient_only(
     assert record["detail"]["change"] == "added"
     assert record["detail"]["entry_id"] == "entry-1"
     assert record["detail"]["actor_source"] == "system"
+
+
+async def test_audit_files_and_store_are_private(
+    hass: HomeAssistant, tmp_path: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Work item 1.1, on a real filesystem: 0o700 directory, 0o600 files.
+
+    Also the one-time migration: a file a pre-1.1 build left world-readable
+    is tightened to 0o600 by _sync_ensure_dir and the change is logged at
+    INFO. And the general HA SOC Store itself is private with atomic
+    writes, which is the other half of the same item.
+    """
+    audit = await _make_audit(hass, tmp_path)
+
+    # Plant a pre-existing wide-mode file before the directory setup runs,
+    # simulating an install upgrading from a pre-1.1 build.
+    os.makedirs(audit._dir_path)
+    legacy = os.path.join(audit._dir_path, "audit-2020-01-01.jsonl")
+    with open(legacy, "w", encoding="utf-8") as handle:
+        handle.write("")
+    os.chmod(legacy, 0o644)
+
+    with caplog.at_level(logging.INFO):
+        await hass.async_add_executor_job(audit._sync_ensure_dir)
+    assert os.stat(audit._dir_path).st_mode & 0o777 == 0o700
+    assert os.stat(legacy).st_mode & 0o777 == 0o600
+    assert "tightened 1 pre-existing audit file(s)" in caplog.text
+
+    # Fresh writes are born private: a day file and the chain head (whose
+    # .tmp staging file becomes the head via os.replace, preserving mode).
+    audit.async_log("service_call", user_id="u1", domain="light", service="turn_on")
+    await audit._async_flush()
+    day_files = [path for _d, path in audit._sync_list_day_files()]
+    assert day_files
+    for path in day_files:
+        assert os.stat(path).st_mode & 0o777 == 0o600
+    head_path = os.path.join(audit._dir_path, "chain_head.json")
+    assert os.stat(head_path).st_mode & 0o777 == 0o600
+
+    # The general store: private=True, atomic_writes=True on the Store.
+    assert audit._store._store._private is True
+    assert audit._store._store._atomic_writes is True
+
+
+async def test_service_data_redaction_is_deep(
+    hass: HomeAssistant, tmp_path: Any
+) -> None:
+    """Work item 1.6: the async_log chokepoint walks nested dicts and lists.
+
+    Key matching is case-insensitive and exact (token redacted, token_id
+    kept); message/title fall only for the notification-shaped domains and
+    only on service calls; payload falls only for mqtt.publish.
+    """
+    audit = await _make_audit(hass, tmp_path)
+
+    audit.async_log(
+        "service_call",
+        user_id="u1",
+        domain="light",
+        service="turn_on",
+        detail={
+            "password": "hunter2",
+            "Token": "tok-value",
+            "options": {"api_key": "k1", "nested": [{"client_secret": "cs"}]},
+            "token_id": "tok-id-visible",
+            "brightness_pct": 50,
+        },
+    )
+    detail = _buffered(audit, "service_call")[0]["detail"]
+    assert detail["password"] == "[redacted]"
+    assert detail["Token"] == "[redacted]"
+    assert detail["options"]["api_key"] == "[redacted]"
+    assert detail["options"]["nested"][0]["client_secret"] == "[redacted]"
+    assert detail["token_id"] == "tok-id-visible"
+    assert detail["brightness_pct"] == 50
+
+    audit.async_log(
+        "service_call",
+        domain="notify",
+        service="mobile_app_phone",
+        detail={"message": "the alarm went off", "title": "Alarm", "target": "phone"},
+    )
+    detail = _buffered(audit, "service_call")[1]["detail"]
+    assert detail["message"] == "[redacted]"
+    assert detail["title"] == "[redacted]"
+    assert detail["target"] == "phone"
+
+    audit.async_log(
+        "service_call",
+        domain="persistent_notification",
+        service="create",
+        detail={"message": "secret door open"},
+    )
+    assert _buffered(audit, "service_call")[2]["detail"]["message"] == "[redacted]"
+
+    audit.async_log(
+        "service_call",
+        domain="mqtt",
+        service="publish",
+        detail={"payload": "creds-in-here", "topic": "home/lock"},
+    )
+    detail = _buffered(audit, "service_call")[3]["detail"]
+    assert detail["payload"] == "[redacted]"
+    assert detail["topic"] == "home/lock"
+
+    # A non-publish mqtt call keeps its payload, and a record that is not a
+    # service call (service=None) keeps title even for a notify domain: a
+    # config entry named "My Notify" is metadata, not a notification body.
+    audit.async_log(
+        "service_call", domain="mqtt", service="dump", detail={"payload": "x"}
+    )
+    assert _buffered(audit, "service_call")[4]["detail"]["payload"] == "x"
+    audit.async_log(
+        "config_entry_change", domain="notify", detail={"title": "My Notify"}
+    )
+    assert _buffered(audit, "config_entry_change")[0]["detail"]["title"] == "My Notify"
+
+
+async def test_high_value_records_flush_immediately(
+    hass: HomeAssistant, tmp_path: Any
+) -> None:
+    """Work item 1.7: high-value categories schedule a flush task at once.
+
+    A plain service_call waits for the 30 s timer; user_added, any
+    firewall_* category, and an explicit flush=True do not. Before the
+    chain head has been loaded nothing schedules at all - an unloaded
+    instance flushing would chain records from genesis over a live chain.
+    """
+    audit = await _make_audit(hass, tmp_path)
+
+    # Pre-load gate: high-value or not, nothing schedules until the head
+    # is loaded; the record just buffers like it did before item 1.7.
+    audit.async_log("user_removed", user_id="early", detail={"target_user_id": "x"})
+    assert audit._flush_task is None
+    assert len(audit._buffer) == 1
+    audit._buffer.clear()
+
+    await hass.async_add_executor_job(audit._sync_ensure_dir)
+    await hass.async_add_executor_job(audit._sync_load_chain_head)
+
+    audit.async_log("service_call", user_id="u1", domain="light", service="turn_on")
+    assert audit._flush_task is None
+    assert len(audit._buffer) == 1
+
+    audit.async_log("user_added", user_id="admin", detail={"target_user_id": "new"})
+    assert audit._flush_task is not None
+    await hass.async_block_till_done()
+    # The task drained the whole buffer, low-value record included, and the
+    # records are on disk without any timer having fired.
+    assert len(audit._buffer) == 0
+    on_disk = await audit.hass.async_add_executor_job(
+        lambda: [
+            json.loads(line)
+            for _d, path in audit._sync_list_day_files()
+            for line in open(path, encoding="utf-8").read().splitlines()
+            if line.strip()
+        ]
+    )
+    assert {r["category"] for r in on_disk} == {"service_call", "user_added"}
+
+    audit.async_log(
+        "firewall_resolved", detail={"actor_source": "addon", "test_id": "t1"}
+    )
+    assert audit._flush_task is not None and not audit._flush_task.done()
+    await hass.async_block_till_done()
+    assert len(audit._buffer) == 0
+
+    # flush=True forces the same behavior for a category outside the set.
+    audit.async_log("service_call", user_id="u2", flush=True)
+    assert audit._flush_task is not None and not audit._flush_task.done()
+    await hass.async_block_till_done()
+    assert len(audit._buffer) == 0

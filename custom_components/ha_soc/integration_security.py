@@ -51,6 +51,7 @@ from .const import (
     INTEGRATION_TIER_CUSTOM,
     INTEGRATION_TIER_HACS,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -141,12 +142,17 @@ def _hacs_domain_origins(hass: HomeAssistant) -> dict[str, str] | None:
 
 
 async def async_integration_security_overview(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
     """Everything the Integration Security view needs. Local signals only;
     GitHub-derived signals are merged from the store cache (populated
-    out-of-band by github_provenance.py) and are None when not collected."""
-    github_configured = bool(store.settings.get(CONF_GITHUB_TOKEN))
+    out-of-band by github_provenance.py) and are None when not collected.
+
+    The token itself lives in the private secret store (SEC-1); only its
+    presence is asked for here, to drive the "configured" flag and the
+    cache merge, and the value never enters this function.
+    """
+    github_configured = bool(await secrets.async_get(CONF_GITHUB_TOKEN))
     hacs_origins = _hacs_domain_origins(hass)
     hacs_installed = hacs_origins is not None or "hacs" in hass.config.components
 

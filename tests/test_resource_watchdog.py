@@ -27,6 +27,7 @@ from custom_components.ha_soc.resource_watchdog import (
     async_resource_limits_for_probe,
     async_store_limit_report,
 )
+from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 from custom_components.ha_soc.store import HaSocData
 
 
@@ -237,8 +238,9 @@ async def test_poll_response_carries_limits(
 ) -> None:
     """The firewall poll answer piggybacks the caps for the Probe."""
     store = entry.runtime_data.store
-    # Pin the shared secret so the poll is accepted.
-    store.data["firewall"]["addon_secret"] = "s3cret"
+    # Pin the shared secret so the poll is accepted. Since SEC-1 the pin
+    # lives in the private secret store, not the firewall dict.
+    await entry.runtime_data.secrets.async_set(PROBE_PAIRING_SECRET_KEY, "s3cret")
     store.data["resource_watchdog"]["hard_limits"] = {"ma": {"memory_mb": 512, "cpus": None}}
 
     response = await hass.services.async_call(
@@ -256,7 +258,7 @@ async def test_ingest_stores_limit_report(
     hass: HomeAssistant, entry: MockConfigEntry, supervisor_context: Context
 ) -> None:
     store = entry.runtime_data.store
-    store.data["firewall"]["addon_secret"] = "s3cret"
+    await entry.runtime_data.secrets.async_set(PROBE_PAIRING_SECRET_KEY, "s3cret")
 
     await hass.services.async_call(
         DOMAIN,

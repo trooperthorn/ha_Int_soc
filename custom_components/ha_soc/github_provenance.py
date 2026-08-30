@@ -20,6 +20,11 @@ a guess. Results are cached in the store keyed by "owner/repo" so a refresh
 doesn't re-hit the API for repos looked up recently; the GitHub endpoint is
 a hardcoded constant and the token/owner/repo are passed as header/path
 params, never spliced into a URL string.
+
+The token lives in the private secret store (secrets_store.py) and is
+fetched immediately before each per-repo lookup, then dropped with that
+call frame (work item SEC-3): no parameter threading, attribute, or module
+global carries the token across the refresh loop.
 """
 from __future__ import annotations
 
@@ -34,6 +39,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.util.dt as dt_util
 
 from .const import CONF_GITHUB_TOKEN, GITHUB_API_BASE
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -54,12 +60,21 @@ def _headers(token: str) -> dict[str, str]:
 
 
 async def _fetch_repo_signals(
-    session: aiohttp.ClientSession, owner_repo: str, token: str
+    session: aiohttp.ClientSession, owner_repo: str, secrets: HaSocSecretStore
 ) -> dict[str, Any] | None:
     """Two calls per repo: the repo object (stars/forks/archived/pushed_at)
     and the default-branch head commit (verification). Returns a signal
     dict, or None on any error (the caller keeps that repo 'not collected').
+
+    The token is fetched from the secret store here, right before the
+    requests it authenticates, and goes out of scope when this function
+    returns (SEC-3).
     """
+    token = await secrets.async_get(CONF_GITHUB_TOKEN)
+    if not token:
+        # The caller checked presence before starting the loop; the token
+        # being cleared mid-refresh just leaves the rest "not collected".
+        return None
     base = f"{GITHUB_API_BASE}/repos/{owner_repo}"
     try:
         async with asyncio.timeout(_TIMEOUT_SECONDS):
@@ -116,13 +131,17 @@ async def _fetch_repo_signals(
 
 
 async def async_refresh_github_signals(
-    hass: HomeAssistant, store: HaSocData, repo_urls: list[str]
+    hass: HomeAssistant,
+    store: HaSocData,
+    repo_urls: list[str],
+    secrets: HaSocSecretStore,
 ) -> dict[str, Any]:
     """Refresh cached GitHub signals for the given owner/repo list. Returns
     a summary; the per-repo data lands in the store cache. A no-op (with a
     clear reason) when no token is configured."""
-    token = store.settings.get(CONF_GITHUB_TOKEN)
-    if not token:
+    # Presence check only; the value is fetched per repo inside
+    # _fetch_repo_signals and never held across the loop (SEC-3).
+    if not await secrets.async_get(CONF_GITHUB_TOKEN):
         return {"ok": False, "reason": "no_github_token", "refreshed": 0}
 
     unique = [r for r in dict.fromkeys(repo_urls) if r]
@@ -133,7 +152,7 @@ async def async_refresh_github_signals(
     cache = dict(store.data["integration_security"].get("github") or {})
     refreshed = 0
     for owner_repo in unique:
-        signals = await _fetch_repo_signals(session, owner_repo, token)
+        signals = await _fetch_repo_signals(session, owner_repo, secrets)
         if signals is not None:
             cache[owner_repo] = signals
             refreshed += 1

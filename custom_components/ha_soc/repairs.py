@@ -4,10 +4,10 @@
 have the domain-specific context to do it well). This module covers the
 cross-cutting issue types that don't belong to either: admins without MFA
 (a `users.py` + `risk.py` concern), confirmed high/critical device
-vulnerabilities (a `vulns.py` concern), and stale long-lived access
-tokens (also a `users.py` concern). Kept separate so none of those
-modules needs to import `homeassistant.helpers.issue_registry` for a
-single call site.
+vulnerabilities (a `vulns.py` concern), stale long-lived access tokens
+(also a `users.py` concern), and a reset/wiped audit chain (an `audit.py`
+concern, work item 1.5). Kept separate so none of those modules needs to
+import `homeassistant.helpers.issue_registry` for a single call site.
 """
 from __future__ import annotations
 
@@ -27,6 +27,42 @@ _STALE_TOKEN_PREFIX = "stale_access_token_"
 # reasonable, already-field-tested value for "probably forgotten", not
 # this project's own invention.
 STALE_TOKEN_UNUSED_DAYS = 180
+
+# One fixed issue id, not a per-incident one: a second reset before the
+# operator dismissed the first just refreshes the same issue with the newer
+# numbers, and the full incident-by-incident history lives in the audit
+# chain itself (every reset writes an audit_chain_reset record).
+AUDIT_CHAIN_RESET_ISSUE_ID = "audit_chain_reset"
+
+
+def async_create_audit_chain_reset_issue(
+    hass: HomeAssistant, *, store_seq: int, disk_seq: int | None
+) -> None:
+    """Raise the Repairs issue for a wiped/rolled-back audit chain.
+
+    Called by audit.py when a startup finds the on-disk chain head absent
+    or behind the store's mirror of the last flushed head (work item 1.5).
+    Severity ERROR, not CRITICAL: the chain has already been continued
+    from the mirrored head and new records are being written, so this is
+    "evidence was destroyed and you must know", not "the control is down
+    right now". is_fixable=False because nothing here can restore deleted
+    records; the operator's action is to investigate who could reach
+    `.storage/` and then dismiss the issue.
+    """
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        AUDIT_CHAIN_RESET_ISSUE_ID,
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="audit_chain_reset",
+        translation_placeholders={
+            "store_seq": str(store_seq),
+            # "none" reads better than a bare 0 for "the head file was
+            # gone entirely" in the rendered issue text.
+            "disk_seq": str(disk_seq) if disk_seq is not None else "none",
+        },
+    )
 
 
 async def async_sync_admin_mfa_issues(hass: HomeAssistant, users: list[dict]) -> None:

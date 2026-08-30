@@ -89,24 +89,33 @@ async def test_verify_chain_detects_deleted_tail(hass: HomeAssistant, store: HaS
 # -- HIGH-1: trust-on-first-use secret gate ----------------------------------
 
 
-async def test_firewall_secret_pin_and_reject(hass: HomeAssistant, store: HaSocData) -> None:
+async def test_firewall_secret_pin_and_reject(hass: HomeAssistant) -> None:
     from custom_components.ha_soc.firewall import (
         async_reset_addon_secret,
         async_verify_or_pin_secret,
     )
+    from custom_components.ha_soc.secrets_store import (
+        PROBE_PAIRING_SECRET_KEY,
+        HaSocSecretStore,
+    )
+
+    # The pin lives in the private secret store since SEC-1, so the checks
+    # run against it rather than the general store.
+    secrets = HaSocSecretStore(hass)
+    await secrets.async_load()
 
     # First non-empty secret pins.
-    assert async_verify_or_pin_secret(store, "addon-secret-1") is True
-    assert store.data["firewall"]["addon_secret"] == "addon-secret-1"
+    assert await async_verify_or_pin_secret(secrets, "addon-secret-1") is True
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) == "addon-secret-1"
     # Same secret keeps working.
-    assert async_verify_or_pin_secret(store, "addon-secret-1") is True
+    assert await async_verify_or_pin_secret(secrets, "addon-secret-1") is True
     # A forged call with the wrong (or no) secret is rejected.
-    assert async_verify_or_pin_secret(store, "attacker-secret") is False
-    assert async_verify_or_pin_secret(store, None) is False
+    assert await async_verify_or_pin_secret(secrets, "attacker-secret") is False
+    assert await async_verify_or_pin_secret(secrets, None) is False
     # Owner reset re-opens pinning.
-    async_reset_addon_secret(store)
-    assert store.data["firewall"]["addon_secret"] is None
-    assert async_verify_or_pin_secret(store, "addon-secret-2") is True
+    await async_reset_addon_secret(secrets)
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) is None
+    assert await async_verify_or_pin_secret(secrets, "addon-secret-2") is True
 
 
 # -- MED-7: firewall rule source must be a real IP/CIDR ----------------------

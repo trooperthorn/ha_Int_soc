@@ -61,7 +61,12 @@ class HaSocOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> Any:
         if user_input is not None:
-            return self.async_create_entry(title="", data=dict(self.config_entry.options))
+            # Always {} so a save through this dialog can never repopulate
+            # entry.options: since work item SEC-2 the options mirror is
+            # gone, nothing reads entry.options, and setup scrubs any
+            # legacy copy to {} exactly once. Echoing the old options back
+            # here would quietly resurrect the copy that scrub removed.
+            return self.async_create_entry(title="", data={})
 
         return self.async_show_form(
             step_id="init",

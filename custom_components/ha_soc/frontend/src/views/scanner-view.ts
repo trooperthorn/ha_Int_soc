@@ -14,6 +14,7 @@ import {
   FirewallPendingTest,
   fetchScannerFindings,
   scanIntegrationNow,
+  exportFinding,
   fetchVulns,
   scanVulnsNow,
   setVulnStatus,
@@ -90,6 +91,7 @@ export class HaSocScannerView extends LitElement {
   @state() private _probe: ProbeOverview | null = null;
   @state() private _loading = true;
   @state() private _scanning = false;
+  @state() private _exportNotice: string | null = null;
 
   @state() private _firewall: FirewallStatus | null = null;
   @state() private _fwDraftRules: FirewallRule[] = [{ action: "allow", proto: "tcp", port: 0, source: "" }];
@@ -306,6 +308,46 @@ export class HaSocScannerView extends LitElement {
     await this._load();
   }
 
+  // The GHSA export is a copy-to-clipboard convenience, never a submission
+  // channel (the server only shapes text; nothing is sent anywhere). The
+  // confirmation names the stored snippet and the target integration
+  // because the copied text is the one thing in this view designed to
+  // leave the instance, and the operator should see exactly what code
+  // excerpt and whose name it carries before it lands on the clipboard.
+  private async _onExportFinding(f: any) {
+    const ok = confirm(
+      `Copy a GHSA-shaped advisory draft to the clipboard?\n\n` +
+        `Integration: ${f.domain}\n` +
+        `Matched code: ${f.snippet}\n\n` +
+        `Nothing is submitted anywhere. The text is only placed on your ` +
+        `clipboard for you to review and paste yourself.`
+    );
+    if (!ok) return;
+    this._exportNotice = null;
+    try {
+      const ghsa = (await exportFinding(this.hass, f.id)) as {
+        title: string;
+        description: string;
+        severity: string;
+        cwe: string;
+        affected: { ecosystem: string; package: string; version: string };
+        references: string[];
+      };
+      const text = [
+        `Title: ${ghsa.title}`,
+        `Severity: ${ghsa.severity}`,
+        `CWE: ${ghsa.cwe}`,
+        `Package: ${ghsa.affected.package} (${ghsa.affected.ecosystem})`,
+        ``,
+        ghsa.description,
+      ].join("\n");
+      await navigator.clipboard.writeText(text);
+      this._exportNotice = `Copied the advisory draft for ${f.domain} (${f.file}:${f.line}) to the clipboard.`;
+    } catch (err: any) {
+      this._exportNotice = `Export failed: ${err?.message ?? "could not copy to the clipboard"}`;
+    }
+  }
+
   private async _onMisconfigStatus(id: string, status: string) {
     await setMisconfigStatus(this.hass, id, status);
     await this._load();
@@ -425,6 +467,7 @@ export class HaSocScannerView extends LitElement {
                     ${sortableTh("Confidence", "confidence", this._scannerSort, (n) => (this._scannerSort = n))}
                     ${sortableTh("CWE", "cwe", this._scannerSort, (n) => (this._scannerSort = n))}
                     <th>Status</th>
+                    <th></th>
                   </tr>
                 </thead>
                 <tbody>
@@ -437,11 +480,15 @@ export class HaSocScannerView extends LitElement {
                         <td>${f.confidence}</td>
                         <td>${f.cwe}</td>
                         <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
+                        <td><button class="ha-btn" @click=${() => this._onExportFinding(f)}>Export</button></td>
                       </tr>
                     `
                   )}
                 </tbody>
               </table>
+              ${this._exportNotice
+                ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${this._exportNotice}</p>`
+                : nothing}
             `}
       </div>
 

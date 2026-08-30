@@ -18,6 +18,11 @@ Two independent checks feed the same "vuln_findings" table:
 - CVE correlation (Part 3): queries the NVD API 2.0 per device, gated by
   a curated manufacturer->CPE table first and a noisier keyword search as
   fallback — network, best-effort, independently fails per device.
+
+The optional NVD API key lives in the private secret store
+(secrets_store.py) and is fetched immediately before each HTTP request,
+then dropped when the request completes (work item SEC-3): no parameter,
+attribute, or module global carries the key between requests.
 """
 from __future__ import annotations
 
@@ -36,6 +41,7 @@ from homeassistant.helpers.aiohttp_client import async_get_clientsession
 import homeassistant.util.dt as dt_util
 
 from .const import (
+    CONF_NVD_API_KEY,
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
     SEVERITY_INFO,
@@ -46,6 +52,7 @@ from .const import (
     STATUS_NEW,
     STATUS_RESOLVED,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -216,14 +223,19 @@ class DeviceVulnerabilityTracker:
     aborts the rest of the scan.
     """
 
-    def __init__(self, hass: HomeAssistant, store: HaSocData) -> None:
+    def __init__(
+        self, hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+    ) -> None:
         self.hass = hass
         self.store = store
+        # The secret store reference, not the key: the key itself is asked
+        # for one request at a time inside _async_query_nvd (SEC-3).
+        self._secrets = secrets
         # match_string -> last time it was actually sent to NVD (see
         # MATCH_STRING_CACHE_TTL). In-memory only; see module docstring.
         self._last_fetched: dict[str, datetime] = {}
 
-    async def async_run_scan(self, *, api_key: str | None = None) -> list[dict]:
+    async def async_run_scan(self) -> list[dict]:
         registry = dr.async_get(self.hass)
         physical_devices = [
             device
@@ -236,9 +248,7 @@ class DeviceVulnerabilityTracker:
         findings.extend(self._check_firmware_currency(devices_by_id))
 
         try:
-            findings.extend(
-                await self._async_correlate_cves(physical_devices, api_key)
-            )
+            findings.extend(await self._async_correlate_cves(physical_devices))
         except Exception:  # noqa: BLE001 - firmware findings above must survive this
             _LOGGER.exception(
                 "HA SOC CVE correlation pass failed; firmware-currency findings "
@@ -411,11 +421,14 @@ class DeviceVulnerabilityTracker:
 
         return findings
 
-    async def _async_correlate_cves(
-        self, devices: list[dr.DeviceEntry], api_key: str | None
-    ) -> list[dict]:
+    async def _async_correlate_cves(self, devices: list[dr.DeviceEntry]) -> list[dict]:
         now = dt_util.utcnow()
         now_iso = now.isoformat()
+        # Presence only, never the value: the pacing between NVD calls
+        # depends on whether a key exists (50 req/30s with one, ~5 without),
+        # and a boolean is all that decision needs. The value itself is
+        # fetched per request inside _async_query_nvd.
+        has_api_key = bool(await self._secrets.async_get(CONF_NVD_API_KEY))
         findings: list[dict] = []
         # Reused across devices that share a match_string within this one
         # scan (e.g. every Shelly device hits the same curated wildcard),
@@ -454,9 +467,7 @@ class DeviceVulnerabilityTracker:
                 )
                 continue
             else:
-                vulnerabilities = await self._async_query_nvd(
-                    query_param, match_string, api_key
-                )
+                vulnerabilities = await self._async_query_nvd(query_param, match_string)
                 # Only a successful fetch earns the multi-day cache entry —
                 # a transient failure should be retried on the next scan
                 # (hours away), not blocked for a full week. Still recorded
@@ -466,7 +477,7 @@ class DeviceVulnerabilityTracker:
                     self._last_fetched[match_string] = now
                 run_cache[match_string] = vulnerabilities
                 await asyncio.sleep(
-                    NVD_DELAY_WITH_KEY if api_key else NVD_DELAY_NO_KEY
+                    NVD_DELAY_WITH_KEY if has_api_key else NVD_DELAY_NO_KEY
                 )
 
             if not vulnerabilities:
@@ -487,10 +498,14 @@ class DeviceVulnerabilityTracker:
         return last is not None and (now - last) < MATCH_STRING_CACHE_TTL
 
     async def _async_query_nvd(
-        self, query_param: str, match_string: str, api_key: str | None
+        self, query_param: str, match_string: str
     ) -> list[dict[str, Any]] | None:
         session = async_get_clientsession(self.hass)
         params = {query_param: match_string, "resultsPerPage": str(NVD_RESULTS_PER_PAGE)}
+        # Fetched immediately before the request and dropped with this
+        # frame when it returns (SEC-3); no attribute holds it between
+        # requests.
+        api_key = await self._secrets.async_get(CONF_NVD_API_KEY)
         headers = {"apiKey": api_key} if api_key else None
 
         try:

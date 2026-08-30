@@ -630,6 +630,9 @@ export interface EntityRemapApplyResult {
   new_entity_id: string;
   fixed: Record<EntityRemapKind, number>;
   errors: string[];
+  // Pre-rewrite snapshot paths under .storage/ha_soc_remap/ (kept 30 days).
+  // Optional so a response from an older backend still renders.
+  backups?: string[];
 }
 
 export interface BrokenEntityReference {

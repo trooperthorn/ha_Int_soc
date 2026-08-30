@@ -25,6 +25,7 @@ from custom_components.ha_soc.github_provenance import async_refresh_github_sign
 from custom_components.ha_soc.integration_security import (
     async_integration_security_overview,
 )
+from custom_components.ha_soc.secrets_store import HaSocSecretStore
 from custom_components.ha_soc.store import HaSocData
 
 # A stand-in for what github_provenance._fetch_repo_signals returns for one
@@ -44,6 +45,15 @@ FAKE_SIGNALS = {
 @pytest.fixture
 async def store(hass: HomeAssistant) -> HaSocData:
     data = HaSocData(hass)
+    await data.async_load()
+    return data
+
+
+@pytest.fixture
+async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
+    # The private secret store is where the GitHub token lives since SEC-1;
+    # the overview and refresh functions take it explicitly.
+    data = HaSocSecretStore(hass)
     await data.async_load()
     return data
 
@@ -77,9 +87,10 @@ async def test_overview_shape_and_no_github_without_token(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     store = entry.runtime_data.store
-    assert not store.settings.get(CONF_GITHUB_TOKEN)  # no token configured
+    secrets = entry.runtime_data.secrets
+    assert await secrets.async_get(CONF_GITHUB_TOKEN) is None  # no token configured
 
-    overview = await async_integration_security_overview(hass, store)
+    overview = await async_integration_security_overview(hass, store, secrets)
 
     assert set(overview) == {
         "github_configured",
@@ -107,7 +118,9 @@ async def test_overview_shape_and_no_github_without_token(
 async def test_ha_soc_itself_is_a_custom_row(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
-    overview = await async_integration_security_overview(hass, entry.runtime_data.store)
+    overview = await async_integration_security_overview(
+        hass, entry.runtime_data.store, entry.runtime_data.secrets
+    )
 
     row = next(r for r in overview["integrations"] if r["domain"] == DOMAIN)
     assert row["tier"] == INTEGRATION_TIER_CUSTOM
@@ -128,7 +141,9 @@ async def test_ha_soc_itself_is_a_custom_row(
 async def test_core_rows_are_consistent(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
-    overview = await async_integration_security_overview(hass, entry.runtime_data.store)
+    overview = await async_integration_security_overview(
+        hass, entry.runtime_data.store, entry.runtime_data.secrets
+    )
 
     core_rows = [r for r in overview["integrations"] if r["tier"] == INTEGRATION_TIER_CORE]
     # The harness may surface zero core rows; this stays robust to that. Any
@@ -142,15 +157,15 @@ async def test_core_rows_are_consistent(
 
 
 async def test_refresh_without_token_is_noop(
-    hass: HomeAssistant, store: HaSocData
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    assert not store.settings.get(CONF_GITHUB_TOKEN)
+    assert await secrets.async_get(CONF_GITHUB_TOKEN) is None
 
     with patch(
         "custom_components.ha_soc.github_provenance._fetch_repo_signals",
         new=AsyncMock(),
     ) as mock_fetch:
-        result = await async_refresh_github_signals(hass, store, ["owner/repo"])
+        result = await async_refresh_github_signals(hass, store, ["owner/repo"], secrets)
 
     assert result == {"ok": False, "reason": "no_github_token", "refreshed": 0}
     mock_fetch.assert_not_called()  # never reached the network layer
@@ -163,11 +178,12 @@ async def test_refresh_with_token_caches_and_merges(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     store = entry.runtime_data.store
-    store.async_update_settings(github_token="ghp_fake_token")
+    secrets = entry.runtime_data.secrets
+    await secrets.async_set(CONF_GITHUB_TOKEN, "ghp_fake_token")
 
     # Discover the ha_soc row's real repo_url (from its manifest) so the
     # cache we write actually merges back onto that row.
-    pre = await async_integration_security_overview(hass, store)
+    pre = await async_integration_security_overview(hass, store, secrets)
     ha_soc_row = next(r for r in pre["integrations"] if r["domain"] == DOMAIN)
     repo_url = ha_soc_row["repo_url"]
     assert repo_url  # ha_soc's manifest points at a github repo
@@ -176,7 +192,7 @@ async def test_refresh_with_token_caches_and_merges(
         "custom_components.ha_soc.github_provenance._fetch_repo_signals",
         new=AsyncMock(return_value=dict(FAKE_SIGNALS)),
     ) as mock_fetch:
-        result = await async_refresh_github_signals(hass, store, [repo_url])
+        result = await async_refresh_github_signals(hass, store, [repo_url], secrets)
 
     mock_fetch.assert_awaited_once()
     assert result["ok"] is True
@@ -189,7 +205,7 @@ async def test_refresh_with_token_caches_and_merges(
     assert store.data["integration_security"]["refreshed_at"] is not None
 
     # A subsequent overview merges the cached signals onto the matching row.
-    post = await async_integration_security_overview(hass, store)
+    post = await async_integration_security_overview(hass, store, secrets)
     merged_row = next(r for r in post["integrations"] if r["domain"] == DOMAIN)
     assert merged_row["github"] == FAKE_SIGNALS
 
@@ -261,7 +277,9 @@ async def test_custom_components_scan_runs_in_executor(
     # (pytest_homeassistant_custom_component common.py), which would make this
     # thread assertion meaningless for a MagicMock.
     with patch.object(mod, "_scan_custom_components_sync", new=_spy):
-        await async_integration_security_overview(hass, entry.runtime_data.store)
+        await async_integration_security_overview(
+            hass, entry.runtime_data.store, entry.runtime_data.secrets
+        )
 
     assert scan_threads, "the custom_components scan was never invoked"
     assert all(tid != loop_thread for tid in scan_threads), (

@@ -9,6 +9,12 @@ Network tab.
 Everything here is READ-ONLY: it lists clients, network devices, and derives
 a WAN/internet status. It never mutates controller state.
 
+The two API keys live in the private secret store (secrets_store.py) and
+are fetched at use time only: each overview/status call builds a
+short-lived ``_Conn`` whose repr masks the key, uses it for that one
+snapshot, and drops it (work item SEC-3). Nothing at module level or on
+a long-lived object ever holds a key between snapshots.
+
 ## Why the field mapping is defensive
 
 Ubiquiti ships two overlapping local surfaces and their field names differ:
@@ -55,6 +61,7 @@ from .const import (
     UNIFI_NETWORK_API_PATH,
     UNIFI_PROTECT_API_PATH,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,14 +131,30 @@ def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
     return default
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, repr=False)
 class _Conn:
-    """A resolved connection to one UniFi app (Network or Protect)."""
+    """A resolved connection to one UniFi app (Network or Protect).
+
+    Short-lived by design (work item SEC-3): built inside
+    async_network_overview / async_protect_status from the secret store's
+    value at that moment, used for that one snapshot, and dropped, so no
+    module-level or long-lived attribute ever holds the API key. The
+    dataclass repr is disabled and replaced below because the generated one
+    would print api_key verbatim into any log or debugger line.
+    """
 
     host: str
     api_key: str
     verify_ssl: bool
     base_path: str
+
+    def __repr__(self) -> str:
+        # Mask the key, keep the rest: host and path are what debugging a
+        # connection problem actually needs.
+        return (
+            f"_Conn(host={self.host!r}, api_key='[redacted]', "
+            f"verify_ssl={self.verify_ssl!r}, base_path={self.base_path!r})"
+        )
 
     @property
     def origin(self) -> str:
@@ -151,10 +174,12 @@ class _Conn:
         return f"{self.origin}{self.base_path}"
 
 
-def _network_conn(store: HaSocData) -> _Conn | None:
+async def _network_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
+    """Build a short-lived Network connection, fetching the API key from the
+    private secret store at use time (SEC-3). None when unconfigured."""
     s = store.settings
     host = (s.get(CONF_UNIFI_NETWORK_HOST) or "").strip()
-    key = (s.get(CONF_UNIFI_NETWORK_API_KEY) or "").strip()
+    key = (await secrets.async_get(CONF_UNIFI_NETWORK_API_KEY) or "").strip()
     if not host or not key:
         return None
     return _Conn(
@@ -165,10 +190,12 @@ def _network_conn(store: HaSocData) -> _Conn | None:
     )
 
 
-def _protect_conn(store: HaSocData) -> _Conn | None:
+async def _protect_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
+    """Build a short-lived Protect connection, fetching the API key from the
+    private secret store at use time (SEC-3). None when unconfigured."""
     s = store.settings
     host = (s.get(CONF_UNIFI_PROTECT_HOST) or "").strip()
-    key = (s.get(CONF_UNIFI_PROTECT_API_KEY) or "").strip()
+    key = (await secrets.async_get(CONF_UNIFI_PROTECT_API_KEY) or "").strip()
     if not host or not key:
         return None
     return _Conn(
@@ -816,7 +843,9 @@ async def _fetch_acl_rules(
     return result
 
 
-async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
+async def async_network_overview(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> dict[str, Any]:
     """Everything the Network tab renders in one snapshot: status, WAN, the
     clients table, the network-devices table, and the ACL-rules audit report,
     plus a compact Protect status. Never raises: a connection problem comes
@@ -845,7 +874,7 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
         "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
-        "protect": await async_protect_status(hass, store),
+        "protect": await async_protect_status(hass, store, secrets),
     }
 
     endpoints = _integration_endpoints(hass)
@@ -856,7 +885,9 @@ async def async_network_overview(hass: HomeAssistant, store: HaSocData) -> dict[
     # can be enriched afterwards.
     core_snap = _core_network_snapshot(hass)
 
-    conn = _network_conn(store)
+    # The connection object (and with it the API key) lives only for this
+    # snapshot; it goes out of scope when this function returns (SEC-3).
+    conn = await _network_conn(store, secrets)
     if conn is not None:
         result["configured"] = True
         await _fill_network_from_api(hass, conn, result, endpoints, now_ts, core_snap)
@@ -1291,7 +1322,9 @@ def _normalize_event(raw: dict[str, Any], origin: str) -> dict[str, Any]:
     }
 
 
-async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
+async def async_protect_status(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> dict[str, Any]:
     """UniFi Protect status for the Network tab: reachable + camera counts,
     the full devices table (with console deep-links), and recent events / AI
     smart detections. Best-effort, never raises; a failure comes back as
@@ -1313,7 +1346,8 @@ async def async_protect_status(hass: HomeAssistant, store: HaSocData) -> dict[st
         "events": [],
         "events_error": None,
     }
-    conn = _protect_conn(store)
+    # Short-lived connection, same as the Network path (SEC-3).
+    conn = await _protect_conn(store, secrets)
     if conn is not None:
         out["configured"] = True
         out["host"] = conn.origin

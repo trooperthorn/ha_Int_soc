@@ -19,6 +19,7 @@ from homeassistant.core import Context, HomeAssistant
 
 from custom_components.ha_soc import firewall
 from custom_components.ha_soc.const import DOMAIN, FIREWALL_TEST_EXPIRED_UNREPORTED
+from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 
 RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": None}]
 PROBE_SECRET = "unit-test-probe-secret"
@@ -241,3 +242,55 @@ async def test_ingest_probe_result_without_firewall_fields_is_a_noop_for_firewal
     fw = store.data["firewall"]
     assert fw["pending"]["test_id"] == pending["test_id"]
     assert fw["known_rules"] is None
+
+
+async def test_pairing_secret_lives_in_secret_store_end_to_end(
+    hass: HomeAssistant, entry: MockConfigEntry, supervisor_context: Context
+) -> None:
+    """The pin created by the add-on's first authenticated call lands in
+    the private secret store (SEC-1) and keeps gating the protocol: the
+    same secret keeps working, a forged one is rejected without leaking
+    pending work, and the owner's pairing reset re-opens pinning."""
+    runtime = entry.runtime_data
+    secrets = runtime.secrets
+
+    # First authenticated poll pins into the secret store; the general
+    # store's firewall dict holds no copy.
+    await _poll(hass, supervisor_context)
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) == PROBE_SECRET
+    assert "addon_secret" not in runtime.store.data["firewall"]
+
+    # With a test pending, the right secret gets the apply and a wrong one
+    # gets a bare none (a forger learns nothing about pending work).
+    _, _, pending = await firewall.async_propose_test(
+        hass, runtime.store, rules=RULES, backup_acknowledged=True, user_id="u1"
+    )
+    forged = await hass.services.async_call(
+        DOMAIN,
+        "poll_firewall_command",
+        {"probe_secret": "forged-secret"},
+        blocking=True,
+        return_response=True,
+        context=supervisor_context,
+    )
+    assert forged == {"action": "none"}
+    # The pending test was not handed out to the forger.
+    assert runtime.store.data["firewall"]["pending"]["applied_at"] is None
+
+    good = await _poll(hass, supervisor_context)
+    assert good["action"] == "apply"
+    assert good["test_id"] == pending["test_id"]
+
+    # Owner reset clears the pin in the secret store; the next non-empty
+    # Supervisor-context secret re-pins.
+    await firewall.async_reset_addon_secret(secrets)
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) is None
+    await hass.services.async_call(
+        DOMAIN,
+        "poll_firewall_command",
+        {"probe_secret": "rotated-secret"},
+        blocking=True,
+        return_response=True,
+        context=supervisor_context,
+    )
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) == "rotated-secret"

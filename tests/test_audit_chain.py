@@ -14,14 +14,17 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 from datetime import datetime, timedelta
 from typing import Any
 from unittest.mock import patch
 
+import homeassistant.helpers.issue_registry as ir
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
 from custom_components.ha_soc.audit import AuditLog
+from custom_components.ha_soc.const import DOMAIN
 from custom_components.ha_soc.store import HaSocData
 
 
@@ -250,3 +253,105 @@ async def test_anchor_survives_flush_rewrite_of_head(
     assert result["ok"] is True
     assert result["verified_from_seq"] == 6
     assert result["records_checked"] == 4
+
+
+async def _build_wiped_log(
+    hass: HomeAssistant, tmp_path: Any
+) -> tuple[AuditLog, dict[str, Any]]:
+    """Three flushed records, mirror at seq 3, then the directory deleted
+    and a fresh AuditLog restarted over the same store. Returns the
+    restarted log (started, caller must stop it) and the pre-wipe mirror.
+    """
+    audit = await _make_audit(hass, tmp_path)
+    for index in range(3):
+        audit.async_log(
+            "service_call", user_id=f"u{index}", domain="light", service="turn_on"
+        )
+    await audit._async_flush()
+    mirror = dict(audit._store.data["audit_head"])
+    assert mirror["seq"] == 3
+    assert mirror["hash"]
+
+    shutil.rmtree(audit._dir_path)
+
+    restarted = AuditLog(hass, audit._store)
+    restarted._dir_path = audit._dir_path
+    await restarted.async_start()
+    # audit_chain_reset is an immediate-flush category (work item 1.7), so
+    # letting the loop settle writes the reset record to disk.
+    await hass.async_block_till_done()
+    return restarted, mirror
+
+
+async def test_audit_directory_wipe_is_detected(
+    hass: HomeAssistant, tmp_path: Any
+) -> None:
+    """Work item 1.5 acceptance: deleting the audit directory and
+    restarting yields the audit record, the Repairs issue, and
+    reason chain_reset on verify - and stays chain_reset on a later
+    verify, because the missing history does not grow back.
+    """
+    restarted, mirror = await _build_wiped_log(hass, tmp_path)
+    try:
+        result = await restarted.async_verify_chain()
+        assert result["ok"] is False
+        assert result["reason"] == "chain_reset"
+        assert result["first_break_seq"] is None
+        # Everything after the reset point still re-verified record by
+        # record: the reset record itself was checked.
+        assert result["records_checked"] == 1
+        assert result["verified_from_seq"] == mirror["seq"] + 1
+
+        registry = ir.async_get(hass)
+        assert registry.async_get_issue(DOMAIN, "audit_chain_reset") is not None
+
+        # The verdict is sticky across flushes, not a one-shot: more
+        # records extend the post-reset chain cleanly and the reason stays.
+        restarted.async_log(
+            "service_call", user_id="later", domain="switch", service="toggle"
+        )
+        result = await restarted.async_verify_chain()
+        assert result["ok"] is False
+        assert result["reason"] == "chain_reset"
+        assert result["records_checked"] == 2
+    finally:
+        await restarted.async_stop()
+
+
+async def test_chain_reset_is_itself_chained(
+    hass: HomeAssistant, tmp_path: Any
+) -> None:
+    """Work item 1.5: the discontinuity is a chained record, not a gap.
+
+    The first record of the continued chain is the audit_chain_reset
+    record, its prev_hash is the store mirror's hash, its seq continues
+    the mirror's numbering, and its detail carries both heads. The head
+    file keeps the reset marker so a later restart cannot lose it.
+    """
+    restarted, mirror = await _build_wiped_log(hass, tmp_path)
+    try:
+        day_files = restarted._sync_list_day_files()
+        assert len(day_files) == 1
+        with open(day_files[0][1], "r", encoding="utf-8") as handle:
+            lines = [line for line in handle.read().splitlines() if line.strip()]
+        first = json.loads(lines[0])
+        assert first["category"] == "audit_chain_reset"
+        assert first["seq"] == mirror["seq"] + 1
+        assert first["prev_hash"] == mirror["hash"]
+        assert first["detail"]["store_head"]["seq"] == mirror["seq"]
+        assert first["detail"]["store_head"]["hash"] == mirror["hash"]
+        # The head file was gone entirely, and the record says so.
+        assert first["detail"]["disk_head"] is None
+
+        with open(
+            os.path.join(restarted._dir_path, "chain_head.json"), encoding="utf-8"
+        ) as handle:
+            head = json.load(handle)
+        assert head["reset"]["seq"] == mirror["seq"]
+        assert head["reset"]["hash"] == mirror["hash"]
+
+        # The store mirror has moved on to the new head, which is what lets
+        # the NEXT wipe be caught the same way.
+        assert restarted._store.data["audit_head"]["seq"] == mirror["seq"] + 1
+    finally:
+        await restarted.async_stop()

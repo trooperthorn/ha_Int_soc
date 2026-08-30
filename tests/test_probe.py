@@ -26,6 +26,7 @@ from homeassistant.core import Context, HomeAssistant
 
 from custom_components.ha_soc.const import DOMAIN, PROBE_ADDON_NAME
 from custom_components.ha_soc.probe import _async_supervisor_user_id, async_probe_overview
+from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 from custom_components.ha_soc.store import HaSocData
 
 # The secret the fake add-on presents. The first Supervisor-context call
@@ -302,9 +303,11 @@ async def test_unauthenticated_ingest_is_rejected_before_pinning(
 ) -> None:
     """Guarantee (inverts the old first-boot race): with nothing pinned
     yet, an ingest call without the Supervisor context neither gets its
-    payload processed nor pins its own secret."""
+    payload processed nor pins its own secret. The pin lives in the
+    private secret store since SEC-1, so that is where absence is proven."""
     store = supervisor_entry.runtime_data.store
-    assert store.data["firewall"]["addon_secret"] is None
+    secrets = supervisor_entry.runtime_data.secrets
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) is None
 
     attacker = MockUser()
     attacker.add_to_hass(hass)
@@ -316,7 +319,7 @@ async def test_unauthenticated_ingest_is_rejected_before_pinning(
         context=Context(user_id=attacker.id),
     )
     assert store.data["host_probe"] is None
-    assert store.data["firewall"]["addon_secret"] is None
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) is None
 
 
 async def test_first_poll_caller_cannot_pin_without_supervisor_context(
@@ -324,8 +327,9 @@ async def test_first_poll_caller_cannot_pin_without_supervisor_context(
 ) -> None:
     """Guarantee (inverts the old first-poll pin): with nothing pinned yet,
     a non-Supervisor poll gets no work and pins nothing; the real add-on's
-    first Supervisor-context poll afterwards still pins its own secret."""
-    store = supervisor_entry.runtime_data.store
+    first Supervisor-context poll afterwards still pins its own secret,
+    into the private secret store (SEC-1), never the general store."""
+    secrets = supervisor_entry.runtime_data.secrets
     attacker = MockUser()
     attacker.add_to_hass(hass)
 
@@ -338,7 +342,7 @@ async def test_first_poll_caller_cannot_pin_without_supervisor_context(
         context=Context(user_id=attacker.id),
     )
     assert response == {"action": "none"}
-    assert store.data["firewall"]["addon_secret"] is None
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) is None
 
     response = await hass.services.async_call(
         DOMAIN,
@@ -349,7 +353,9 @@ async def test_first_poll_caller_cannot_pin_without_supervisor_context(
         context=supervisor_context,
     )
     assert response == {"action": "none"}
-    assert store.data["firewall"]["addon_secret"] == PROBE_SECRET
+    assert await secrets.async_get(PROBE_PAIRING_SECRET_KEY) == PROBE_SECRET
+    # The general store's firewall dict carries no copy of the pin.
+    assert "addon_secret" not in supervisor_entry.runtime_data.store.data["firewall"]
 
 
 async def test_probe_rejection_is_audited_and_detected(

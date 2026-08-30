@@ -46,14 +46,20 @@ evidence its local timer reverted the expired test, and the record is
 archived as ``reverted`` by ``addon_timer``. A poll that arrives holding a
 DIFFERENT test id than ``pending`` is answered ``none`` with reason
 ``addon_holds_other_test`` so Core never asks the add-on to apply test B
-while test A is still armed on the host.
+while test A is still armed on the host. Whenever a test moves to history,
+a ``firewall_resolved`` audit record is written with actor_source
+``addon`` (work item 1.4), because the add-on's report is the event that
+actually settled host firewall state.
 
 Authentication of the add-on's inbound calls is two-layered as of the
 Supervisor-context change in probe.py: the service handlers there reject
 any call whose context user is not the Supervisor system user BEFORE this
 module's shared-secret check runs, so the secret here is defense in depth,
 not the only gate. A call that presents no secret is always rejected; the
-old "nothing pinned and nothing presented" acceptance is gone.
+old "nothing pinned and nothing presented" acceptance is gone. The pinned
+secret itself is stored in the dedicated private secret store
+(secrets_store.py) rather than the general HA SOC store, so the pairing
+credential never sits in a world-readable storage file (work item SEC-1).
 """
 from __future__ import annotations
 
@@ -78,6 +84,7 @@ from .const import (
     FIREWALL_TEST_REVERTED,
     FIREWALL_TEST_TESTING,
 )
+from .secrets_store import PROBE_PAIRING_SECRET_KEY, HaSocSecretStore
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -124,7 +131,31 @@ def _iso_now() -> str:
     return dt_util.utcnow().isoformat()
 
 
-def async_verify_or_pin_secret(store: HaSocData, presented: str | None) -> bool:
+def _async_runtime_audit(hass: HomeAssistant):
+    """The runtime's AuditLog, or None when HA SOC is not set up.
+
+    async_report_from_addon audits every test that moves to history (work
+    item 1.4), but its callers - probe.py's service closures and
+    async_next_addon_command below - carry only hass and the store, so the
+    audit log is fetched from the entry's runtime data at use time. The
+    local import avoids the circular import with __init__.py at module load
+    (the same pattern websocket_api._runtime uses). In production the
+    services that reach this module only exist while the entry is set up,
+    so None here happens only in tests that drive this module without a
+    config entry; those calls simply go unaudited rather than crashing the
+    add-on's report path.
+    """
+    from . import get_runtime_data
+
+    try:
+        return get_runtime_data(hass).audit
+    except RuntimeError:
+        return None
+
+
+async def async_verify_or_pin_secret(
+    secrets: HaSocSecretStore, presented: str | None
+) -> bool:
     """Shared-secret check for the add-on's inbound calls, defense in depth.
 
     The add-on generates a random secret once, persists it in its own /data,
@@ -138,6 +169,13 @@ def async_verify_or_pin_secret(store: HaSocData, presented: str | None) -> bool:
     is therefore closed to anything that cannot call through the Supervisor
     proxy.
 
+    The pinned value lives in the dedicated private secret store under
+    secrets_store.PROBE_PAIRING_SECRET_KEY (work item SEC-1), never in the
+    general HA SOC store, so the world-readable storage file carries no
+    copy of it. That is why this function takes the secret store and is
+    async: the pin is fetched at use time and written through the store's
+    own immediate atomic save.
+
     A missing secret is a rejection, always. The old branch that accepted a
     call with nothing pinned and nothing presented is gone, because it let
     any local caller through until the real add-on's first report. An
@@ -150,24 +188,21 @@ def async_verify_or_pin_secret(store: HaSocData, presented: str | None) -> bool:
     so a forged caller cannot learn the pinned value byte by byte through
     timing.
     """
-    fw = store.data["firewall"]
-    pinned = fw.get("addon_secret")
     presented = presented or None
     if presented is None:
         return False
+    pinned = await secrets.async_get(PROBE_PAIRING_SECRET_KEY)
     if pinned is None:
-        fw["addon_secret"] = presented
-        store.async_schedule_save()
+        await secrets.async_set(PROBE_PAIRING_SECRET_KEY, presented)
         _LOGGER.info("HA SOC firewall: pinned the add-on's probe secret (first Supervisor-context call).")
         return True
     return hmac.compare_digest(presented, pinned)
 
 
-def async_reset_addon_secret(store: HaSocData) -> None:
+async def async_reset_addon_secret(secrets: HaSocSecretStore) -> None:
     """Clear the pinned secret so the next non-empty one re-pins. Owner-only
     recovery for a lost/rotated add-on secret or a bad first-boot pin."""
-    store.data["firewall"]["addon_secret"] = None
-    store.async_schedule_save()
+    await secrets.async_set(PROBE_PAIRING_SECRET_KEY, None)
 
 
 async def async_get_status(hass: HomeAssistant, store: HaSocData) -> dict[str, Any]:
@@ -394,12 +429,17 @@ async def async_report_from_addon(
     async_next_addon_command) the add-on polling with an empty
     current_test_id while the pending record has already aged into
     expired_unreported, which is the timer-ran evidence described there.
+    Every archive writes a firewall_resolved audit record with
+    actor_source "addon" (work item 1.4): the add-on's report - not any
+    person's click - is what actually moved host firewall state to its
+    final form, and the chain must say so.
     """
     fw = store.data["firewall"]
     if known_rules is not None:
         fw["known_rules"] = known_rules
         fw["known_rules_reported_at"] = _iso_now()
 
+    archived = False
     pending = fw.get("pending")
     if (
         pending
@@ -422,6 +462,7 @@ async def async_report_from_addon(
         history.append(dict(pending))
         fw["history"] = history[-_MAX_HISTORY:]
         fw["pending"] = None
+        archived = True
     elif (
         pending
         and addon_reports_no_current_test
@@ -446,5 +487,27 @@ async def async_report_from_addon(
         history.append(dict(pending))
         fw["history"] = history[-_MAX_HISTORY:]
         fw["pending"] = None
+        archived = True
+
+    if archived:
+        audit = _async_runtime_audit(hass)
+        if audit is not None:
+            # user_id stays None on purpose: no Home Assistant user
+            # performed this resolution, the add-on (or its timer) did,
+            # and actor_source says so. reported_rule_count is the size of
+            # the known-rules snapshot this same report carried, or None
+            # when the report carried none (the timer-evidence archive
+            # path always carries none).
+            audit.async_log(
+                "firewall_resolved",
+                detail={
+                    "actor_source": "addon",
+                    "test_id": pending.get("test_id"),
+                    "status": pending.get("status"),
+                    "reported_rule_count": len(known_rules)
+                    if known_rules is not None
+                    else None,
+                },
+            )
 
     store.async_schedule_save()

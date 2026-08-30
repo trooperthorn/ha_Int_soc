@@ -24,6 +24,11 @@ const KIND_LABELS: Record<string, string> = {
   other: "Other (review manually)",
 };
 
+// Work item 1.9 added backup-path reporting to the apply result. The shared
+// EntityRemapApplyResult in ha-soc-ws.ts now carries the optional backups
+// list itself; the alias remains only so existing references keep reading.
+type ApplyResultWithBackups = EntityRemapApplyResult;
+
 @customElement("ha-soc-entity-remap-view")
 export class HaSocEntityRemapView extends LitElement {
   static styles = sharedStyles;
@@ -36,7 +41,7 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _report: EntityRemapReport | null = null;
   @state() private _finding = false;
   @state() private _applying = false;
-  @state() private _applyResult: EntityRemapApplyResult | null = null;
+  @state() private _applyResult: ApplyResultWithBackups | null = null;
   // Same acknowledgement pattern as the firewall card's _fwBackupAck: the
   // server refuses an apply without backup_acknowledged, so the button stays
   // disabled until the operator has confirmed they read the consequences.
@@ -309,11 +314,14 @@ export class HaSocEntityRemapView extends LitElement {
                           <code>automations.yaml</code>, <code>scripts.yaml</code>, and
                           <code>scenes.yaml</code> are each copied aside as
                           <code>&lt;file&gt;.ha_soc-&lt;timestamp&gt;.bak</code>; that
-                          storage-mode dashboards and helper entries are rewritten in place
-                          and are NOT yet backed up (backups for those land with a later
-                          work item); that comments and formatting in the YAML files do not
-                          survive the rewrite; and that automations, scripts, and scenes
-                          reload right after the write.
+                          storage-mode dashboards and helper entries get a JSON snapshot of
+                          their previous state under <code>.storage/ha_soc_remap/</code>
+                          (kept for 30 days) before being rewritten in place; that a YAML
+                          file containing <code>!secret</code> or <code>!include</code> is
+                          refused entirely and reported as "manual edit required"; that
+                          comments and formatting in the YAML files do not survive the
+                          rewrite; and that automations, scripts, and scenes reload right
+                          after the write.
                         </span>
                       </label>
                     `
@@ -348,6 +356,12 @@ export class HaSocEntityRemapView extends LitElement {
                 ${this._applyResult.errors.length
                   ? html`<div style="color:var(--error-color);margin-top:6px;">
                       ${this._applyResult.errors.length} error(s): ${this._applyResult.errors.join("; ")}
+                    </div>`
+                  : nothing}
+                ${this._applyResult.backups?.length
+                  ? html`<div class="muted" style="font-size:12px;margin-top:6px;">
+                      Backups written before the rewrite:
+                      ${this._applyResult.backups.map((path) => html`<div><code>${path}</code></div>`)}
                     </div>`
                   : nothing}
               </div>

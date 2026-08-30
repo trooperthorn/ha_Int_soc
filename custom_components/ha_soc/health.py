@@ -26,13 +26,25 @@ Two load-bearing approximations, called out where they matter below:
 A finding, once set to "dismissed" by an analyst, is never flipped back by
 a later pass of these checks — only the resolve path (condition no longer
 present) touches status, and it explicitly skips dismissed findings.
+
+Boundary-widening checks (work item SEC-7, plus 1.7's ban-logger check):
+a group of checks watches for configuration that widens who can read
+HA SOC's own private files (the secret store, the audit chain) or blinds
+its own capture: on-disk modes of secrets.yaml and .storage, add-ons known
+to map the config directory, backup locations stored without protection,
+a Samba config share without authentication, and the http.ban logger
+being silenced. Every value those checks read is a file mode, a boolean,
+or an option KEY name, never a secret value, and each check's docstring
+names its obvious false positive and its could-not-evaluate behavior.
 """
 from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
 import ipaddress
+import json
 import logging
+import os
 from typing import Any
 
 from homeassistant.config import async_hass_config_yaml
@@ -53,6 +65,7 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration, async_get_integrations
 import homeassistant.util.dt as dt
 
+from .audit import BAN_LOGGER_NAME
 from .const import (
     DOMAIN,
     PROBE_ADDON_NAME,
@@ -126,6 +139,23 @@ _FAILING_STATES = (
 # is matched by a name/slug substring instead, since this project has no
 # way to enumerate every third-party SSH add-on's slug ahead of time.
 _KNOWN_SSH_ADDON_SLUGS = {"core_ssh"}
+
+# Name/slug substrings for the add-ons known to map the Home Assistant
+# config directory (SSH, Samba, File editor, Studio Code Server, and their
+# common community forks). Matching is by name because the Supervisor
+# add-on info core caches (aiohasupervisor's InstalledAddonComplete,
+# checked against the installed core 2026.2.3 dependency) carries no
+# volume-map field at all, so "does this add-on map config" cannot be read
+# from the data - see _check_config_mapping_addons' docstring for the
+# honesty consequences.
+_CONFIG_MAPPING_ADDON_MARKERS = (
+    "ssh",
+    "samba",
+    "file editor",
+    "configurator",
+    "studio code",
+    "vscode",
+)
 
 # How long the HA SOC Probe add-on can be installed and running without
 # ever successfully reporting before this is worth a Repairs issue rather
@@ -579,6 +609,11 @@ class IntegrationHealth:
             self._check_ssh_addon_inventory,
             self._check_ssh_addon_exposed,
             self._check_probe_addon_not_reporting,
+            self._check_audit_ban_logger,
+            self._check_storage_file_modes,
+            self._check_config_mapping_addons,
+            self._check_backup_protection,
+            self._check_samba_config_share,
             self._check_broken_entity_references,
             self._check_unknown_service_references,
             self._check_unknown_device_references,
@@ -1062,6 +1097,387 @@ class IntegrationHealth:
                 "title": finding["title"], "summary": finding["summary"],
             })],
         )
+
+    # -- Boundary-widening checks (work item SEC-7, plus 1.7's ban logger) --
+
+    async def _check_audit_ban_logger(self) -> list[dict]:
+        """check="audit_ban_logger_silenced" - LOW (work item 1.7).
+
+        audit.py's login_fail capture is a logging.Handler attached to the
+        homeassistant.components.http.ban logger, and a handler only sees
+        records its logger actually emits: raising that logger's effective
+        level above WARNING (through the logger: integration, usually to
+        quiet a noisy scanner) silently blinds failed-login auditing while
+        every other part of the audit log keeps working. The value read is
+        a logging level integer, nothing else. Obvious false positive: an
+        operator who deliberately silenced the ban logger has accepted
+        exactly this blindness - the finding exists so that is a decision
+        on the record, not an accident nobody noticed.
+        """
+        level = logging.getLogger(BAN_LOGGER_NAME).getEffectiveLevel()
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        if level > logging.WARNING:
+            finding = _new_finding(
+                "misconfig:audit_ban_logger_silenced",
+                "audit_ban_logger_silenced", SEVERITY_LOW,
+                title="Failed-login auditing is blinded by the logger configuration",
+                summary=(
+                    f"The {BAN_LOGGER_NAME} logger's effective level is "
+                    f"{logging.getLevelName(level)}, above WARNING. Home "
+                    "Assistant reports failed logins only as WARNING log "
+                    "records from that logger, so HA SOC's login_fail "
+                    "audit capture receives nothing while it stays this "
+                    "quiet. Set the logger back to warning (or lower) in "
+                    "your logger: configuration."
+                ),
+                detail={"logger": BAN_LOGGER_NAME, "effective_level": level},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check("audit_ban_logger_silenced", items)
+
+    async def _check_storage_file_modes(self) -> list[dict]:
+        """check="storage_file_modes" - LOW (work item SEC-7).
+
+        secrets.yaml readable beyond 0o600, or the .storage directory
+        beyond 0o700, widens who on the host can read every credential and
+        private store in them. Only file MODES are read (executor-side
+        stat, never on the event loop, never file contents), and the
+        summary carries the exact chmod that fixes it. Could-not-evaluate:
+        a stat that fails for any reason other than the path not existing
+        skips the whole check without touching existing findings, and an
+        absent secrets.yaml is simply nothing to check. Obvious false
+        positive: a config directory on a filesystem that cannot represent
+        POSIX permission bits (a network share, FAT) reports wide modes
+        that chmod cannot actually change.
+        """
+        # ha-soc-allow: storage_file_access stats modes only, never reads content (SEC-7)
+        secrets_path = self.hass.config.path("secrets.yaml")
+        storage_path = self.hass.config.path(".storage")
+
+        def _stat_modes() -> dict[str, int | None] | None:
+            modes: dict[str, int | None] = {}
+            for label, path in (
+                ("secrets_yaml", secrets_path),
+                ("storage_dir", storage_path),
+            ):
+                try:
+                    modes[label] = os.stat(path).st_mode & 0o777
+                except FileNotFoundError:
+                    modes[label] = None
+                except OSError:
+                    return None
+            return modes
+
+        modes = await self.hass.async_add_executor_job(_stat_modes)
+        if modes is None:
+            _LOGGER.debug("Skipping storage_file_modes check: stat failed")
+            return []
+
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        # Group or other bits set means another uid on the host can reach
+        # the file; 0o077 masks exactly those bits.
+        secrets_mode = modes["secrets_yaml"]
+        if secrets_mode is not None and secrets_mode & 0o077:
+            finding = _new_finding(
+                "misconfig:storage_file_modes:secrets_yaml",
+                "storage_file_modes", SEVERITY_LOW,
+                title="secrets.yaml is readable beyond its owner",
+                summary=(
+                    f"secrets.yaml has mode {secrets_mode:04o}, so other "
+                    "accounts on the host (and any container sharing the "
+                    "directory without root remapping) can read every "
+                    f"secret in it. Fix: chmod 600 {secrets_path}"
+                ),
+                detail={"path": secrets_path, "mode": f"{secrets_mode:04o}"},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        storage_mode = modes["storage_dir"]
+        if storage_mode is not None and storage_mode & 0o077:
+            finding = _new_finding(
+                "misconfig:storage_file_modes:storage_dir",
+                "storage_file_modes", SEVERITY_LOW,
+                title="The .storage directory is accessible beyond its owner",
+                summary=(
+                    f"The .storage directory has mode {storage_mode:04o}. "
+                    "It holds the auth store, HA SOC's private secret "
+                    "store, and the audit chain; directory access is what "
+                    "lets another uid list and open the private files "
+                    f"inside. Fix: chmod 700 {storage_path}"
+                ),
+                detail={"path": storage_path, "mode": f"{storage_mode:04o}"},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check("storage_file_modes", items)
+
+    async def _check_config_mapping_addons(self) -> list[dict]:
+        """check="config_mapping_addon" - MEDIUM, HIGH when also exposed (SEC-7).
+
+        An add-on that maps the config directory reads everything the
+        0o600/0o700 modes above protect (the secret store, the auth
+        store, the audit chain) from outside the Core process, which is
+        the direct answer to "who can read the secret store". Severity is
+        HIGH when the add-on also has host_network or published ports
+        (reachable without Home Assistant's login in front of it), else
+        MEDIUM. Values read: name, slug, state, host_network, and the
+        published-ports map, booleans and identifiers only.
+
+        Coverage limit, stated rather than papered over: the Supervisor
+        add-on info core caches (aiohasupervisor InstalledAddonComplete,
+        checked against the installed core 2026.2.3 dependency) exposes NO
+        volume-map field, so this check recognizes the well-known
+        config-mapping add-ons by name/slug substring and cannot see "any
+        other" add-on's actual map. Absence of a finding is not proof
+        nothing maps the config directory. Obvious false positive: an
+        add-on whose name merely contains a marker word (say, a dashboard
+        called "SSH Monitor") without mapping the config directory at all.
+        Could-not-evaluate: off Supervisor there is nothing to check, and
+        an unpopulated add-on cache skips the pass without touching
+        existing findings.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            return self._async_finalize_check("config_mapping_addon", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping config_mapping_addon check: add-on info not cached yet"
+            )
+            return []
+
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        for slug, info in addons.items():
+            if not isinstance(info, dict):
+                # The Supervisor failed to serve this add-on's info this
+                # cycle; skipping it is the honest move (no finding, no
+                # resolve) rather than treating "unknown" as "clean".
+                continue
+            name = info.get("name") or slug
+            haystack = f"{slug} {name}".lower()
+            if not any(marker in haystack for marker in _CONFIG_MAPPING_ADDON_MARKERS):
+                continue
+            host_network = bool(info.get("host_network"))
+            published_ports = sorted(
+                host_port for host_port in (info.get("network") or {}).values()
+                if host_port is not None
+            )
+            exposed = host_network or bool(published_ports)
+            severity = SEVERITY_HIGH if exposed else SEVERITY_MEDIUM
+            exposure = (
+                "and it is directly reachable on the host network, so a "
+                "compromise of the add-on itself exposes those files "
+                "without Home Assistant's login in the way"
+                if exposed
+                else "through Home Assistant's ingress only, as shipped"
+            )
+            finding = _new_finding(
+                f"misconfig:config_mapping_addon:{slug}",
+                "config_mapping_addon", severity,
+                title=f"{name} can read Home Assistant's config directory",
+                summary=(
+                    f"{name} is one of the add-ons that map the config "
+                    "directory, which includes .storage (the auth store, "
+                    "HA SOC's private secret store, and the audit chain) "
+                    f"and secrets.yaml, {exposure}. Keep it if you use it; "
+                    "uninstall it if you do not."
+                ),
+                detail={
+                    "slug": slug,
+                    "name": name,
+                    "state": info.get("state"),
+                    "host_network": host_network,
+                    "published_ports": published_ports,
+                },
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check("config_mapping_addon", items)
+
+    async def _check_backup_protection(self) -> list[dict]:
+        """check="backup_unprotected" - MEDIUM (work item SEC-7).
+
+        Backup protection (encryption) is the one control that still
+        covers .storage once a backup leaves the box. Read from
+        .storage/backup, executor-side: config.create_backup.password is
+        checked for null-ness ONLY (the value never leaves the closure)
+        and each config.agents[<id>].protected boolean is read as-is;
+        those are the exact fields core's backup component persists
+        (verified against the installed core 2026.2.3 source,
+        components/backup/config.py and store.py). Could-not-evaluate: an
+        absent file means backups were never configured, which resolves
+        any prior finding honestly; an unreadable or unparseable file
+        skips the pass without touching existing findings. Obvious false
+        positive: an operator who deliberately keeps unencrypted backups
+        on media they consider physically secure - the finding makes that
+        a recorded decision, not an oversight.
+        """
+        # ha-soc-allow: storage_file_access reads password null-ness and protected booleans only (SEC-7)
+        path = self.hass.config.path(".storage", "backup")
+
+        def _read() -> dict[str, Any] | None:
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    raw = json.load(handle)
+            except FileNotFoundError:
+                return {"absent": True}
+            except (OSError, ValueError):
+                return None
+            config = ((raw.get("data") or {}).get("config")) or {}
+            create = config.get("create_backup") or {}
+            agents = config.get("agents") or {}
+            return {
+                "absent": False,
+                "password_set": create.get("password") is not None,
+                "agent_ids": sorted(agents),
+                "unprotected_agents": sorted(
+                    agent_id
+                    for agent_id, agent in agents.items()
+                    if isinstance(agent, dict) and agent.get("protected") is False
+                ),
+            }
+
+        info = await self.hass.async_add_executor_job(_read)
+        if info is None:
+            _LOGGER.debug("Skipping backup_unprotected check: could not read %s", path)
+            return []
+        if info["absent"]:
+            return self._async_finalize_check("backup_unprotected", [])
+
+        problems: list[str] = []
+        if info["agent_ids"] and not info["password_set"]:
+            problems.append(
+                "no backup password is configured, so backups are created "
+                "unencrypted for every location"
+            )
+        if info["unprotected_agents"]:
+            problems.append(
+                "protection is turned off for: "
+                + ", ".join(info["unprotected_agents"])
+            )
+        if not problems:
+            return self._async_finalize_check("backup_unprotected", [])
+
+        finding = _new_finding(
+            "misconfig:backup_unprotected", "backup_unprotected", SEVERITY_MEDIUM,
+            title="Backups are stored without protection for a configured location",
+            summary=(
+                "; ".join(problems).capitalize()
+                + ". An unprotected backup carries the full .storage "
+                "directory (auth store, HA SOC's secret store, the audit "
+                "chain) readable by whoever holds the backup file. Enable "
+                "backup encryption under Settings > System > Backups."
+            ),
+            detail={
+                "password_set": info["password_set"],
+                "unprotected_agents": info["unprotected_agents"],
+                "configured_agents": info["agent_ids"],
+            },
+        )
+        return self._async_finalize_check(
+            "backup_unprotected",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )
+
+    async def _check_samba_config_share(self) -> list[dict]:
+        """check="samba_unauthenticated" - HIGH (work item SEC-7).
+
+        A Samba add-on shares the config directory over the network; run
+        without a password or with guest access, that is .storage handed
+        to the LAN. Only option KEY presence and value truthiness are
+        evaluated, inside the closure; no option value is ever copied
+        into the finding, the log, or the summary. UNVERIFIED (plan
+        section 0, rule 5): the official Samba add-on's exact option key
+        names could not be verified against a live Supervisor from this
+        environment, so the check probes the common shapes, a key named
+        exactly "password" (case-insensitive) whose value is falsy, and
+        any boolean key containing "guest" that is true, and a Samba
+        add-on using different key names is skipped as could-not-evaluate
+        rather than guessed at. Obvious false positive: a Samba fork that
+        authenticates through something outside its options (for example
+        host users) looks passwordless here.
+        """
+        from homeassistant.helpers.hassio import is_hassio
+
+        if not is_hassio(self.hass):
+            return self._async_finalize_check("samba_unauthenticated", [])
+
+        from homeassistant.components.hassio import get_addons_info
+
+        addons = get_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping samba_unauthenticated check: add-on info not cached yet"
+            )
+            return []
+
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        for slug, info in addons.items():
+            if not isinstance(info, dict):
+                continue
+            name = info.get("name") or slug
+            if "samba" not in f"{slug} {name}".lower():
+                continue
+            options = info.get("options")
+            if not isinstance(options, dict):
+                # No options in the cached info means the key shapes below
+                # cannot be evaluated at all; skipping beats inventing.
+                continue
+            password_keys = [
+                key for key in options
+                if isinstance(key, str) and key.lower() == "password"
+            ]
+            password_missing = bool(password_keys) and not any(
+                options[key] for key in password_keys
+            )
+            guest_keys_on = sorted(
+                key for key, value in options.items()
+                if isinstance(key, str) and "guest" in key.lower() and value is True
+            )
+            if not password_missing and not guest_keys_on:
+                continue
+
+            reasons: list[str] = []
+            if password_missing:
+                reasons.append("its password option is empty")
+            if guest_keys_on:
+                reasons.append(
+                    "guest access is enabled (" + ", ".join(guest_keys_on) + ")"
+                )
+            finding = _new_finding(
+                f"misconfig:samba_unauthenticated:{slug}",
+                "samba_unauthenticated", SEVERITY_HIGH,
+                title=f"{name} shares the config directory without authentication",
+                summary=(
+                    f"{name} exposes the config directory over SMB and "
+                    + " and ".join(reasons)
+                    + ", so anyone on the network segment can read "
+                    ".storage (the auth store, HA SOC's secret store, the "
+                    "audit chain) and secrets.yaml. Set a password and "
+                    "disable guest access in the add-on's configuration."
+                ),
+                detail={
+                    "slug": slug,
+                    "password_key_present": bool(password_keys),
+                    "password_set": not password_missing if password_keys else None,
+                    "guest_keys_enabled": guest_keys_on,
+                },
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check("samba_unauthenticated", items)
 
     def _async_hygiene_finding(
         self, check: str, severity: str, title: str, summary: str, items: list[Any]

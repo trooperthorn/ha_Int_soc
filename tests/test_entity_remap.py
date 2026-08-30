@@ -3,11 +3,16 @@ Spook-inspired broken-reference scan.
 """
 from __future__ import annotations
 
+import json
+import os
+import re
+import stat
+import time
 from types import SimpleNamespace
 
-import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
 
+from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
 import homeassistant.util.yaml as ha_yaml
@@ -209,8 +214,12 @@ async def test_find_and_apply_list_helper_reference(hass: HomeAssistant) -> None
 
 
 async def test_unmodeled_entry_mention_is_detect_only(hass: HomeAssistant) -> None:
+    # SEC-4 narrowed the fallback to the INTEGRATION_LOCATOR_KEYS
+    # allowlist, so the mention must sit under a locator key (here
+    # "source") to be found at all; the non-locator case is covered by
+    # test_entity_remap_reads_only_locator_keys.
     entry = MockConfigEntry(
-        domain="template", title="My Template", options={"state": "{{ states('sensor.old_name') }}"}
+        domain="unmodeled_domain", title="My Unmodeled", options={"source": "{{ states('sensor.old_name') }}"}
     )
     entry.add_to_hass(hass)
 
@@ -220,7 +229,48 @@ async def test_unmodeled_entry_mention_is_detect_only(hass: HomeAssistant) -> No
 
     result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["helper"] == 0
-    assert entry.options["state"] == "{{ states('sensor.old_name') }}"
+    assert entry.options["source"] == "{{ states('sensor.old_name') }}"
+
+
+async def test_entity_remap_reads_only_locator_keys(hass: HomeAssistant) -> None:
+    # SEC-4: a mention that only exists inside a credential value must
+    # never be read, so it produces no report item at all.
+    secret_entry = MockConfigEntry(
+        domain="some_cloud",
+        title="Cloud",
+        data={"password": "pw-sensor.old_name-pw"},
+        options={"api_key": "sensor.old_name"},
+    )
+    secret_entry.add_to_hass(hass)
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert report["other"] == []
+    assert report["total_count"] == 0
+
+    # The same needle under a locator key is still found (behavior parity
+    # for locator-shaped values), reading entry.data as well.
+    locator_entry = MockConfigEntry(
+        domain="other_cloud", title="Cloud 2", data={"source": "{{ states('sensor.old_name') }}"}
+    )
+    locator_entry.add_to_hass(hass)
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert [item["id"] for item in report["other"]] == [locator_entry.entry_id]
+    assert report["other"][0]["editable"] is False
+
+    # The moved fallback: a helper domain whose structural field holds a
+    # template (not an exact entity_id) no longer short-circuits past the
+    # allowlisted substring check, so it is surfaced for manual review.
+    helper_entry = MockConfigEntry(
+        domain="threshold", title="Templated Threshold", options={"entity_id": "{{ states('sensor.old_name') }}"}
+    )
+    helper_entry.add_to_hass(hass)
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert report["helper"] == []
+    other_ids = {item["id"] for item in report["other"]}
+    assert helper_entry.entry_id in other_ids
+    assert all(item["editable"] is False for item in report["other"])
 
 
 async def test_no_references_produces_empty_report(hass: HomeAssistant) -> None:
@@ -328,3 +378,203 @@ async def test_scan_finds_broken_helper_reference(hass: HomeAssistant) -> None:
     entity_ids = [b["entity_id"] for b in broken]
     assert "sensor.gone" in entity_ids
     assert broken[entity_ids.index("sensor.gone")]["referenced_by"][0]["kind"] == "helper"
+
+
+# -- Item 1.9: backups, YAML taint refusal, dict keys, entry.data, reloads ---
+
+
+async def test_remap_backs_up_dashboard_and_helper(hass: HomeAssistant) -> None:
+    from homeassistant.components.lovelace import LOVELACE_DATA
+
+    storage_config = _FakeDashboardConfig(
+        "storage",
+        {"views": [{"cards": [{"type": "entities", "entities": ["sensor.old_name"]}]}]},
+    )
+    hass.data[LOVELACE_DATA] = SimpleNamespace(dashboards={None: storage_config})
+    entry = MockConfigEntry(domain="derivative", title="My Derivative", options={"source": "sensor.old_name"})
+    entry.add_to_hass(hass)
+
+    # A stale backup from an earlier run is pruned at the start of the apply.
+    backup_dir = hass.config.path(remap.REMAP_BACKUP_DIR)
+    os.makedirs(backup_dir, mode=0o700, exist_ok=True)
+    stale = os.path.join(backup_dir, "stale-old.json")
+    with open(stale, "w", encoding="utf-8") as file:
+        file.write("{}")
+    old_time = time.time() - 31 * 24 * 3600
+    os.utime(stale, (old_time, old_time))
+
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
+    assert result["fixed"]["dashboard"] == 1
+    assert result["fixed"]["helper"] == 1
+    assert result["errors"] == []
+    assert not os.path.exists(stale)
+
+    assert stat.S_IMODE(os.stat(backup_dir).st_mode) == 0o700
+    backups = result["backups"]
+    assert len(backups) == 2
+    dashboard_backup = next(p for p in backups if os.path.basename(p).startswith("default-"))
+    helper_backup = next(p for p in backups if os.path.basename(p).startswith(entry.entry_id))
+    for path in (dashboard_backup, helper_backup):
+        assert os.path.dirname(path) == backup_dir
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        # Millisecond stamp (work plan item 4.14): 8 date digits, then a
+        # 9-digit HHMMSSmmm block.
+        assert re.search(r"-\d{8}T\d{9}\.json$", path)
+
+    with open(dashboard_backup, encoding="utf-8") as file:
+        assert json.load(file) == {
+            "views": [{"cards": [{"type": "entities", "entities": ["sensor.old_name"]}]}]
+        }
+    with open(helper_backup, encoding="utf-8") as file:
+        snapshot = json.load(file)
+    assert snapshot["entry_id"] == entry.entry_id
+    assert snapshot["options"] == {"source": "sensor.old_name"}
+
+    # The live objects really did move on while the backups kept the past.
+    assert storage_config.saved["views"][0]["cards"][0]["entities"] == ["sensor.new_name"]
+    assert entry.options["source"] == "sensor.new_name"
+
+
+_SECRET_TAINTED_AUTOMATIONS = """\
+- id: auto_taint
+  alias: Tainted Automation
+  trigger:
+  - platform: state
+    entity_id: sensor.old_name
+  action:
+  - service: persistent_notification.create
+    data:
+      message: !secret hidden_message
+"""
+
+_INCLUDE_TAINTED_AUTOMATIONS = """\
+- id: auto_taint
+  alias: Tainted Automation
+  trigger:
+  - platform: state
+    entity_id: sensor.old_name
+  action: !include actions.yaml
+"""
+
+
+async def _assert_tainted_yaml_refused(hass: HomeAssistant, tainted_text: str) -> None:
+    # D-13 (b): the raw file text carries !secret or !include, so every
+    # item in it must be reported "manual edit required" and the file must
+    # never be rewritten. The running automation is set up from an
+    # equivalent plain config because the loaded state and the on-disk
+    # file are separate inputs here.
+    path = hass.config.path("automations.yaml")
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(tainted_text)
+    config = [
+        {
+            "id": "auto_taint",
+            "alias": "Tainted Automation",
+            "trigger": [{"platform": "state", "entity_id": "sensor.old_name"}],
+            "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
+        }
+    ]
+    assert await async_setup_component(hass, "automation", {"automation": config})
+    await hass.async_block_till_done()
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert len(report["automation"]) == 1
+    assert report["automation"][0]["editable"] is False
+    assert report["automation"][0]["reason"] == "contains !include or !secret; manual edit required"
+    assert report["editable_count"] == 0
+
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
+    assert result["fixed"]["automation"] == 0
+    assert result["errors"] == []
+    assert result["backups"] == []
+    with open(path, encoding="utf-8") as file:
+        assert file.read() == tainted_text
+
+
+async def test_remap_refuses_secret_tagged_yaml(hass: HomeAssistant) -> None:
+    await _assert_tainted_yaml_refused(hass, _SECRET_TAINTED_AUTOMATIONS)
+
+
+async def test_remap_refuses_include_tagged_yaml(hass: HomeAssistant) -> None:
+    await _assert_tainted_yaml_refused(hass, _INCLUDE_TAINTED_AUTOMATIONS)
+
+
+async def test_remap_detects_dict_key_reference(hass: HomeAssistant) -> None:
+    from homeassistant.components.lovelace import LOVELACE_DATA
+
+    # Pure walker behavior first: keys now count as exact hits, but only
+    # for detection; the value walker still ignores them.
+    assert remap._contains_exact({"sensor.old_name": "on"}, "sensor.old_name") is True
+    assert remap._contains_exact_value({"sensor.old_name": "on"}, "sensor.old_name") is False
+
+    storage_config = _FakeDashboardConfig(
+        "storage",
+        {"views": [{"cards": [{"type": "custom:map-card", "entities": {"sensor.old_name": {"label": "Old"}}}]}]},
+    )
+    hass.data[LOVELACE_DATA] = SimpleNamespace(dashboards={None: storage_config})
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert len(report["dashboard"]) == 1
+    item = report["dashboard"][0]
+    assert item["editable"] is False
+    assert item["template_only"] is True
+    assert "dictionary key" in item["reason"]
+
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
+    assert result["fixed"]["dashboard"] == 0
+    assert storage_config.saved is None
+
+
+async def test_remap_reads_entry_data(hass: HomeAssistant) -> None:
+    # Item 1.9: structural helper fields living in entry.data (imported or
+    # older entries) are found, rewritten, and scanned, not just options.
+    entry = MockConfigEntry(domain="derivative", title="Data Derivative", data={"source": "sensor.old_name"})
+    entry.add_to_hass(hass)
+
+    report = await remap.async_find_references(hass, "sensor.old_name")
+    assert [item["id"] for item in report["helper"]] == [entry.entry_id]
+    assert report["helper"][0]["editable"] is True
+
+    result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
+    assert result["fixed"]["helper"] == 1
+    assert entry.data["source"] == "sensor.new_name"
+
+    scan_entry = MockConfigEntry(domain="threshold", title="Data Threshold", data={"entity_id": "sensor.gone"})
+    scan_entry.add_to_hass(hass)
+    broken = await remap.async_scan_broken_references(hass)
+    entity_ids = [b["entity_id"] for b in broken]
+    assert "sensor.gone" in entity_ids
+
+
+async def test_remap_reloads_scripts_and_scenes_once_per_domain(hass: HomeAssistant) -> None:
+    # Section 6.1 verified fact: script.reload and scene.reload take an
+    # EMPTY schema, so the apply loop must call each exactly once, with no
+    # service data, after all items are rewritten. The real services run
+    # here (not mocks), so passing any data would make the schema reject
+    # the call and fail this test.
+    scripts = {
+        "s_one": {"alias": "One", "sequence": [{"service": "light.turn_on", "target": {"entity_id": "sensor.old_name"}}]},
+        "s_two": {"alias": "Two", "sequence": [{"service": "light.turn_on", "target": {"entity_id": "sensor.old_name"}}]},
+    }
+    scenes = [
+        {"id": "sc_one", "name": "Scene One", "entities": {"sensor.old_name": "on"}},
+        {"id": "sc_two", "name": "Scene Two", "entities": {"sensor.old_name": "on"}},
+    ]
+    ha_yaml.save_yaml(hass.config.path("scripts.yaml"), scripts)
+    ha_yaml.save_yaml(hass.config.path("scenes.yaml"), scenes)
+    assert await async_setup_component(hass, "script", {"script": scripts})
+    assert await async_setup_component(hass, "scene", {"scene": scenes})
+    await hass.async_block_till_done()
+
+    events = async_capture_events(hass, EVENT_CALL_SERVICE)
+    result = await remap.async_apply_remap(
+        hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True
+    )
+    await hass.async_block_till_done()
+
+    assert result["errors"] == []
+    assert result["fixed"]["script"] == 2
+    assert result["fixed"]["scene"] == 2
+    calls = [(e.data["domain"], e.data["service"]) for e in events]
+    assert calls.count(("script", "reload")) == 1
+    assert calls.count(("scene", "reload")) == 1

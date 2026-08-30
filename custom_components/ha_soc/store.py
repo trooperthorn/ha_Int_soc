@@ -6,7 +6,23 @@ resolved) of vulnerability, misconfiguration, scanner, and detection
 findings. It deliberately excludes the audit log and raw event history,
 which are high-volume and live in their own rotating JSONL files
 (see audit.py) — rewriting one Store file on every audit event would mean
-serializing the whole history on every write.
+serializing the whole history on every write. It also deliberately
+excludes every secret value: those live in the dedicated private secret
+store (secrets_store.py), so that this file never carries a credential.
+
+The one audit-related thing this Store DOES hold is ``audit_head``: a tiny
+{seq, hash, at} mirror of the audit chain's on-disk head, written by
+audit.py after every successful flush (work item 1.5). It exists because
+the audit directory and this Store file are two different files an
+attacker would have to falsify consistently: a wiped or rolled-back audit
+directory whose head has fallen behind this mirror is detected at the next
+startup and verification. The mirror only ever advances (see
+async_set_audit_head).
+
+The Store itself is created ``private=True, atomic_writes=True`` (work
+item 1.1): findings, baselines, and firewall history are sensitive even
+with the secrets moved out, so the file is written 0o600 through a temp
+file and rename, the same way core writes its own auth store.
 """
 from __future__ import annotations
 
@@ -37,11 +53,17 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class SettingsData(TypedDict):
+    # Secret VALUES are deliberately absent from this shape. Every key in
+    # const.SECRET_SETTING_KEYS (the NVD API key, the GitHub token, the two
+    # UniFi API keys) lives in the dedicated private secret store instead
+    # (secrets_store.py, work item SEC-1); async_migrate_legacy_secrets
+    # drains any value an older install still has in here on first load.
+    # The frontend's "<key>_set" booleans are derived on the wire by
+    # websocket_api._masked_settings, never persisted here.
     audit_retention_days: int
     audit_max_bytes: int
     scanner_enabled: bool
     scanner_network_checks_enabled: bool
-    nvd_api_key: str | None
     risk_learning_period_days: int
     access_level: str
     mfa_policy: str
@@ -54,14 +76,11 @@ class SettingsData(TypedDict):
     # start dark for an existing install.
     security_sources_enabled: dict[str, bool]
     # UniFi Network / Protect direct-to-console connections (Network tab).
-    # Host + local API key + SSL-verify per app; the two API keys are
-    # secrets (see const.SECRET_SETTING_KEYS) — never returned raw, never
-    # logged. Empty host means "not configured".
+    # Host + SSL-verify per app; the matching API keys are secrets and live
+    # in the secret store. Empty host means "not configured".
     unifi_network_host: str | None
-    unifi_network_api_key: str | None
     unifi_network_verify_ssl: bool
     unifi_protect_host: str | None
-    unifi_protect_api_key: str | None
     unifi_protect_verify_ssl: bool
 
 
@@ -69,6 +88,11 @@ class StoreData(TypedDict):
     """Shape of the JSON persisted under .storage/ha_soc.storage."""
 
     settings: SettingsData
+    # {seq, hash, at} mirror of the audit chain's last flushed head, written
+    # by audit.py after every successful flush and compared against the
+    # on-disk chain head at startup so a wiped or rolled-back audit
+    # directory is detected (work item 1.5). None until the first flush.
+    audit_head: dict[str, Any] | None
     # user_id -> dashboard url_path -> {"views": {view_path: bool}, "sidebar_hidden": bool}
     permissions_matrix: dict[str, dict[str, Any]]
     # finding_id -> finding record (see vulns.py / health.py / scanner.py for field shapes)
@@ -128,19 +152,17 @@ def default_store_data() -> StoreData:
             audit_max_bytes=DEFAULT_AUDIT_MAX_BYTES,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
-            nvd_api_key=None,
             risk_learning_period_days=DEFAULT_RISK_LEARNING_PERIOD_DAYS,
             access_level=DEFAULT_ACCESS_LEVEL,
             mfa_policy=DEFAULT_MFA_POLICY,
             mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
             security_sources_enabled=dict(DEFAULT_SECURITY_SOURCES_ENABLED),
             unifi_network_host=None,
-            unifi_network_api_key=None,
             unifi_network_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
             unifi_protect_host=None,
-            unifi_protect_api_key=None,
             unifi_protect_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
         ),
+        audit_head=None,
         permissions_matrix={},
         vuln_findings={},
         misconfig_findings={},
@@ -157,13 +179,13 @@ def default_store_data() -> StoreData:
             "known_rules_reported_at": None,
             "pending": None,
             "history": [],
-            # Shared secret with the add-on, defense in depth behind the
-            # Supervisor-context check in probe.py. Pinned to the first
-            # non-empty probe_secret presented on an already-authenticated
-            # call; thereafter every ingest/poll call must present a match
-            # (a missing secret is always rejected). See
+            # No "addon_secret" key here anymore, deliberately: the shared
+            # pairing secret with the Probe add-on lives in the private
+            # secret store (secrets_store.PROBE_PAIRING_SECRET_KEY) since
+            # work item SEC-1, and a legacy value in an older install's
+            # stored firewall dict is drained into it on first load by
+            # async_migrate_legacy_secrets. See
             # firewall.async_verify_or_pin_secret.
-            "addon_secret": None,
         },
         integration_security={"github": {}, "refreshed_at": None},
         resource_watchdog={
@@ -210,10 +232,17 @@ class HaSocData:
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
+        # private=True + atomic_writes=True (work item 1.1, D-8 option (a)):
+        # findings, per-user baselines, and the firewall history are
+        # sensitive even without the secret values (which live in
+        # secrets_store.py), so the file gets the same 0o600 temp-file-and-
+        # rename treatment core gives its own auth store.
         self._store = HaSocStore(
             hass,
             STORAGE_VERSION_MAJOR,
             STORAGE_KEY,
+            private=True,
+            atomic_writes=True,
             minor_version=STORAGE_VERSION_MINOR,
         )
         self.data: StoreData = default_store_data()
@@ -226,10 +255,11 @@ class HaSocData:
     async def async_load(self) -> bool:
         """Load persisted state. Returns True if a prior save existed.
 
-        The return value lets the caller distinguish "this is the very
-        first time HA SOC has ever run" (nothing on disk yet) from a normal
-        restart — used once, in __init__.py, to decide whether a pre-setup
-        options-flow save should be seeded into settings.
+        The return value distinguishes "this is the very first time HA SOC
+        has ever run" (nothing on disk yet) from a normal restart. The old
+        seed-from-entry.options path that consumed it was removed with the
+        entry.options mirror (work item SEC-2); the flag is kept because it
+        is cheap and honest information a future first-run step may need.
         """
         stored = await self._store.async_load()
         if stored is not None:
@@ -266,6 +296,28 @@ class HaSocData:
 
     def async_update_settings(self, **changes: Any) -> None:
         self.data["settings"].update(changes)  # type: ignore[typeddict-item]
+        self.async_schedule_save()
+
+    # -- Audit chain head mirror (work item 1.5) -----------------------------
+    def async_set_audit_head(self, head: dict[str, Any]) -> None:
+        """Record the audit chain's flushed head ({seq, hash, at}).
+
+        The mirror only ever advances. A chain head that moves backwards is
+        exactly the wipe/rollback signal audit.py compares this mirror
+        against, so accepting a lower seq here would erase the evidence the
+        mirror exists to preserve. In normal operation the head always
+        advances anyway (a post-reset chain continues numbering from this
+        mirror, see audit.py), so a regressing call is a programming error
+        or a race and is dropped rather than honored.
+        """
+        current = self.data.get("audit_head")
+        if isinstance(current, dict):
+            try:
+                if int(current.get("seq", 0)) >= int(head["seq"]):
+                    return
+            except (TypeError, ValueError, KeyError):
+                pass
+        self.data["audit_head"] = head
         self.async_schedule_save()
 
     # -- Permissions matrix -------------------------------------------------
@@ -328,12 +380,32 @@ class HaSocData:
         self.data["detections"][detection_id] = detection
         self.async_schedule_save()
 
-    def async_set_detection_status(self, detection_id: str, status: str) -> None:
+    def async_set_detection_status(
+        self,
+        detection_id: str,
+        status: str,
+        *,
+        by_user_id: str | None = None,
+        at: str | None = None,
+    ) -> dict[str, Any] | None:
+        """Set a detection's status, recording who, when, and what it was.
+
+        status_by/status_at/previous_status are recorded on the detection
+        itself (work item 1.4) so the analyst trail survives on the record,
+        not only in the audit chain. Returns the mutated detection so the
+        caller can audit rule_id and previous_status, or None when no such
+        detection exists (in which case nothing changed and nothing should
+        be audited).
+        """
         detection = self.data["detections"].get(detection_id)
         if detection is None:
-            return
+            return None
+        detection["previous_status"] = detection.get("status")
         detection["status"] = status
+        detection["status_by"] = by_user_id
+        detection["status_at"] = at
         self.async_schedule_save()
+        return detection
 
     # -- Posture history ------------------------------------------------
     def async_append_posture_snapshot(self, snapshot: dict[str, Any], *, max_days: int = 90) -> None:

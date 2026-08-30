@@ -11,6 +11,14 @@ access_level can still ask why.
 Command namespace is `ha_soc/*`. Mutating/PII-bearing commands never return
 raw refresh-token secrets or JWT material to the frontend — only metadata
 (ids, timestamps, client names).
+
+HA SOC's own actions are in its own audit chain (work item 1.4, decision
+D-14 option (a)): every mutating command here writes an audit record, and
+the three privileged READS (host/Supervisor/add-on container logs, the
+crash log, and a user's detail including their token list) write a
+`privileged_read` record naming the target. Ordinary list/summary reads
+are deliberately not audited (D-14 rejected option (b)); logging every
+panel refresh would bury the records that matter.
 """
 from __future__ import annotations
 
@@ -259,6 +267,15 @@ async def ws_users_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_detail(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # Privileged read (work item 1.4, D-14): the detail includes the target
+    # user's refresh-token list. The ATTEMPT is what gets audited, before
+    # the fetch, so a probe for a nonexistent user id still leaves a
+    # record; a not_found answer discloses nothing beyond the id's absence.
+    runtime.audit.async_log(
+        "privileged_read",
+        user_id=connection.user.id,
+        detail={"target": msg["user_id"], "read": "user_detail"},
+    )
     detail = await runtime.users.async_get_user_detail(msg["user_id"])
     if detail is None:
         connection.send_error(msg["id"], "not_found", "User not found")
@@ -577,6 +594,22 @@ async def ws_permissions_dashboard_flags_set(hass: HomeAssistant, connection, ms
     if not ok:
         connection.send_error(msg["id"], reason or "set_failed", "Could not update dashboard flags")
         return
+    # Work item 1.4: only the flags actually present in the message are
+    # recorded, so the record says what changed, not what happened to be
+    # omitted.
+    runtime.audit.async_log(
+        "lovelace_change",
+        user_id=connection.user.id,
+        detail={
+            "action": "dashboard_flags_set",
+            "dashboard_id": msg["dashboard_id"],
+            "flags": {
+                key: msg[key]
+                for key in ("require_admin", "show_in_sidebar")
+                if key in msg
+            },
+        },
+    )
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -597,6 +630,18 @@ async def ws_permissions_sidebar_push(hass: HomeAssistant, connection, msg: dict
     if not ok:
         connection.send_error(msg["id"], reason or "push_failed", "Could not update sidebar for that user")
         return
+    # Work item 1.4: this is a per-user visibility change (cosmetic, per
+    # permissions.py's labeling, but still an admin acting on another
+    # user), so the record carries the target user and the full hidden set.
+    runtime.audit.async_log(
+        "lovelace_change",
+        user_id=connection.user.id,
+        detail={
+            "action": "sidebar_push",
+            "target_user_id": msg["user_id"],
+            "hidden_dashboard_paths": msg["hidden_dashboard_paths"],
+        },
+    )
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -660,8 +705,33 @@ async def ws_detections_list(hass: HomeAssistant, connection, msg: dict) -> None
 )
 @websocket_api.async_response
 async def ws_detections_set_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from homeassistant.util import dt as dt_util
+
     runtime = _runtime(hass)
-    runtime.store.async_set_detection_status(msg["detection_id"], msg["status"])
+    # The store records status_by/status_at/previous_status on the
+    # detection itself and hands the record back so the audit entry can
+    # carry the rule id and the transition (work item 1.4). An unknown id
+    # is an error now, not a silent {"ok": True}: nothing changed, so
+    # claiming success would be false and auditing it would be fiction.
+    detection = runtime.store.async_set_detection_status(
+        msg["detection_id"],
+        msg["status"],
+        by_user_id=connection.user.id,
+        at=dt_util.utcnow().isoformat(),
+    )
+    if detection is None:
+        connection.send_error(msg["id"], "not_found", "Detection not found")
+        return
+    runtime.audit.async_log(
+        "detection_status_changed",
+        user_id=connection.user.id,
+        detail={
+            "detection_id": msg["detection_id"],
+            "rule_id": detection.get("rule_id"),
+            "old_status": detection.get("previous_status"),
+            "new_status": msg["status"],
+        },
+    )
     connection.send_result(msg["id"], {"ok": True})
 
 
@@ -683,8 +753,9 @@ async def ws_vulns_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_vulns_scan_now(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    api_key = runtime.store.settings.get("nvd_api_key") or None
-    findings = await runtime.vulns.async_run_scan(api_key=api_key)
+    # The tracker fetches the NVD API key from the secret store right
+    # before each request (SEC-3); no key is handled here.
+    findings = await runtime.vulns.async_run_scan()
     connection.send_result(msg["id"], {"findings": findings})
 
 
@@ -785,6 +856,16 @@ async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_logs_fault(hass: HomeAssistant, connection, msg: dict) -> None:
     from .logs import async_fault_log_overview
 
+    # Privileged read (work item 1.4, D-14): the crash/fault log is Core's
+    # own post-mortem dump and can carry anything that was in scope when a
+    # thread died. The attempt is audited even when the file turns out not
+    # to exist.
+    runtime = _runtime(hass)
+    runtime.audit.async_log(
+        "privileged_read",
+        user_id=connection.user.id,
+        detail={"target": "core", "read": "fault_log"},
+    )
     connection.send_result(msg["id"], await async_fault_log_overview(hass))
 
 
@@ -812,6 +893,20 @@ async def ws_logs_container(hass: HomeAssistant, connection, msg: dict) -> None:
     logs.py against the Supervisor's own add-on list, never interpolated raw."""
     from .logs import async_fetch_container_log
 
+    # Privileged read (work item 1.4, D-14): host, Supervisor, Core, and
+    # add-on logs routinely carry material their own UIs gate behind admin.
+    # The audited target is the plain slug for an add-on ("addon:" prefix
+    # stripped) or core/supervisor/host, and the attempt is audited before
+    # the fetch so a failed or rejected fetch still leaves a record.
+    runtime = _runtime(hass)
+    runtime.audit.async_log(
+        "privileged_read",
+        user_id=connection.user.id,
+        detail={
+            "target": msg["target"].removeprefix("addon:"),
+            "read": "container_log",
+        },
+    )
     connection.send_result(msg["id"], await async_fetch_container_log(hass, msg["target"]))
 
 
@@ -1162,7 +1257,7 @@ async def ws_firewall_reset_pairing(hass: HomeAssistant, connection, msg: dict) 
     from .firewall import async_reset_addon_secret
 
     runtime = _runtime(hass)
-    async_reset_addon_secret(runtime.store)
+    await async_reset_addon_secret(runtime.secrets)
     runtime.audit.async_log(
         "user_updated",
         user_id=connection.user.id,
@@ -1209,7 +1304,7 @@ async def ws_integration_security_list(hass: HomeAssistant, connection, msg: dic
     from .integration_security import async_integration_security_overview
 
     runtime = _runtime(hass)
-    overview = await async_integration_security_overview(hass, runtime.store)
+    overview = await async_integration_security_overview(hass, runtime.store, runtime.secrets)
     overview["refreshed_at"] = runtime.store.data.get("integration_security", {}).get("refreshed_at")
     connection.send_result(msg["id"], overview)
 
@@ -1225,9 +1320,9 @@ async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: 
 
     runtime = _runtime(hass)
     # Discover the repo URLs to look up from the current local overview.
-    overview = await async_integration_security_overview(hass, runtime.store)
+    overview = await async_integration_security_overview(hass, runtime.store, runtime.secrets)
     repo_urls = [r["repo_url"] for r in overview["integrations"] if r.get("repo_url")]
-    result = await async_refresh_github_signals(hass, runtime.store, repo_urls)
+    result = await async_refresh_github_signals(hass, runtime.store, repo_urls, runtime.secrets)
     connection.send_result(msg["id"], result)
 
 
@@ -1361,7 +1456,7 @@ async def ws_network_overview(hass: HomeAssistant, connection, msg: dict) -> Non
     from .unifi import async_network_overview
 
     runtime = _runtime(hass)
-    overview = await async_network_overview(hass, runtime.store)
+    overview = await async_network_overview(hass, runtime.store, runtime.secrets)
     connection.send_result(msg["id"], overview)
 
 
@@ -1369,22 +1464,32 @@ async def ws_network_overview(hass: HomeAssistant, connection, msg: dict) -> Non
 # Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
 # carry the security-sensitive controls (access level, API credentials), so
 # they are reachable by the account owner alone, regardless of access_level.
-# HaSocData.settings is the single source of truth; entry.options is kept as
-# a synced copy for pre-load prefill only. See config_flow.py's docstring.
+# HaSocData.settings is the single source of truth for every non-secret
+# setting; secret values live only in the private secret store (SEC-1), and
+# the old entry.options mirror is gone entirely (SEC-2): a legacy mirror is
+# scrubbed to {} once at setup. See config_flow.py's docstring.
 # ----------------------------------------------------------------------------
 
 
-def _masked_settings(settings: dict) -> dict:
-    """A copy of settings safe to send to the frontend: every secret value
-    is replaced by a redaction placeholder (when set) or "" (when unset),
-    and a companion "<key>_set" boolean says whether one is configured — so
-    the form can show "configured" without ever receiving the raw secret.
+async def _masked_settings(settings: dict, secrets) -> dict:
+    """A copy of settings safe to send to the frontend: every secret key is
+    present as a redaction placeholder (when set) or "" (when unset), and a
+    companion "<key>_set" boolean says whether one is configured, so the
+    form can show "configured" without ever receiving the raw secret.
+
+    Secret VALUES no longer live in the settings dict at all (they moved to
+    the private secret store, SEC-1), so presence is asked of that store
+    per key; the wire shape is byte-for-byte what it was before the move,
+    which is why the frontend needed no change.
     """
     out = dict(settings)
     for key in SECRET_SETTING_KEYS:
-        value = settings.get(key) or ""
-        out[key] = REDACTED_PLACEHOLDER if value else ""
-        out[f"{key}_set"] = bool(value)
+        # Defensive pop: settings must never carry a secret value anymore,
+        # but if a stray one ever appeared it must not reach the wire.
+        out.pop(key, None)
+        is_set = bool(await secrets.async_get(key))
+        out[key] = REDACTED_PLACEHOLDER if is_set else ""
+        out[f"{key}_set"] = is_set
     return out
 
 
@@ -1393,7 +1498,9 @@ def _masked_settings(settings: dict) -> dict:
 @websocket_api.async_response
 async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
+    connection.send_result(
+        msg["id"], await _masked_settings(runtime.store.settings, runtime.secrets)
+    )
 
 
 @require_owner
@@ -1435,25 +1542,39 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     for key in SECRET_SETTING_KEYS:
         if changes.get(key) == REDACTED_PLACEHOLDER:
             del changes[key]
+
+    # Secret values are routed to the private secret store and never enter
+    # the settings dict (SEC-1). An empty string clears the stored secret,
+    # matching the pre-SEC-1 behavior where "" made the "<key>_set" flag
+    # read false.
+    secret_changes = {
+        key: changes.pop(key) for key in list(changes) if key in SECRET_SETTING_KEYS
+    }
+    for key, value in secret_changes.items():
+        await runtime.secrets.async_set(key, value)
+
     if changes:
         runtime.store.async_update_settings(**changes)
 
-        # Keep entry.options in sync so a pre-runtime prefill never shows a
-        # value this tab already changed.
-        entries = hass.config_entries.async_entries(DOMAIN)
-        if entries:
-            hass.config_entries.async_update_entry(
-                entries[0], options=dict(runtime.store.settings)
-            )
-
-        # Secret values in `changes` are redacted inside audit.async_log()
-        # itself (see _redact_secrets_deep) before anything is persisted.
+    if changes or secret_changes:
+        # The audit record names every changed key. Secret values are
+        # replaced with the placeholder HERE so no raw secret even enters
+        # the audit path; audit.async_log's own _redact_secrets_deep stays
+        # behind this as defense in depth.
         runtime.audit.async_log(
             "soc_config_change",
             user_id=connection.user.id,
-            detail={"action": "settings_changed", "changes": changes},
+            detail={
+                "action": "settings_changed",
+                "changes": {
+                    **changes,
+                    **{key: REDACTED_PLACEHOLDER for key in secret_changes},
+                },
+            },
         )
-    connection.send_result(msg["id"], _masked_settings(runtime.store.settings))
+    connection.send_result(
+        msg["id"], await _masked_settings(runtime.store.settings, runtime.secrets)
+    )
 
 
 # ----------------------------------------------------------------------------

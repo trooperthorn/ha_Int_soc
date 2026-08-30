@@ -34,8 +34,9 @@ therefore requires exactly that context: a call whose context user is
 missing or is any account other than the Supervisor system user is
 rejected before its payload is looked at, audited as probe_auth_rejected,
 and surfaced as a HIGH detection. The shared probe secret (pinned on the
-first Supervisor-context call, see firewall.py) stays as defense in depth
-behind that check, and a call presenting no secret is rejected too. On a
+first Supervisor-context call and held in the private secret store, see
+firewall.py and secrets_store.py) stays as defense in depth behind that
+check, and a call presenting no secret is rejected too. On a
 Core or Container install (is_hassio false) there is no Supervisor proxy
 and so no legitimate caller; the two services are not registered at all
 there rather than registered-and-always-rejecting.
@@ -65,6 +66,7 @@ from .firewall import (
     async_report_from_addon,
     async_verify_or_pin_secret,
 )
+from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
 if TYPE_CHECKING:
@@ -215,7 +217,7 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
 
 
 def async_register_probe_service(
-    hass: HomeAssistant, store: HaSocData, audit: "AuditLog"
+    hass: HomeAssistant, store: HaSocData, audit: "AuditLog", secrets: HaSocSecretStore
 ) -> None:
     """Register the add-on's two ways in: ha_soc.ingest_probe_result (its
     existing periodic report, now also carrying firewall state) and
@@ -272,7 +274,9 @@ def async_register_probe_service(
             presented = call.data.get("probe_secret") or None
             if presented is None:
                 reason = "no_secret"
-            elif not async_verify_or_pin_secret(store, presented):
+            elif not await async_verify_or_pin_secret(secrets, presented):
+                # The pinned value lives in the private secret store
+                # (SEC-1) and is fetched at use time; see firewall.py.
                 reason = "bad_secret"
 
         if reason is None:

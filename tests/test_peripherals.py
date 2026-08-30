@@ -169,6 +169,37 @@ async def test_resolved_device_field_used_when_present(hass: HomeAssistant, stor
     assert row["key"] == "0403:6001:ABC123"
 
 
+async def test_peripherals_reads_only_locator_keys(hass: HomeAssistant, store: HaSocData) -> None:
+    # SEC-4: the device path appearing inside credential values must never
+    # produce a match; only INTEGRATION_LOCATOR_KEYS values are read out
+    # of another integration's config entry.
+    secret_entry = MockConfigEntry(
+        domain="evil_cloud",
+        title="Cloudy",
+        data={"password": "x-/dev/ttyUSB0-x"},
+        options={"token": "/dev/ttyUSB0"},
+    )
+    secret_entry.add_to_hass(hass)
+
+    device = _usb_device("/dev/ttyUSB0")
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"] is None
+    assert overview["unassigned_count"] == 1
+
+    # A locator-key value still matches (behavior parity), including one
+    # nested under another locator key.
+    owner = MockConfigEntry(domain="zwave_js", title="Z-Wave", data={"device": {"path": "/dev/ttyUSB0"}})
+    owner.add_to_hass(hass)
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+    assert overview["devices"][0]["assigned_integration"] == {
+        "entry_id": owner.entry_id,
+        "domain": "zwave_js",
+        "title": "Z-Wave",
+    }
+
+
 async def test_usb_component_unavailable_degrades_honestly(hass: HomeAssistant, store: HaSocData) -> None:
     # Simulate the `usb` component genuinely not being importable (e.g. its
     # aiousbwatcher/pyserial requirements missing) by blanking the module
