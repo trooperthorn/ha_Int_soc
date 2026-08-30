@@ -34,6 +34,7 @@ from .repairs import (
 )
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
+from .resource_watchdog import ResourceWatchdog
 from .store import HaSocData, SettingsData
 from .users import LiveSessionRegistry, UsersManager
 from .vulns import DeviceVulnerabilityTracker
@@ -61,6 +62,7 @@ class HaSocRuntimeData:
     scanner: IntegrationScanner
     risk: RiskEngine
     detections: DetectionEngine
+    watchdog: "ResourceWatchdog"
 
 
 # Plain generic alias rather than a PEP 695 `type` statement — keeps this
@@ -113,6 +115,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     scanner = IntegrationScanner(hass, store)
     risk = RiskEngine(hass, store, users=users)
     detections = DetectionEngine(hass, store, audit=audit, users=users)
+    watchdog = ResourceWatchdog(hass, store, audit)
 
     entry.runtime_data = HaSocRuntimeData(
         store=store,
@@ -125,12 +128,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         scanner=scanner,
         risk=risk,
         detections=detections,
+        watchdog=watchdog,
     )
 
     await audit.async_start()
     await permissions.async_start()
     await health.async_start()
     scanner.async_start(hass)
+    watchdog.async_start()
 
     async_register_websocket_api(hass)
     async_register_probe_service(hass, store)
@@ -216,6 +221,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
         await runtime.permissions.async_stop()
         await runtime.health.async_stop()
         runtime.scanner.async_stop()
+        runtime.watchdog.async_stop()
 
     async_unregister_probe_service(hass)
     await async_unregister_panel(hass)

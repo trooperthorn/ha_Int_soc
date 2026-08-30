@@ -8,9 +8,13 @@ import {
   IntegrationTier,
   ContainerResourceOverview,
   ContainerResource,
+  WatchdogAction,
+  WatchdogStatus,
   fetchIntegrationSecurity,
   refreshIntegrationSecurity,
   fetchContainerResources,
+  fetchWatchdogStatus,
+  setWatchdog,
 } from "../data/ha-soc-ws";
 
 const TIER_LABEL: Record<IntegrationTier, string> = {
@@ -46,11 +50,37 @@ export class HaSocIntegrationSecurityView extends LitElement {
   @state() private _limit = PAGE_SIZE;
   @state() private _containers: ContainerResourceOverview | null = null;
   @state() private _containersLoading = true;
+  @state() private _watchdog: WatchdogStatus | null = null;
+  @state() private _editSlug: string | null = null;
+  @state() private _wdError: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this._load();
     this._loadContainers();
+    this._loadWatchdog();
+  }
+
+  private async _loadWatchdog() {
+    try {
+      this._watchdog = await fetchWatchdogStatus(this.hass);
+    } catch {
+      this._watchdog = null;
+    }
+  }
+
+  // Owner-gated server-side (require_owner) — a non-owner admin's change is
+  // rejected by the WS layer; surface that as a message instead of silence.
+  private async _setWatchdog(changes: Parameters<typeof setWatchdog>[1]) {
+    this._wdError = null;
+    try {
+      this._watchdog = await setWatchdog(this.hass, changes);
+    } catch (e) {
+      this._wdError =
+        e && typeof e === "object" && "code" in (e as Record<string, unknown>) && (e as { code: string }).code === "unauthorized"
+          ? "Watchdog and cap configuration are available to the account owner only."
+          : `Could not save: ${e instanceof Error ? e.message : JSON.stringify(e)}`;
+    }
   }
 
   private async _load() {
@@ -256,6 +286,7 @@ export class HaSocIntegrationSecurityView extends LitElement {
           pinning CPU) is the usual signal for the one that's OOM-killing / restart-looping
           and dragging the host down — those float to the top and are flagged.
         </p>
+        ${this._renderWatchdogBar()}
         ${this._containersLoading && !c
           ? html`<div class="empty">Loading container stats…</div>`
           : !c || !c.available
@@ -279,6 +310,7 @@ export class HaSocIntegrationSecurityView extends LitElement {
                           <th>Net ↓/↑</th>
                           <th>Disk R/W</th>
                           <th>Flags</th>
+                          <th>Watchdog / Cap</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -286,11 +318,244 @@ export class HaSocIntegrationSecurityView extends LitElement {
                       </tbody>
                     </table>
                   </div>
+                  ${this._renderEditor()}
+                  ${this._renderWatchdogActivity()}
                   <p class="muted" style="font-size:11.5px;margin-top:8px;">
                     Updated ${new Date(c.generated_at).toLocaleTimeString()}. CPU/memory are
                     an instantaneous sample — click Refresh to re-poll.
                   </p>
                 `}
+      </div>
+    `;
+  }
+
+  // -- Watchdog global config bar -----------------------------------------
+
+  private _renderWatchdogBar() {
+    const w = this._watchdog;
+    if (!w) return nothing;
+    const cfg = w.config;
+    return html`
+      <div
+        style="border:1px solid var(--divider-color);border-radius:10px;padding:10px 14px;margin-bottom:12px;"
+      >
+        <div class="toolbar" style="margin-bottom:${cfg.enabled ? "8px" : "0"};">
+          <label style="display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:13.5px;cursor:pointer;">
+            <input
+              type="checkbox"
+              .checked=${cfg.enabled}
+              @change=${(e: Event) => this._setWatchdog({ enabled: (e.target as HTMLInputElement).checked })}
+            />
+            Resource Watchdog
+          </label>
+          <span class="muted" style="font-size:12px;">
+            ${cfg.enabled
+              ? `sampling every ${cfg.interval_seconds}s — acts after ${cfg.sustained_samples} sustained breaches`
+              : "off — no automatic detection or action (owner-only setting)"}
+          </span>
+        </div>
+        ${cfg.enabled
+          ? html`
+              <div class="toolbar" style="gap:14px;margin-bottom:0;">
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  CPU ≥
+                  <input type="number" min="10" max="100" style="width:64px;" .value=${String(cfg.default_cpu_percent)}
+                    @change=${(e: Event) => this._setWatchdog({ default_cpu_percent: Number((e.target as HTMLInputElement).value) })} />%
+                </label>
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  Memory ≥
+                  <input type="number" min="10" max="100" style="width:64px;" .value=${String(cfg.default_memory_percent)}
+                    @change=${(e: Event) => this._setWatchdog({ default_memory_percent: Number((e.target as HTMLInputElement).value) })} />%
+                </label>
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  Default action
+                  <select .value=${cfg.default_action}
+                    @change=${(e: Event) => this._setWatchdog({ default_action: (e.target as HTMLSelectElement).value as WatchdogAction })}>
+                    <option value="alert" ?selected=${cfg.default_action === "alert"}>Alert only</option>
+                    <option value="restart" ?selected=${cfg.default_action === "restart"}>Restart add-on</option>
+                    <option value="stop" ?selected=${cfg.default_action === "stop"}>Stop add-on</option>
+                  </select>
+                </label>
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  Sustained samples
+                  <input type="number" min="1" max="30" style="width:56px;" .value=${String(cfg.sustained_samples)}
+                    @change=${(e: Event) => this._setWatchdog({ sustained_samples: Number((e.target as HTMLInputElement).value) })} />
+                </label>
+              </div>
+              <p class="muted" style="font-size:11.5px;margin:6px 0 0;">
+                Home Assistant Core and the Supervisor are always alert-only — the watchdog
+                never auto-restarts them, whatever the default. After 3 enforcement actions
+                on one container within an hour it downgrades that container to alert-only
+                (a restart loop needs a human, not more restarts).
+              </p>
+            `
+          : nothing}
+        ${this._wdError
+          ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin:6px 0 0;">${this._wdError}</p>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  // -- Per-container watchdog/cap cell + editor ---------------------------
+
+  private _wdCell(r: ContainerResource) {
+    const w = this._watchdog;
+    if (!w) return html`<span class="muted">—</span>`;
+    const cfg = w.config;
+    const ov = cfg.overrides?.[r.slug] ?? {};
+    const cpu = ov.cpu_percent ?? cfg.default_cpu_percent;
+    const mem = ov.memory_percent ?? cfg.default_memory_percent;
+    const action = r.kind === "addon" ? (ov.action ?? cfg.default_action) : "alert";
+    const cap = cfg.hard_limits?.[r.slug];
+    const capState = w.hard_limit_state?.[r.slug];
+    const capChip = cap
+      ? capState
+        ? html`<span
+            class="pill ${capState.status === "applied" ? "good" : "high"}"
+            title=${capState.detail ?? capState.status}
+            ><span class="dot"></span>cap ${capState.status}</span
+          >`
+        : html`<span class="pill medium" title="Configured; waiting for the Probe to apply"
+            ><span class="dot"></span>cap pending</span
+          >`
+      : nothing;
+    return html`
+      <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+        ${cfg.enabled && ov.enabled !== false
+          ? html`<span class="muted" style="font-size:11px;" title="Thresholds → action">
+              ${cpu}%/${mem}% → ${action}
+            </span>`
+          : html`<span class="muted" style="font-size:11px;">off</span>`}
+        ${capChip}
+        <button
+          class="ha-btn"
+          style="padding:2px 8px;font-size:11.5px;"
+          @click=${() => (this._editSlug = this._editSlug === r.slug ? null : r.slug)}
+        >
+          ${this._editSlug === r.slug ? "Close" : "Edit"}
+        </button>
+      </div>
+    `;
+  }
+
+  private _renderEditor() {
+    const slug = this._editSlug;
+    const w = this._watchdog;
+    const c = this._containers;
+    if (!slug || !w || !c) return nothing;
+    const row = c.containers.find((x) => x.slug === slug);
+    if (!row) return nothing;
+    const ov = w.config.overrides?.[slug] ?? {};
+    const cap = w.config.hard_limits?.[slug] ?? { memory_mb: null, cpus: null };
+    const isAddon = row.kind === "addon";
+    return html`
+      <div
+        style="border:1px solid var(--primary-color);border-radius:10px;padding:12px 14px;margin-top:10px;"
+      >
+        <div style="font-weight:600;font-size:13.5px;margin-bottom:8px;">
+          ${row.name} <span class="muted" style="font-weight:400;">— per-container watchdog & cap</span>
+        </div>
+        <div class="toolbar" style="gap:14px;">
+          <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+            CPU ≥
+            <input type="number" min="10" max="100" style="width:64px;"
+              placeholder=${String(w.config.default_cpu_percent)}
+              .value=${ov.cpu_percent != null ? String(ov.cpu_percent) : ""}
+              @change=${(e: Event) => {
+                const v = (e.target as HTMLInputElement).value;
+                this._setWatchdog({ override: { slug, cpu_percent: v ? Number(v) : null } });
+              }} />%
+          </label>
+          <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+            Memory ≥
+            <input type="number" min="10" max="100" style="width:64px;"
+              placeholder=${String(w.config.default_memory_percent)}
+              .value=${ov.memory_percent != null ? String(ov.memory_percent) : ""}
+              @change=${(e: Event) => {
+                const v = (e.target as HTMLInputElement).value;
+                this._setWatchdog({ override: { slug, memory_percent: v ? Number(v) : null } });
+              }} />%
+          </label>
+          ${isAddon
+            ? html`
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  Action
+                  <select .value=${ov.action ?? w.config.default_action}
+                    @change=${(e: Event) =>
+                      this._setWatchdog({ override: { slug, action: (e.target as HTMLSelectElement).value as WatchdogAction } })}>
+                    <option value="alert" ?selected=${(ov.action ?? w.config.default_action) === "alert"}>Alert only</option>
+                    <option value="restart" ?selected=${(ov.action ?? w.config.default_action) === "restart"}>Restart</option>
+                    <option value="stop" ?selected=${(ov.action ?? w.config.default_action) === "stop"}>Stop</option>
+                  </select>
+                </label>
+              `
+            : html`<span class="muted" style="font-size:12px;">action: alert only (never auto-restarted)</span>`}
+          <button class="ha-btn" style="font-size:11.5px;" @click=${() => this._setWatchdog({ override: { slug, clear: true } })}>
+            Reset to defaults
+          </button>
+        </div>
+        ${isAddon
+          ? html`
+              <div class="toolbar" style="gap:14px;margin-top:8px;margin-bottom:0;">
+                <span style="font-size:12.5px;font-weight:600;">Hard cap (Docker):</span>
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  Memory
+                  <input type="number" min="64" step="64" style="width:84px;" placeholder="unlimited"
+                    .value=${cap.memory_mb != null ? String(cap.memory_mb) : ""}
+                    @change=${(e: Event) => {
+                      const v = (e.target as HTMLInputElement).value;
+                      this._setWatchdog({ hard_limit: { slug, memory_mb: v ? Number(v) : null, cpus: cap.cpus } });
+                    }} /> MB
+                </label>
+                <label class="muted" style="font-size:12px;display:inline-flex;align-items:center;gap:6px;">
+                  CPUs
+                  <input type="number" min="0.1" step="0.1" style="width:70px;" placeholder="unlimited"
+                    .value=${cap.cpus != null ? String(cap.cpus) : ""}
+                    @change=${(e: Event) => {
+                      const v = (e.target as HTMLInputElement).value;
+                      this._setWatchdog({ hard_limit: { slug, memory_mb: cap.memory_mb, cpus: v ? Number(v) : null } });
+                    }} />
+                </label>
+                <button class="ha-btn" style="font-size:11.5px;"
+                  @click=${() => this._setWatchdog({ hard_limit: { slug, memory_mb: null, cpus: null } })}>
+                  Remove cap
+                </button>
+              </div>
+              <p class="muted" style="font-size:11.5px;margin:6px 0 0;">
+                ⚠ Hard caps are real Docker limits applied by the HA SOC Probe add-on. They
+                require the Probe's <strong>Protection Mode to be disabled</strong> — a
+                root-equivalent grant to that add-on (its security rating drops
+                accordingly) — and are re-applied automatically every ~60s so they survive
+                Supervisor recreating the container on updates. A memory cap means the
+                kernel OOM-kills the add-on's process when it exceeds the cap — Supervisor's
+                own add-on watchdog then restarts it if enabled.
+              </p>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  private _renderWatchdogActivity() {
+    const w = this._watchdog;
+    if (!w) return nothing;
+    const outcomes = Object.entries(w.containers)
+      .filter(([, s]) => s.last_outcome)
+      .map(([slug, s]) => ({ slug, text: s.last_outcome as string }));
+    if (!outcomes.length) return nothing;
+    return html`
+      <div style="margin-top:10px;">
+        <div style="font-size:12px;font-weight:600;color:var(--secondary-text-color);margin-bottom:4px;">
+          RECENT WATCHDOG ACTIVITY
+        </div>
+        ${outcomes.map(
+          (o) => html`
+            <div class="muted" style="font-size:12px;font-family:var(--code-font-family,monospace);">
+              ${o.slug}: ${o.text}
+            </div>
+          `
+        )}
       </div>
     `;
   }
@@ -332,6 +597,7 @@ export class HaSocIntegrationSecurityView extends LitElement {
               </div>`
             : html`<span class="muted">—</span>`}
         </td>
+        <td>${this._wdCell(r)}</td>
       </tr>
     `;
   }

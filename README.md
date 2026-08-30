@@ -344,6 +344,40 @@ a Supervisor-based install (HA OS / Supervised); on a Container/Core install
 the section says so rather than erroring. See
 [`custom_components/ha_soc/containers.py`](custom_components/ha_soc/containers.py).
 
+### Resource Watchdog & hard caps
+
+Supervisor exposes **no API to cap an add-on's CPU or memory** (verified
+against the full `aiohasupervisor` client surface), so a runaway add-on can
+eat the host until the kernel OOM-kills something — often not the guilty
+container. HA SOC covers this two ways, matching what the platform allows:
+
+- **Watchdog (supported APIs only, opt-in).** Samples per-container stats
+  on an interval and acts only on a *sustained* breach (N consecutive
+  samples over the per-container or default threshold — a one-sample media
+  scan spike trips nothing). On a trip it records a detection +
+  notification + audit entry and takes the configured action: alert,
+  **restart**, or stop the add-on via the real Supervisor API. Two rules are
+  hard-coded: Core and the Supervisor are never auto-restarted (alert-only,
+  whatever the config), and after 3 enforcement actions on one container in
+  an hour the watchdog downgrades it to alert-only — an add-on that
+  re-breaches after every restart is a restart *loop*, and looping it
+  forever is worse than saying so.
+- **Hard caps (explicit escape hatch, owner-only).** Real Docker limits
+  (`--memory`/`--cpus` equivalents) per add-on, delivered to the HA SOC
+  Probe over its existing poll channel and applied against the Docker
+  socket. This requires the Probe add-on's **Protection Mode to be
+  disabled** — a root-equivalent grant the panel spells out before anything
+  applies; with protection on, every application honestly reports
+  *denied*. Because Supervisor recreates containers on add-on
+  updates/restarts (silently dropping any Docker-level limit), the Probe
+  re-applies the caps every ~60 s. A capped add-on that exceeds its memory
+  limit is OOM-killed by the kernel; Supervisor's own add-on watchdog then
+  restarts it if enabled.
+
+Both live on the Integration Security tab's Container Resource Usage card;
+all configuration is owner-only and audit-logged. See
+[`custom_components/ha_soc/resource_watchdog.py`](custom_components/ha_soc/resource_watchdog.py).
+
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a

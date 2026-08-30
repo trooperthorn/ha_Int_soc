@@ -53,6 +53,20 @@ PROBE_SECRET=""
 backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup_${1}.rules"; }
 resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
 
+# --- Resource hard caps (Docker) ----------------------------------------------
+# Owner-configured per-add-on Docker limits (--memory / --cpus equivalents),
+# delivered on the same poll channel as firewall work and applied against the
+# Docker socket. Requires config.yaml's `docker_api: true` AND this add-on's
+# Protection Mode DISABLED — with protection on, the socket is read-only and
+# every apply reports "denied" (surfaced verbatim in the HA SOC panel) rather
+# than pretending. Because Supervisor recreates containers on add-on
+# update/restart (silently dropping any limit), the current caps are
+# re-applied every LIMIT_APPLY_EVERY poll cycles (~60s) — idempotent, cheap,
+# and the only way caps survive the platform's own lifecycle.
+DOCKER_SOCK="/var/run/docker.sock"
+LIMITS_FILE="${STATE_DIR}/ha_soc_resource_limits.json"
+LIMIT_APPLY_EVERY=12  # x POLL_INTERVAL_SECONDS = ~60s
+
 # Create the per-install probe secret once (atomically, so the two services
 # racing to create it can't end up with two different values — noclobber
 # makes the redirect fail for the loser, who then reads the winner's file),
@@ -148,6 +162,87 @@ known_rules_json() {
     fi
 }
 
+# One docker-socket update for one container. Args: container name, then the
+# JSON body. Prints the HTTP status code ("000" when the socket itself is
+# unreachable — no docker_api grant, or Protection Mode still enabled).
+docker_update() {
+    local container="$1" body="$2"
+    curl -sS -o /tmp/ha_soc_docker_resp -w '%{http_code}' \
+        --unix-socket "${DOCKER_SOCK}" \
+        -X POST \
+        -H "Content-Type: application/json" \
+        -d "${body}" \
+        "http://localhost/containers/${container}/update" 2>/dev/null || echo "000"
+}
+
+# Applies the current caps (LIMITS_FILE: {slug: {memory_mb, cpus}}) to every
+# targeted container, resets containers whose cap was removed since the last
+# pass, and reports per-slug state back to Core via ingest_probe_result.
+# Never exits non-zero — a cap that can't be applied is REPORTED, not fatal.
+apply_resource_limits() {
+    local limits prev_slugs slug entry memory_mb cpus body code status detail state_entries
+    limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
+    prev_slugs=$(cat "${LIMITS_FILE}.applied" 2>/dev/null || echo "[]")
+    state_entries="{}"
+
+    if [ ! -S "${DOCKER_SOCK}" ]; then
+        # Socket not mapped at all — docker_api not granted (or old config).
+        for slug in $(echo "${limits}" | jq -r 'keys[]'); do
+            state_entries=$(echo "${state_entries}" | jq -c --arg s "${slug}" \
+                '. + {($s): {status: "denied", detail: "Docker socket not available — enable docker_api and disable Protection Mode on the HA SOC Probe add-on."}}')
+        done
+    else
+        # Reset any container whose cap was removed since the last pass —
+        # 0 for Memory/MemorySwap/NanoCpus means "unlimited" to Docker.
+        for slug in $(echo "${prev_slugs}" | jq -r '.[]'); do
+            if [ "$(echo "${limits}" | jq --arg s "${slug}" 'has($s)')" = "false" ]; then
+                docker_update "addon_${slug}" '{"Memory":0,"MemorySwap":0,"NanoCpus":0,"CpuShares":0}' >/dev/null
+                bashio::log.info "Resource caps removed for addon_${slug} — reset to unlimited."
+            fi
+        done
+
+        for slug in $(echo "${limits}" | jq -r 'keys[]'); do
+            entry=$(echo "${limits}" | jq -c --arg s "${slug}" '.[$s]')
+            memory_mb=$(echo "${entry}" | jq -r '.memory_mb // empty')
+            cpus=$(echo "${entry}" | jq -r '.cpus // empty')
+            # Memory cap implies the swap cap too (MemorySwap = Memory):
+            # without it Docker rejects the update, and a cap that the
+            # container can dodge by swapping isn't a cap.
+            body="{}"
+            if [ -n "${memory_mb}" ]; then
+                body=$(echo "${body}" | jq -c --argjson b "$(( memory_mb * 1024 * 1024 ))" '. + {Memory: $b, MemorySwap: $b}')
+            fi
+            if [ -n "${cpus}" ]; then
+                body=$(echo "${body}" | jq -c --argjson n "$(awk -v c="${cpus}" 'BEGIN{printf "%.0f", c * 1000000000}')" '. + {NanoCpus: $n}')
+            fi
+            code=$(docker_update "addon_${slug}" "${body}")
+            case "${code}" in
+                200) status="applied"; detail="" ;;
+                404) status="failed"; detail="container addon_${slug} not found" ;;
+                000) status="denied"; detail="Docker socket rejected the connection — is Protection Mode disabled on the HA SOC Probe add-on?" ;;
+                *)   status="failed"; detail="docker update returned HTTP ${code}: $(head -c 200 /tmp/ha_soc_docker_resp 2>/dev/null)" ;;
+            esac
+            state_entries=$(echo "${state_entries}" | jq -c --arg s "${slug}" --arg st "${status}" --arg d "${detail}" \
+                '. + {($s): {status: $st, detail: (if $d == "" then null else $d end)}}')
+        done
+    fi
+
+    echo "${limits}" | jq -c 'keys' > "${LIMITS_FILE}.applied"
+
+    if [ "$(echo "${state_entries}" | jq 'length')" != "0" ]; then
+        payload=$(jq -n \
+            --argjson state "${state_entries}" \
+            --arg probe_secret "${PROBE_SECRET}" \
+            '{resource_limit_state: $state, probe_secret: $probe_secret}')
+        curl -sS -o /dev/null \
+            -X POST \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d "${payload}" \
+            "${INGEST_URL}" 2>/dev/null || true
+    fi
+}
+
 # --- Reporting back to Core ---------------------------------------------------
 
 report_resolution() {
@@ -232,6 +327,8 @@ bashio::log.info "HA SOC Probe firewall poller starting — checking for pending
 
 # --- Main poll loop -------------------------------------------------------
 
+poll_counter=0
+
 while true; do
     current_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
 
@@ -284,6 +381,30 @@ while true; do
             :
             ;;
     esac
+
+    # Resource hard caps: apply immediately when the delivered set changes,
+    # and re-apply every ~60s regardless — Supervisor recreates containers
+    # on add-on update/restart, silently dropping any Docker-level limit,
+    # so idempotent re-application is the only way a cap actually persists.
+    new_limits=$(echo "${response}" | jq -c '.service_response.resource_limits.limits // empty' 2>/dev/null || echo "")
+    if [ -n "${new_limits}" ]; then
+        old_limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
+        if [ "${new_limits}" != "${old_limits}" ]; then
+            echo "${new_limits}" > "${LIMITS_FILE}"
+            bashio::log.info "Resource cap set changed — applying now."
+            apply_resource_limits
+        fi
+    elif [ -s "${LIMITS_FILE}" ] && [ "$(cat "${LIMITS_FILE}")" != "{}" ]; then
+        # Core no longer sends any caps — clear ours (resets containers).
+        echo "{}" > "${LIMITS_FILE}"
+        bashio::log.info "All resource caps cleared by HA SOC — resetting containers."
+        apply_resource_limits
+    fi
+    poll_counter=$(( poll_counter + 1 ))
+    if [ $(( poll_counter % LIMIT_APPLY_EVERY )) -eq 0 ] \
+        && [ -s "${LIMITS_FILE}" ] && [ "$(cat "${LIMITS_FILE}")" != "{}" ]; then
+        apply_resource_limits
+    fi
 
     sleep "${POLL_INTERVAL_SECONDS}"
 done

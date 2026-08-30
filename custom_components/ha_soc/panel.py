@@ -30,9 +30,21 @@ def _bundle_path() -> str:
     return os.path.join(os.path.dirname(__file__), "frontend", "dist", "ha-soc-panel.js")
 
 
+def _bundle_mtime_sync(bundle_path: str) -> float | None:
+    """The bundle's mtime, or None if it doesn't exist. Disk I/O — run in
+    the executor only (same event-loop rule as integration_security.py's
+    custom_components scan; stat-ing a file on the loop stalls everything
+    on a slow disk)."""
+    try:
+        return os.path.getmtime(bundle_path)
+    except OSError:
+        return None
+
+
 async def async_register_panel(hass: HomeAssistant) -> None:
     bundle_path = _bundle_path()
-    if not os.path.exists(bundle_path):
+    mtime = await hass.async_add_executor_job(_bundle_mtime_sync, bundle_path)
+    if mtime is None:
         _LOGGER.warning(
             "HA SOC frontend bundle not found at %s — build frontend/ before "
             "using the panel (see frontend/README.md). Skipping panel registration.",
@@ -40,7 +52,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         )
         return
 
-    cache_bust = int(os.path.getmtime(bundle_path))
+    cache_bust = int(mtime)
     await hass.http.async_register_static_paths(
         [StaticPathConfig(PANEL_URL, bundle_path, cache_headers=False)]
     )

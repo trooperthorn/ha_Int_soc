@@ -81,6 +81,30 @@ A proposed ruleset is never permanent on arrival:
    backup immediately, rather than assuming it's still safely "in
    progress." An interrupted test is always treated as failed.
 
+## Resource hard caps (optional, off by default)
+
+The HA SOC panel can configure real Docker limits (memory / CPUs) per
+add-on — the per-container cap Supervisor itself has no API for. This
+add-on receives those caps on the same poll channel as firewall work and
+applies them against the Docker socket (`config.yaml`'s `docker_api`).
+
+Two things to know before using it:
+
+- **It only works with this add-on's Protection Mode DISABLED.** With
+  protection on (the default), the Docker socket is read-only and every
+  application honestly reports *denied* back to the panel. Disabling
+  Protection Mode is a root-equivalent grant to this add-on — the panel
+  says so before anything is applied, and users who don't use hard caps
+  lose nothing by leaving protection on.
+- **Caps are re-applied every ~60 s, by design.** Supervisor recreates
+  add-on containers on update/restart, silently dropping any Docker-level
+  limit — idempotent re-application is the only way a cap actually
+  persists across the platform's own lifecycle. Removing a cap in the
+  panel resets that container to unlimited on the next pass.
+
+A capped add-on that exceeds its memory limit is OOM-killed by the kernel;
+Supervisor's own add-on watchdog restarts it if enabled.
+
 ## What it deliberately does NOT do
 
 - **No process-name attribution.** Knowing *which port* is open is useful

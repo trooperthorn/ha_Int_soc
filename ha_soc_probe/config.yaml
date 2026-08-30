@@ -1,5 +1,5 @@
 name: HA SOC Probe
-version: "2026.08.24.4"
+version: "2026.08.26.2"
 slug: ha_soc_probe
 description: >-
   Optional host-level companion for the HA SOC integration. Reports the
@@ -26,6 +26,14 @@ homeassistant_api: true
 # never touches the raw INPUT chain or anything Docker itself manages.
 privileged:
   - NET_ADMIN
+# docker_api maps the Docker socket for the OPTIONAL resource hard-cap
+# feature (per-add-on --memory/--cpus, configured owner-only in the HA SOC
+# panel). With Protection Mode ON (the default) the socket is read-only and
+# every cap application honestly reports "denied" — actually applying caps
+# requires the user to deliberately disable Protection Mode on THIS add-on,
+# a root-equivalent grant the panel spells out before anything is applied.
+# Users who don't use hard caps lose nothing by leaving Protection Mode on.
+docker_api: true
 options:
   scan_interval_hours: 6
 schema:

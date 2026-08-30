@@ -336,6 +336,79 @@ export interface ContainerResourceOverview {
   generated_at: string;
 }
 
+// Mirrors resource_watchdog.py. Watchdog = sustained-breach detection +
+// per-container action (alert/restart/stop — add-ons only; Core/Supervisor
+// are clamped to alert server-side). hard_limits = Docker caps applied by
+// the Probe add-on (requires its Protection Mode disabled).
+export type WatchdogAction = "alert" | "restart" | "stop";
+
+export interface WatchdogOverride {
+  cpu_percent?: number | null;
+  memory_percent?: number | null;
+  action?: WatchdogAction;
+  enabled?: boolean;
+}
+
+export interface WatchdogHardLimit {
+  memory_mb: number | null;
+  cpus: number | null;
+}
+
+export interface WatchdogConfig {
+  enabled: boolean;
+  default_cpu_percent: number;
+  default_memory_percent: number;
+  default_action: WatchdogAction;
+  sustained_samples: number;
+  interval_seconds: number;
+  overrides: Record<string, WatchdogOverride>;
+  hard_limits: Record<string, WatchdogHardLimit>;
+}
+
+export interface WatchdogHistorySample {
+  ts: string;
+  cpu_percent: number | null;
+  memory_percent: number | null;
+  memory_usage: number | null;
+}
+
+export interface WatchdogContainerState {
+  breach_count: number;
+  last_outcome: string | null;
+  history: WatchdogHistorySample[];
+}
+
+export interface WatchdogHardLimitState {
+  status: string; // applied | failed | denied | unknown
+  detail: string | null;
+  at: string;
+}
+
+export interface WatchdogStatus {
+  config: WatchdogConfig;
+  hard_limit_state: Record<string, WatchdogHardLimitState>;
+  running: boolean;
+  containers: Record<string, WatchdogContainerState>;
+}
+
+export interface WatchdogSetPayload {
+  enabled?: boolean;
+  default_cpu_percent?: number;
+  default_memory_percent?: number;
+  default_action?: WatchdogAction;
+  sustained_samples?: number;
+  interval_seconds?: number;
+  override?: {
+    slug: string;
+    cpu_percent?: number | null;
+    memory_percent?: number | null;
+    action?: WatchdogAction;
+    enabled?: boolean;
+    clear?: boolean;
+  };
+  hard_limit?: { slug: string; memory_mb?: number | null; cpus?: number | null };
+}
+
 // Mirrors unifi.py's normalized contract. Every per-row field is nullable
 // on purpose: the exact UniFi field names could not be verified against a
 // live controller, so anything the console doesn't return comes through as
@@ -773,6 +846,12 @@ export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
 
 export const fetchContainerResources = (hass: HomeAssistant) =>
   ws<ContainerResourceOverview>(hass, { type: "ha_soc/containers/resources" });
+
+export const fetchWatchdogStatus = (hass: HomeAssistant) =>
+  ws<WatchdogStatus>(hass, { type: "ha_soc/watchdog/status" });
+
+export const setWatchdog = (hass: HomeAssistant, changes: WatchdogSetPayload) =>
+  ws<WatchdogStatus>(hass, { type: "ha_soc/watchdog/set", ...changes });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });
