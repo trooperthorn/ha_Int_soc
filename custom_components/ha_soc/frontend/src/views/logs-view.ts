@@ -126,6 +126,12 @@ export class HaSocLogsView extends LitElement {
   @state() private _entries: HaLogEntry[] = [];
   @state() private _fault: FaultLogOverview | null = null;
   @state() private _loading = true;
+  // Non-null when the captured-records load failed: rendered as a
+  // distinct could-not-load state, never an empty "no matching log
+  // entries" (work plan item 4.12). The container-log path already
+  // reports its own failures inline (async_fetch_container_log never
+  // raises), so this covers only the system-log source.
+  @state() private _error: string | null = null;
   @state() private _domainFilter = "";
   @state() private _levelFilter = "";
   @state() private _expanded: Set<number> = new Set();
@@ -156,6 +162,7 @@ export class HaSocLogsView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       const [entries, fault, targets] = await Promise.all([
         fetchSystemLog(this.hass),
@@ -167,6 +174,11 @@ export class HaSocLogsView extends LitElement {
       this._entries = entries;
       this._fault = fault;
       this._targets = targets;
+    } catch (err: any) {
+      // system_log/list or the fault-log fetch itself failing must not
+      // read as "no log entries"; the fault card and table both stay
+      // hidden until the next successful load.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -361,6 +373,13 @@ export class HaSocLogsView extends LitElement {
           ? this._renderContainerLog()
           : this._loading
           ? html`<div class="empty">Loading…</div>`
+          : this._error
+          ? html`
+              <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+                <p style="font-size:13px;margin:0 0 8px;">${this._error}</p>
+                <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+              </div>
+            `
           : !filtered.length
           ? html`<div class="empty">No matching log entries.</div>`
           : html`

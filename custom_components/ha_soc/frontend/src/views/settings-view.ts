@@ -55,6 +55,12 @@ export class HaSocSettingsView extends LitElement {
   @state() private _security: SecurityOverview | null = null;
   @state() private _thresholds: DetectionThresholdTable | null = null;
   @state() private _loading = true;
+  // Non-null when fetchSettings itself failed (the security/threshold
+  // sub-loads already degrade independently below). Without this, a
+  // failed load left the page reading "Loading settings..." forever,
+  // which looks like a stuck page rather than a failure (work plan item
+  // 4.12).
+  @state() private _error: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -63,6 +69,7 @@ export class HaSocSettingsView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._settings = await fetchSettings(this.hass);
       // Fetched separately: a failure here (e.g. the security_health
@@ -82,6 +89,12 @@ export class HaSocSettingsView extends LitElement {
       } catch {
         this._thresholds = null;
       }
+    } catch (err: any) {
+      // Unlike the two isolated sub-loads above, fetchSettings itself
+      // failing must not be swallowed: the whole page has nothing to
+      // show without it, and "Loading settings..." forever looks like a
+      // stuck page rather than a failure.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -259,7 +272,16 @@ export class HaSocSettingsView extends LitElement {
   }
 
   render() {
-    if (this._loading || !this._settings) return html`<div class="empty">Loading settings…</div>`;
+    if (this._loading) return html`<div class="empty">Loading settings…</div>`;
+    if (this._error || !this._settings) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load Settings</h3>
+          <p style="font-size:13px;">${this._error ?? "The server returned no settings."}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
+    }
     const s = this._settings;
 
     return html`

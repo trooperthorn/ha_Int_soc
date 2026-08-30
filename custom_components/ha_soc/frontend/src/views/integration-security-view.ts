@@ -53,6 +53,11 @@ export class HaSocIntegrationSecurityView extends LitElement {
 
   @state() private _overview: IntegrationSecurityOverview | null = null;
   @state() private _loading = true;
+  // Non-null when the load itself failed: without this a failure left
+  // _overview null forever with _loading already cleared by the finally
+  // block, so the page silently stuck on "Loading integrations..." with
+  // no way to tell a failure from a slow load (work plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _refreshing = false;
   @state() private _search = "";
   @state() private _tierFilter = "all";
@@ -96,8 +101,11 @@ export class HaSocIntegrationSecurityView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._overview = await fetchIntegrationSecurity(this.hass);
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -162,7 +170,16 @@ export class HaSocIntegrationSecurityView extends LitElement {
   }
 
   render() {
-    if (this._loading || !this._overview) return html`<div class="empty">Loading integrations…</div>`;
+    if (this._loading) return html`<div class="empty">Loading integrations…</div>`;
+    if (this._error || !this._overview) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load Integration Security</h3>
+          <p style="font-size:13px;">${this._error ?? "The server returned no data."}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
+    }
     const o = this._overview;
     const filtered = this._filtered();
     const shown = filtered.slice(0, this._limit);

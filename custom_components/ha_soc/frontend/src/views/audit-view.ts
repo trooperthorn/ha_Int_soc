@@ -48,6 +48,10 @@ export class HaSocAuditView extends LitElement {
   @state() private _events: AuditEvent[] = [];
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
+  // Non-null when the query failed: rendered as a distinct could-not-load
+  // state with the server's message, never an empty "no matching events".
+  // The two must never be visually the same thing (work plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _category = "";
   @state() private _userId = "";
   @state() private _verifyResult: {
@@ -74,12 +78,17 @@ export class HaSocAuditView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       this._events = await queryAudit(this.hass, {
         category: this._category || undefined,
         user_id: this._userId || undefined,
         limit: 200,
       });
+    } catch (err: any) {
+      // "No matching events" and "the query itself failed" must never
+      // look the same; store the server's message and show it distinctly.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -187,6 +196,13 @@ export class HaSocAuditView extends LitElement {
           : null}
         ${this._loading
           ? html`<div class="empty">Loading…</div>`
+          : this._error
+          ? html`
+              <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+                <p style="font-size:13px;margin:0 0 8px;">${this._error}</p>
+                <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+              </div>
+            `
           : !this._events.length
           ? html`<div class="empty">No matching events.</div>`
           : html`

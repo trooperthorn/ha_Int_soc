@@ -52,6 +52,11 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _applyError: string | null = null;
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
+  // Non-null when _load itself failed. Without this a rejected registry
+  // or broken-references fetch left _brokenLoading stuck true forever,
+  // an unbounded "Loading..." with no way to tell a failure from a slow
+  // sweep (work plan item 4.12).
+  @state() private _brokenError: string | null = null;
   @state() private _brokenFilter: string | null = null;
   // Column sort for the "referenced but not found" table (see sortable.ts);
   // null keeps the sweep's reported order.
@@ -78,15 +83,24 @@ export class HaSocEntityRemapView extends LitElement {
   }
 
   private async _load() {
-    const [entities, broken, access] = await Promise.all([
-      fetchEntityRegistry(this.hass),
-      fetchBrokenEntityReferences(this.hass),
-      fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
-    ]);
-    this._entities = entities;
-    this._broken = broken;
-    this._isOwner = !!access.is_owner;
-    this._brokenLoading = false;
+    this._brokenLoading = true;
+    this._brokenError = null;
+    try {
+      const [entities, broken, access] = await Promise.all([
+        fetchEntityRegistry(this.hass),
+        fetchBrokenEntityReferences(this.hass),
+        fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
+      ]);
+      this._entities = entities;
+      this._broken = broken;
+      this._isOwner = !!access.is_owner;
+    } catch (err: any) {
+      // A failed fetch must not leave the sweep reading "Loading..."
+      // forever; store the server's message and show it distinctly.
+      this._brokenError = err?.message ?? String(err);
+    } finally {
+      this._brokenLoading = false;
+    }
   }
 
   private _labelFor(entityId: string): string {
@@ -412,6 +426,13 @@ export class HaSocEntityRemapView extends LitElement {
           : nothing}
         ${this._brokenLoading
           ? html`<div class="empty">Loading…</div>`
+          : this._brokenError
+            ? html`
+                <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+                  <p style="font-size:13px;margin:0 0 8px;">${this._brokenError}</p>
+                  <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+                </div>
+              `
           : !this._broken.length
             ? html`<div class="empty">Nothing found — no dangling entity references detected.</div>`
             : !this._filteredBroken().length

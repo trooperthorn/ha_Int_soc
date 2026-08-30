@@ -13,7 +13,8 @@ import {
   FirewallRuleFamily,
   FirewallStatus,
   FirewallPendingTest,
-  fetchScannerFindings,
+  ScannerDomainCoverage,
+  fetchScannerListing,
   scanIntegrationNow,
   exportFinding,
   fetchVulns,
@@ -107,11 +108,22 @@ export class HaSocScannerView extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _scannerFindings: Finding[] = [];
+  // Per-domain coverage from listing_payload (work plan item 4.8): which
+  // domains a completed scan actually looked at. null means the payload
+  // carried no coverage map at all (an older backend); either way, a
+  // domain without a record renders as "not scanned", never as an
+  // implied-clean zero findings.
+  @state() private _coverage: Record<string, ScannerDomainCoverage> | null = null;
   @state() private _vulnFindings: Finding[] = [];
   @state() private _misconfigFindings: Finding[] = [];
   @state() private _probe: ProbeOverview | null = null;
   @state() private _loading = true;
+  // Non-null when the load failed: rendered as a distinct could-not-load
+  // state with the server's message, never empty tables (work plan item
+  // 4.12).
+  @state() private _error: string | null = null;
   @state() private _scanning = false;
+  @state() private _scanError: string | null = null;
   @state() private _exportNotice: string | null = null;
 
   @state() private _firewall: FirewallStatus | null = null;
@@ -137,10 +149,29 @@ export class HaSocScannerView extends LitElement {
   @state() private _vulnSort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
   @state() private _fwRulesSort: SortState | null = null;
+  @state() private _coverageSort: SortState | null = null;
 
   private static readonly MISCONFIG_SORT: Record<string, (f: Finding) => unknown> = {
     check: (f) => f.check,
+    // Ascending reads worst first, matching the default order; the
+    // explicit column makes split-severity checks (notify_coverage_gaps
+    // emits one LOW and one MEDIUM finding) visibly distinct rows.
+    severity: (f) => severityRank(String(f.severity)),
     summary: (f) => f.summary,
+  };
+
+  // Coverage-table sort accessors (work plan item 4.8). scanned_at is an
+  // ISO timestamp, which compares correctly as a string.
+  private static readonly COVERAGE_SORT: Record<
+    string,
+    (r: { domain: string; cov: ScannerDomainCoverage }) => unknown
+  > = {
+    domain: (r) => r.domain,
+    files: (r) => r.cov.scanned_files,
+    oversize: (r) => r.cov.skipped_oversize,
+    over_cap: (r) => r.cov.skipped_over_cap,
+    parse_failures: (r) => r.cov.parse_failures,
+    scanned_at: (r) => r.cov.scanned_at,
   };
 
   private static readonly SCANNER_SORT: Record<string, (f: Finding) => unknown> = {
@@ -196,9 +227,10 @@ export class HaSocScannerView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       const [scanner, vulns, health, probe, access] = await Promise.all([
-        fetchScannerFindings(this.hass),
+        fetchScannerListing(this.hass),
         fetchVulns(this.hass),
         fetchHealth(this.hass),
         fetchProbeStatus(this.hass),
@@ -206,7 +238,8 @@ export class HaSocScannerView extends LitElement {
         // failing the whole tab; the server gate is what actually enforces.
         fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
       ]);
-      this._scannerFindings = scanner;
+      this._scannerFindings = scanner.findings;
+      this._coverage = scanner.coverage ?? null;
       this._vulnFindings = vulns;
       this._misconfigFindings = health.misconfig_findings;
       this._probe = probe;
@@ -217,6 +250,11 @@ export class HaSocScannerView extends LitElement {
         ? await fetchFirewallStatus(this.hass).catch(() => null)
         : null;
       this._maybeManageFirewallPolling();
+    } catch (err: any) {
+      // One rejected fetch fails the whole Promise.all; an empty findings
+      // table would read as a clean scan, so store the server's message
+      // and render the could-not-load state instead.
+      this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
@@ -364,9 +402,14 @@ export class HaSocScannerView extends LitElement {
 
   private async _onScanIntegrations() {
     this._scanning = true;
+    this._scanError = null;
     try {
       await scanIntegrationNow(this.hass);
       await this._load();
+    } catch (err: any) {
+      // A rejected scan request must not end in a silently unchanged
+      // table; show the server's reason next to the button that failed.
+      this._scanError = `Integration scan failed: ${err?.message ?? err}`;
     } finally {
       this._scanning = false;
     }
@@ -374,16 +417,27 @@ export class HaSocScannerView extends LitElement {
 
   private async _onScanVulns() {
     this._scanning = true;
+    this._scanError = null;
     try {
       await scanVulnsNow(this.hass);
       await this._load();
+    } catch (err: any) {
+      this._scanError = `Device vulnerability scan failed: ${err?.message ?? err}`;
     } finally {
       this._scanning = false;
     }
   }
 
   private async _onVulnStatus(id: string, status: string) {
-    await setVulnStatus(this.hass, id, status);
+    this._scanError = null;
+    try {
+      await setVulnStatus(this.hass, id, status);
+    } catch (err: any) {
+      // The select already shows the new value in the DOM; the reload
+      // below re-renders it from the stored state, so on a rejection the
+      // old status comes back and the reason is shown.
+      this._scanError = `Status change failed: ${err?.message ?? err}`;
+    }
     await this._load();
   }
 
@@ -428,7 +482,12 @@ export class HaSocScannerView extends LitElement {
   }
 
   private async _onMisconfigStatus(id: string, status: string) {
-    await setMisconfigStatus(this.hass, id, status);
+    this._scanError = null;
+    try {
+      await setMisconfigStatus(this.hass, id, status);
+    } catch (err: any) {
+      this._scanError = `Status change failed: ${err?.message ?? err}`;
+    }
     await this._load();
   }
 
@@ -472,6 +531,92 @@ export class HaSocScannerView extends LitElement {
     return groups;
   }
 
+  // Work plan item 4.8: what the most recently completed pass actually
+  // looked at, per domain, so an absent record can never be misread as
+  // "scanned, nothing found". A domain that has findings but no coverage
+  // entry (this pass skipped it, or a rescan has not run since it was
+  // last flagged) is called out by name instead of silently vanishing
+  // from the coverage picture. Renders nothing at all against a backend
+  // that never sent a coverage map (the ScannerListing.coverage field is
+  // optional precisely so an older payload still parses).
+  private _renderScannerCoverage() {
+    if (!this._coverage) return nothing;
+    const coveredDomains = new Set(Object.keys(this._coverage));
+    const findingDomains = new Set(this._scannerFindings.map((f: any) => String(f.domain)));
+    const notScanned = Array.from(findingDomains)
+      .filter((d) => !coveredDomains.has(d))
+      .sort((a, b) => a.localeCompare(b));
+    const rows = Object.entries(this._coverage).map(([domain, cov]) => ({ domain, cov }));
+    const sorted = this._coverageSort
+      ? sortRows(rows, this._coverageSort, HaSocScannerView.COVERAGE_SORT)
+      : rows.slice().sort((a, b) => a.domain.localeCompare(b.domain));
+
+    return html`
+      <h4 class="fw-subhead">Scan coverage</h4>
+      <p class="muted" style="font-size:12px;margin-top:-6px;">
+        What the most recent completed pass over each domain actually looked at.
+        A domain is never implied clean by an absent record.
+      </p>
+      ${!rows.length
+        ? html`<div class="empty">No domain has completed a scan yet.</div>`
+        : html`
+            <table>
+              <thead>
+                <tr>
+                  ${sortableTh("Domain", "domain", this._coverageSort, (n) => (this._coverageSort = n))}
+                  ${sortableTh("Files scanned", "files", this._coverageSort, (n) => (this._coverageSort = n), {
+                    numeric: true,
+                  })}
+                  ${sortableTh(
+                    "Skipped (too large)",
+                    "oversize",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh(
+                    "Skipped (over cap)",
+                    "over_cap",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh(
+                    "Parse failures",
+                    "parse_failures",
+                    this._coverageSort,
+                    (n) => (this._coverageSort = n),
+                    { numeric: true }
+                  )}
+                  ${sortableTh("Scanned at", "scanned_at", this._coverageSort, (n) => (this._coverageSort = n))}
+                </tr>
+              </thead>
+              <tbody>
+                ${sorted.map(
+                  (r) => html`
+                    <tr>
+                      <td>${r.domain}</td>
+                      <td class="num">${r.cov.scanned_files}</td>
+                      <td class="num">${r.cov.skipped_oversize}</td>
+                      <td class="num">${r.cov.skipped_over_cap}</td>
+                      <td class="num">${r.cov.parse_failures}</td>
+                      <td>${new Date(r.cov.scanned_at).toLocaleString()}</td>
+                    </tr>
+                  `
+                )}
+              </tbody>
+            </table>
+          `}
+      ${notScanned.length
+        ? html`<p style="font-size:12.5px;margin-top:8px;">
+            <strong>Not scanned this pass:</strong> ${notScanned.join(", ")}.
+            ${notScanned.length === 1 ? "Its" : "Their"} existing findings above were not
+            re-verified in the most recent run.
+          </p>`
+        : nothing}
+    `;
+  }
+
   private _renderStatusSelect(id: string, current: string, onChange: (s: string) => void) {
     return html`
       <select @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value)}>
@@ -491,8 +636,22 @@ export class HaSocScannerView extends LitElement {
 
   render() {
     if (this._loading) return html`<div class="empty">Loading findings…</div>`;
+    if (this._error)
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load the Scanner tab</h3>
+          <p style="font-size:13px;">${this._error}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
 
     return html`
+      ${this._scanError
+        ? html`<div class="card" style="border:1px solid var(--error-color,#db4437);">
+            <p style="font-size:13px;color:var(--error-color,#db4437);margin:0;">${this._scanError}</p>
+          </div>`
+        : nothing}
+
       <div class="card">
         <h3>Misconfiguration Findings</h3>
         ${!this._misconfigFindings.length
@@ -502,6 +661,7 @@ export class HaSocScannerView extends LitElement {
                 <thead>
                   <tr>
                     ${sortableTh("Check", "check", this._misconfigSort, (n) => (this._misconfigSort = n))}
+                    ${sortableTh("Severity", "severity", this._misconfigSort, (n) => (this._misconfigSort = n))}
                     ${sortableTh("Summary", "summary", this._misconfigSort, (n) => (this._misconfigSort = n))}
                     <th>Status</th>
                   </tr>
@@ -510,9 +670,16 @@ export class HaSocScannerView extends LitElement {
                   ${this._sortedMisconfigFindings().map(
                     (f: any) => html`
                       <tr>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.check}</span></td>
+                        <td>${f.check}</td>
+                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.severity}</span></td>
                         <td>${f.summary}</td>
-                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}</td>
+                        <td>
+                          ${f.acknowledged_by_design
+                            ? html`<span class="tag enforced" title=${f.acknowledged_reason ?? "Acknowledged by design"}
+                                >acknowledged by design</span
+                              >`
+                            : this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}
+                        </td>
                       </tr>
                     `
                   )}
@@ -527,7 +694,9 @@ export class HaSocScannerView extends LitElement {
           Static AST/regex analysis of every installed integration's source — core and
           custom. Every finding is advisory and needs a human to confirm; Home
           Assistant's own quality tooling (hassfest) never checks for these patterns and
-          never runs against custom_components at all.
+          never runs against custom_components at all. These rules find unobfuscated
+          pattern instances only; a dynamically constructed call, a string-built
+          decorator, or a renamed import will not be detected.
         </p>
         <div class="toolbar">
           <button class="ha-btn" ?disabled=${this._scanning} @click=${this._onScanIntegrations}>
@@ -569,6 +738,7 @@ export class HaSocScannerView extends LitElement {
                 ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${this._exportNotice}</p>`
                 : nothing}
             `}
+        ${this._renderScannerCoverage()}
       </div>
 
       <div class="card">

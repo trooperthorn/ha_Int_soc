@@ -361,6 +361,12 @@ Samba shares of the config directory.
   N; records before D expired under retention" rather than pretending the
   whole history was re-checked. Records before the anchor are attested by
   the anchor's stored hash, not re-verified record by record.
+- A failed load is never shown as "no data" or left as an endless spinner.
+  Every panel view catches its own load failure into a distinct
+  could-not-load state, with the server's message and a Retry button,
+  so a WebSocket error is never mistaken for an empty result or a specific
+  backend state (e.g. "USB discovery isn't available") it did not actually
+  report.
 
 ## Optional: HA SOC Probe add-on
 

@@ -30,8 +30,16 @@ export class HaSocPermissionsView extends LitElement {
   @state() private _selected: string | null | undefined = undefined;
   @state() private _views: ViewRow[] = [];
   @state() private _loading = true;
+  // Non-null when the users/dashboards load itself failed: rendered as a
+  // distinct could-not-load state with the server's message, never an
+  // empty matrix (work plan item 4.12).
+  @state() private _error: string | null = null;
   @state() private _drift: Record<string, unknown>[] = [];
   @state() private _viewsError: string | null = null;
+  // The server's reason for the most recently rejected action (a
+  // visibility/flag write, whose checkbox is rolled back in place, or a
+  // failed drift check); rendered inline above the matrix.
+  @state() private _writeError: string | null = null;
   @state() private _sort: SortState | null = null;
 
   connectedCallback(): void {
@@ -41,6 +49,7 @@ export class HaSocPermissionsView extends LitElement {
 
   private async _load() {
     this._loading = true;
+    this._error = null;
     try {
       const [users, dashboards] = await Promise.all([
         fetchUsers(this.hass),
@@ -52,6 +61,11 @@ export class HaSocPermissionsView extends LitElement {
         this._selected = (dashboards[0].url_path as string | null) ?? null;
       }
       if (this._selected !== undefined) await this._loadViews();
+    } catch (e: any) {
+      // A failed users/dashboards load used to fall through to the "no
+      // views" empty state, which reads as a working page with nothing
+      // to manage; store the server's message and say what failed.
+      this._error = e?.message ?? String(e);
     } finally {
       this._loading = false;
     }
@@ -91,28 +105,70 @@ export class HaSocPermissionsView extends LitElement {
     await this._loadViews();
   }
 
-  private async _onToggleUser(view: ViewRow, userId: string) {
+  private async _onToggleUser(e: Event, view: ViewRow, userId: string) {
+    const box = e.target as HTMLInputElement;
     const current = view.visibleUserIds ?? this._users.map((u) => u.id);
-    const next = current.includes(userId)
-      ? current.filter((id) => id !== userId)
-      : [...current, userId];
+    const wasVisible = current.includes(userId);
+    const next = wasVisible ? current.filter((id) => id !== userId) : [...current, userId];
     // Writing back the full user list (== "everyone") resets to visible-to-all.
     const userIds = next.length === this._users.length ? [] : next;
-    await setViewVisibility(this.hass, this._selected ?? null, view.path, userIds);
-    await this._loadViews();
+    this._writeError = null;
+    try {
+      await setViewVisibility(this.hass, this._selected ?? null, view.path, userIds);
+      await this._loadViews();
+    } catch (err: any) {
+      // Roll the checkbox back to the state the server still holds. The
+      // DOM element must be reset directly: the bound value never
+      // changed, so a plain re-render would leave the browser's own
+      // toggle standing and the box would lie about what was saved.
+      box.checked = wasVisible;
+      this._writeError = `The visibility change for "${view.title}" was rejected: ${
+        err?.message ?? err?.code ?? "unknown error"
+      }. The checkbox was restored to the saved state.`;
+    }
   }
 
-  private async _onToggleFlag(dashboardId: string, flag: "require_admin" | "show_in_sidebar", value: boolean) {
-    await setDashboardFlags(this.hass, dashboardId, { [flag]: value });
-    await this._load();
+  private async _onToggleFlag(
+    e: Event,
+    dashboardId: string,
+    flag: "require_admin" | "show_in_sidebar",
+    value: boolean
+  ) {
+    const box = e.target as HTMLInputElement;
+    this._writeError = null;
+    try {
+      await setDashboardFlags(this.hass, dashboardId, { [flag]: value });
+      await this._load();
+    } catch (err: any) {
+      // Same rollback rationale as _onToggleUser: reset the DOM checkbox
+      // itself, because the bound value did not change.
+      box.checked = !value;
+      this._writeError = `The ${flag} change was rejected: ${
+        err?.message ?? err?.code ?? "unknown error"
+      }. The checkbox was restored to the saved state.`;
+    }
   }
 
   private async _onCheckDrift() {
-    this._drift = await checkDrift(this.hass);
+    this._writeError = null;
+    try {
+      this._drift = await checkDrift(this.hass);
+    } catch (err: any) {
+      // A failed drift check must not look like "no drift"; say it failed.
+      this._writeError = `Drift check failed: ${err?.message ?? err}`;
+    }
   }
 
   render() {
     if (this._loading) return html`<div class="empty">Loading dashboards…</div>`;
+    if (this._error)
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load the Permissions Matrix</h3>
+          <p style="font-size:13px;">${this._error}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
 
     const current = this._dashboards.find(
       (d) => ((d.url_path as string | null) ?? null) === (this._selected ?? null)
@@ -144,7 +200,12 @@ export class HaSocPermissionsView extends LitElement {
                     type="checkbox"
                     .checked=${!!current.require_admin}
                     @change=${(e: Event) =>
-                      this._onToggleFlag(current.id as string, "require_admin", (e.target as HTMLInputElement).checked)}
+                      this._onToggleFlag(
+                        e,
+                        current.id as string,
+                        "require_admin",
+                        (e.target as HTMLInputElement).checked
+                      )}
                   />
                   require_admin
                 </label>
@@ -154,6 +215,7 @@ export class HaSocPermissionsView extends LitElement {
                     .checked=${current.show_in_sidebar !== false}
                     @change=${(e: Event) =>
                       this._onToggleFlag(
+                        e,
                         current.id as string,
                         "show_in_sidebar",
                         (e.target as HTMLInputElement).checked
@@ -167,6 +229,11 @@ export class HaSocPermissionsView extends LitElement {
           <button class="ha-btn" @click=${this._onCheckDrift}>Check drift</button>
         </div>
 
+        ${this._writeError
+          ? html`<p style="font-size:12.5px;color:var(--error-color,#db4437);">
+              ${this._writeError}
+            </p>`
+          : nothing}
         ${this._drift.length
           ? html`<p style="font-size:12.5px;color:var(--warning-color);">
               ${this._drift.length} view(s) no longer match the policy last applied here — likely edited directly in the dashboard editor.
@@ -213,7 +280,7 @@ export class HaSocPermissionsView extends LitElement {
                               <input
                                 type="checkbox"
                                 .checked=${visible}
-                                @change=${() => this._onToggleUser(v, u.id)}
+                                @change=${(e: Event) => this._onToggleUser(e, v, u.id)}
                               />
                             </td>
                           `;

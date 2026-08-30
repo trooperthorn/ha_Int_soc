@@ -17,6 +17,11 @@ export interface HaSocUser {
   llat_oldest_days: number | null;
   account_age_days: number | null;
   auth_provider_types: string[];
+  // False when every credential comes from a non-homeassistant auth
+  // provider (SSO/header proxy, trusted_networks, command line): HA
+  // cannot observe a second factor enforced upstream, so the Users view
+  // renders "MFA not assessable" instead of a red "none" (D-18).
+  mfa_assessable: boolean;
 }
 
 export interface RiskFactor {
@@ -615,9 +620,16 @@ export interface SecurityEntityRow {
   entity_id: string;
   name: string | null;
   domain: string;
-  state: string;
+  // Null on a registry entity with no state object at all (work plan
+  // item 4.5): its integration never loaded it. Such a row always has
+  // problem true and reason "no state (integration not loaded)".
+  state: string | null;
   device_class: string | null;
   problem: boolean;
+  // Why problem is true: the problem state itself ("unavailable",
+  // "unknown", "jammed") or the no-state explanation above; null on a
+  // healthy row.
+  reason: string | null;
   battery_entity_id: string | null;
   battery_level: number | null;
   low_battery: boolean;
@@ -743,8 +755,23 @@ export const revokeToken = (hass: HomeAssistant, userId: string, tokenId: string
 export const revokeAllSessions = (hass: HomeAssistant, userId: string) =>
   ws<{ revoked: number }>(hass, { type: "ha_soc/users/revoke_all_sessions", user_id: userId });
 
-export const setPassword = (hass: HomeAssistant, userId: string, password: string) =>
-  ws(hass, { type: "ha_soc/users/set_password", user_id: userId, password });
+// revoke_sessions defaults true server-side (work plan item 4.12):
+// whoever held the old password must be signed out, or the reset changes
+// nothing for an attacker with a live session. Long-lived tokens are
+// spared either way. The client always sends the flag explicitly so the
+// audit record reflects a deliberate choice, never a schema default.
+export const setPassword = (
+  hass: HomeAssistant,
+  userId: string,
+  password: string,
+  revokeSessions: boolean
+) =>
+  ws<{ ok: boolean; sessions_revoked: number }>(hass, {
+    type: "ha_soc/users/set_password",
+    user_id: userId,
+    password,
+    revoke_sessions: revokeSessions,
+  });
 
 export const fetchLiveSessions = (hass: HomeAssistant) =>
   ws<{ sessions: Record<string, unknown>[] }>(hass, { type: "ha_soc/sessions/list" }).then(
@@ -944,8 +971,28 @@ export const scanVulnsNow = (hass: HomeAssistant) =>
 export const setVulnStatus = (hass: HomeAssistant, findingId: string, status: string, note?: string) =>
   ws(hass, { type: "ha_soc/vulns/set_status", finding_id: findingId, status, note });
 
-export const fetchScannerFindings = (hass: HomeAssistant) =>
-  ws<{ findings: Finding[] }>(hass, { type: "ha_soc/scanner/list" }).then((r) => r.findings);
+// Mirrors scanner.py's scan_directory_report coverage record: what one
+// completed pass over a domain really looked at (work plan item 4.8). A
+// domain with no record has never been scanned and must render as "not
+// scanned", never as an implied-clean zero findings.
+export interface ScannerDomainCoverage {
+  scanned_files: number;
+  skipped_oversize: number;
+  skipped_over_cap: number;
+  parse_failures: number;
+  scanned_at: string;
+}
+
+// Mirrors IntegrationScanner.listing_payload. coverage is optional so a
+// backend still serving the pre-coverage findings-only payload parses;
+// its absence renders the same way as an empty table: nothing scanned.
+export interface ScannerListing {
+  findings: Finding[];
+  coverage?: Record<string, ScannerDomainCoverage>;
+}
+
+export const fetchScannerListing = (hass: HomeAssistant) =>
+  ws<ScannerListing>(hass, { type: "ha_soc/scanner/list" });
 
 export const scanIntegrationNow = (hass: HomeAssistant, domain?: string) =>
   ws(hass, { type: "ha_soc/scanner/scan_now", domain });
@@ -1004,8 +1051,22 @@ export const discardFirewallPending = (hass: HomeAssistant) =>
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
 
+// Mirrors github_provenance.py's async_refresh_github_signals summary.
+// reason is "no_github_token" (nothing ran) or "rate_limited" (the loop
+// stopped early, keeping what it had fetched). invalid_slugs is a COUNT
+// of malformed owner/repo slugs refused a request, not a list; the slug
+// strings themselves go to the server log only. cache_fresh counts repos
+// skipped because their cached signals are younger than the TTL. The
+// three count fields are absent on the no_github_token early return.
 export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
-  ws<{ ok: boolean; reason?: string; refreshed?: number; skipped?: number }>(hass, {
+  ws<{
+    ok: boolean;
+    reason?: string;
+    refreshed?: number;
+    skipped?: number;
+    cache_fresh?: number;
+    invalid_slugs?: number;
+  }>(hass, {
     type: "ha_soc/integration_security/refresh",
   });
 
