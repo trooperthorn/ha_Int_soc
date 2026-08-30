@@ -154,6 +154,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_scanner_export,
         ws_health_list,
         ws_logs_fault,
+        ws_logs_targets,
+        ws_logs_container,
         ws_misconfig_set_status,
         ws_dashboard_summary,
         ws_dashboard_devices,
@@ -787,6 +789,33 @@ async def ws_logs_fault(hass: HomeAssistant, connection, msg: dict) -> None:
 
 
 @require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/logs/targets"})
+@websocket_api.async_response
+async def ws_logs_targets(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Log sources the Logs tab can offer besides the integration log:
+    Core, Supervisor, host journal, and every installed add-on."""
+    from .logs import async_container_log_targets
+
+    connection.send_result(msg["id"], await async_container_log_targets(hass))
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/logs/container",
+        vol.Required("target"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_logs_container(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Current log text of one container. The target string is validated in
+    logs.py against the Supervisor's own add-on list, never interpolated raw."""
+    from .logs import async_fetch_container_log
+
+    connection.send_result(msg["id"], await async_fetch_container_log(hass, msg["target"]))
+
+
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/misconfig/set_status",
@@ -1007,7 +1036,7 @@ async def ws_entity_remap_apply(hass: HomeAssistant, connection, msg: dict) -> N
         )
         return
     runtime.audit.async_log(
-        "user_updated",
+        "soc_config_change",
         user_id=connection.user.id,
         detail={"action": "entity_remap_applied", **result},
     )
@@ -1309,7 +1338,7 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
         # immediately rather than on the next restart.
         runtime.watchdog.async_start()
         runtime.audit.async_log(
-            "user_updated",
+            "soc_config_change",
             user_id=connection.user.id,
             detail={"action": "watchdog_config_changed", "changes": changes},
         )
@@ -1420,7 +1449,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
         # Secret values in `changes` are redacted inside audit.async_log()
         # itself (see _redact_secrets_deep) before anything is persisted.
         runtime.audit.async_log(
-            "user_updated",
+            "soc_config_change",
             user_id=connection.user.id,
             detail={"action": "settings_changed", "changes": changes},
         )

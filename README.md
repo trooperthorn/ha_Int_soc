@@ -57,6 +57,17 @@ imply otherwise.
   as one panel-native form, backed by the exact same store as the native
   "Configure" dialog — change it from either place and the other reflects
   it immediately.
+- **Logs:** three log sources in one tab. Home Assistant's own captured
+  WARNING/ERROR/CRITICAL records (the same buffer as Settings > System >
+  Logs, deduplicated, filterable by integration and level, tracebacks
+  expandable in place); the `home-assistant.log.fault` crash dump,
+  surfaced read-only because a non-empty file means Core itself died at a
+  fatal signal at least once; and, on Supervisor installs, the full
+  container log of any app or add-on (Core, Supervisor, the host journal,
+  or any installed add-on) fetched through the Supervisor's journald
+  gateway, ANSI-stripped and tail-capped to the newest 128 KB. Add-on
+  targets are validated against the Supervisor's own installed-add-on
+  list before the slug ever reaches a URL.
 - **Access control** — the panel and every `ha_soc/*` command default to
   **account owner only**; a setting (Settings tab or the native Configure
   dialog) can open it to every administrator. Enforced server-side on each
@@ -120,6 +131,13 @@ imply otherwise.
   Probe add-on: unlike host port scanning, serial-device visibility isn't
   structurally out of reach for a regular integration, so it doesn't need
   one.
+
+Every data table in the panel sorts by any column. The header cells are
+real buttons (keyboard focusable, activatable with Enter or Space) and the
+`th` carries `aria-sort`, so the current order is announced by assistive
+technology rather than conveyed only by an arrow glyph. Unknown or empty
+values always sink to the bottom of a sort in either direction: an unknown
+value is not "smallest", it is unknown.
 
 ## Icon / branding
 
@@ -217,6 +235,13 @@ custom_components/ha_soc/
 ├── config_hygiene.py     — Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py    — lock/siren/valve entities + curated integration health (Dashboard)
+├── logs.py               — fault-log reader + Supervisor container/add-on log access (Logs tab)
+├── unifi.py              — UniFi Network/Protect data for the Network tab
+├── firewall.py           — host firewall read/test/confirm state machine (with the add-on)
+├── integration_security.py — per-integration provenance/trust signals (Integration Security tab)
+├── containers.py         — per-container CPU/memory usage via Supervisor stats
+├── resource_watchdog.py  — sustained-overuse watchdog + optional Docker hard caps
+├── diagnostics.py        — redacted config-entry diagnostics (safe to attach to an issue)
 ├── websocket_api.py      — the ha_soc/* command surface the panel calls
 ├── sensor.py / binary_sensor.py / repairs.py — entities + Repairs integration
 ├── panel.py              — sidebar panel registration

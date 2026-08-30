@@ -1,8 +1,18 @@
 import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import type { HomeAssistant } from "../types";
-import { FaultLogOverview, HaLogEntry, fetchFaultLog, fetchSystemLog } from "../data/ha-soc-ws";
+import {
+  ContainerLog,
+  ContainerLogTargets,
+  FaultLogOverview,
+  HaLogEntry,
+  fetchContainerLog,
+  fetchFaultLog,
+  fetchLogTargets,
+  fetchSystemLog,
+} from "../data/ha-soc-ws";
 
 // Same core/custom logger-name convention health.py uses for its own
 // per-domain error attribution — anything that doesn't match either
@@ -29,6 +39,10 @@ function logLevelClass(level: string): string {
   const normalized = level.toUpperCase();
   return LOG_LEVEL_ORDER.includes(normalized) ? normalized.toLowerCase() : "info";
 }
+
+// The captured-records table, the view's default source. Container targets
+// (Supervisor journald streams) are raw text and render in a <pre> instead.
+const SOURCE_SYSTEM = "system";
 
 @customElement("ha-soc-logs-view")
 export class HaSocLogsView extends LitElement {
@@ -89,7 +103,8 @@ export class HaSocLogsView extends LitElement {
       :host(.dark) .log-level.warning {
         color: var(--status-warning, #fab219);
       }
-      .fault-log pre {
+      .fault-log pre,
+      .rawlog {
         white-space: pre-wrap;
         font-size: 11.5px;
         background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.04);
@@ -98,6 +113,10 @@ export class HaSocLogsView extends LitElement {
         margin: 0;
         max-height: 400px;
         overflow-y: auto;
+      }
+      .rawlog {
+        max-height: 600px;
+        font-family: var(--code-font-family, monospace);
       }
     `,
   ];
@@ -110,6 +129,25 @@ export class HaSocLogsView extends LitElement {
   @state() private _domainFilter = "";
   @state() private _levelFilter = "";
   @state() private _expanded: Set<number> = new Set();
+  @state() private _sort: SortState | null = null;
+  @state() private _targets: ContainerLogTargets | null = null;
+  @state() private _source = SOURCE_SYSTEM;
+  @state() private _containerLog: ContainerLog | null = null;
+  @state() private _containerLoading = false;
+
+  // Sort accessors for the captured-records table. Time and count are the
+  // underlying numbers, never the locale strings; level sorts by severity
+  // rank (Debug lowest) with unknown levels sinking as null.
+  private static readonly LOG_SORT: Record<string, (e: HaLogEntry) => unknown> = {
+    time: (e) => e.first_occurred,
+    level: (e) => {
+      const rank = LOG_LEVEL_ORDER.indexOf(e.level.toUpperCase());
+      return rank === -1 ? null : rank;
+    },
+    integration: (e) => domainFor(e.name),
+    message: (e) => e.message[e.message.length - 1],
+    count: (e) => e.count,
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -119,12 +157,49 @@ export class HaSocLogsView extends LitElement {
   private async _load() {
     this._loading = true;
     try {
-      const [entries, fault] = await Promise.all([fetchSystemLog(this.hass), fetchFaultLog(this.hass)]);
+      const [entries, fault, targets] = await Promise.all([
+        fetchSystemLog(this.hass),
+        fetchFaultLog(this.hass),
+        // Selector population is best-effort: a failure (e.g. command missing
+        // during a live upgrade) must not take down the whole Logs tab.
+        fetchLogTargets(this.hass).catch(() => null),
+      ]);
       this._entries = entries;
       this._fault = fault;
+      this._targets = targets;
     } finally {
       this._loading = false;
     }
+  }
+
+  private async _loadContainer(target: string) {
+    this._containerLoading = true;
+    try {
+      this._containerLog = await fetchContainerLog(this.hass, target);
+    } catch (err) {
+      this._containerLog = {
+        available: false,
+        target,
+        content: null,
+        truncated: false,
+        error: String(err),
+        fetched_at: new Date().toISOString(),
+      };
+    } finally {
+      this._containerLoading = false;
+    }
+  }
+
+  private _onSourceChange(e: Event) {
+    const value = (e.target as HTMLSelectElement).value;
+    this._source = value;
+    this._containerLog = null;
+    if (value !== SOURCE_SYSTEM) this._loadContainer(value);
+  }
+
+  private _refresh() {
+    if (this._source === SOURCE_SYSTEM) this._load();
+    else this._loadContainer(this._source);
   }
 
   private _toggleExpanded(index: number) {
@@ -144,11 +219,13 @@ export class HaSocLogsView extends LitElement {
   }
 
   private get _filtered(): HaLogEntry[] {
-    return this._entries.filter((e) => {
+    const filtered = this._entries.filter((e) => {
       if (this._domainFilter && domainFor(e.name) !== this._domainFilter) return false;
       if (this._levelFilter && e.level.toUpperCase() !== this._levelFilter) return false;
       return true;
     });
+    // With no sort chosen the backend order stands (most recent first).
+    return sortRows(filtered, this._sort, HaSocLogsView.LOG_SORT);
   }
 
   private _renderFaultLogCard() {
@@ -187,40 +264,102 @@ export class HaSocLogsView extends LitElement {
     `;
   }
 
+  private _renderContainerLog() {
+    const log = this._containerLog;
+    const name =
+      this._targets?.targets.find((t) => t.id === this._source)?.name ?? this._source;
+    if (this._containerLoading && !log) return html`<div class="empty">Loading ${name} logs…</div>`;
+    if (!log) return html`<div class="empty">Select a source.</div>`;
+    if (!log.available)
+      return html`<div class="empty">
+        Couldn't load ${name} logs${log.error ? html`<br /><span class="muted">${log.error}</span>` : nothing}
+      </div>`;
+    return html`
+      <p class="muted" style="font-size:12px;">
+        Fetched ${new Date(log.fetched_at).toLocaleString()}${log.truncated
+          ? ", showing the most recent 128 KB (older lines are in the add-on's own Log tab)"
+          : ""}.
+        This is the container's live journald stream via Supervisor, point-in-time, use
+        Refresh for new lines.
+      </p>
+      <pre class="rawlog">${log.content?.trim() ? log.content : "(log is empty)"}</pre>
+    `;
+  }
+
   render() {
     const filtered = this._filtered;
+    const s = this._sort;
+    const on = (next: SortState) => {
+      this._sort = next;
+      // Expanded tracebacks are keyed by row position; a re-sort reorders
+      // rows, so collapse them rather than attach to the wrong entries.
+      this._expanded = new Set();
+    };
+    const showingSystem = this._source === SOURCE_SYSTEM;
 
     return html`
       ${this._renderFaultLogCard()}
 
       <div class="card">
-        <h3>Home Assistant Logs</h3>
+        <h3>Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          The same WARNING/ERROR/CRITICAL buffer as Settings → System → Logs
-          (<code>/config/logs</code>) — deduplicated, most recent first. This shows Home
-          Assistant's own captured log records only;
-          <strong>add-on container logs aren't included</strong> — they're a separate
-          stream Supervisor captures per-container, not part of Home Assistant's Python
-          logging, so there's nothing for this view to filter. Check an add-on's own
-          Log tab (Settings → Add-ons → the add-on → Log) for those.
+          ${showingSystem
+            ? html`The same WARNING/ERROR/CRITICAL buffer as Settings → System → Logs
+                (<code>/config/logs</code>), deduplicated, most recent first. This shows Home
+                Assistant's own captured log records only. For an app or add-on's full
+                container output, pick it from the source selector.`
+            : html`Raw container output captured by the Supervisor, the same stream as the
+                add-on's own Log tab. ANSI colors are stripped server-side.`}
         </p>
         <div class="toolbar">
-          <select @change=${(e: Event) => (this._domainFilter = (e.target as HTMLSelectElement).value)}>
-            <option value="" ?selected=${this._domainFilter === ""}>All integrations</option>
-            ${this._domains.map(
-              (d) => html`<option value=${d} ?selected=${d === this._domainFilter}>${d}</option>`
-            )}
-          </select>
-          <select @change=${(e: Event) => (this._levelFilter = (e.target as HTMLSelectElement).value)}>
-            <option value="" ?selected=${this._levelFilter === ""}>All levels</option>
-            ${this._levels.map(
-              (l) => html`<option value=${l} ?selected=${l === this._levelFilter}>${l}</option>`
-            )}
-          </select>
+          ${this._targets?.available
+            ? html`
+                <select @change=${this._onSourceChange} aria-label="Log source">
+                  <option value=${SOURCE_SYSTEM} ?selected=${showingSystem}>
+                    Integration logs (captured records)
+                  </option>
+                  ${this._targets.targets.map(
+                    (t) => html`<option value=${t.id} ?selected=${t.id === this._source}>${t.name}</option>`
+                  )}
+                </select>
+              `
+            : nothing}
+          ${showingSystem
+            ? html`
+                <select
+                  aria-label="Filter by integration"
+                  @change=${(e: Event) => {
+                    this._domainFilter = (e.target as HTMLSelectElement).value;
+                    this._expanded = new Set();
+                  }}
+                >
+                  <option value="" ?selected=${this._domainFilter === ""}>All integrations</option>
+                  ${this._domains.map(
+                    (d) => html`<option value=${d} ?selected=${d === this._domainFilter}>${d}</option>`
+                  )}
+                </select>
+                <select
+                  aria-label="Filter by level"
+                  @change=${(e: Event) => {
+                    this._levelFilter = (e.target as HTMLSelectElement).value;
+                    this._expanded = new Set();
+                  }}
+                >
+                  <option value="" ?selected=${this._levelFilter === ""}>All levels</option>
+                  ${this._levels.map(
+                    (l) => html`<option value=${l} ?selected=${l === this._levelFilter}>${l}</option>`
+                  )}
+                </select>
+              `
+            : nothing}
           <span class="spacer"></span>
-          <button class="ha-btn" @click=${this._load}>Refresh</button>
+          <button class="ha-btn" @click=${this._refresh} ?disabled=${this._containerLoading}>
+            ${this._containerLoading ? "Loading…" : "Refresh"}
+          </button>
         </div>
-        ${this._loading
+        ${!showingSystem
+          ? this._renderContainerLog()
+          : this._loading
           ? html`<div class="empty">Loading…</div>`
           : !filtered.length
           ? html`<div class="empty">No matching log entries.</div>`
@@ -228,11 +367,11 @@ export class HaSocLogsView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Level</th>
-                    <th>Integration</th>
-                    <th>Message</th>
-                    <th>Count</th>
+                    ${sortableTh("Time", "time", s, on)}
+                    ${sortableTh("Level", "level", s, on)}
+                    ${sortableTh("Integration", "integration", s, on)}
+                    ${sortableTh("Message", "message", s, on)}
+                    ${sortableTh("Count", "count", s, on, { numeric: true })}
                   </tr>
                 </thead>
                 <tbody>

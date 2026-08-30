@@ -1,6 +1,7 @@
 import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import type { HomeAssistant } from "../types";
 import {
   HaSocUser,
@@ -31,6 +32,7 @@ export class HaSocPermissionsView extends LitElement {
   @state() private _loading = true;
   @state() private _drift: Record<string, unknown>[] = [];
   @state() private _viewsError: string | null = null;
+  @state() private _sort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -175,16 +177,32 @@ export class HaSocPermissionsView extends LitElement {
           ? html`<div class="empty">
               ${this._viewsError ?? "This dashboard has no views, or is YAML-managed (read-only)."}
             </div>`
-          : html`
+          : (() => {
+              // Accessors are built inline because the user columns are
+              // dynamic. With no sort chosen the dashboard's own view order
+              // stands (it is the order users see in the dashboard itself);
+              // a user column sorts by that user's visibility flag so
+              // "what can user X see" groups together.
+              const accessors: Record<string, (v: ViewRow) => unknown> = {
+                view: (v) => v.title,
+              };
+              for (const u of this._users) {
+                accessors[`user:${u.id}`] = (v) =>
+                  v.visibleUserIds === null || v.visibleUserIds.includes(u.id);
+              }
+              const rows = sortRows(this._views, this._sort, accessors);
+              const s = this._sort;
+              const on = (n: SortState) => (this._sort = n);
+              return html`
               <table>
                 <thead>
                   <tr>
-                    <th>View</th>
-                    ${this._users.map((u) => html`<th>${u.name ?? u.id}</th>`)}
+                    ${sortableTh("View", "view", s, on)}
+                    ${this._users.map((u) => sortableTh(u.name ?? u.id, `user:${u.id}`, s, on))}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._views.map(
+                  ${rows.map(
                     (v) => html`
                       <tr>
                         <td>${v.title}</td>
@@ -205,7 +223,8 @@ export class HaSocPermissionsView extends LitElement {
                   )}
                 </tbody>
               </table>
-            `}
+            `;
+            })()}
       </div>
     `;
   }

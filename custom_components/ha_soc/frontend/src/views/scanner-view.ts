@@ -2,6 +2,7 @@ import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   Finding,
   OpenPort,
@@ -32,6 +33,20 @@ function severityRank(severity: string): number {
   const i = SEVERITY_ORDER.indexOf(severity);
   return i === -1 ? SEVERITY_ORDER.length : i;
 }
+
+// Confidence values are ranked semantically, not alphabetically (the
+// alphabet would put the scanner's "advisory" ahead of "high"). Each table
+// has its own vocabulary: the integration scanner emits high/medium/advisory
+// (scanner.py), the vulnerability correlator emits exact_cpe/curated_map/
+// keyword/heuristic strongest-first (vulns.py). Unknown values return null
+// so sortRows sinks them like any other unknown.
+function confidenceRank(order: readonly string[], confidence: unknown): number | null {
+  const i = order.indexOf(String(confidence));
+  return i === -1 ? null : i;
+}
+
+const SCANNER_CONFIDENCE_ORDER = ["high", "medium", "advisory"] as const;
+const VULN_CONFIDENCE_ORDER = ["exact_cpe", "curated_map", "keyword", "heuristic"] as const;
 
 // True if an IPv4 dotted-quad is in an RFC 1918 private range
 // (10/8, 172.16/12, 192.168/16). Loopback/link-local are handled separately.
@@ -82,6 +97,55 @@ export class HaSocScannerView extends LitElement {
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
   private _fwPollHandle: number | null = null;
+
+  // Column sort state, one per table (see sortable.ts). null means "no
+  // user choice yet", in which case each table keeps its original default
+  // ordering (severity-descending for findings, port-ascending for ports).
+  @state() private _misconfigSort: SortState | null = null;
+  @state() private _scannerSort: SortState | null = null;
+  @state() private _vulnSort: SortState | null = null;
+  @state() private _portSort: SortState | null = null;
+  @state() private _fwRulesSort: SortState | null = null;
+
+  private static readonly MISCONFIG_SORT: Record<string, (f: Finding) => unknown> = {
+    check: (f) => f.check,
+    summary: (f) => f.summary,
+  };
+
+  private static readonly SCANNER_SORT: Record<string, (f: Finding) => unknown> = {
+    domain: (f) => f.domain,
+    pattern: (f) => f.pattern,
+    // file plus line in one string; localeCompare's numeric option keeps
+    // line 9 before line 23 within the same file.
+    location: (f) => `${f.file}:${f.line}`,
+    confidence: (f) => confidenceRank(SCANNER_CONFIDENCE_ORDER, f.confidence),
+    cwe: (f) => f.cwe,
+  };
+
+  private static readonly VULN_SORT: Record<string, (f: Finding) => unknown> = {
+    cve: (f) => f.cve_id,
+    cvss: (f) => {
+      if (f.cvss == null) return null;
+      const v = Number(f.cvss);
+      return Number.isNaN(v) ? null : v;
+    },
+    confidence: (f) => confidenceRank(VULN_CONFIDENCE_ORDER, f.confidence),
+  };
+
+  private static readonly PORT_SORT: Record<string, (p: OpenPort) => unknown> = {
+    port: (p) => p.port,
+    proto: (p) => p.proto,
+    interface: (p) => p.interface,
+  };
+
+  private static readonly FW_RULE_SORT: Record<string, (r: FirewallRule) => unknown> = {
+    action: (r) => r.action,
+    proto: (r) => r.proto,
+    port: (r) => r.port,
+    // null source displays as "any"; sort it as that word rather than
+    // sinking it as unknown, since "any" is a definite value here.
+    source: (r) => r.source ?? "any",
+  };
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -251,6 +315,12 @@ export class HaSocScannerView extends LitElement {
   // every CVE row — devices ordered by their own worst finding first,
   // findings within a device also worst-first, so both the grouping and
   // the reading order lead with what needs attention most.
+  //
+  // Column sorting reorders rows WITHIN each device group only; the group
+  // header rows stay put. The one exception is the first (CVE) column:
+  // sorting it also reorders the groups themselves by device name, giving
+  // an alphabetical device listing in one click. Other columns keep the
+  // default worst-first group order.
   private _groupedVulnFindings(): { device_name: string; findings: Finding[] }[] {
     const byDevice = new Map<string, Finding[]>();
     for (const f of this._vulnFindings) {
@@ -259,11 +329,25 @@ export class HaSocScannerView extends LitElement {
       if (list) list.push(f);
       else byDevice.set(name, [f]);
     }
+    const sort = this._vulnSort;
     const groups = Array.from(byDevice.entries()).map(([device_name, findings]) => ({
       device_name,
-      findings: [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity)),
+      // Worst severity computed before any user sort reorders the rows,
+      // so the default group order stays stable whatever column is active.
+      worst: Math.min(...findings.map((f) => severityRank(f.severity))),
+      findings: sort
+        ? sortRows(findings, sort, HaSocScannerView.VULN_SORT)
+        : [...findings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity)),
     }));
-    groups.sort((a, b) => severityRank(a.findings[0].severity) - severityRank(b.findings[0].severity));
+    if (sort?.key === "cve") {
+      groups.sort(
+        (a, b) =>
+          a.device_name.localeCompare(b.device_name, undefined, { sensitivity: "base", numeric: true }) *
+          sort.dir
+      );
+    } else {
+      groups.sort((a, b) => a.worst - b.worst);
+    }
     return groups;
   }
 
@@ -273,6 +357,15 @@ export class HaSocScannerView extends LitElement {
         ${STATUS_OPTIONS.map((s) => html`<option value=${s} ?selected=${s === current}>${s}</option>`)}
       </select>
     `;
+  }
+
+  // Severity-descending (worst first) is the default until the user picks
+  // a column; from then on the shared helper owns the order.
+  private _sortedMisconfigFindings(): Finding[] {
+    if (this._misconfigSort) {
+      return sortRows(this._misconfigFindings, this._misconfigSort, HaSocScannerView.MISCONFIG_SORT);
+    }
+    return [...this._misconfigFindings].sort((a, b) => severityRank(a.severity) - severityRank(b.severity));
   }
 
   render() {
@@ -287,13 +380,13 @@ export class HaSocScannerView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Check</th>
-                    <th>Summary</th>
+                    ${sortableTh("Check", "check", this._misconfigSort, (n) => (this._misconfigSort = n))}
+                    ${sortableTh("Summary", "summary", this._misconfigSort, (n) => (this._misconfigSort = n))}
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._misconfigFindings.map(
+                  ${this._sortedMisconfigFindings().map(
                     (f: any) => html`
                       <tr>
                         <td><span class="pill ${f.severity}"><span class="dot"></span>${f.check}</span></td>
@@ -326,16 +419,16 @@ export class HaSocScannerView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Domain</th>
-                    <th>Pattern</th>
-                    <th>Location</th>
-                    <th>Confidence</th>
-                    <th>CWE</th>
+                    ${sortableTh("Domain", "domain", this._scannerSort, (n) => (this._scannerSort = n))}
+                    ${sortableTh("Pattern", "pattern", this._scannerSort, (n) => (this._scannerSort = n))}
+                    ${sortableTh("Location", "location", this._scannerSort, (n) => (this._scannerSort = n))}
+                    ${sortableTh("Confidence", "confidence", this._scannerSort, (n) => (this._scannerSort = n))}
+                    ${sortableTh("CWE", "cwe", this._scannerSort, (n) => (this._scannerSort = n))}
                     <th>Status</th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._scannerFindings.map(
+                  ${sortRows(this._scannerFindings, this._scannerSort, HaSocScannerView.SCANNER_SORT).map(
                     (f: any) => html`
                       <tr>
                         <td>${f.domain}</td>
@@ -370,9 +463,9 @@ export class HaSocScannerView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>CVE</th>
-                    <th>CVSS</th>
-                    <th>Confidence</th>
+                    ${sortableTh("CVE", "cve", this._vulnSort, (n) => (this._vulnSort = n))}
+                    ${sortableTh("CVSS", "cvss", this._vulnSort, (n) => (this._vulnSort = n))}
+                    ${sortableTh("Confidence", "confidence", this._vulnSort, (n) => (this._vulnSort = n))}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -472,10 +565,11 @@ export class HaSocScannerView extends LitElement {
     `;
   }
 
-  // Group the host's listening ports by bind address. Group order:
-  // 0.0.0.0 first, then public/routable (non-RFC1918), then private
-  // (RFC1918), then loopback/link-local, then unresolved. Ports within a
-  // group sort ascending.
+  // Group the host's listening ports by bind address. Group order is fixed
+  // by security notability: 0.0.0.0 first, then public/routable
+  // (non-RFC1918), then private (RFC1918), then loopback/link-local, then
+  // unresolved. Column sorting never reorders the groups themselves; it
+  // only reorders ports within each group (default: port ascending).
   private _renderPortsByBindAddress(ports: OpenPort[]) {
     const groups = new Map<string, OpenPort[]>();
     for (const p of ports) {
@@ -495,9 +589,9 @@ export class HaSocScannerView extends LitElement {
       <table>
         <thead>
           <tr>
-            <th>Port</th>
-            <th>Protocol</th>
-            <th>Interface</th>
+            ${sortableTh("Port", "port", this._portSort, (n) => (this._portSort = n))}
+            ${sortableTh("Protocol", "proto", this._portSort, (n) => (this._portSort = n))}
+            ${sortableTh("Interface", "interface", this._portSort, (n) => (this._portSort = n))}
           </tr>
         </thead>
         ${ordered.map(([key, groupPorts]) => {
@@ -516,10 +610,10 @@ export class HaSocScannerView extends LitElement {
                   >
                 </td>
               </tr>
-              ${groupPorts
-                .slice()
-                .sort((a, b) => a.port - b.port)
-                .map(
+              ${(this._portSort
+                ? sortRows(groupPorts, this._portSort, HaSocScannerView.PORT_SORT)
+                : groupPorts.slice().sort((a, b) => a.port - b.port)
+              ).map(
                   (p) => html`
                     <tr>
                       <td>${p.port}</td>
@@ -567,14 +661,14 @@ export class HaSocScannerView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Action</th>
-                    <th>Protocol</th>
-                    <th>Port</th>
-                    <th>Source</th>
+                    ${sortableTh("Action", "action", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Protocol", "proto", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Port", "port", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Source", "source", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                   </tr>
                 </thead>
                 <tbody>
-                  ${fw.known_rules.map(
+                  ${sortRows(fw.known_rules, this._fwRulesSort, HaSocScannerView.FW_RULE_SORT).map(
                     (r) => html`
                       <tr>
                         <td>

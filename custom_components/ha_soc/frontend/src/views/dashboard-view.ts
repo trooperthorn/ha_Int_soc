@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   navigate,
   navigateToHaPath,
@@ -39,8 +40,6 @@ const SECURITY_ENTITY_DOMAIN_LABELS: Record<string, string> = {
   siren: "Sirens",
   valve: "Valves",
 };
-
-type DeviceSortKey = "name" | "vendor" | "risk_score" | "total_findings";
 
 const STATUS_TILES: { key: DeviceStatus; label: string }[] = [
   { key: "available", label: "Available" },
@@ -86,6 +85,14 @@ const ISSUE_STATUS: Record<IntegrationIssueCategory, { label: string; colorVar: 
   debug_logging: { label: "Warning", colorVar: "var(--status-warning)" },
   disabled: { label: "Disabled", colorVar: "var(--cat-other)" },
 };
+
+// Sort rank for the Issues table's Severity column. The key order of
+// ISSUE_CATEGORY_LABELS already runs worst to mildest, so the index in
+// that object is the rank; deriving it here means there is no second
+// list that could drift out of sync with the labels.
+const ISSUE_CATEGORY_RANK: Record<IntegrationIssueCategory, number> = Object.fromEntries(
+  Object.keys(ISSUE_CATEGORY_LABELS).map((key, i) => [key, i])
+) as Record<IntegrationIssueCategory, number>;
 
 const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
 const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
@@ -318,14 +325,6 @@ export class HaSocDashboardView extends LitElement {
         background: var(--card-background-color, #fff);
         color: var(--primary-text-color);
       }
-      th.sortable {
-        cursor: pointer;
-        user-select: none;
-      }
-      th.sortable .arrow {
-        opacity: 0.6;
-        margin-left: 3px;
-      }
       .health-dot {
         display: inline-block;
         width: 9px;
@@ -405,13 +404,13 @@ export class HaSocDashboardView extends LitElement {
   @state() private _loading = true;
   @state() private _deviceSearch = "";
   @state() private _deviceStatusFilter: DeviceStatus | null = null;
-  @state() private _deviceSort: { key: DeviceSortKey; dir: "asc" | "desc" } = {
-    key: "risk_score",
-    dir: "desc",
-  };
+  // Same default order the view has always had: riskiest devices first.
+  @state() private _deviceSort: SortState | null = { key: "risk_score", dir: -1 };
   @state() private _devicePageSize: number | "all" = 20;
   @state() private _integrationSearch = "";
+  @state() private _integrationSort: SortState | null = null;
   @state() private _integrationPageSize: number | "all" = 20;
+  @state() private _detectionSort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -480,17 +479,30 @@ export class HaSocDashboardView extends LitElement {
     return `conic-gradient(${parts.join(", ")})`;
   }
 
-  private _onSort(key: DeviceSortKey) {
-    this._deviceSort =
-      this._deviceSort.key === key
-        ? { key, dir: this._deviceSort.dir === "asc" ? "desc" : "asc" }
-        : { key, dir: key === "name" || key === "vendor" ? "asc" : "desc" };
-  }
-
   private _onStatusTileClick(status: DeviceStatus) {
     this._deviceStatusFilter = this._deviceStatusFilter === status ? null : status;
     this.renderRoot.querySelector("#devices-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
+
+  // Accessors for sortRows on the All Devices table. Health sorts by the
+  // STATUS_TILES order (healthiest first when ascending) rather than the
+  // raw status string, so alphabetical accidents like "disabled" landing
+  // between "available" and "unavailable" cannot happen. Severity is one
+  // composite number so a single column orders by critical, then high,
+  // then medium, then low; 1e9/1e6/1e3 spacing holds as long as no tier
+  // count reaches 1000, far above anything a real scan produces.
+  private static readonly DEVICE_SORT: Record<string, (r: DeviceOverviewRow) => unknown> = {
+    status: (r) => STATUS_TILES.findIndex((t) => t.key === r.status),
+    name: (r) => r.name,
+    vendor: (r) => r.vendor,
+    risk_score: (r) => r.risk_score,
+    total_findings: (r) => r.total_findings,
+    severity: (r) =>
+      r.severity_counts.critical * 1e9 +
+      r.severity_counts.high * 1e6 +
+      r.severity_counts.medium * 1e3 +
+      r.severity_counts.low,
+  };
 
   private _sortedFilteredDevices(): DeviceOverviewRow[] {
     const devices = this._deviceOverview?.devices ?? [];
@@ -504,26 +516,27 @@ export class HaSocDashboardView extends LitElement {
         d.os.toLowerCase().includes(q)
       );
     });
-
-    const { key, dir } = this._deviceSort;
-    const sorted = [...filtered].sort((a, b) => {
-      const av = a[key];
-      const bv = b[key];
-      const cmp = typeof av === "string" ? av.localeCompare(bv as string) : (av as number) - (bv as number);
-      return dir === "asc" ? cmp : -cmp;
-    });
-    return sorted;
+    return sortRows(filtered, this._deviceSort, HaSocDashboardView.DEVICE_SORT);
   }
+
+  // Severity sorts by issue-category rank; sortRows is stable, so rows in
+  // the same category keep the backend's error_count_24h desc order.
+  private static readonly INTEGRATION_SORT: Record<string, (r: IntegrationIssueRow) => unknown> = {
+    title: (r) => r.title,
+    severity: (r) => ISSUE_CATEGORY_RANK[r.issue_category],
+  };
 
   private _filteredIntegrations(): IntegrationIssueRow[] {
     const integrations = this._integrationOverview?.integrations ?? [];
     const q = this._integrationSearch.trim().toLowerCase();
-    if (!q) return integrations;
-    // Backend already sorts by error_count_24h desc — filtering preserves
-    // that order rather than re-sorting, same as the search box above.
-    return integrations.filter(
-      (row) => row.title.toLowerCase().includes(q) || row.domain.toLowerCase().includes(q)
-    );
+    // With no sort chosen, the backend's error_count_24h desc order is
+    // kept; filtering alone must not reorder rows.
+    const filtered = q
+      ? integrations.filter(
+          (row) => row.title.toLowerCase().includes(q) || row.domain.toLowerCase().includes(q)
+        )
+      : integrations;
+    return sortRows(filtered, this._integrationSort, HaSocDashboardView.INTEGRATION_SORT);
   }
 
   private _statusDotColor(status: string): string {
@@ -548,7 +561,27 @@ export class HaSocDashboardView extends LitElement {
     const s = this._summary;
     const d = this._deviceOverview;
     const integ = this._integrationOverview;
-    const openDetections = this._detections.filter((det) => det.status === "open");
+    // Accessors live inline because the User column sorts by the resolved
+    // display name, which needs this._users, not by the raw user_id.
+    const openDetections = sortRows(
+      this._detections.filter((det) => det.status === "open"),
+      this._detectionSort,
+      {
+        time: (det) => det.last_seen,
+        rule: (det) => det.title,
+        // Ranked so ascending reads worst first. "info" is not in
+        // SEVERITY_ORDER, and indexOf's -1 would float it above
+        // "critical"; it must sink below "low" instead.
+        severity: (det) => {
+          const i = SEVERITY_ORDER.indexOf(det.severity as (typeof SEVERITY_ORDER)[number]);
+          return i === -1 ? SEVERITY_ORDER.length : i;
+        },
+        user: (det) => this._nameFor(det.user_id),
+      }
+    );
+    const onDetectionSort = (next: SortState) => {
+      this._detectionSort = next;
+    };
 
     const vulnSeverityTotals = d.devices.reduce(
       (acc, device) => {
@@ -582,6 +615,15 @@ export class HaSocDashboardView extends LitElement {
     const allFilteredDevices = this._sortedFilteredDevices();
     const shownDevices =
       this._devicePageSize === "all" ? allFilteredDevices : allFilteredDevices.slice(0, this._devicePageSize);
+    // Both cards below truncate to the first N rows rather than paging, so
+    // there is no page index to reset on a sort change; the slice always
+    // shows the top of the new order.
+    const onDeviceSort = (next: SortState) => {
+      this._deviceSort = next;
+    };
+    const onIntegrationSort = (next: SortState) => {
+      this._integrationSort = next;
+    };
 
     const allFilteredIntegrations = this._filteredIntegrations();
     const shownIntegrations =
@@ -745,10 +787,10 @@ export class HaSocDashboardView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Rule</th>
-                    <th>Severity</th>
-                    <th>User</th>
+                    ${sortableTh("Time", "time", this._detectionSort, onDetectionSort)}
+                    ${sortableTh("Rule", "rule", this._detectionSort, onDetectionSort)}
+                    ${sortableTh("Severity", "severity", this._detectionSort, onDetectionSort)}
+                    ${sortableTh("User", "user", this._detectionSort, onDetectionSort)}
                     <th></th>
                   </tr>
                 </thead>
@@ -798,20 +840,12 @@ export class HaSocDashboardView extends LitElement {
                   <table>
                     <thead>
                       <tr>
-                        <th>Health</th>
-                        <th class="sortable" @click=${() => this._onSort("name")}>
-                          Device${this._sortArrow("name")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("vendor")}>
-                          Vendor${this._sortArrow("vendor")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("risk_score")}>
-                          Risk Score${this._sortArrow("risk_score")}
-                        </th>
-                        <th class="sortable" @click=${() => this._onSort("total_findings")}>
-                          Total${this._sortArrow("total_findings")}
-                        </th>
-                        <th>Severity</th>
+                        ${sortableTh("Health", "status", this._deviceSort, onDeviceSort)}
+                        ${sortableTh("Device", "name", this._deviceSort, onDeviceSort)}
+                        ${sortableTh("Vendor", "vendor", this._deviceSort, onDeviceSort)}
+                        ${sortableTh("Risk Score", "risk_score", this._deviceSort, onDeviceSort, { numeric: true })}
+                        ${sortableTh("Total", "total_findings", this._deviceSort, onDeviceSort, { numeric: true })}
+                        ${sortableTh("Severity", "severity", this._deviceSort, onDeviceSort)}
                       </tr>
                     </thead>
                     <tbody>
@@ -897,8 +931,8 @@ export class HaSocDashboardView extends LitElement {
                         <table>
                           <thead>
                             <tr>
-                              <th>Integration</th>
-                              <th>Severity</th>
+                              ${sortableTh("Integration", "title", this._integrationSort, onIntegrationSort)}
+                              ${sortableTh("Severity", "severity", this._integrationSort, onIntegrationSort)}
                             </tr>
                           </thead>
                           <tbody>
@@ -949,11 +983,6 @@ export class HaSocDashboardView extends LitElement {
         </div>
       </div>
     `;
-  }
-
-  private _sortArrow(key: DeviceSortKey) {
-    if (this._deviceSort.key !== key) return nothing;
-    return html`<span class="arrow">${this._deviceSort.dir === "asc" ? "▲" : "▼"}</span>`;
   }
 
   private _renderSecurityCard() {

@@ -2,6 +2,7 @@ import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   BrokenEntityReference,
   EntityRegistryEntry,
@@ -39,6 +40,16 @@ export class HaSocEntityRemapView extends LitElement {
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
   @state() private _brokenFilter: string | null = null;
+  // Column sort for the "referenced but not found" table (see sortable.ts);
+  // null keeps the sweep's reported order.
+  @state() private _brokenSort: SortState | null = null;
+
+  private static readonly BROKEN_SORT: Record<string, (b: BrokenEntityReference) => unknown> = {
+    entity_id: (b) => b.entity_id,
+    // A row can have several referrers; sort on the first one's name, which
+    // is also what the cell visibly leads with.
+    referenced_by: (b) => b.referenced_by[0]?.name ?? null,
+  };
   // Pre-selected: constrain the New/replacement suggestions to the same
   // entity domain as the Old entity (binary_sensor→binary_sensor, etc.).
   @state() private _filterSameType = true;
@@ -310,13 +321,13 @@ export class HaSocEntityRemapView extends LitElement {
                 <table>
                   <thead>
                     <tr>
-                      <th>Entity ID</th>
-                      <th>Referenced by</th>
+                      ${sortableTh("Entity ID", "entity_id", this._brokenSort, (n) => (this._brokenSort = n))}
+                      ${sortableTh("Referenced by", "referenced_by", this._brokenSort, (n) => (this._brokenSort = n))}
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${this._filteredBroken().map(
+                    ${sortRows(this._filteredBroken(), this._brokenSort, HaSocEntityRemapView.BROKEN_SORT).map(
                       (b) => html`
                         <tr>
                           <td>

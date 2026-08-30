@@ -2,19 +2,33 @@ import { LitElement, html } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import { AuditEvent, HaSocUser, fetchUsers, queryAudit, verifyAuditChain } from "../data/ha-soc-ws";
 
-const CATEGORIES = [
-  "",
-  "service_call",
-  "login_ok",
-  "login_fail",
-  "token_created",
-  "user_added",
-  "user_updated",
-  "user_removed",
-  "lovelace_change",
-  "entity_registry_change",
+// [category value, display label]. Must track every category audit.py can
+// write, or records become reachable only through "All categories".
+const CATEGORIES: [string, string][] = [
+  ["", "All categories"],
+  ["service_call", "Service call"],
+  ["login_ok", "Login OK"],
+  ["login_fail", "Login failed"],
+  ["token_created", "Token created"],
+  ["session_seen", "Session first seen"],
+  ["user_added", "User added"],
+  ["user_updated", "User updated"],
+  ["user_removed", "User removed"],
+  ["lovelace_change", "Dashboard edit"],
+  ["dashboard_panels_change", "Panel set changed"],
+  ["entity_registry_change", "Entity registry"],
+  ["device_registry_change", "Device registry"],
+  ["area_registry_change", "Area registry"],
+  ["floor_registry_change", "Floor registry"],
+  ["label_registry_change", "Label registry"],
+  ["category_registry_change", "Category registry"],
+  ["config_entry_change", "Config entry"],
+  ["core_config_change", "Core config"],
+  ["watchdog_triggered", "Watchdog triggered"],
+  ["soc_config_change", "SOC config change"],
 ];
 
 @customElement("ha-soc-audit-view")
@@ -29,6 +43,7 @@ export class HaSocAuditView extends LitElement {
   @state() private _category = "";
   @state() private _userId = "";
   @state() private _verifyResult: { ok: boolean; records_checked: number } | null = null;
+  @state() private _sort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -76,6 +91,24 @@ export class HaSocAuditView extends LitElement {
   }
 
   render() {
+    // With no sort chosen the server's newest-first order is kept as-is
+    // (sortRows passes rows through on a null state). Time sorts by the
+    // parsed timestamp, not the locale string; User sorts by the resolved
+    // display name so it matches what is on screen.
+    const s = this._sort;
+    const on = (next: SortState) => {
+      this._sort = next;
+    };
+    const events = sortRows(this._events, s, {
+      time: (e) => Date.parse(e.ts),
+      category: (e) => e.category,
+      user: (e) => (e.user_id ? this._nameFor(e.user_id) : null),
+      action: (e) =>
+        e.domain
+          ? `${e.domain}.${e.service}${e.entity_ids?.length ? ` (${e.entity_ids.join(", ")})` : ""}`
+          : null,
+      source: (e) => e.ip,
+    });
     return html`
       <div class="card">
         <h3>Audit Log</h3>
@@ -87,7 +120,8 @@ export class HaSocAuditView extends LitElement {
         <div class="toolbar">
           <select @change=${this._onCategoryChange}>
             ${CATEGORIES.map(
-              (c) => html`<option value=${c} ?selected=${c === this._category}>${c || "All categories"}</option>`
+              ([value, label]) =>
+                html`<option value=${value} ?selected=${value === this._category}>${label}</option>`
             )}
           </select>
           <select @change=${this._onUserChange}>
@@ -115,15 +149,15 @@ export class HaSocAuditView extends LitElement {
               <table>
                 <thead>
                   <tr>
-                    <th>Time</th>
-                    <th>Category</th>
-                    <th>User</th>
-                    <th>Action</th>
-                    <th>Source</th>
+                    ${sortableTh("Time", "time", s, on)}
+                    ${sortableTh("Category", "category", s, on)}
+                    ${sortableTh("User", "user", s, on)}
+                    ${sortableTh("Action", "action", s, on)}
+                    ${sortableTh("Source", "source", s, on)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._events.map(
+                  ${events.map(
                     (e) => html`
                       <tr>
                         <td>${new Date(e.ts).toLocaleString()}</td>

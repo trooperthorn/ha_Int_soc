@@ -2,6 +2,7 @@ import { LitElement, html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
+import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   HaSocUser,
   RiskResult,
@@ -22,6 +23,7 @@ export class HaSocUsersView extends LitElement {
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _loading = true;
   @state() private _busyUserId: string | null = null;
+  @state() private _sort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -85,6 +87,22 @@ export class HaSocUsersView extends LitElement {
     if (this._loading) return html`<div class="empty">Loading users…</div>`;
     if (!this._users.length) return html`<div class="empty">No users found.</div>`;
 
+    // Accessors live here (not in a static map) because Risk needs this._risk.
+    // Last login sorts by the parsed timestamp, never the locale string;
+    // Risk sorts by the numeric score; MFA/Role sort so like values group.
+    const s = this._sort;
+    const on = (next: SortState) => {
+      this._sort = next;
+    };
+    const users = sortRows(this._users, s, {
+      user: (u) => u.name ?? u.id,
+      role: (u) => `${u.is_admin ? "Admin" : "User"}${u.local_only ? " · local only" : ""}`,
+      mfa: (u) => u.mfa_enabled,
+      risk: (u) => this._risk[u.id]?.score ?? null,
+      last_login: (u) => (u.last_login_at ? Date.parse(u.last_login_at) : null),
+      tokens: (u) => u.llat_count,
+    });
+
     return html`
       <div class="card">
         <h3>Users &amp; Access</h3>
@@ -96,17 +114,17 @@ export class HaSocUsersView extends LitElement {
         <table>
           <thead>
             <tr>
-              <th>User</th>
-              <th>Role</th>
-              <th>MFA</th>
-              <th>Risk</th>
-              <th>Last login</th>
-              <th>Tokens</th>
+              ${sortableTh("User", "user", s, on)}
+              ${sortableTh("Role", "role", s, on)}
+              ${sortableTh("MFA", "mfa", s, on)}
+              ${sortableTh("Risk", "risk", s, on)}
+              ${sortableTh("Last login", "last_login", s, on)}
+              ${sortableTh("Tokens", "tokens", s, on)}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${this._users.map((u) => {
+            ${users.map((u) => {
               const risk = this._risk[u.id];
               return html`
                 <tr class=${u.is_active ? "" : "row-disabled"}>
