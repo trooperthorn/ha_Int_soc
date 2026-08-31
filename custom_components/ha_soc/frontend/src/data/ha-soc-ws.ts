@@ -564,8 +564,64 @@ export interface AclReport {
   rules: AclRule[];
 }
 
-// Mirrors unifi.py's correlate_server_ports_with_acl — the HA server's own
-// open ports cross-referenced against the ACL rules above.
+// Mirrors unifi.py's _normalize_firewall_traffic_filter — one side (source
+// or destination) of a Firewall Policy. Genuinely richer than an ACL rule's
+// filter: a required zone, plus an optional typed traffic filter narrowing
+// it further (network/IP/MAC/port, or — destination only — domain/
+// application/application category). REGION/VPN_SERVER/
+// SITE_TO_SITE_VPN_TUNNEL/IPV6_IID filters are represented by filter_type
+// alone (see unifi.py's docstring for why).
+export interface FirewallTrafficFilter {
+  zone: string | null;
+  filter_type: string | null;
+  networks: string[];
+  ip_or_subnets: string[];
+  macs: string[];
+  domains: string[];
+  applications: number[];
+  application_categories: number[];
+  match_opposite: boolean | null;
+  ports: string[];
+  ports_from_list: boolean;
+}
+
+// Mirrors unifi.py's _normalize_firewall_policy — one Firewall Policy, the
+// zone-based default allow/deny mechanism UniFi shows by default (Settings
+// -> Security -> Create Policy), genuinely separate from ACL Rules above.
+export interface FirewallPolicy {
+  order: number;
+  id: string | null;
+  name: string | null;
+  description: string | null;
+  enabled: boolean | null;
+  action: string | null;
+  logging_enabled: boolean | null;
+  ip_version: string | null;
+  protocol: string | null;
+  connection_state_filter: string[] | null;
+  scheduled: boolean;
+  networks: string[];
+  ports: string[];
+  source: FirewallTrafficFilter;
+  destination: FirewallTrafficFilter;
+}
+
+export interface FirewallZone {
+  id: string;
+  name: string;
+  networks: string[];
+}
+
+export interface FirewallPoliciesReport {
+  available: boolean;
+  error: string | null;
+  rules: FirewallPolicy[];
+  zones: FirewallZone[];
+}
+
+// Mirrors unifi.py's correlate_server_ports_with_rules — the HA server's
+// own open ports cross-referenced against the ACL rules and Firewall
+// Policies above.
 export interface ServerPort {
   port: number;
   proto: string | null;
@@ -647,6 +703,7 @@ export interface NetworkOverview {
   clients: NetworkClientRow[];
   devices: NetworkDeviceRow[];
   acl: AclReport;
+  firewall_policies: FirewallPoliciesReport;
   server_ports: ServerPortsReport;
   failing_endpoint_count: number;
   generated_at: string;
@@ -704,6 +761,7 @@ export interface NetworkSecurityFinding {
 // Mirrors network_security.py's async_network_security_overview().
 export interface NetworkSecurityOverview {
   acl: AclReport;
+  firewall_policies: FirewallPoliciesReport;
   server_ports: ServerPortsReport;
   unifi_reachable: boolean;
   unifi_error: string | null;

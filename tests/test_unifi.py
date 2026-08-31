@@ -43,9 +43,10 @@ from custom_components.ha_soc.unifi import (
     _normalize_client,
     _normalize_device,
     _normalize_event,
+    _normalize_firewall_policy,
     async_network_overview,
     async_protect_status,
-    correlate_server_ports_with_acl,
+    correlate_server_ports_with_rules,
 )
 
 
@@ -491,13 +492,193 @@ async def test_overview_acl_unavailable_when_no_endpoint(
 
 
 # ---------------------------------------------------------------------------
+# Firewall Policies — UniFi's zone-based default allow/deny UI, genuinely
+# separate from ACL Rules (confirmed against a live controller: acl-rules
+# returned count=0 while the real rules lived under firewall/policies).
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_firewall_policy_network_source_ip_destination() -> None:
+    nm = {"n1": "IoT (VLAN 30)"}
+    zone_names = {"z-int": "Internal", "z-ext": "External"}
+    raw = {
+        "id": "p1",
+        "name": "Block IoT to LAN",
+        "description": "IoT devices should not reach the LAN",
+        "enabled": True,
+        "index": 2,
+        "loggingEnabled": True,
+        "action": {"type": "BLOCK"},
+        "ipProtocolScope": {
+            "ipVersion": "IPV4",
+            "protocolFilter": {"type": "NAMED_PROTOCOL", "name": "TCP"},
+        },
+        "connectionStateFilter": ["NEW", "ESTABLISHED"],
+        "source": {
+            "zoneId": "z-int",
+            "trafficFilter": {"type": "NETWORK", "networkFilter": {"networkIds": ["n1"], "matchOpposite": False}},
+        },
+        "destination": {
+            "zoneId": "z-int",
+            "trafficFilter": {
+                "type": "IP_ADDRESS",
+                "ipAddressFilter": {
+                    "type": "IP_ADDRESSES",
+                    "matchOpposite": False,
+                    "items": [{"type": "SUBNET", "value": "192.168.1.0/24"}],
+                },
+                "portFilter": {
+                    "type": "PORTS",
+                    "matchOpposite": False,
+                    "items": [
+                        {"type": "PORT_NUMBER", "value": 22},
+                        {"type": "PORT_NUMBER_RANGE", "start": 8000, "stop": 8010},
+                    ],
+                },
+            },
+        },
+    }
+    row = _normalize_firewall_policy(raw, 0, nm, zone_names)
+    assert row["order"] == 2
+    assert row["name"] == "Block IoT to LAN"
+    assert row["action"] == "BLOCK"
+    assert row["enabled"] is True
+    assert row["logging_enabled"] is True
+    assert row["ip_version"] == "IPV4"
+    assert row["protocol"] == "TCP"
+    assert row["connection_state_filter"] == ["NEW", "ESTABLISHED"]
+    assert row["scheduled"] is False
+    assert row["source"]["zone"] == "Internal"
+    assert row["source"]["filter_type"] == "NETWORK"
+    assert row["source"]["networks"] == ["IoT (VLAN 30)"]
+    assert row["destination"]["zone"] == "Internal"
+    assert row["destination"]["filter_type"] == "IP_ADDRESS"
+    assert row["destination"]["ip_or_subnets"] == ["192.168.1.0/24"]
+    assert row["destination"]["ports"] == ["22", "8000-8010"]
+    assert row["networks"] == ["IoT (VLAN 30)"]
+    assert row["ports"] == ["22", "8000-8010"]
+
+
+def test_normalize_firewall_policy_port_filter_from_traffic_matching_list() -> None:
+    """A port filter scoped to a saved Traffic Matching List carries no raw
+    port numbers at all — this must surface as 'from_list', never a
+    fabricated port number."""
+    raw = {
+        "id": "p2",
+        "index": 0,
+        "action": {"type": "ALLOW"},
+        "source": {"zoneId": "z1"},
+        "destination": {
+            "zoneId": "z1",
+            "trafficFilter": {
+                "type": "PORT",
+                "portFilter": {
+                    "type": "TRAFFIC_MATCHING_LIST",
+                    "matchOpposite": False,
+                    "trafficMatchingListId": "list-1",
+                },
+            },
+        },
+    }
+    row = _normalize_firewall_policy(raw, 0, {}, {})
+    assert row["destination"]["ports"] == []
+    assert row["destination"]["ports_from_list"] is True
+
+
+def test_normalize_firewall_policy_missing_zone_name_degrades_to_none() -> None:
+    row = _normalize_firewall_policy(
+        {"id": "p3", "index": 0, "action": {"type": "ALLOW"}, "source": {"zoneId": "unknown"}, "destination": {"zoneId": "unknown"}},
+        0,
+        {},
+        {},
+    )
+    assert row["source"]["zone"] is None
+    assert row["destination"]["zone"] is None
+
+
+async def test_overview_firewall_policies_report(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    zones = [{"id": "z1", "name": "Internal", "networkIds": ["n1"]}]
+    policies = [
+        {
+            "id": "p1",
+            "name": "Allow LAN to HA",
+            "enabled": True,
+            "index": 0,
+            "action": {"type": "ALLOW"},
+            "source": {"zoneId": "z1"},
+            "destination": {"zoneId": "z1"},
+        }
+    ]
+
+    async def _se(hass, conn, path):
+        base = path.split("?", 1)[0]
+        if base == "/sites":
+            return {"data": [{"id": "default"}]}
+        if base in ("/sites/default/clients", "/sites/default/devices"):
+            return {"data": []}
+        if base == "/sites/default/acl-rules":
+            return {"data": []}
+        if base == "/sites/default/firewall/zones":
+            return {"data": zones}
+        if base == "/sites/default/firewall/policies":
+            return {"data": policies}
+        raise UniFiError("Endpoint not found")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
+        o = await async_network_overview(hass, store, secrets)
+
+    assert o["firewall_policies"]["available"] is True
+    assert len(o["firewall_policies"]["rules"]) == 1
+    assert o["firewall_policies"]["rules"][0]["name"] == "Allow LAN to HA"
+    assert o["firewall_policies"]["rules"][0]["source"]["zone"] == "Internal"
+    # network_map is empty here (no /sites/default/networks mock), so the
+    # zone's networkIds fall back to their raw id string, same as
+    # _resolve_network_refs does everywhere else in this module.
+    assert o["firewall_policies"]["zones"] == [{"id": "z1", "name": "Internal", "networks": ["n1"]}]
+
+
+async def test_overview_firewall_policies_unreachable_reports_error(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    async def _se(hass, conn, path):
+        base = path.split("?", 1)[0]
+        if base == "/sites":
+            return {"data": [{"id": "default"}]}
+        if base in ("/sites/default/clients", "/sites/default/devices"):
+            return {"data": []}
+        if base == "/sites/default/acl-rules":
+            return {"data": []}
+        if base == "/sites/default/firewall/zones":
+            raise UniFiError("Endpoint not found")
+        if base == "/sites/default/firewall/policies":
+            raise UniFiError("Endpoint not found")
+        raise UniFiError("Endpoint not found")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_se)):
+        o = await async_network_overview(hass, store, secrets)
+
+    # Unlike ACL Rules, Firewall Policies is a confirmed-real endpoint, so a
+    # failure here is a genuine error, not "not supported by this build".
+    assert o["firewall_policies"]["available"] is False
+    assert o["firewall_policies"]["error"]
+
+
+# ---------------------------------------------------------------------------
 # HA server port <-> ACL rule correlation
 # ---------------------------------------------------------------------------
 
 
 def test_correlate_server_ports_no_open_ports_reports_unavailable() -> None:
-    assert correlate_server_ports_with_acl(None, [])["available"] is False
-    assert correlate_server_ports_with_acl([], [])["available"] is False
+    assert correlate_server_ports_with_rules(None, [])["available"] is False
+    assert correlate_server_ports_with_rules([], [])["available"] is False
 
 
 def test_correlate_server_ports_ignores_wildcard_and_loopback_binds() -> None:
@@ -507,7 +688,7 @@ def test_correlate_server_ports_ignores_wildcard_and_loopback_binds() -> None:
         {"port": 8123, "proto": "tcp", "address": "0.0.0.0"},
         {"port": 22, "proto": "tcp", "address": "127.0.0.1"},
     ]
-    out = correlate_server_ports_with_acl(ports, [])
+    out = correlate_server_ports_with_rules(ports, [])
     assert out["available"] is False
     assert out["ports"] == []
 
@@ -546,17 +727,49 @@ def test_correlate_server_ports_covered_vs_network_scoped_vs_uncovered() -> None
             "destination": {"ip_or_subnets": ["192.168.10.0/24"], "ports": [], "networks": []},
         },
     ]
-    out = correlate_server_ports_with_acl(ports, rules)
+    out = correlate_server_ports_with_rules(ports, rules)
     assert out["available"] is True
     assert out["server_ips"] == ["192.168.10.5"]
     by_port = {p["port"]: p for p in out["ports"]}
     assert by_port[8123]["status"] == "covered"
-    assert by_port[8123]["covered_by"] == ["Allow LAN to HA UI"]
+    assert by_port[8123]["covered_by"] == ["ACL: Allow LAN to HA UI"]
     assert by_port[22]["status"] == "network_scoped"
-    assert by_port[22]["network_scoped_by"] == ["Guest zone reaches HA"]
+    assert by_port[22]["network_scoped_by"] == ["ACL: Guest zone reaches HA"]
     assert by_port[51827]["status"] == "uncovered"
     assert by_port[51827]["covered_by"] == []
     assert by_port[51827]["network_scoped_by"] == []
+
+
+def test_correlate_server_ports_firewall_policy_with_string_and_range_ports() -> None:
+    """Firewall Policy destinations carry port entries as strings (a single
+    number or a "start-stop" range), never plain ints like ACL rules —
+    _port_in_dest_list must tolerate both shapes."""
+    ports = [
+        {"port": 8123, "proto": "tcp", "address": "192.168.10.5"},
+        {"port": 8443, "proto": "tcp", "address": "192.168.10.5"},
+        {"port": 9999, "proto": "tcp", "address": "192.168.10.5"},
+    ]
+    policies = [
+        {
+            "id": "p1",
+            "order": 0,
+            "name": "Allow LAN to HA (single port)",
+            "enabled": True,
+            "destination": {"ip_or_subnets": ["192.168.10.0/24"], "ports": ["8123"], "networks": []},
+        },
+        {
+            "id": "p2",
+            "order": 1,
+            "name": "Allow LAN to HA (range)",
+            "enabled": True,
+            "destination": {"ip_or_subnets": ["192.168.10.0/24"], "ports": ["8400-8500"], "networks": []},
+        },
+    ]
+    out = correlate_server_ports_with_rules(ports, [], policies)
+    by_port = {p["port"]: p for p in out["ports"]}
+    assert by_port[8123]["covered_by"] == ["Policy: Allow LAN to HA (single port)"]
+    assert by_port[8443]["covered_by"] == ["Policy: Allow LAN to HA (range)"]
+    assert by_port[9999]["status"] == "uncovered"
 
 
 # ---------------------------------------------------------------------------

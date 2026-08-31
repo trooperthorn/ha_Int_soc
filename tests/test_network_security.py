@@ -9,13 +9,15 @@ from custom_components.ha_soc.const import SEVERITY_HIGH, SEVERITY_INFO, SEVERIT
 from custom_components.ha_soc.network_security import build_findings
 
 _EMPTY_ACL = {"available": False, "rules": []}
+_EMPTY_FIREWALL_POLICIES = {"available": False, "rules": [], "zones": []}
 _EMPTY_SERVER_PORTS = {"available": False, "ports": []}
 _UNCONFIGURED_PIHOLE = {"configured": False, "reachable": False}
 
 
-def _unifi(acl=None, server_ports=None):
+def _unifi(acl=None, firewall_policies=None, server_ports=None):
     return {
         "acl": acl if acl is not None else _EMPTY_ACL,
+        "firewall_policies": firewall_policies if firewall_policies is not None else _EMPTY_FIREWALL_POLICIES,
         "server_ports": server_ports if server_ports is not None else _EMPTY_SERVER_PORTS,
     }
 
@@ -34,6 +36,20 @@ def test_no_findings_when_everything_is_clean() -> None:
                     "source": {"ip_or_subnets": ["10.0.0.0/24"], "networks": [], "macs": []},
                 }
             ],
+        },
+        firewall_policies={
+            "available": True,
+            "rules": [
+                {
+                    "id": "p1",
+                    "order": 0,
+                    "enabled": True,
+                    "action": "ALLOW",
+                    "source": {"zone": "Internal", "filter_type": "NETWORK"},
+                    "destination": {"zone": "Internal", "filter_type": "NETWORK"},
+                }
+            ],
+            "zones": [],
         },
         server_ports={
             "available": True,
@@ -57,12 +73,51 @@ def test_acl_unavailable_produces_no_finding_of_its_own() -> None:
     assert not [f for f in findings if f["id"].startswith("acl_")]
 
 
-def test_acl_available_but_empty_is_informational() -> None:
+def test_both_empty_and_available_produces_one_combined_finding() -> None:
+    unifi = _unifi(
+        acl={"available": True, "rules": []},
+        firewall_policies={"available": True, "rules": [], "zones": []},
+    )
+    findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
+    ids = [f["id"] for f in findings]
+    assert ids.count("no_traffic_rules_configured") == 1
+    assert next(f for f in findings if f["id"] == "no_traffic_rules_configured")["severity"] == SEVERITY_INFO
+    # No per-mechanism "no rules" noise on top of the combined finding.
+    assert "acl_no_rules" not in ids
+    assert "firewall_policy_no_rules" not in ids
+
+
+def test_acl_empty_but_firewall_policies_has_rules_is_not_flagged() -> None:
+    """An install that only uses Firewall Policies (UniFi's default UI) —
+    the exact shape confirmed against a real controller — must not be told
+    ACL Rules being empty is a gap; the other mechanism covers it."""
+    unifi = _unifi(
+        acl={"available": True, "rules": []},
+        firewall_policies={
+            "available": True,
+            "rules": [
+                {
+                    "id": "p1",
+                    "order": 0,
+                    "enabled": True,
+                    "action": "BLOCK",
+                    "source": {"zone": "IoT", "filter_type": None},
+                    "destination": {"zone": "Internal", "filter_type": None},
+                }
+            ],
+            "zones": [],
+        },
+    )
+    findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
+    assert not [f for f in findings if f["id"] == "no_traffic_rules_configured"]
+
+
+def test_no_rules_finding_requires_both_confirmed_empty() -> None:
+    # firewall_policies unavailable (error) — must not claim "no rules" when
+    # one side genuinely couldn't be checked.
     unifi = _unifi(acl={"available": True, "rules": []})
     findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
-    ids = {f["id"] for f in findings}
-    assert "acl_no_rules" in ids
-    assert next(f for f in findings if f["id"] == "acl_no_rules")["severity"] == SEVERITY_INFO
+    assert not [f for f in findings if f["id"] == "no_traffic_rules_configured"]
 
 
 def test_broad_allow_rule_flagged() -> None:
@@ -128,6 +183,53 @@ def test_disabled_broad_allow_rule_not_flagged() -> None:
     )
     findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
     assert not [f for f in findings if f["id"].startswith("acl_broad_allow_")]
+
+
+def test_firewall_policy_broad_allow_flagged() -> None:
+    unifi = _unifi(
+        firewall_policies={
+            "available": True,
+            "rules": [
+                {
+                    "id": "p1",
+                    "order": 0,
+                    "name": "Internal to External",
+                    "enabled": True,
+                    "action": "ALLOW",
+                    "source": {"zone": "Internal", "filter_type": None},
+                    "destination": {"zone": "External", "filter_type": None},
+                },
+                {
+                    # Has a traffic filter narrowing it — must not be flagged.
+                    "id": "p2",
+                    "order": 1,
+                    "name": "IoT to printer only",
+                    "enabled": True,
+                    "action": "ALLOW",
+                    "source": {"zone": "IoT", "filter_type": None},
+                    "destination": {"zone": "Internal", "filter_type": "IP_ADDRESS"},
+                },
+                {
+                    # BLOCK with no filter — opposite intent, never flagged.
+                    "id": "p3",
+                    "order": 2,
+                    "name": "Deny all",
+                    "enabled": True,
+                    "action": "BLOCK",
+                    "source": {"zone": "IoT", "filter_type": None},
+                    "destination": {"zone": "Internal", "filter_type": None},
+                },
+            ],
+            "zones": [],
+        }
+    )
+    findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
+    broad = [f for f in findings if f["id"].startswith("firewall_policy_broad_allow_")]
+    assert len(broad) == 1
+    assert broad[0]["id"] == "firewall_policy_broad_allow_p1"
+    assert broad[0]["severity"] == SEVERITY_MEDIUM
+    assert "Internal" in broad[0]["title"]
+    assert "External" in broad[0]["title"]
 
 
 def test_uncovered_server_ports_grouped_into_one_finding() -> None:
@@ -199,7 +301,10 @@ def test_pihole_iot_not_scoped_flagged_medium() -> None:
 
 
 def test_findings_sorted_by_severity_then_id() -> None:
-    unifi = _unifi(acl={"available": True, "rules": []})
+    unifi = _unifi(
+        acl={"available": True, "rules": []},
+        firewall_policies={"available": True, "rules": [], "zones": []},
+    )
     pihole = {"configured": True, "reachable": True, "blocking_enabled": False, "iot_cidr": None}
     findings = build_findings(unifi, pihole)
     severities = [f["severity"] for f in findings]

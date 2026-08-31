@@ -6,6 +6,8 @@ import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   AclReport,
   AclRule,
+  FirewallPoliciesReport,
+  FirewallPolicy,
   NetworkSecurityFinding,
   NetworkSecurityOverview,
   PiHoleOverview,
@@ -16,8 +18,13 @@ import {
 // The ACL Rules card, the HA-server-port correlation, and the Pi-hole DNS
 // section used to live scattered across the Network tab; this view is the
 // dedicated security-audit surface the Network tab's ACL card moved into,
-// plus the two new pieces (server-port coverage, Pi-hole) tied together
-// with the advisory findings list this project derives from all three.
+// plus the newer pieces (Firewall Policies, server-port coverage, Pi-hole)
+// tied together with the advisory findings list this project derives from
+// all of them. ACL Rules and Firewall Policies are genuinely separate
+// UniFi resources, not two names for the same feature — Firewall Policies
+// (zone-based) is what current UniFi Network firmware shows by default
+// under Settings -> Security -> Create Policy, and a controller can have
+// rules under either, both, or neither.
 @customElement("ha-soc-network-security-view")
 export class HaSocNetworkSecurityView extends LitElement {
   static styles = [
@@ -168,6 +175,7 @@ export class HaSocNetworkSecurityView extends LitElement {
   @state() private _loading = true;
   @state() private _error: string | null = null;
   @state() private _aclSort: SortState | null = null;
+  @state() private _firewallPolicySort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
 
   connectedCallback(): void {
@@ -204,6 +212,7 @@ export class HaSocNetworkSecurityView extends LitElement {
         </span>
       </div>
       ${this._renderFindings(o.findings)}
+      ${this._renderFirewallPolicies(o.firewall_policies)}
       ${this._renderAcl(o.acl)}
       ${this._renderServerPorts(o.server_ports)}
       ${this._renderPihole(o.pihole)}
@@ -230,6 +239,123 @@ export class HaSocNetworkSecurityView extends LitElement {
             )}`
           : html`<div class="empty">Nothing stood out — no advisory findings right now.</div>`}
       </div>
+    `;
+  }
+
+  // -- Firewall Policies ----------------------------------------------------
+
+  private _policyActionClass(action: string | null): string {
+    const a = (action ?? "").toLowerCase();
+    if (a === "allow") return "healthy";
+    if (a === "block" || a === "reject") return "failing";
+    return "other";
+  }
+
+  private _renderFirewallPolicies(fw: FirewallPoliciesReport) {
+    return html`
+      <div class="card">
+        <h3>
+          Firewall Policies — Security Audit
+          <span class="muted" style="font-weight:400;font-size:12px;"
+            >— UniFi's default zone-based allow/deny view; order matters, evaluated top
+            to bottom</span
+          >
+        </h3>
+        ${!fw.available
+          ? html`
+              <div class="note" style="font-size:13px;">
+                Couldn't read Firewall Policies from this controller.${
+                  fw.error ? html` ${fw.error}` : ""
+                }
+              </div>
+            `
+          : !fw.rules.length
+            ? html`<div class="empty">No Firewall Policies configured.</div>`
+            : html`
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        ${sortableTh("#", "order", this._firewallPolicySort, (n) => (this._firewallPolicySort = n), {
+                          numeric: true,
+                        })}
+                        ${sortableTh("Name", "name", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Action", "action", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Source zone", "source_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Dest. zone", "dest_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Protocol", "protocol", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Ports", "ports", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                        ${sortableTh("Enabled", "enabled", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      ${sortRows(fw.rules.slice(), this._firewallPolicySort, {
+                        order: (r) => r.order,
+                        name: (r) => r.name,
+                        action: (r) => r.action,
+                        source_zone: (r) => r.source.zone,
+                        dest_zone: (r) => r.destination.zone,
+                        protocol: (r) => r.protocol,
+                        ports: (r) => r.ports.length,
+                        enabled: (r) => r.enabled,
+                      }).map((r: FirewallPolicy, i) => this._renderFirewallPolicyRow(r, i))}
+                    </tbody>
+                  </table>
+                </div>
+                <div class="note">
+                  Every policy is scoped to a source/destination zone pair; the detail
+                  line under each name shows any additional network/IP/MAC/domain
+                  narrowing the controller reported.
+                </div>
+              `}
+      </div>
+    `;
+  }
+
+  private _renderFirewallPolicyRow(r: FirewallPolicy, i: number) {
+    const detailFor = (side: FirewallPolicy["source"]) => {
+      const bits: string[] = [];
+      if (side.networks.length) bits.push(`networks: ${side.networks.join(", ")}`);
+      if (side.ip_or_subnets.length) bits.push(`IP: ${side.ip_or_subnets.join(", ")}`);
+      if (side.macs.length) bits.push(`MAC: ${side.macs.join(", ")}`);
+      if (side.domains.length) bits.push(`domains: ${side.domains.join(", ")}`);
+      if (side.applications.length) bits.push(`${side.applications.length} app(s)`);
+      if (side.application_categories.length) bits.push(`${side.application_categories.length} app categor${side.application_categories.length === 1 ? "y" : "ies"}`);
+      if (!bits.length && side.filter_type) bits.push(side.filter_type.toLowerCase().replace(/_/g, " "));
+      return bits.join(" · ");
+    };
+    const srcDetail = detailFor(r.source);
+    const dstDetail = detailFor(r.destination);
+    const detail = [srcDetail && `from ${srcDetail}`, dstDetail && `to ${dstDetail}`].filter(Boolean).join(" · ");
+    return html`
+      <tr>
+        <td class="num">${r.order ?? i + 1}</td>
+        <td style="font-weight:600;">
+          ${r.name ?? "—"}${detail ? html`<span class="sub">${detail}</span>` : nothing}
+        </td>
+        <td>
+          ${r.action
+            ? html`<span class="match ${this._policyActionClass(r.action)}">${r.action}</span>`
+            : html`<span class="muted">—</span>`}
+        </td>
+        <td>${r.source.zone ?? html`<span class="muted">—</span>`}</td>
+        <td>${r.destination.zone ?? html`<span class="muted">—</span>`}</td>
+        <td>${r.protocol ?? html`<span class="muted">any</span>`}</td>
+        <td>
+          ${r.ports.length
+            ? html`<span class="mono">${r.ports.join(", ")}</span>`
+            : r.source.ports_from_list || r.destination.ports_from_list
+              ? html`<span class="muted">traffic matching list</span>`
+              : html`<span class="muted">any</span>`}
+        </td>
+        <td>
+          ${r.enabled == null
+            ? html`<span class="muted">—</span>`
+            : r.enabled
+              ? "yes"
+              : html`<span class="muted">disabled</span>`}
+        </td>
+      </tr>
     `;
   }
 

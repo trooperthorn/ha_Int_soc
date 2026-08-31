@@ -1056,6 +1056,273 @@ async def _fetch_acl_rules(
     return result
 
 
+# ---------------------------------------------------------------------------
+# Firewall Policies — UniFi's zone-based default allow/deny UI (Settings ->
+# Security -> Create Policy), a genuinely separate resource from ACL Rules
+# above, not another name for the same thing. Confirmed real (not probed
+# like the ACL candidates): a live controller returned
+# {"offset":0,"limit":25,"count":0,"totalCount":0,"data":[]} for
+# GET /sites/{siteId}/acl-rules on an install whose actual rules turned out
+# to live under Firewall Policies instead — the two coexist, and an honest
+# security audit reads both. Schema verified against the community-
+# maintained OpenAPI extraction for this controller version
+# (github.com/beezly/unifi-apis), parsed directly rather than through a
+# lossy summarizer, since developer.ui.com itself is unreachable from every
+# environment this project has been built in. Confirmed real paths:
+#   GET /sites/{siteId}/firewall/zones     (id, name, networkIds)
+#   GET /sites/{siteId}/firewall/policies  (the rules)
+# ---------------------------------------------------------------------------
+
+
+def _normalize_ip_matching(item: dict[str, Any]) -> str | None:
+    """One 'IP matching' entry (IP_ADDRESS / SUBNET / IP_ADDRESS_RANGE)."""
+    t = item.get("type")
+    if t in ("IP_ADDRESS", "SUBNET"):
+        v = item.get("value")
+        return str(v) if v not in (None, "") else None
+    if t == "IP_ADDRESS_RANGE":
+        start, stop = item.get("start"), item.get("stop")
+        if start and stop:
+            return f"{start}-{stop}"
+    return None
+
+
+def _normalize_port_matching(item: dict[str, Any]) -> str | None:
+    """One 'Port matching' entry (PORT_NUMBER / PORT_NUMBER_RANGE). Kept as
+    a string (not coerced to int like ACL's flat portFilter) because a
+    Firewall Policy port entry can genuinely be a range."""
+    t = item.get("type")
+    if t == "PORT_NUMBER":
+        v = item.get("value")
+        return str(v) if v is not None else None
+    if t == "PORT_NUMBER_RANGE":
+        start, stop = item.get("start"), item.get("stop")
+        if start is not None and stop is not None:
+            return f"{start}-{stop}"
+    return None
+
+
+def _normalize_firewall_port_filter(pf: Any) -> dict[str, Any]:
+    """A Firewall Policy 'port filter' — the same shape whether it's a
+    standalone PORT traffic filter or an extra port constraint nested
+    inside a NETWORK/IP_ADDRESS/etc. filter. type PORTS carries explicit
+    port/range items; type TRAFFIC_MATCHING_LIST references a saved list
+    this project doesn't resolve by name — surfaced as ``from_list`` so the
+    UI can say "scoped by a Traffic Matching List" instead of fabricating
+    port numbers that were never in the payload."""
+    if not isinstance(pf, dict):
+        return {"ports": [], "from_list": False}
+    if pf.get("type") == "TRAFFIC_MATCHING_LIST":
+        return {"ports": [], "from_list": True}
+    items = pf.get("items") if isinstance(pf.get("items"), list) else []
+    ports = [p for p in (_normalize_port_matching(i) for i in items if isinstance(i, dict)) if p]
+    return {"ports": ports, "from_list": False}
+
+
+def _normalize_firewall_protocol(scope: Any) -> dict[str, Any]:
+    """{'ip_version': 'IPV4'|'IPV6'|'IPV4_AND_IPV6'|None,
+    'protocol': readable string or None (None = matches all protocols)}."""
+    if not isinstance(scope, dict):
+        return {"ip_version": None, "protocol": None}
+    ip_version = scope.get("ipVersion")
+    pf = scope.get("protocolFilter")
+    if not isinstance(pf, dict):
+        return {"ip_version": ip_version, "protocol": None}
+    ptype = pf.get("type")
+    if ptype in ("NAMED_PROTOCOL", "PRESET"):
+        # Both discriminate a second time on their own "name" (AH/DCCP/TCP/
+        # UDP/ICMP/... for NAMED_PROTOCOL, TCP_UDP for PRESET); "name" IS
+        # the readable protocol string in either case.
+        name = pf.get("name")
+        return {"ip_version": ip_version, "protocol": str(name) if name else None}
+    if ptype == "PROTOCOL_NUMBER":
+        num = pf.get("protocolNumber")
+        return {"ip_version": ip_version, "protocol": f"protocol {num}" if num is not None else None}
+    return {"ip_version": ip_version, "protocol": None}
+
+
+def _normalize_firewall_traffic_filter(raw: Any, network_map: dict[str, str]) -> dict[str, Any]:
+    """One side (source or destination) of a Firewall Policy's traffic
+    filter. Fully modeled for the filter types this project has verified
+    field-for-field (NETWORK, IP_ADDRESS, MAC_ADDRESS, PORT, plus the
+    destination-only DOMAIN/APPLICATION/APPLICATION_CATEGORY filters);
+    REGION, VPN_SERVER, SITE_TO_SITE_VPN_TUNNEL, and IPV6_IID are surfaced
+    by ``filter_type`` alone rather than guessed at, since this project
+    hasn't verified their own nested field names. ``zone`` is filled in by
+    the caller from the enclosing source/destination object's zoneId,
+    which is separate from (and always present alongside) this filter."""
+    filter_type = raw.get("type") if isinstance(raw, dict) else None
+    networks: list[str] = []
+    ip_or_subnets: list[str] = []
+    macs: list[str] = []
+    domains: list[str] = []
+    applications: list[int] = []
+    application_categories: list[int] = []
+    match_opposite: bool | None = None
+
+    if isinstance(raw, dict):
+        net_filter = raw.get("networkFilter")
+        if isinstance(net_filter, dict):
+            ids = net_filter.get("networkIds")
+            networks = _resolve_network_refs(ids if isinstance(ids, list) else [], network_map)
+            match_opposite = net_filter.get("matchOpposite")
+
+        ip_filter = raw.get("ipAddressFilter")
+        if isinstance(ip_filter, dict):
+            match_opposite = ip_filter.get("matchOpposite")
+            items = ip_filter.get("items") if isinstance(ip_filter.get("items"), list) else []
+            ip_or_subnets = [
+                v for v in (_normalize_ip_matching(i) for i in items if isinstance(i, dict)) if v
+            ]
+
+        mac_filter = raw.get("macAddressFilter")
+        if isinstance(mac_filter, dict):
+            # The primary filter (filter_type == MAC_ADDRESS): a list.
+            addrs = mac_filter.get("macAddresses")
+            macs = [str(m) for m in addrs] if isinstance(addrs, list) else []
+        elif isinstance(mac_filter, str):
+            # An EXTRA single-MAC constraint on a NETWORK/IP_ADDRESS/IPV6_IID
+            # source filter, not the primary MAC_ADDRESS filter object.
+            macs = [mac_filter]
+
+        dom_filter = raw.get("domainFilter")
+        if isinstance(dom_filter, dict) and isinstance(dom_filter.get("domains"), list):
+            domains = [str(v) for v in dom_filter["domains"]]
+
+        app_filter = raw.get("applicationFilter")
+        if isinstance(app_filter, dict) and isinstance(app_filter.get("applicationIds"), list):
+            applications = list(app_filter["applicationIds"])
+
+        cat_filter = raw.get("applicationCategoryFilter")
+        if isinstance(cat_filter, dict) and isinstance(cat_filter.get("applicationCategoryIds"), list):
+            application_categories = list(cat_filter["applicationCategoryIds"])
+
+    port_info = _normalize_firewall_port_filter(raw.get("portFilter") if isinstance(raw, dict) else None)
+
+    return {
+        "zone": None,  # filled in by the caller
+        "filter_type": filter_type,
+        "networks": networks,
+        "ip_or_subnets": ip_or_subnets,
+        "macs": macs,
+        "domains": domains,
+        "applications": applications,
+        "application_categories": application_categories,
+        "match_opposite": match_opposite,
+        "ports": port_info["ports"],
+        "ports_from_list": port_info["from_list"],
+    }
+
+
+def _normalize_firewall_policy(
+    raw: dict[str, Any], index: int, network_map: dict[str, str], zone_name_map: dict[str, str]
+) -> dict[str, Any]:
+    """One Firewall Policy, order-preserving, matching the verified schema:
+    ``action`` (a typed ALLOW/BLOCK/REJECT object), ``index``,
+    ``ipProtocolScope`` (ipVersion + protocolFilter), ``connectionStateFilter``,
+    ``loggingEnabled``, ``schedule`` (None = always active), and
+    ``source``/``destination`` objects each carrying a required ``zoneId``
+    plus an optional ``trafficFilter`` narrowing it further."""
+    order = raw.get("index")
+    try:
+        order = int(order) if order is not None else index
+    except (TypeError, ValueError):
+        order = index
+
+    action_obj = raw.get("action")
+    action = action_obj.get("type") if isinstance(action_obj, dict) else None
+
+    source_raw = raw.get("source") if isinstance(raw.get("source"), dict) else {}
+    destination_raw = raw.get("destination") if isinstance(raw.get("destination"), dict) else {}
+    source = _normalize_firewall_traffic_filter(source_raw.get("trafficFilter"), network_map)
+    destination = _normalize_firewall_traffic_filter(destination_raw.get("trafficFilter"), network_map)
+    source["zone"] = zone_name_map.get(str(source_raw.get("zoneId")))
+    destination["zone"] = zone_name_map.get(str(destination_raw.get("zoneId")))
+
+    proto = _normalize_firewall_protocol(raw.get("ipProtocolScope"))
+    networks = list(dict.fromkeys(source["networks"] + destination["networks"]))
+
+    def _port_sort_key(p: str) -> tuple[int, Any]:
+        head = p.split("-", 1)[0]
+        return (0, int(head)) if head.isdigit() else (1, p)
+
+    ports = sorted(set(source["ports"]) | set(destination["ports"]), key=_port_sort_key)
+
+    enabled = raw.get("enabled")
+    return {
+        "order": order,
+        "id": str(raw.get("id") or "") or None,
+        "name": str(raw.get("name") or "") or None,
+        "description": raw.get("description"),
+        "enabled": bool(enabled) if enabled is not None else None,
+        "action": action,
+        "logging_enabled": raw.get("loggingEnabled"),
+        "ip_version": proto["ip_version"],
+        "protocol": proto["protocol"],
+        "connection_state_filter": raw.get("connectionStateFilter"),
+        "scheduled": raw.get("schedule") is not None,
+        "networks": networks,
+        "ports": ports,
+        "source": source,
+        "destination": destination,
+    }
+
+
+async def _fetch_firewall_zones(
+    hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
+) -> list[dict[str, Any]]:
+    """[{id, name, networks}] — best-effort; [] if the endpoint is absent so
+    a controller version without zones degrades to "policies show no zone
+    name" rather than taking the whole tab down."""
+    try:
+        rows = await _get_paginated(hass, conn, f"/sites/{site_id}/firewall/zones")
+    except UniFiError:
+        return []
+    out: list[dict[str, Any]] = []
+    for z in rows:
+        zid = z.get("id")
+        if not zid:
+            continue
+        net_ids = z.get("networkIds")
+        out.append(
+            {
+                "id": str(zid),
+                "name": str(z.get("name") or zid),
+                "networks": _resolve_network_refs(
+                    net_ids if isinstance(net_ids, list) else [], network_map
+                ),
+            }
+        )
+    return out
+
+
+async def _fetch_firewall_policies(
+    hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
+) -> dict[str, Any]:
+    """Firewall Policies — UniFi's zone-based default allow/deny audit,
+    genuinely separate from ACL Rules (see this section's module comment).
+    Unlike _fetch_acl_rules this never probes candidate paths: the endpoint
+    is confirmed real, so a failure here is a real connectivity/permission
+    problem worth surfacing as such rather than "not supported"."""
+    result: dict[str, Any] = {"available": False, "error": None, "rules": [], "zones": []}
+    zones = await _fetch_firewall_zones(hass, conn, site_id, network_map)
+    result["zones"] = zones
+    zone_name_map = {z["id"]: z["name"] for z in zones}
+    try:
+        rows = await _get_paginated(hass, conn, f"/sites/{site_id}/firewall/policies")
+    except UniFiError as err:
+        result["error"] = str(err)
+        return result
+    except Exception as err:  # noqa: BLE001
+        result["error"] = f"Unexpected error: {err}"
+        return result
+    rules = [_normalize_firewall_policy(r, i, network_map, zone_name_map) for i, r in enumerate(rows)]
+    rules.sort(key=lambda r: r["order"])
+    result["available"] = True
+    result["rules"] = rules
+    return result
+
+
 def _ip_in_any(ip_str: str, candidates: list[str]) -> bool:
     """Whether ip_str matches any candidate exactly, or falls inside a
     candidate that parses as a CIDR network. Never raises: an unparseable
@@ -1091,36 +1358,65 @@ def _server_ip_addresses(open_ports: list[dict[str, Any]]) -> list[str]:
     return sorted(out)
 
 
-def correlate_server_ports_with_acl(
-    open_ports: list[dict[str, Any]] | None, acl_rules: list[dict[str, Any]]
+def _port_in_dest_list(port: Any, dest_ports: list[Any]) -> bool:
+    """Whether ``port`` (an int) is matched by a destination's port list —
+    ACL rules carry plain ints, Firewall Policy rules carry strings that
+    can be a single number ("443") or a range ("8000-9000"). Handles both
+    representations rather than assuming either shape."""
+    for entry in dest_ports:
+        if isinstance(entry, bool):
+            continue
+        if isinstance(entry, int) and entry == port:
+            return True
+        if isinstance(entry, str):
+            if "-" in entry:
+                lo, _, hi = entry.partition("-")
+                if lo.strip().isdigit() and hi.strip().isdigit() and int(lo) <= port <= int(hi):
+                    return True
+            elif entry.strip().isdigit() and int(entry) == port:
+                return True
+    return False
+
+
+def correlate_server_ports_with_rules(
+    open_ports: list[dict[str, Any]] | None,
+    acl_rules: list[dict[str, Any]],
+    firewall_policies: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Cross-reference the HA server's own real listening ports (from the
     Probe add-on, already used to drive the host-firewall rule builder in
-    firewall.py) against the UniFi ACL rules whose destination actually
-    names this server, so the Network Security tab can show — for each port
-    HA itself has open — whether any ACL rule explicitly scopes who may
-    reach it.
+    firewall.py) against BOTH UniFi rule sets — ACL Rules and Firewall
+    Policies (see the "Firewall Policies" section above for why they're
+    two genuinely separate resources, not the same thing under different
+    names) — whose destination actually names this server, so the Network
+    Security tab can show, for each port HA itself has open, whether any
+    rule of either kind explicitly scopes who may reach it. A rule's
+    label is prefixed ``ACL:`` or ``Policy:`` in the output so the operator
+    knows which UI to go edit.
 
     This is deliberately conservative about what it claims. A rule only
-    counts as covering a port when its destinationFilter names an IP or
-    CIDR that contains one of the server's reported addresses AND (its
-    port list is empty, meaning "all ports", or includes this port). A
-    rule whose destination is scoped to a NETWORK/zone rather than a
-    specific IP is reported separately as "network_scoped" rather than
-    folded into "covered" or "uncovered": this function has no verified
-    way to know which UniFi network the server's own IP belongs to (the
-    Integration API's network list was not confirmed to expose per-network
-    IP subnets), so claiming a network-scoped rule does or doesn't cover
-    the server would be a guess this project's honesty rule forbids.
-    "uncovered" means no rule was found naming the server by IP/CIDR at
-    all — it does NOT mean the port is reachable from everywhere; UniFi's
-    own default zone-based policy (not enumerated here) still applies.
+    counts as covering a port when its destination names an IP or CIDR
+    that contains one of the server's reported addresses AND (its port
+    list is empty, meaning "all ports", or includes this port — see
+    _port_in_dest_list for the two port-list shapes tolerated). A rule
+    whose destination is scoped to a NETWORK/zone rather than a specific
+    IP is reported separately as "network_scoped" rather than folded into
+    "covered" or "uncovered": this function has no verified way to know
+    which UniFi network the server's own IP belongs to (the Integration
+    API's network list was not confirmed to expose per-network IP
+    subnets), so claiming a network-scoped rule does or doesn't cover the
+    server would be a guess this project's honesty rule forbids.
+    "uncovered" means no rule of either kind was found naming the server
+    by IP/CIDR at all — it does NOT mean the port is reachable from
+    everywhere; UniFi's own default zone-based policy (not enumerated
+    here) still applies.
     """
     server_ips = _server_ip_addresses(open_ports or [])
     if not server_ips:
         return {"available": False, "server_ips": [], "ports": []}
 
-    enabled_rules = [r for r in acl_rules if r.get("enabled") is not False]
+    rule_sets = [("ACL", r) for r in acl_rules] + [("Policy", r) for r in (firewall_policies or [])]
+    enabled_rules = [(kind, r) for kind, r in rule_sets if r.get("enabled") is not False]
     out_ports: list[dict[str, Any]] = []
     for p in open_ports or []:
         addr = p.get("address")
@@ -1129,15 +1425,16 @@ def correlate_server_ports_with_acl(
         port = p.get("port")
         matching: list[str] = []
         network_scoped: list[str] = []
-        for rule in enabled_rules:
+        for kind, rule in enabled_rules:
             dest = rule.get("destination") or {}
-            port_matches = not dest.get("ports") or port in dest["ports"]
-            if not port_matches:
+            if dest.get("ports") and not _port_in_dest_list(port, dest["ports"]):
                 continue
+            rule_label = rule.get("name") or rule.get("id") or f"rule {rule.get('order')}"
+            label = f"{kind}: {rule_label}"
             if dest.get("ip_or_subnets") and _ip_in_any(str(addr), dest["ip_or_subnets"]):
-                matching.append(rule.get("name") or rule.get("id") or f"rule {rule.get('order')}")
+                matching.append(label)
             elif dest.get("networks"):
-                network_scoped.append(rule.get("name") or rule.get("id") or f"rule {rule.get('order')}")
+                network_scoped.append(label)
         out_ports.append(
             {
                 "port": port,
@@ -1187,6 +1484,7 @@ async def async_network_overview(
         "clients": [],
         "devices": [],
         "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
+        "firewall_policies": {"available": False, "error": None, "rules": [], "zones": []},
         "server_ports": {"available": False, "server_ips": [], "ports": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
@@ -1223,8 +1521,10 @@ async def async_network_overview(
             _apply_core_network_data(result, core_snap, endpoints, now_ts)
 
             host_probe = store.data.get("host_probe") or {}
-            result["server_ports"] = correlate_server_ports_with_acl(
-                host_probe.get("open_ports"), result["acl"]["rules"]
+            result["server_ports"] = correlate_server_ports_with_rules(
+                host_probe.get("open_ports"),
+                result["acl"]["rules"],
+                result["firewall_policies"]["rules"],
             )
     except asyncio.TimeoutError:
         result["error"] = (
@@ -1270,6 +1570,7 @@ async def _fill_network_from_api(
     if not network_map and core_snap is not None:
         network_map = unifi_core.network_name_map(core_snap["networks"])
     result["acl"] = await _fetch_acl_rules(hass, conn, site_id, network_map)
+    result["firewall_policies"] = await _fetch_firewall_policies(hass, conn, site_id, network_map)
 
     clients = [_normalize_client(r, endpoints, broadcast_map, now_ts) for r in clients_raw]
     devices = [_normalize_device(r, endpoints) for r in devices_raw]

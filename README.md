@@ -118,18 +118,20 @@ imply otherwise.
   integration whose device is a live client but whose config entry is
   failing to load is flagged **⚠ failing** — the "an integration IP is
   failing" signal. See below.
-- **Network Security** — a dedicated tab tying together the **ACL Rules —
-  Security Audit** report (every ACL rule in evaluation order, with its
-  ports, protocols, source/destination, and the networks it applies to),
-  the Home Assistant server's own **listening ports cross-referenced
-  against those rules** (via the optional Host Probe add-on), a **Pi-hole**
-  DNS section (blocking status, query totals, whether your IoT subnet has
-  its own scoped client group, top blocked domains), and an **advisory
-  findings list** derived from all three — e.g. an ACL rule with no source/
-  destination scoping at all, a server port no rule names, or an IoT subnet
-  falling through to Pi-hole's global Default group. Entirely read-only and
-  advisory: nothing here ever edits a UniFi rule, toggles Pi-hole, or
-  reassigns a Pi-hole client. See below.
+- **Network Security** — a dedicated tab tying together **Firewall
+  Policies** (UniFi's zone-based default allow/deny UI) and **ACL Rules**
+  — two genuinely separate UniFi resources, both read and audited in
+  evaluation order with their ports, protocols, source/destination/zones,
+  and the networks each applies to — the Home Assistant server's own
+  **listening ports cross-referenced against both rule sets** (via the
+  optional Host Probe add-on), a **Pi-hole** DNS section (blocking status,
+  query totals, whether your IoT subnet has its own scoped client group,
+  top blocked domains), and an **advisory findings list** derived from all
+  four — e.g. a rule/policy with no source/destination scoping at all, a
+  server port nothing names, or an IoT subnet falling through to Pi-hole's
+  global Default group. Entirely read-only and advisory: nothing here ever
+  edits a UniFi rule or policy, toggles Pi-hole, or reassigns a Pi-hole
+  client. See below.
 - **Host Probe (optional add-on)** — real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
@@ -301,10 +303,11 @@ custom_components/ha_soc/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py    — lock/siren/valve entities + curated integration health (Dashboard)
 ├── logs.py               — fault-log reader + Supervisor container/add-on log access (Logs tab)
-├── unifi.py              — UniFi Network/Protect data for the Network tab; ACL rules +
-│                           HA-server-port/ACL correlation for the Network Security tab
+├── unifi.py              — UniFi Network/Protect data for the Network tab; ACL rules,
+│                           Firewall Policies, and HA-server-port correlation for the
+│                           Network Security tab
 ├── pihole.py             — Pi-hole v6 direct API client (Network Security tab's DNS section)
-├── network_security.py   — advisory findings tying ACL/ports/Pi-hole together
+├── network_security.py   — advisory findings tying rules/policies/ports/Pi-hole together
 ├── firewall.py           — host firewall read/test/confirm state machine (with the add-on)
 ├── integration_security.py — per-integration provenance/trust signals (Integration Security tab)
 ├── containers.py         — per-container CPU/memory usage via Supervisor stats
@@ -661,8 +664,8 @@ two tables:
   `/devices/{id}` detail endpoint for bandwidth / last-seen / firmware
   status.
 
-The **ACL Rules — Security Audit** report, the HA server's own port
-coverage, and the Pi-hole DNS section live on their own tab — see
+**Firewall Policies**, **ACL Rules — Security Audit**, the HA server's own
+port coverage, and the Pi-hole DNS section live on their own tab — see
 [Network Security tab](#network-security-tab) below.
 
 **UniFi Protect** gets two tables of its own:
@@ -704,10 +707,44 @@ integration, not the network — and it's surfaced with a banner at the top.
 ## Network Security tab
 
 The **Network Security** tab is the security-audit surface for your UniFi
-ACL rules, the Home Assistant server's own exposure, and Pi-hole's DNS-level
-view of the IoT network — all read-only, all advisory. Nothing on this tab
-ever edits a UniFi rule, toggles Pi-hole blocking, or reassigns a Pi-hole
-client to a group.
+Firewall Policies and ACL rules, the Home Assistant server's own exposure,
+and Pi-hole's DNS-level view of the IoT network — all read-only, all
+advisory. Nothing on this tab ever edits a UniFi rule or policy, toggles
+Pi-hole blocking, or reassigns a Pi-hole client to a group.
+
+**Firewall Policies and ACL Rules are two genuinely separate UniFi
+resources, not two names for the same feature.** This was confirmed against
+a live controller: its ACL Rules endpoint responded with zero rules
+(`{"count":0,"data":[]}`) while its actual allow/deny configuration lived
+entirely under Firewall Policies — the zone-based mechanism current UniFi
+Network firmware shows by default under **Settings → Security → Create
+Policy**. A controller can have rules under either, both, or neither, so
+this tab reads and audits both independently.
+
+**Firewall Policies — Security Audit.** Every policy the controller
+exposes, **in evaluation order**, with:
+
+- **Action** (allow/block/reject), **Source zone → Destination zone**,
+  **Protocol**, **Ports**, **Enabled** state.
+- Each row's name cell shows any additional narrowing beyond the zone pair
+  — networks, IP/subnet, MAC, domains, or application/category counts —
+  when the controller reported one.
+- A port list scoped to a saved **Traffic Matching List** is shown as such
+  rather than as fabricated port numbers, since this project doesn't
+  resolve that list's contents.
+
+This reads the confirmed real endpoints `GET /sites/{siteId}/firewall/zones`
+and `GET /sites/{siteId}/firewall/policies`, whose schema (`action` as a
+typed ALLOW/BLOCK/REJECT object, `ipProtocolScope`, `source`/`destination`
+each with a required `zoneId` and an optional typed `trafficFilter` —
+NETWORK/IP_ADDRESS/MAC_ADDRESS/PORT modeled field-for-field; REGION/
+VPN_SERVER/SITE_TO_SITE_VPN_TUNNEL/IPV6_IID shown by type only) was
+extracted directly from Ubiquiti's own published OpenAPI spec for this
+controller version and parsed programmatically — not summarized secondhand
+— since `developer.ui.com` itself isn't reachable from every environment
+this project has been built in. See the "Firewall Policies" section of
+[`unifi.py`](custom_components/ha_soc/unifi.py) for the full verified shape
+and what's still marked `# VERIFY`.
 
 **ACL Rules — Security Audit.** Every ACL rule the controller exposes, **in
 evaluation order**, with:
@@ -735,20 +772,21 @@ fabricated ruleset.
 
 **Home Assistant Server Ports.** The optional [HA SOC Probe](#optional-ha-soc-probe-add-on)
 add-on already reports the server's real listening TCP/UDP ports and their
-bind addresses; this table cross-references each one against the ACL rules
-above and labels it:
+bind addresses; this table cross-references each one against **both** the
+Firewall Policies and ACL rules above (`correlate_server_ports_with_rules`
+in [`unifi.py`](custom_components/ha_soc/unifi.py)) and labels it, with each
+covering rule prefixed `ACL:` or `Policy:` so you know which UI to go edit:
 
-- **Covered** — an enabled rule's destination names this server's IP/subnet
-  and (has no port restriction, or explicitly includes this port).
-- **Network-scoped** — a rule covers it by network/zone rather than by IP;
-  this project has no verified way to confirm the server's own network
-  membership from the Integration API, so this is reported separately
-  rather than folded into "covered" (see `correlate_server_ports_with_acl`'s
-  docstring).
-- **Uncovered** — no enabled rule names this server by IP/subnet at all for
-  that port. This does **not** by itself mean the port is reachable from
-  every network — UniFi's own default zone policy still applies — only that
-  no rule enumerates who may reach it.
+- **Covered** — an enabled rule/policy's destination names this server's
+  IP/subnet and (has no port restriction, or explicitly includes this port).
+- **Network-scoped** — a rule/policy covers it by network/zone rather than
+  by IP; this project has no verified way to confirm the server's own
+  network membership from the Integration API, so this is reported
+  separately rather than folded into "covered".
+- **Uncovered** — no enabled rule or policy of either kind names this
+  server by IP/subnet at all for that port. This does **not** by itself
+  mean the port is reachable from every network — UniFi's own default zone
+  policy still applies — only that nothing enumerates who may reach it.
 
 **Pi-hole DNS.** Configure a Pi-hole v6 host and its **app password**
 (Pi-hole → Settings → API → App password) in Settings, plus the **IoT
@@ -769,17 +807,21 @@ published OpenAPI spec (the same one served locally at
 `http://pi.hole/api/docs`) rather than guessed, since that host is only
 reachable on your own LAN.
 
-**Suggestions.** A short advisory findings list combines all three sources —
+**Suggestions.** A short advisory findings list combines all four sources —
 today: an ACL rule with no source/destination scoping at all (allows from
-anywhere to anywhere), a server port no enabled rule names, no ACL rules
-configured at all, Pi-hole blocking disabled, no IoT CIDR configured yet, and
-an IoT subnet without its own Pi-hole client group. Each finding fires only
-when the underlying data actually supports the specific claim — none of them
-guess at which UniFi network is "the IoT network" beyond what you've told
-Pi-hole explicitly. Findings are recomputed fresh on every refresh rather
-than tracked through a dismiss/resolve lifecycle like the Scanner tab's
-findings: this is live network/DNS configuration that can change from one
-refresh to the next (a rule edited in the UniFi app, blocking toggled from
+anywhere to anywhere), a Firewall Policy that allows an entire zone-to-zone
+path with no traffic filter narrowing it, a server port no enabled rule or
+policy names, neither ACL Rules nor Firewall Policies having anything
+configured (a single combined nudge — an install using only one of the two
+mechanisms is not missing anything just because the other is empty),
+Pi-hole blocking disabled, no IoT CIDR configured yet, and an IoT subnet
+without its own Pi-hole client group. Each finding fires only when the
+underlying data actually supports the specific claim — none of them guess
+at which UniFi network is "the IoT network" beyond what you've told Pi-hole
+explicitly. Findings are recomputed fresh on every refresh rather than
+tracked through a dismiss/resolve lifecycle like the Scanner tab's findings:
+this is live network/DNS configuration that can change from one refresh to
+the next (a rule or policy edited in the UniFi app, blocking toggled from
 Pi-hole's own UI), and a persisted status here could go stale silently.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook

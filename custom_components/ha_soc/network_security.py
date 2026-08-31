@@ -1,5 +1,14 @@
 """Network Security tab — advisory findings tying together UniFi ACL rules,
-the HA server's own open ports, and Pi-hole's DNS-level IoT visibility.
+UniFi Firewall Policies, the HA server's own open ports, and Pi-hole's
+DNS-level IoT visibility.
+
+ACL Rules and Firewall Policies are two genuinely separate UniFi resources,
+not two names for the same thing — confirmed against a live controller
+whose ACL Rules endpoint returned zero rules while its real allow/deny
+configuration lived entirely under Firewall Policies, the zone-based
+mechanism current UniFi Network firmware shows by default (Settings ->
+Security -> Create Policy). Both are read here and analyzed with the same
+posture; see unifi.py's "Firewall Policies" section for the schema.
 
 This module never mutates anything and never talks to the network itself;
 ``async_network_security_overview`` is a thin wrapper that fetches the two
@@ -20,7 +29,7 @@ what the owner has explicitly told Pi-hole (the ``pihole_iot_cidr``
 setting), because the Integration API's client/device rows in this build
 were not verified to expose a reliable per-network IP-subnet mapping HA SOC
 could use to infer that on its own (see unifi.py's
-correlate_server_ports_with_acl docstring for the same caveat applied to
+correlate_server_ports_with_rules docstring for the same caveat applied to
 port coverage).
 
 Explicitly out of scope for this version, and why: a dismiss/resolve
@@ -72,28 +81,16 @@ def _finding(
 
 
 def _acl_findings(acl: dict[str, Any]) -> list[dict[str, Any]]:
+    """ACL-Rules-specific findings. Whether ANY rules are configured at all
+    (across both ACL Rules and Firewall Policies) is handled separately by
+    _no_rules_finding, since an install using only Firewall Policies — the
+    UI UniFi shows by default — is not missing anything just because ACL
+    Rules specifically is empty."""
     findings: list[dict[str, Any]] = []
     if not acl.get("available"):
         return findings  # unifi.py already surfaces the "why" via acl.error
 
     rules = acl.get("rules") or []
-    if not rules:
-        findings.append(
-            _finding(
-                "acl_no_rules",
-                SEVERITY_INFO,
-                "acl",
-                "No ACL rules are configured on this controller",
-                "The controller's ACL endpoint responded but returned zero rules. "
-                "Traffic between your networks is governed entirely by UniFi's "
-                "default same-broadcast-domain/zone behavior, which is usually "
-                "permissive by default. Consider adding an explicit rule denying "
-                "the IoT network access to your LAN/management network as a "
-                "starting point.",
-            )
-        )
-        return findings
-
     broad_allows = [
         r
         for r in rules
@@ -123,6 +120,72 @@ def _acl_findings(acl: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def _firewall_policy_findings(fw: dict[str, Any]) -> list[dict[str, Any]]:
+    """Firewall-Policy-specific findings, mirroring _acl_findings' broad-
+    allow check but adapted to the zone-based schema: every policy is
+    always scoped to a source/destination zone pair (zoneId is required),
+    so "broad" here means "no traffic filter narrowing beyond that zone
+    pair" rather than "no scoping at all"."""
+    findings: list[dict[str, Any]] = []
+    if not fw.get("available"):
+        return findings  # unifi.py already surfaces the "why" via firewall_policies.error
+
+    rules = fw.get("rules") or []
+    broad_allows = [
+        r
+        for r in rules
+        if r.get("enabled") is not False
+        and _action_is_allow(r.get("action"))
+        and not (r.get("source") or {}).get("filter_type")
+        and not (r.get("destination") or {}).get("filter_type")
+    ]
+    for r in broad_allows:
+        name = r.get("name") or f"policy {r.get('order')}"
+        src_zone = (r.get("source") or {}).get("zone") or "an unnamed zone"
+        dst_zone = (r.get("destination") or {}).get("zone") or "an unnamed zone"
+        findings.append(
+            _finding(
+                f"firewall_policy_broad_allow_{r.get('id') or r.get('order')}",
+                SEVERITY_MEDIUM,
+                "firewall_policy",
+                f'Firewall policy "{name}" allows all traffic from {src_zone} to {dst_zone}',
+                "This enabled ALLOW policy has no traffic filter beyond its "
+                "zone-to-zone scope — no network, IP, MAC, port, or protocol "
+                "narrowing within that zone pair. Review whether it should be "
+                "scoped more tightly, especially if either zone includes your "
+                "IoT network.",
+            )
+        )
+    return findings
+
+
+def _no_rules_finding(acl: dict[str, Any], fw: dict[str, Any]) -> list[dict[str, Any]]:
+    """One combined informational finding for "neither rule mechanism has
+    anything configured" — fires only when BOTH ACL Rules and Firewall
+    Policies were successfully read AND both came back empty, never when
+    either side is merely unavailable (unreadable is not evidence of
+    empty) or when only one of the two is empty (the other one covering
+    your traffic is not a gap)."""
+    acl_confirmed_empty = bool(acl.get("available")) and not (acl.get("rules") or [])
+    fw_confirmed_empty = bool(fw.get("available")) and not (fw.get("rules") or [])
+    if not (acl_confirmed_empty and fw_confirmed_empty):
+        return []
+    return [
+        _finding(
+            "no_traffic_rules_configured",
+            SEVERITY_INFO,
+            "acl",
+            "No ACL rules or Firewall Policies are configured on this controller",
+            "Neither of UniFi's two rule mechanisms has anything configured. "
+            "Traffic between your networks/zones is governed entirely by "
+            "UniFi's built-in default behavior, which is usually permissive "
+            "between zones on the same gateway. Consider adding an explicit "
+            "Firewall Policy (Settings -> Security -> Create Policy) denying "
+            "the IoT network access to your LAN/management network.",
+        )
+    ]
+
+
 def _server_port_findings(server_ports: dict[str, Any]) -> list[dict[str, Any]]:
     findings: list[dict[str, Any]] = []
     if not server_ports.get("available"):
@@ -138,14 +201,15 @@ def _server_port_findings(server_ports: dict[str, Any]) -> list[dict[str, Any]]:
             "server_ports_uncovered",
             SEVERITY_MEDIUM,
             "exposure",
-            f"{len(uncovered)} port(s) open on the Home Assistant server have no matching ACL rule",
+            f"{len(uncovered)} port(s) open on the Home Assistant server have no matching rule",
             f"These listening ports were reported by the HA SOC Probe and don't "
-            f"appear as a destination in any enabled ACL rule on this controller "
-            f"(by IP/subnet): {port_list}. This doesn't necessarily mean they're "
-            f"reachable from every network — UniFi's default zone policy still "
-            f"applies — but no rule enumerates who may reach them. If any network "
-            f"other than your trusted LAN can reach the server's IP, consider "
-            f"adding an explicit rule scoping these ports.",
+            f"appear as a destination in any enabled ACL rule or Firewall Policy "
+            f"on this controller (by IP/subnet): {port_list}. This doesn't "
+            f"necessarily mean they're reachable from every network — UniFi's "
+            f"default zone policy still applies — but no rule of either kind "
+            f"enumerates who may reach them. If any network other than your "
+            f"trusted LAN can reach the server's IP, consider adding an explicit "
+            f"rule or policy scoping these ports.",
         )
     )
     return findings
@@ -219,8 +283,12 @@ def build_findings(
     """Pure combination of the two snapshots into an advisory findings list,
     highest severity first, then stable by id. No I/O, no persistence —
     safe to call repeatedly with the same input and get the same output."""
+    acl = unifi_overview.get("acl") or {}
+    firewall_policies = unifi_overview.get("firewall_policies") or {}
     findings: list[dict[str, Any]] = []
-    findings.extend(_acl_findings(unifi_overview.get("acl") or {}))
+    findings.extend(_no_rules_finding(acl, firewall_policies))
+    findings.extend(_acl_findings(acl))
+    findings.extend(_firewall_policy_findings(firewall_policies))
     findings.extend(_server_port_findings(unifi_overview.get("server_ports") or {}))
     findings.extend(_pihole_findings(pihole_overview))
 
@@ -247,6 +315,7 @@ async def async_network_security_overview(
 
     return {
         "acl": unifi_overview["acl"],
+        "firewall_policies": unifi_overview["firewall_policies"],
         "server_ports": unifi_overview["server_ports"],
         "unifi_reachable": unifi_overview["reachable"],
         "unifi_error": unifi_overview["error"],
