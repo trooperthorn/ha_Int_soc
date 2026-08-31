@@ -8,7 +8,6 @@ import {
   NetworkOverview,
   NetworkClientRow,
   NetworkDeviceRow,
-  AclReport,
   ProtectCamera,
   ProtectEvent,
   UniFiBandwidth,
@@ -261,7 +260,6 @@ export class HaSocNetworkView extends LitElement {
   @state() private _devicePage = 0;
   @state() private _devicePageSize: number | "all" = 25;
   @state() private _deviceSort: SortState | null = null;
-  @state() private _aclSort: SortState | null = null;
   @state() private _protectSort: SortState | null = null;
   @state() private _eventSort: SortState | null = null;
 
@@ -414,7 +412,7 @@ export class HaSocNetworkView extends LitElement {
 
     return html`
       ${this._renderFailingBanner(o)} ${this._renderStats(o)} ${this._renderSsid(o)}
-      ${this._renderClientsTable(o)} ${this._renderDevicesTable(o)} ${this._renderAcl(o.acl)}
+      ${this._renderClientsTable(o)} ${this._renderDevicesTable(o)}
       ${this._renderProtectCard(o)}
       <div class="footer">
         <span>Last updated ${new Date(o.generated_at).toLocaleTimeString()}</span>
@@ -787,106 +785,6 @@ export class HaSocNetworkView extends LitElement {
         <td>${this._fmtLastSeen(d.last_seen)}</td>
         <td>${this._renderMatch(d)}</td>
       </tr>
-    `;
-  }
-
-  private _aclActionClass(action: string | null): string {
-    const a = (action ?? "").toLowerCase();
-    if (["allow", "accept", "permit"].some((x) => a.includes(x))) return "healthy";
-    if (["deny", "drop", "block", "reject"].some((x) => a.includes(x))) return "failing";
-    return "other";
-  }
-
-  private _renderAcl(acl: AclReport) {
-    return html`
-      <div class="card" id="acl-card">
-        <h3>
-          ACL Rules — Security Audit
-          <span class="muted" style="font-weight:400;font-size:12px;"
-            >— order matters; rules are evaluated top to bottom${
-              acl.endpoint ? ` · source: ${acl.endpoint}` : ""
-            }</span
-          >
-        </h3>
-        ${!acl.available
-          ? html`
-              <div class="note" style="font-size:13px;">
-                This controller's Integration API didn't return ACL / firewall rules.
-                Endpoints tried:
-                <code>${acl.endpoints_tried.join(", ") || "—"}</code>.${
-                  acl.error ? html` Last response: ${acl.error}.` : ""
-                }
-                If your controller exposes them under a different path, tell me and I'll
-                add it — the field mappings here are marked <code>VERIFY</code> in
-                <code>unifi.py</code>.
-              </div>
-            `
-          : !acl.rules.length
-            ? html`<div class="empty">No ACL rules configured (endpoint: ${acl.endpoint}).</div>`
-            : html`
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        ${sortableTh("#", "order", this._aclSort, (n) => (this._aclSort = n), { numeric: true })}
-                        ${sortableTh("Name", "name", this._aclSort, (n) => (this._aclSort = n))}
-                        ${sortableTh("Action", "action", this._aclSort, (n) => (this._aclSort = n))}
-                        ${sortableTh("Networks", "networks", this._aclSort, (n) => (this._aclSort = n))}
-                        ${sortableTh("Direction", "direction", this._aclSort, (n) => (this._aclSort = n))}
-                        ${sortableTh("Protocol", "protocol", this._aclSort, (n) => (this._aclSort = n))}
-                        ${sortableTh("Enabled", "enabled", this._aclSort, (n) => (this._aclSort = n))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${sortRows(acl.rules.slice(), this._aclSort, {
-                        order: (r) => r.order,
-                        name: (r) => r.name,
-                        action: (r) => r.action,
-                        networks: (r) => r.networks.join(", ") || null,
-                        direction: (r) => r.direction,
-                        protocol: (r) => r.protocol,
-                        enabled: (r) => r.enabled,
-                      }).map(
-                        (r, i) => html`
-                          <tr>
-                            <td class="num">${r.order ?? i + 1}</td>
-                            <td style="font-weight:600;">${r.name ?? "—"}</td>
-                            <td>
-                              ${r.action
-                                ? html`<span class="match ${this._aclActionClass(r.action)}" style="cursor:default;"
-                                    >${r.action}</span
-                                  >`
-                                : html`<span class="muted">—</span>`}
-                            </td>
-                            <td>
-                              ${r.networks.length
-                                ? html`<span class="chips"
-                                    >${r.networks.map((n) => html`<span class="chip">${n}</span>`)}</span
-                                  >`
-                                : html`<span class="muted">any / —</span>`}
-                            </td>
-                            <td>${r.direction ?? "—"}</td>
-                            <td>${r.protocol ?? "—"}</td>
-                            <td>
-                              ${r.enabled == null
-                                ? html`<span class="muted">—</span>`
-                                : r.enabled
-                                  ? "yes"
-                                  : html`<span class="muted">disabled</span>`}
-                            </td>
-                          </tr>
-                        `
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-                <div class="note">
-                  Order reflects evaluation precedence as returned by the controller. A
-                  later "deny" cannot override an earlier "allow" for the same traffic —
-                  read top-down when auditing.
-                </div>
-              `}
-      </div>
     `;
   }
 

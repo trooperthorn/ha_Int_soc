@@ -42,6 +42,7 @@ from .const import (
     DEFAULT_MFA_POLICY,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
+    DEFAULT_PIHOLE_VERIFY_SSL,
     DEFAULT_SECURITY_SOURCES_ENABLED,
     DEFAULT_UNIFI_VERIFY_SSL,
     DETECTION_RESOLVED,
@@ -118,6 +119,13 @@ class SettingsData(TypedDict):
     unifi_network_verify_ssl: bool
     unifi_protect_host: str | None
     unifi_protect_verify_ssl: bool
+    # Pi-hole v6 direct connection (Network Security tab). Host + SSL-verify
+    # + the IoT-subnet CIDR used only for the client-group-scoping check;
+    # the app password is a secret and lives in the secret store. Empty
+    # host means "not configured".
+    pihole_host: str | None
+    pihole_verify_ssl: bool
+    pihole_iot_cidr: str | None
 
 
 class StoreData(TypedDict):
@@ -208,6 +216,9 @@ def default_store_data() -> StoreData:
             unifi_network_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
             unifi_protect_host=None,
             unifi_protect_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
+            pihole_host=None,
+            pihole_verify_ssl=DEFAULT_PIHOLE_VERIFY_SSL,
+            pihole_iot_cidr=None,
         ),
         audit_head=None,
         permissions_matrix={},

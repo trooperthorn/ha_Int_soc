@@ -89,12 +89,32 @@ DEFAULT_UNIFI_VERIFY_SSL = False
 UNIFI_NETWORK_API_PATH = "/proxy/network/integration/v1"
 UNIFI_PROTECT_API_PATH = "/proxy/protect/integration/v1"
 
+# -- Pi-hole v6 (local API, direct to the instance) ------------------------
+# The user provides a local Pi-hole host and its app password (Settings ->
+# API -> App password in Pi-hole's own UI), and HA SOC logs in over the LAN
+# to get a session id for that one snapshot. See pihole.py. iot_cidr is the
+# subnet the user identifies as the IoT network whose DNS the UniFi gateway
+# forwards to Pi-hole — used only to check whether Pi-hole has a dedicated
+# client group scoped to it, never to configure DNS itself.
+CONF_PIHOLE_HOST = "pihole_host"
+CONF_PIHOLE_API_KEY = "pihole_api_key"
+CONF_PIHOLE_VERIFY_SSL = "pihole_verify_ssl"
+CONF_PIHOLE_IOT_CIDR = "pihole_iot_cidr"
+DEFAULT_PIHOLE_VERIFY_SSL = False
+PIHOLE_API_PATH = "/api"
+
 # Settings keys whose values are secrets — never logged verbatim, never
 # returned raw to the frontend. audit.py redacts these inside async_log()
 # itself, and ws_settings_get returns a boolean "is set" flag for each
 # instead of the value. Add every future credential-shaped setting here.
 SECRET_SETTING_KEYS: frozenset[str] = frozenset(
-    {CONF_NVD_API_KEY, CONF_GITHUB_TOKEN, CONF_UNIFI_NETWORK_API_KEY, CONF_UNIFI_PROTECT_API_KEY}
+    {
+        CONF_NVD_API_KEY,
+        CONF_GITHUB_TOKEN,
+        CONF_UNIFI_NETWORK_API_KEY,
+        CONF_UNIFI_PROTECT_API_KEY,
+        CONF_PIHOLE_API_KEY,
+    }
 )
 REDACTED_PLACEHOLDER = "[redacted]"
 

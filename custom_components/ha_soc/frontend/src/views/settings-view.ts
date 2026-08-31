@@ -141,7 +141,12 @@ export class HaSocSettingsView extends LitElement {
   // it can't accidentally clear a stored secret; typing a value sets it.
   private _renderSecretField(
     label: string,
-    key: "nvd_api_key" | "github_token" | "unifi_network_api_key" | "unifi_protect_api_key",
+    key:
+      | "nvd_api_key"
+      | "github_token"
+      | "unifi_network_api_key"
+      | "unifi_protect_api_key"
+      | "pihole_api_key",
     isSet: boolean
   ) {
     return html`
@@ -471,6 +476,62 @@ export class HaSocSettingsView extends LitElement {
             .checked=${s.unifi_protect_verify_ssl}
             @change=${(e: Event) =>
               this._update("unifi_protect_verify_ssl", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>Pi-hole</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Connects directly to a Pi-hole v6 instance over your LAN with its
+          <strong>app password</strong> (Pi-hole → Settings → API → App password) to
+          populate the <strong>Network Security</strong> tab's DNS section — blocking
+          status, query totals, and whether the IoT subnet below has its own Pi-hole
+          client group. Read-only; nothing is ever toggled or reassigned on Pi-hole.
+        </p>
+        <label class="settings-row">
+          <span>Pi-hole host or IP</span>
+          <input
+            type="text"
+            placeholder="e.g. pi.hole or 192.168.1.5"
+            .value=${s.pihole_host ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("pihole_host", v ? v : null);
+            }}
+          />
+        </label>
+        ${this._renderSecretField("App password", "pihole_api_key", !!s.pihole_api_key_set)}
+        <label class="settings-row">
+          <span>
+            Verify TLS certificate
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default — most home Pi-hole instances are plain HTTP on the LAN.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.pihole_verify_ssl}
+            @change=${(e: Event) => this._update("pihole_verify_ssl", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+        <label class="settings-row">
+          <span>
+            IoT network CIDR
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >The subnet whose DNS your UniFi gateway forwards to Pi-hole, e.g.
+              192.168.50.0/24. Used only to check whether it has a dedicated Pi-hole
+              client group — never to configure DNS itself.</span
+            >
+          </span>
+          <input
+            type="text"
+            placeholder="e.g. 192.168.50.0/24"
+            .value=${s.pihole_iot_cidr ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("pihole_iot_cidr", v ? v : null);
+            }}
           />
         </label>
       </div>

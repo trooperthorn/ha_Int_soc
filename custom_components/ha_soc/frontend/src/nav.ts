@@ -4,6 +4,7 @@
 export type SocTab =
   | "dashboard"
   | "network"
+  | "network_security"
   | "users"
   | "audit"
   | "permissions"
