@@ -884,16 +884,14 @@ def _resolve_network_refs(refs: list[Any], network_map: dict[str, str]) -> list[
 
 
 def _port_list(value: Any) -> list[int]:
-    """A filter's port entries as a sorted list of ints. The verified
-    ACL Rule schema (developer.ui.com/network/v10.3.58/getaclrule; cross-
-    checked against the community-maintained OpenAPI extraction at
-    github.com/beezly/unifi-apis, since developer.ui.com itself could not be
-    reached from this environment) defines ``portFilter`` as a plain set of
-    integers — no ranges, no "80-443" strings. This still tolerates a
-    string port ("443") or a "start-end" range dict/string defensively, in
-    case a controller version reports one, but neither is the documented
-    shape: VERIFY against a live controller if a rule ever shows a range
-    here instead of individual ports."""
+    """A filter's port entries as a sorted list of ints. Confirmed against
+    a real controller's own OpenAPI spec (network_v10.4.57): every ACL
+    rule ``portFilter`` — on IP_ADDRESSES_OR_SUBNETS, NETWORKS, and PORTS
+    endpoint filters alike — is a plain array of ints (1-65535), never a
+    range or a string. This still tolerates a string port ("443") or a
+    "start-end" range defensively, in case an older/newer controller
+    version reports one, but neither is the documented shape on the
+    version this was verified against."""
     if not isinstance(value, list):
         return []
     out: set[int] = set()
@@ -913,12 +911,25 @@ def _port_list(value: Any) -> list[int]:
 
 
 def _normalize_acl_filter(raw: Any, network_map: dict[str, str]) -> dict[str, Any]:
-    """One side (source or destination) of an ACL rule: the verified
-    ``sourceFilter`` / ``destinationFilter`` object shape — ``type``,
-    ``ipAddressesOrSubnets``, ``portFilter``, ``networkIds``,
-    ``macAddresses``, ``prefixLength``. Never raises: a filter that isn't a
-    dict (absent, or a legacy flat string on an older private-API endpoint)
-    normalizes to an empty-but-shaped record rather than being guessed at."""
+    """One side (source or destination) of an ACL rule.
+
+    Confirmed against a real controller's own OpenAPI spec (the user
+    uploaded network_v10.4.57's spec directly): ``sourceFilter`` /
+    ``destinationFilter`` is a discriminated union keyed on ``type``.
+    IPV4-type rules use "IP ACL rule endpoint": IP_ADDRESSES_OR_SUBNETS
+    (``ipAddressesOrSubnets`` + ``portFilter``), NETWORKS (``networkIds`` +
+    ``portFilter``), or PORTS (``portFilter`` only). MAC-type rules use
+    "MAC ACL rule endpoint": MAC_ADDRESSES (``macAddresses`` +
+    ``prefixLength``) — a MAC-type rule carries no network of its own here
+    at all; its scope comes from the rule-level ``networkIdFilter`` instead
+    (see _normalize_acl_rule). Reading all four possible fields
+    unconditionally (rather than switching on ``type`` first) is
+    deliberate and still correct: each leaf variant only ever populates
+    its own fields, so an absent field degrades to empty exactly as it
+    would with an explicit per-type dispatch, with less code. Never
+    raises: a filter that isn't a dict (absent, or a legacy flat string on
+    an older private-API endpoint) normalizes to an empty-but-shaped
+    record rather than being guessed at."""
     if not isinstance(raw, dict):
         return {
             "match_type": None,
@@ -943,20 +954,30 @@ def _normalize_acl_filter(raw: Any, network_map: dict[str, str]) -> dict[str, An
 def _normalize_acl_rule(
     raw: dict[str, Any], index: int, network_map: dict[str, str]
 ) -> dict[str, Any]:
-    """One ACL rule, order-preserving, matching the verified UniFi ACL Rule
-    schema (getAclRule / listAclRules under /sites/{siteId}/acl-rules):
-    ``action`` (ALLOW/BLOCK), ``index``, ``protocolFilter`` (a list, not a
-    single value), a rule-scoping ``networkId``, and the ``sourceFilter`` /
-    ``destinationFilter`` objects normalized by _normalize_acl_filter — each
-    carrying its own port list, so "the ports configured" is read from
-    where the controller actually puts it (per side) rather than a single
-    flat "protocol" guess. ``networks`` at the top level is every network
-    this rule touches (its own networkId plus both filters' networkIds),
-    resolved to display names and deduped, for the table's Networks column.
-    ``ports`` at the top level is the same dedup/sort over both filters'
-    ports, for a compact combined column; source_ports/destination_ports
-    stay available underneath for anyone who needs the distinction (a rule
-    restricting who may call OUT on port 22 reads very differently from one
+    """One ACL rule, order-preserving, matching the real schema confirmed
+    against a live controller's own OpenAPI spec (the user uploaded
+    network_v10.4.57's spec directly, superseding the earlier third-party
+    extraction this module was first built against): ``type`` (IPV4 | MAC,
+    discriminating which endpoint shape sourceFilter/destinationFilter
+    use — see _normalize_acl_filter), ``action`` (ALLOW/BLOCK), ``index``,
+    ``metadata.origin`` (USER_DEFINED for a rule the account owner created
+    themselves, SYSTEM_DEFINED for one UniFi ships by default, DERIVED for
+    one the controller generated from other configuration — surfaced as
+    ``custom`` so the panel can visibly distinguish an owner's own rules
+    from UniFi's built-ins), and — IPV4 rules only — a top-level
+    ``protocolFilter`` restricted to TCP/UDP.
+
+    A MAC-type rule carries no network in its sourceFilter/destinationFilter
+    at all (MAC ACL rule endpoint only ever has macAddresses+prefixLength);
+    its scope is the rule-level ``networkIdFilter`` (singular — one network
+    per MAC rule) instead, resolved into the same ``networks`` list an
+    IPV4 rule's filters would populate, so the table's Networks column is
+    honest for either rule type without the caller needing to branch on it.
+
+    ``ports`` at the top level is a dedup/sort over both filters' ports for
+    a compact combined column; source/destination stay available
+    underneath for anyone who needs the distinction (a rule restricting
+    who may call OUT on port 22 reads very differently from one
     restricting who may reach IN on port 22).
 
     Endpoints other than "acl-rules" in _ACL_ENDPOINT_SUFFIXES are older,
@@ -971,6 +992,8 @@ def _normalize_acl_rule(
         order = int(order) if order is not None else index
     except (TypeError, ValueError):
         order = index
+
+    rule_type = raw.get("type")  # "IPV4" | "MAC"
 
     source = _normalize_acl_filter(raw.get("sourceFilter"), network_map)
     destination = _normalize_acl_filter(raw.get("destinationFilter"), network_map)
@@ -989,13 +1012,15 @@ def _normalize_acl_rule(
 
     protocol_filter = raw.get("protocolFilter")
     if isinstance(protocol_filter, list) and protocol_filter:
-        protocols = [str(p).lower() for p in protocol_filter]
+        protocols = [str(p) for p in protocol_filter]
     else:
         legacy_proto = _first(raw, "protocol", "protocolMatch")
-        protocols = [str(legacy_proto).lower()] if legacy_proto else []
+        protocols = [str(legacy_proto).upper()] if legacy_proto else []
 
+    # MAC-type rules scope their network via the rule-level networkIdFilter
+    # (a single uuid), not via either filter side — see the docstring above.
     rule_network_refs: list[Any] = []
-    v = raw.get("networkId")
+    v = raw.get("networkIdFilter")
     if v not in (None, ""):
         rule_network_refs.append(v)
     networks = list(
@@ -1008,12 +1033,17 @@ def _normalize_acl_rule(
     ports = sorted(set(source["ports"]) | set(destination["ports"]))
 
     enabled = _first(raw, "enabled", "isEnabled")
+    metadata = raw.get("metadata")
+    origin = metadata.get("origin") if isinstance(metadata, dict) else None
     return {
         "order": order,
         "id": str(_first(raw, "id", "_id", default="")) or None,
         "name": str(_first(raw, "name", "description", "displayName", default="")) or None,
+        "rule_type": str(rule_type) if rule_type else None,
         "action": (str(_first(raw, "action", "policy", "ruleAction", default="")) or None),
         "enabled": bool(enabled) if enabled is not None else None,
+        "origin": origin,
+        "custom": origin == "USER_DEFINED" if origin is not None else None,
         "protocols": protocols,
         "networks": networks,
         "ports": ports,
@@ -1220,7 +1250,9 @@ def _normalize_firewall_policy(
     """One Firewall Policy, order-preserving, matching the verified schema:
     ``action`` (a typed ALLOW/BLOCK/REJECT object), ``index``,
     ``ipProtocolScope`` (ipVersion + protocolFilter), ``connectionStateFilter``,
-    ``loggingEnabled``, ``schedule`` (None = always active), and
+    ``loggingEnabled``, ``schedule`` (None = always active), ``metadata.origin``
+    (USER_DEFINED for a policy the account owner created, surfaced as
+    ``custom`` the same way _normalize_acl_rule does), and
     ``source``/``destination`` objects each carrying a required ``zoneId``
     plus an optional ``trafficFilter`` narrowing it further."""
     order = raw.get("index")
@@ -1249,6 +1281,8 @@ def _normalize_firewall_policy(
     ports = sorted(set(source["ports"]) | set(destination["ports"]), key=_port_sort_key)
 
     enabled = raw.get("enabled")
+    metadata = raw.get("metadata")
+    origin = metadata.get("origin") if isinstance(metadata, dict) else None
     return {
         "order": order,
         "id": str(raw.get("id") or "") or None,
@@ -1256,6 +1290,8 @@ def _normalize_firewall_policy(
         "description": raw.get("description"),
         "enabled": bool(enabled) if enabled is not None else None,
         "action": action,
+        "origin": origin,
+        "custom": origin == "USER_DEFINED" if origin is not None else None,
         "logging_enabled": raw.get("loggingEnabled"),
         "ip_version": proto["ip_version"],
         "protocol": proto["protocol"],

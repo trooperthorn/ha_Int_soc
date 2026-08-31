@@ -732,6 +732,8 @@ exposes, **in evaluation order**, with:
 - A port list scoped to a saved **Traffic Matching List** is shown as such
   rather than as fabricated port numbers, since this project doesn't
   resolve that list's contents.
+- The same **custom** badge and "N custom / M total" count as ACL Rules
+  below, driven by the same `metadata.origin` field.
 
 This reads the confirmed real endpoints `GET /sites/{siteId}/firewall/zones`
 and `GET /sites/{siteId}/firewall/policies`, whose schema (`action` as a
@@ -749,26 +751,46 @@ and what's still marked `# VERIFY`.
 **ACL Rules — Security Audit.** Every ACL rule the controller exposes, **in
 evaluation order**, with:
 
-- **Action** (allow/block), **Protocols**, **Enabled** state.
-- **Networks** — every network the rule touches (its own scoping network
-  plus both filters' networks), resolved to names.
+- **Action** (allow/block), **Protocols** (TCP/UDP — the only two an IPV4
+  ACL rule can filter by), **Enabled** state.
+- **Networks** — every network the rule touches, resolved to names. A
+  MAC-type rule's network comes from its own `networkIdFilter`; an IPV4
+  rule's comes from whichever of its source/destination filters is
+  NETWORKS-scoped.
 - **Ports** — the destination and source port lists the controller actually
   configured, combined and deduplicated for the table; each row's name cell
   also shows the raw source/destination IP-or-subnet and MAC detail when the
   controller reported it.
+- A **custom** badge next to the name, plus a "N custom / M total" count in
+  the card header, for every rule whose `metadata.origin` is
+  `USER_DEFINED` — i.e. a rule you created yourself, distinct from one
+  UniFi ships by default.
 
-This reads the UniFi Network Integration API's documented ACL Rule shape
-(`action`, `protocolFilter`, `networkId`, `sourceFilter`/`destinationFilter`
-— each carrying its own `portFilter`/`ipAddressesOrSubnets`/`networkIds`/
-`macAddresses`), verified against Ubiquiti's own published OpenAPI spec for
-this version (`developer.ui.com/network/v10.3.58/getaclrule`) by way of a
-community-maintained extraction, since that host isn't reachable from every
-environment. It's still marked `# VERIFY` in
+This reads the real ACL Rule schema — a `type` (`IPV4` or `MAC`)
+discriminator, `action`, and (IPV4 only) a top-level `protocolFilter`, with
+`sourceFilter`/`destinationFilter` each independently discriminated into
+`IP_ADDRESSES_OR_SUBNETS` (+ port), `NETWORKS` (+ port), or `PORTS`-only
+for IPV4 rules, and `MAC_ADDRESSES` for MAC rules — verified directly
+against a live controller's own OpenAPI spec (the account owner uploaded
+`network_v10.4.57`'s spec straight from their console), which superseded
+and corrected an earlier build of this module based on a third-party
+extraction of a different controller version that turned out to model this
+resource incorrectly. It's still marked `# VERIFY` in
 [`unifi.py`](custom_components/ha_soc/unifi.py) wherever a live controller
 could confirm it further — the same honesty posture as the Network tab's own
 field-mapping caveat above. If the controller's ACL endpoint doesn't
 respond, the report says so (and lists what it tried) rather than showing a
 fabricated ruleset.
+
+> **What this API surface does not expose.** The same uploaded spec confirms
+> this controller's entire public Integration API surface — every path it
+> serves — includes only `acl-rules` and `firewall/policies`+`firewall/zones`
+> as rule-like resources; there is no endpoint for UniFi's older, pre-zone
+> "Firewall Rules" screen (the classic WAN_IN/WAN_OUT/LAN_IN/LAN_OUT/DMZ
+> ruleset some UniFi OS versions still show in the UI). A rule created
+> through that legacy screen cannot be read by this integration, or by any
+> integration using this API — it isn't a gap in this project's code, it's
+> a gap in what Ubiquiti's public API exposes on this firmware.
 
 **Home Assistant Server Ports.** The optional [HA SOC Probe](#optional-ha-soc-probe-add-on)
 add-on already reports the server's real listening TCP/UDP ports and their

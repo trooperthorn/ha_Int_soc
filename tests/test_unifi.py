@@ -364,40 +364,99 @@ async def test_overview_full_snapshot_and_endpoint_correlation(
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_acl_rule_resolves_networks_ports_and_order() -> None:
-    """The verified ACL Rule schema (developer.ui.com/network/v10.3.58/
-    getaclrule): action/index/protocolFilter/networkId at the top level,
-    sourceFilter/destinationFilter objects each carrying their own
-    portFilter/ipAddressesOrSubnets/networkIds/macAddresses."""
+def test_normalize_acl_rule_ipv4_resolves_networks_ports_and_order() -> None:
+    """The real IPV4 ACL Rule schema, verified directly against a live
+    controller's own uploaded OpenAPI spec (network_v10.4.57): a top-level
+    ``type: "IPV4"``/``protocolFilter`` (TCP/UDP only), and
+    sourceFilter/destinationFilter discriminated by their own ``type``
+    into IP_ADDRESSES_OR_SUBNETS/NETWORKS/PORTS, each carrying only the
+    fields that variant actually has."""
     nm = {"n1": "IoT (VLAN 30)", "n2": "Guest (VLAN 40)"}
     raw = {
+        "type": "IPV4",
         "name": "Block IoT to LAN",
         "action": "BLOCK",
         "enabled": True,
         "index": 3,
-        "networkId": "n1",
-        "protocolFilter": ["tcp", "udp"],
-        "sourceFilter": {"type": "NETWORK", "networkIds": ["n1"]},
+        "protocolFilter": ["TCP", "UDP"],
+        "metadata": {"origin": "USER_DEFINED"},
+        "sourceFilter": {"type": "NETWORKS", "networkIds": ["n1"]},
         "destinationFilter": {
-            "type": "IP",
+            "type": "IP_ADDRESSES_OR_SUBNETS",
             "ipAddressesOrSubnets": ["192.168.1.0/24"],
             "portFilter": [22, 443, "8080"],
-            "networkIds": ["n2"],
         },
     }
     row = _normalize_acl_rule(raw, 0, nm)
     assert row["order"] == 3
     assert row["name"] == "Block IoT to LAN"
+    assert row["rule_type"] == "IPV4"
     assert row["action"] == "BLOCK"
     assert row["enabled"] is True
-    assert row["protocols"] == ["tcp", "udp"]
-    # Rule-level networkId + both filters' networkIds, resolved and deduped.
-    assert row["networks"] == ["IoT (VLAN 30)", "Guest (VLAN 40)"]
+    assert row["origin"] == "USER_DEFINED"
+    assert row["custom"] is True
+    assert row["protocols"] == ["TCP", "UDP"]
+    assert row["networks"] == ["IoT (VLAN 30)"]
     assert row["ports"] == [22, 443, 8080]
     assert row["source"]["networks"] == ["IoT (VLAN 30)"]
     assert row["destination"]["ip_or_subnets"] == ["192.168.1.0/24"]
     assert row["destination"]["ports"] == [22, 443, 8080]
-    assert row["destination"]["networks"] == ["Guest (VLAN 40)"]
+
+
+def test_normalize_acl_rule_mac_type_scopes_network_via_networkid_filter() -> None:
+    """A MAC-type rule's sourceFilter/destinationFilter never carries a
+    network (only macAddresses/prefixLength) — its network comes from the
+    rule-level ``networkIdFilter`` instead, which must still land in the
+    row's ``networks`` list."""
+    nm = {"n1": "IoT (VLAN 30)"}
+    raw = {
+        "type": "MAC",
+        "name": "Block IoT device",
+        "action": "BLOCK",
+        "enabled": True,
+        "index": 1,
+        "networkIdFilter": "n1",
+        "metadata": {"origin": "SYSTEM_DEFINED"},
+        "sourceFilter": {"type": "MAC_ADDRESSES", "macAddresses": ["aa:bb:cc:dd:ee:ff"]},
+        "destinationFilter": None,
+    }
+    row = _normalize_acl_rule(raw, 0, nm)
+    assert row["rule_type"] == "MAC"
+    assert row["origin"] == "SYSTEM_DEFINED"
+    assert row["custom"] is False
+    assert row["networks"] == ["IoT (VLAN 30)"]
+    assert row["source"]["macs"] == ["aa:bb:cc:dd:ee:ff"]
+    # IPV4-only field; a MAC rule never carries protocolFilter.
+    assert row["protocols"] == []
+
+
+def test_normalize_acl_rule_ports_only_filter_carries_no_network_or_ip() -> None:
+    """The PORTS-discriminated endpoint filter matches by port alone —
+    ipAddressesOrSubnets/networkIds/macs must all stay empty for it."""
+    row = _normalize_acl_rule(
+        {
+            "type": "IPV4",
+            "name": "Any source, port 67 only",
+            "action": "ALLOW",
+            "enabled": True,
+            "index": 0,
+            "destinationFilter": {"type": "PORTS", "portFilter": [67]},
+        },
+        0,
+        {},
+    )
+    assert row["destination"]["ports"] == [67]
+    assert row["destination"]["ip_or_subnets"] == []
+    assert row["destination"]["networks"] == []
+    assert row["destination"]["macs"] == []
+
+
+def test_normalize_acl_rule_missing_origin_is_none_not_false() -> None:
+    """No metadata at all (e.g. a private-API fallback row) must report
+    ``custom`` as None (unknown), never a false "not custom"."""
+    row = _normalize_acl_rule({"name": "x", "action": "ALLOW", "index": 0}, 0, {})
+    assert row["origin"] is None
+    assert row["custom"] is None
 
 
 def test_normalize_acl_rule_legacy_flat_fields_degrade_gracefully() -> None:
@@ -428,12 +487,12 @@ async def test_overview_ssid_join_and_acl_report(
     networks = [{"id": "n1", "name": "LAN", "vlan": 1}]
     acl = [
         {
+            "type": "IPV4",
             "name": "Block IoT",
             "action": "BLOCK",
-            "networkId": "n1",
             "enabled": True,
             "index": 0,
-            "destinationFilter": {"portFilter": [443]},
+            "destinationFilter": {"type": "NETWORKS", "networkIds": ["n1"], "portFilter": [443]},
         }
     ]
 

@@ -74,6 +74,19 @@ export class HaSocNetworkSecurityView extends LitElement {
         padding: 2px 8px;
         font-size: 11px;
       }
+      .badge-custom {
+        display: inline-block;
+        margin-left: 6px;
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.03em;
+        padding: 1px 7px;
+        border-radius: 100px;
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.15);
+        color: var(--primary-color);
+        vertical-align: middle;
+      }
       .sub {
         display: block;
         font-size: 11px;
@@ -244,6 +257,22 @@ export class HaSocNetworkSecurityView extends LitElement {
 
   // -- Firewall Policies ----------------------------------------------------
 
+  // Shared between the ACL and Firewall Policy tables: metadata.origin is
+  // "USER_DEFINED" for a rule the account owner created themselves, so
+  // this is a direct visual answer to "did my custom rule actually get
+  // picked up" — not a guess, since a null origin (an older private-API
+  // fallback row) renders nothing rather than a false "not custom".
+  private _renderCustomBadge(custom: boolean | null) {
+    return custom ? html`<span class="badge-custom">custom</span>` : nothing;
+  }
+
+  private _customCountLabel(rows: { custom: boolean | null }[]): string {
+    const known = rows.filter((r) => r.custom != null);
+    if (!known.length) return "";
+    const customCount = known.filter((r) => r.custom).length;
+    return ` · ${customCount} custom / ${rows.length} total`;
+  }
+
   private _policyActionClass(action: string | null): string {
     const a = (action ?? "").toLowerCase();
     if (a === "allow") return "healthy";
@@ -258,7 +287,7 @@ export class HaSocNetworkSecurityView extends LitElement {
           Firewall Policies — Security Audit
           <span class="muted" style="font-weight:400;font-size:12px;"
             >— UniFi's default zone-based allow/deny view; order matters, evaluated top
-            to bottom</span
+            to bottom${this._customCountLabel(fw.rules)}</span
           >
         </h3>
         ${!fw.available
@@ -331,7 +360,9 @@ export class HaSocNetworkSecurityView extends LitElement {
       <tr>
         <td class="num">${r.order ?? i + 1}</td>
         <td style="font-weight:600;">
-          ${r.name ?? "—"}${detail ? html`<span class="sub">${detail}</span>` : nothing}
+          ${r.name ?? "—"}${this._renderCustomBadge(r.custom)}${
+            detail ? html`<span class="sub">${detail}</span>` : nothing
+          }
         </td>
         <td>
           ${r.action
@@ -376,7 +407,7 @@ export class HaSocNetworkSecurityView extends LitElement {
           <span class="muted" style="font-weight:400;font-size:12px;"
             >— order matters; rules are evaluated top to bottom${
               acl.endpoint ? ` · source: ${acl.endpoint}` : ""
-            }</span
+            }${this._customCountLabel(acl.rules)}</span
           >
         </h3>
         ${!acl.available
@@ -439,7 +470,9 @@ export class HaSocNetworkSecurityView extends LitElement {
       <tr>
         <td class="num">${r.order ?? i + 1}</td>
         <td style="font-weight:600;">
-          ${r.name ?? "—"}${detail ? html`<span class="sub">${detail}</span>` : nothing}
+          ${r.name ?? "—"}${this._renderCustomBadge(r.custom)}${
+            detail ? html`<span class="sub">${detail}</span>` : nothing
+          }
         </td>
         <td>
           ${r.action

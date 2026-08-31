@@ -547,8 +547,16 @@ export interface AclRule {
   order: number;
   id: string | null;
   name: string | null;
+  // "IPV4" | "MAC" — which endpoint-filter shape sourceFilter/
+  // destinationFilter use.
+  rule_type: string | null;
   action: string | null;
   enabled: boolean | null;
+  // metadata.origin verbatim ("USER_DEFINED" | "SYSTEM_DEFINED" |
+  // "DERIVED"), plus the derived custom flag (true only for
+  // USER_DEFINED; null when origin itself wasn't reported).
+  origin: string | null;
+  custom: boolean | null;
   protocols: string[];
   networks: string[];
   ports: number[];
@@ -595,6 +603,8 @@ export interface FirewallPolicy {
   description: string | null;
   enabled: boolean | null;
   action: string | null;
+  origin: string | null;
+  custom: boolean | null;
   logging_enabled: boolean | null;
   ip_version: string | null;
   protocol: string | null;
