@@ -44,6 +44,7 @@ one that shows a confidently wrong VLAN or IP.
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 from dataclasses import dataclass
@@ -867,45 +868,144 @@ async def _fetch_network_map(
     return {}
 
 
+def _resolve_network_refs(refs: list[Any], network_map: dict[str, str]) -> list[str]:
+    """Network id/name/object references resolved to display names via
+    network_map (id -> "Name (VLAN x)"), falling back to the raw reference
+    stringified when it isn't a known id. Dedupes, preserves order."""
+    out: list[str] = []
+    for ref in refs:
+        if isinstance(ref, dict):
+            rid = _first(ref, "id", "_id")
+            rname = _first(ref, "name", "displayName")
+            out.append(network_map.get(str(rid), str(rname) if rname else str(rid)))
+        elif ref not in (None, ""):
+            out.append(network_map.get(str(ref), str(ref)))
+    return list(dict.fromkeys(out))
+
+
+def _port_list(value: Any) -> list[int]:
+    """A filter's port entries as a sorted list of ints. The verified
+    ACL Rule schema (developer.ui.com/network/v10.3.58/getaclrule; cross-
+    checked against the community-maintained OpenAPI extraction at
+    github.com/beezly/unifi-apis, since developer.ui.com itself could not be
+    reached from this environment) defines ``portFilter`` as a plain set of
+    integers — no ranges, no "80-443" strings. This still tolerates a
+    string port ("443") or a "start-end" range dict/string defensively, in
+    case a controller version reports one, but neither is the documented
+    shape: VERIFY against a live controller if a rule ever shows a range
+    here instead of individual ports."""
+    if not isinstance(value, list):
+        return []
+    out: set[int] = set()
+    for item in value:
+        if isinstance(item, bool):
+            continue
+        if isinstance(item, (int, float)):
+            out.add(int(item))
+        elif isinstance(item, str) and item.strip().isdigit():
+            out.add(int(item))
+        elif isinstance(item, str) and "-" in item:
+            # Defensive only — the verified schema never sends this shape.
+            lo, _, hi = item.partition("-")
+            if lo.strip().isdigit() and hi.strip().isdigit():
+                out.update(range(int(lo), int(hi) + 1))
+    return sorted(out)
+
+
+def _normalize_acl_filter(raw: Any, network_map: dict[str, str]) -> dict[str, Any]:
+    """One side (source or destination) of an ACL rule: the verified
+    ``sourceFilter`` / ``destinationFilter`` object shape — ``type``,
+    ``ipAddressesOrSubnets``, ``portFilter``, ``networkIds``,
+    ``macAddresses``, ``prefixLength``. Never raises: a filter that isn't a
+    dict (absent, or a legacy flat string on an older private-API endpoint)
+    normalizes to an empty-but-shaped record rather than being guessed at."""
+    if not isinstance(raw, dict):
+        return {
+            "match_type": None,
+            "ip_or_subnets": [],
+            "ports": [],
+            "networks": [],
+            "macs": [],
+        }
+    ip_or_subnets = raw.get("ipAddressesOrSubnets")
+    macs = raw.get("macAddresses")
+    return {
+        "match_type": str(_first(raw, "type", "matchType", default="")) or None,
+        "ip_or_subnets": [str(v) for v in ip_or_subnets] if isinstance(ip_or_subnets, list) else [],
+        "ports": _port_list(raw.get("portFilter")),
+        "networks": _resolve_network_refs(
+            raw.get("networkIds") if isinstance(raw.get("networkIds"), list) else [], network_map
+        ),
+        "macs": [str(v) for v in macs] if isinstance(macs, list) else [],
+    }
+
+
 def _normalize_acl_rule(
     raw: dict[str, Any], index: int, network_map: dict[str, str]
 ) -> dict[str, Any]:
-    """One ACL / firewall rule, order-preserving. VERIFY: field names vary by
-    controller version — this reads the common ones and falls back to the
-    payload position for order."""
-    order = _first(raw, "ruleIndex", "index", "order", "ruleOrder", "sequence")
+    """One ACL rule, order-preserving, matching the verified UniFi ACL Rule
+    schema (getAclRule / listAclRules under /sites/{siteId}/acl-rules):
+    ``action`` (ALLOW/BLOCK), ``index``, ``protocolFilter`` (a list, not a
+    single value), a rule-scoping ``networkId``, and the ``sourceFilter`` /
+    ``destinationFilter`` objects normalized by _normalize_acl_filter — each
+    carrying its own port list, so "the ports configured" is read from
+    where the controller actually puts it (per side) rather than a single
+    flat "protocol" guess. ``networks`` at the top level is every network
+    this rule touches (its own networkId plus both filters' networkIds),
+    resolved to display names and deduped, for the table's Networks column.
+    ``ports`` at the top level is the same dedup/sort over both filters'
+    ports, for a compact combined column; source_ports/destination_ports
+    stay available underneath for anyone who needs the distinction (a rule
+    restricting who may call OUT on port 22 reads very differently from one
+    restricting who may reach IN on port 22).
+
+    Endpoints other than "acl-rules" in _ACL_ENDPOINT_SUFFIXES are older,
+    private-API fallbacks this schema was never designed for; a raw row
+    lacking sourceFilter/destinationFilter degrades to empty filter sides
+    rather than a fabricated guess, and the legacy flat-field candidates
+    below (source/destination as bare strings) keep some detail visible on
+    a controller that still speaks that surface.
+    """
+    order = _first(raw, "index", "ruleIndex", "order", "ruleOrder", "sequence")
     try:
         order = int(order) if order is not None else index
     except (TypeError, ValueError):
         order = index
 
-    # Which networks the rule applies to — resolved to names where possible.
-    net_refs: list[Any] = []
-    for key in (
-        "networkIds",
-        "networks",
-        "targetNetworkIds",
-        "appliesTo",
-        "networkId",
-        "network",
-        "vlanIds",
-        "vlans",
-    ):
-        v = raw.get(key)
-        if isinstance(v, list):
-            net_refs.extend(v)
-        elif v not in (None, ""):
-            net_refs.append(v)
-    networks: list[str] = []
-    for ref in net_refs:
-        if isinstance(ref, dict):
-            rid = _first(ref, "id", "_id")
-            rname = _first(ref, "name", "displayName")
-            networks.append(network_map.get(str(rid), str(rname) if rname else str(rid)))
-        else:
-            networks.append(network_map.get(str(ref), str(ref)))
-    # Dedupe, preserve order.
-    networks = list(dict.fromkeys(networks))
+    source = _normalize_acl_filter(raw.get("sourceFilter"), network_map)
+    destination = _normalize_acl_filter(raw.get("destinationFilter"), network_map)
+
+    # Legacy fallback: an older private-API rule with flat source/destination
+    # strings instead of filter objects carries no port/network detail, but
+    # is still worth showing rather than a blank row.
+    if raw.get("sourceFilter") is None:
+        legacy_src = _first(raw, "source", "src", "sourceZone")
+        if legacy_src:
+            source["ip_or_subnets"] = [str(legacy_src)]
+    if raw.get("destinationFilter") is None:
+        legacy_dst = _first(raw, "destination", "dst", "destinationZone")
+        if legacy_dst:
+            destination["ip_or_subnets"] = [str(legacy_dst)]
+
+    protocol_filter = raw.get("protocolFilter")
+    if isinstance(protocol_filter, list) and protocol_filter:
+        protocols = [str(p).lower() for p in protocol_filter]
+    else:
+        legacy_proto = _first(raw, "protocol", "protocolMatch")
+        protocols = [str(legacy_proto).lower()] if legacy_proto else []
+
+    rule_network_refs: list[Any] = []
+    v = raw.get("networkId")
+    if v not in (None, ""):
+        rule_network_refs.append(v)
+    networks = list(
+        dict.fromkeys(
+            _resolve_network_refs(rule_network_refs, network_map)
+            + source["networks"]
+            + destination["networks"]
+        )
+    )
+    ports = sorted(set(source["ports"]) | set(destination["ports"]))
 
     enabled = _first(raw, "enabled", "isEnabled")
     return {
@@ -914,11 +1014,11 @@ def _normalize_acl_rule(
         "name": str(_first(raw, "name", "description", "displayName", default="")) or None,
         "action": (str(_first(raw, "action", "policy", "ruleAction", default="")) or None),
         "enabled": bool(enabled) if enabled is not None else None,
-        "direction": str(_first(raw, "direction", "ruleset", "matchDirection", default="")) or None,
-        "protocol": str(_first(raw, "protocol", "protocolMatch", default="")) or None,
-        "source": str(_first(raw, "source", "src", "sourceZone", default="")) or None,
-        "destination": str(_first(raw, "destination", "dst", "destinationZone", default="")) or None,
+        "protocols": protocols,
         "networks": networks,
+        "ports": ports,
+        "source": source,
+        "destination": destination,
     }
 
 
@@ -956,6 +1056,102 @@ async def _fetch_acl_rules(
     return result
 
 
+def _ip_in_any(ip_str: str, candidates: list[str]) -> bool:
+    """Whether ip_str matches any candidate exactly, or falls inside a
+    candidate that parses as a CIDR network. Never raises: an unparseable
+    candidate (a hostname, a zone name like "Internal") is simply not a
+    match rather than a crash — ACL filters can carry non-IP values."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    for candidate in candidates:
+        if candidate == ip_str:
+            return True
+        try:
+            if ip in ipaddress.ip_network(candidate, strict=False):
+                return True
+        except ValueError:
+            continue
+    return False
+
+
+def _server_ip_addresses(open_ports: list[dict[str, Any]]) -> list[str]:
+    """The HA server's own real LAN IP(s), as reported by the Probe add-on's
+    bind-address decoding of /proc/net/tcp[6] (see probe.py's _PORT_SCHEMA
+    docstring) — never a guess, and never 0.0.0.0/loopback, which say
+    "every interface"/"this host only" rather than naming an address other
+    devices on the LAN actually see."""
+    out: set[str] = set()
+    for p in open_ports:
+        addr = p.get("address")
+        if not addr or addr in ("0.0.0.0", "::", "127.0.0.1", "::1"):
+            continue
+        out.add(str(addr))
+    return sorted(out)
+
+
+def correlate_server_ports_with_acl(
+    open_ports: list[dict[str, Any]] | None, acl_rules: list[dict[str, Any]]
+) -> dict[str, Any]:
+    """Cross-reference the HA server's own real listening ports (from the
+    Probe add-on, already used to drive the host-firewall rule builder in
+    firewall.py) against the UniFi ACL rules whose destination actually
+    names this server, so the Network Security tab can show — for each port
+    HA itself has open — whether any ACL rule explicitly scopes who may
+    reach it.
+
+    This is deliberately conservative about what it claims. A rule only
+    counts as covering a port when its destinationFilter names an IP or
+    CIDR that contains one of the server's reported addresses AND (its
+    port list is empty, meaning "all ports", or includes this port). A
+    rule whose destination is scoped to a NETWORK/zone rather than a
+    specific IP is reported separately as "network_scoped" rather than
+    folded into "covered" or "uncovered": this function has no verified
+    way to know which UniFi network the server's own IP belongs to (the
+    Integration API's network list was not confirmed to expose per-network
+    IP subnets), so claiming a network-scoped rule does or doesn't cover
+    the server would be a guess this project's honesty rule forbids.
+    "uncovered" means no rule was found naming the server by IP/CIDR at
+    all — it does NOT mean the port is reachable from everywhere; UniFi's
+    own default zone-based policy (not enumerated here) still applies.
+    """
+    server_ips = _server_ip_addresses(open_ports or [])
+    if not server_ips:
+        return {"available": False, "server_ips": [], "ports": []}
+
+    enabled_rules = [r for r in acl_rules if r.get("enabled") is not False]
+    out_ports: list[dict[str, Any]] = []
+    for p in open_ports or []:
+        addr = p.get("address")
+        if not addr or addr in ("0.0.0.0", "::", "127.0.0.1", "::1"):
+            continue
+        port = p.get("port")
+        matching: list[str] = []
+        network_scoped: list[str] = []
+        for rule in enabled_rules:
+            dest = rule.get("destination") or {}
+            port_matches = not dest.get("ports") or port in dest["ports"]
+            if not port_matches:
+                continue
+            if dest.get("ip_or_subnets") and _ip_in_any(str(addr), dest["ip_or_subnets"]):
+                matching.append(rule.get("name") or rule.get("id") or f"rule {rule.get('order')}")
+            elif dest.get("networks"):
+                network_scoped.append(rule.get("name") or rule.get("id") or f"rule {rule.get('order')}")
+        out_ports.append(
+            {
+                "port": port,
+                "proto": p.get("proto"),
+                "address": addr,
+                "process": p.get("process"),
+                "covered_by": matching,
+                "network_scoped_by": network_scoped,
+                "status": "covered" if matching else ("network_scoped" if network_scoped else "uncovered"),
+            }
+        )
+    return {"available": True, "server_ips": server_ips, "ports": out_ports}
+
+
 async def async_network_overview(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
@@ -991,6 +1187,7 @@ async def async_network_overview(
         "clients": [],
         "devices": [],
         "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
+        "server_ports": {"available": False, "server_ips": [], "ports": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
         "protect": {"configured": False, "reachable": False, "error": None},
@@ -1024,6 +1221,11 @@ async def async_network_overview(
                 await _fill_network_from_api(hass, conn, result, endpoints, now_ts, core_snap)
 
             _apply_core_network_data(result, core_snap, endpoints, now_ts)
+
+            host_probe = store.data.get("host_probe") or {}
+            result["server_ports"] = correlate_server_ports_with_acl(
+                host_probe.get("open_ports"), result["acl"]["rules"]
+            )
     except asyncio.TimeoutError:
         result["error"] = (
             f"The network snapshot did not complete within "

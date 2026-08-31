@@ -338,6 +338,13 @@ export interface HaSocSettings {
   unifi_protect_api_key?: string | null;
   unifi_protect_api_key_set?: boolean;
   unifi_protect_verify_ssl: boolean;
+  // Pi-hole v6 connection (Network Security tab). Same host/verify_ssl/
+  // masked-secret shape as the UniFi fields above; iot_cidr is plain.
+  pihole_host: string | null;
+  pihole_api_key?: string | null;
+  pihole_api_key_set?: boolean;
+  pihole_verify_ssl: boolean;
+  pihole_iot_cidr: string | null;
 }
 
 // Mirrors integration_security.py's async_integration_security_overview().
@@ -521,20 +528,32 @@ export interface NetworkDeviceRow extends NetworkClientRow {
   firmware_updatable: boolean | null;
 }
 
-// Mirrors unifi.py's _normalize_acl_rule — an order-preserving ACL/firewall
-// rule for the security-audit report. Field availability depends on the
-// controller's Integration API version (see acl.available / endpoint).
+// Mirrors unifi.py's _normalize_acl_filter — one side (source or
+// destination) of an ACL rule.
+export interface AclFilter {
+  match_type: string | null;
+  ip_or_subnets: string[];
+  ports: number[];
+  networks: string[];
+  macs: string[];
+}
+
+// Mirrors unifi.py's _normalize_acl_rule — an order-preserving ACL rule for
+// the security-audit report, following the verified UniFi ACL Rule schema
+// (action/protocolFilter/sourceFilter/destinationFilter). Field availability
+// depends on the controller's Integration API version (see acl.available /
+// endpoint).
 export interface AclRule {
   order: number;
   id: string | null;
   name: string | null;
   action: string | null;
   enabled: boolean | null;
-  direction: string | null;
-  protocol: string | null;
-  source: string | null;
-  destination: string | null;
+  protocols: string[];
   networks: string[];
+  ports: number[];
+  source: AclFilter;
+  destination: AclFilter;
 }
 
 export interface AclReport {
@@ -543,6 +562,24 @@ export interface AclReport {
   endpoint: string | null;
   endpoints_tried: string[];
   rules: AclRule[];
+}
+
+// Mirrors unifi.py's correlate_server_ports_with_acl — the HA server's own
+// open ports cross-referenced against the ACL rules above.
+export interface ServerPort {
+  port: number;
+  proto: string | null;
+  address: string | null;
+  process: string | null;
+  covered_by: string[];
+  network_scoped_by: string[];
+  status: "covered" | "network_scoped" | "uncovered";
+}
+
+export interface ServerPortsReport {
+  available: boolean;
+  server_ips: string[];
+  ports: ServerPort[];
 }
 
 export interface NetworkWan {
@@ -610,9 +647,69 @@ export interface NetworkOverview {
   clients: NetworkClientRow[];
   devices: NetworkDeviceRow[];
   acl: AclReport;
+  server_ports: ServerPortsReport;
   failing_endpoint_count: number;
   generated_at: string;
   protect: ProtectStatus;
+}
+
+// Mirrors pihole.py's async_pihole_overview().
+export interface PiHoleGroup {
+  id: number | null;
+  name: string | null;
+  enabled: boolean | null;
+  comment: string | null;
+}
+
+export interface PiHoleClient {
+  client: string | null;
+  name: string | null;
+  comment: string | null;
+  group_ids: number[];
+  group_names: string[];
+  default_group_only: boolean;
+}
+
+export interface PiHoleSummary {
+  total: number | null;
+  blocked: number | null;
+  percent_blocked: number | null;
+  unique_domains: number | null;
+}
+
+export interface PiHoleOverview {
+  configured: boolean;
+  reachable: boolean;
+  error: string | null;
+  blocking_enabled: boolean | null;
+  summary: PiHoleSummary | null;
+  groups: PiHoleGroup[];
+  clients: PiHoleClient[];
+  iot_cidr: string | null;
+  iot_clients_scoped: boolean | null;
+  top_blocked_domains: { domain: string | null; count: number | null }[];
+  recent_blocked: string[];
+  generated_at: string;
+}
+
+// Mirrors network_security.py's build_findings().
+export interface NetworkSecurityFinding {
+  id: string;
+  severity: string;
+  category: string;
+  title: string;
+  detail: string;
+}
+
+// Mirrors network_security.py's async_network_security_overview().
+export interface NetworkSecurityOverview {
+  acl: AclReport;
+  server_ports: ServerPortsReport;
+  unifi_reachable: boolean;
+  unifi_error: string | null;
+  pihole: PiHoleOverview;
+  findings: NetworkSecurityFinding[];
+  generated_at: string;
 }
 
 // Mirrors security_health.py's async_security_overview().
@@ -1115,6 +1212,9 @@ export const fetchSecurityHealth = (hass: HomeAssistant) =>
 
 export const fetchNetworkOverview = (hass: HomeAssistant) =>
   ws<NetworkOverview>(hass, { type: "ha_soc/network/overview" });
+
+export const fetchNetworkSecurityOverview = (hass: HomeAssistant) =>
+  ws<NetworkSecurityOverview>(hass, { type: "ha_soc/network_security/overview" });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

@@ -45,6 +45,7 @@ from custom_components.ha_soc.unifi import (
     _normalize_event,
     async_network_overview,
     async_protect_status,
+    correlate_server_ports_with_acl,
 )
 
 
@@ -362,25 +363,57 @@ async def test_overview_full_snapshot_and_endpoint_correlation(
 # ---------------------------------------------------------------------------
 
 
-def test_normalize_acl_rule_resolves_networks_and_order() -> None:
+def test_normalize_acl_rule_resolves_networks_ports_and_order() -> None:
+    """The verified ACL Rule schema (developer.ui.com/network/v10.3.58/
+    getaclrule): action/index/protocolFilter/networkId at the top level,
+    sourceFilter/destinationFilter objects each carrying their own
+    portFilter/ipAddressesOrSubnets/networkIds/macAddresses."""
     nm = {"n1": "IoT (VLAN 30)", "n2": "Guest (VLAN 40)"}
     raw = {
         "name": "Block IoT to LAN",
-        "action": "DENY",
+        "action": "BLOCK",
         "enabled": True,
-        "ruleIndex": 3,
-        "networkIds": ["n1", "n2"],
-        "direction": "in",
-        "protocol": "tcp",
+        "index": 3,
+        "networkId": "n1",
+        "protocolFilter": ["tcp", "udp"],
+        "sourceFilter": {"type": "NETWORK", "networkIds": ["n1"]},
+        "destinationFilter": {
+            "type": "IP",
+            "ipAddressesOrSubnets": ["192.168.1.0/24"],
+            "portFilter": [22, 443, "8080"],
+            "networkIds": ["n2"],
+        },
     }
     row = _normalize_acl_rule(raw, 0, nm)
     assert row["order"] == 3
     assert row["name"] == "Block IoT to LAN"
-    assert row["action"] == "DENY"
+    assert row["action"] == "BLOCK"
     assert row["enabled"] is True
+    assert row["protocols"] == ["tcp", "udp"]
+    # Rule-level networkId + both filters' networkIds, resolved and deduped.
     assert row["networks"] == ["IoT (VLAN 30)", "Guest (VLAN 40)"]
-    assert row["direction"] == "in"
-    assert row["protocol"] == "tcp"
+    assert row["ports"] == [22, 443, 8080]
+    assert row["source"]["networks"] == ["IoT (VLAN 30)"]
+    assert row["destination"]["ip_or_subnets"] == ["192.168.1.0/24"]
+    assert row["destination"]["ports"] == [22, 443, 8080]
+    assert row["destination"]["networks"] == ["Guest (VLAN 40)"]
+
+
+def test_normalize_acl_rule_legacy_flat_fields_degrade_gracefully() -> None:
+    """A private-API row with no sourceFilter/destinationFilter at all
+    (an older controller surface) still yields a shaped, non-crashing row —
+    empty filter sides rather than a fabricated guess, plus the legacy
+    flat source/destination string kept as a bare IP/zone hint."""
+    row = _normalize_acl_rule(
+        {"name": "Legacy rule", "action": "allow", "source": "10.0.0.5", "destination": "any"},
+        2,
+        {},
+    )
+    assert row["order"] == 2
+    assert row["protocols"] == []
+    assert row["ports"] == []
+    assert row["source"]["ip_or_subnets"] == ["10.0.0.5"]
+    assert row["destination"]["ip_or_subnets"] == ["any"]
 
 
 async def test_overview_ssid_join_and_acl_report(
@@ -392,7 +425,16 @@ async def test_overview_ssid_join_and_acl_report(
     clients = [{"name": "phone", "type": "WIRELESS", "wifiBroadcastId": "b1"}]
     broadcasts = [{"id": "b1", "name": "HomeWiFi"}]
     networks = [{"id": "n1", "name": "LAN", "vlan": 1}]
-    acl = [{"name": "Block IoT", "action": "deny", "networkIds": ["n1"], "enabled": True, "ruleIndex": 0}]
+    acl = [
+        {
+            "name": "Block IoT",
+            "action": "BLOCK",
+            "networkId": "n1",
+            "enabled": True,
+            "index": 0,
+            "destinationFilter": {"portFilter": [443]},
+        }
+    ]
 
     async def _se(hass, conn, path):
         base = path.split("?", 1)[0]
@@ -422,8 +464,9 @@ async def test_overview_ssid_join_and_acl_report(
     assert o["acl"]["endpoint"] == "acl-rules"
     rule = o["acl"]["rules"][0]
     assert rule["name"] == "Block IoT"
-    assert rule["action"] == "deny"
+    assert rule["action"] == "BLOCK"
     assert rule["networks"] == ["LAN (VLAN 1)"]
+    assert rule["ports"] == [443]
 
 
 async def test_overview_acl_unavailable_when_no_endpoint(
@@ -445,6 +488,75 @@ async def test_overview_acl_unavailable_when_no_endpoint(
 
     assert o["acl"]["available"] is False
     assert o["acl"]["endpoints_tried"]  # lists what was probed, for the audit
+
+
+# ---------------------------------------------------------------------------
+# HA server port <-> ACL rule correlation
+# ---------------------------------------------------------------------------
+
+
+def test_correlate_server_ports_no_open_ports_reports_unavailable() -> None:
+    assert correlate_server_ports_with_acl(None, [])["available"] is False
+    assert correlate_server_ports_with_acl([], [])["available"] is False
+
+
+def test_correlate_server_ports_ignores_wildcard_and_loopback_binds() -> None:
+    # 0.0.0.0/::/127.0.0.1 say "every interface"/"this host only", never a
+    # real address another device on the LAN could target.
+    ports = [
+        {"port": 8123, "proto": "tcp", "address": "0.0.0.0"},
+        {"port": 22, "proto": "tcp", "address": "127.0.0.1"},
+    ]
+    out = correlate_server_ports_with_acl(ports, [])
+    assert out["available"] is False
+    assert out["ports"] == []
+
+
+def test_correlate_server_ports_covered_vs_network_scoped_vs_uncovered() -> None:
+    ports = [
+        {"port": 8123, "proto": "tcp", "address": "192.168.10.5"},
+        {"port": 22, "proto": "tcp", "address": "192.168.10.5"},
+        {"port": 51827, "proto": "tcp", "address": "192.168.10.5"},
+    ]
+    rules = [
+        {
+            "id": "r1",
+            "order": 0,
+            "name": "Allow LAN to HA UI",
+            "enabled": True,
+            "destination": {
+                "ip_or_subnets": ["192.168.10.0/24"],
+                "ports": [8123],
+                "networks": [],
+            },
+        },
+        {
+            "id": "r2",
+            "order": 1,
+            "name": "Guest zone reaches HA",
+            "enabled": True,
+            "destination": {"ip_or_subnets": [], "ports": [22], "networks": ["Guest"]},
+        },
+        {
+            # Disabled rules must never count as coverage.
+            "id": "r3",
+            "order": 2,
+            "name": "Disabled catch-all",
+            "enabled": False,
+            "destination": {"ip_or_subnets": ["192.168.10.0/24"], "ports": [], "networks": []},
+        },
+    ]
+    out = correlate_server_ports_with_acl(ports, rules)
+    assert out["available"] is True
+    assert out["server_ips"] == ["192.168.10.5"]
+    by_port = {p["port"]: p for p in out["ports"]}
+    assert by_port[8123]["status"] == "covered"
+    assert by_port[8123]["covered_by"] == ["Allow LAN to HA UI"]
+    assert by_port[22]["status"] == "network_scoped"
+    assert by_port[22]["network_scoped_by"] == ["Guest zone reaches HA"]
+    assert by_port[51827]["status"] == "uncovered"
+    assert by_port[51827]["covered_by"] == []
+    assert by_port[51827]["network_scoped_by"] == []
 
 
 # ---------------------------------------------------------------------------

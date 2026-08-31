@@ -55,6 +55,10 @@ from .const import (
     CONF_MFA_POLICY,
     CONF_GITHUB_TOKEN,
     CONF_NVD_API_KEY,
+    CONF_PIHOLE_API_KEY,
+    CONF_PIHOLE_HOST,
+    CONF_PIHOLE_IOT_CIDR,
+    CONF_PIHOLE_VERIFY_SSL,
     CONF_SCANNER_ENABLED,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
@@ -296,6 +300,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_watchdog_status,
         ws_watchdog_set,
         ws_network_overview,
+        ws_network_security_overview,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -1788,6 +1793,26 @@ async def ws_network_overview(hass: HomeAssistant, connection, msg: dict) -> Non
 
 
 # ----------------------------------------------------------------------------
+# Network Security — ACL rules (with ports/networks), the HA server's own
+# open ports cross-referenced against those rules, Pi-hole DNS visibility for
+# the IoT network, and the advisory findings derived from both. One snapshot
+# command backs the whole tab, same shape as ha_soc/network/overview above.
+# Never mutates UniFi or Pi-hole state.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/network_security/overview"})
+@websocket_api.async_response
+async def ws_network_security_overview(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .network_security import async_network_security_overview
+
+    runtime = _runtime(hass)
+    overview = await async_network_security_overview(hass, runtime.store, runtime.secrets)
+    connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
 # Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
 # carry the security-sensitive controls (access level, API credentials), so
 # they are reachable by the account owner alone, regardless of access_level.
@@ -1868,6 +1893,13 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_UNIFI_PROTECT_HOST): vol.Any(str, None),
         vol.Optional(CONF_UNIFI_PROTECT_API_KEY): str,
         vol.Optional(CONF_UNIFI_PROTECT_VERIFY_SSL): bool,
+        # Pi-hole v6 direct connection (Network Security tab). Same
+        # host/None-clears/secret-placeholder handling as the UniFi fields
+        # above; iot_cidr is a plain (non-secret) setting.
+        vol.Optional(CONF_PIHOLE_HOST): vol.Any(str, None),
+        vol.Optional(CONF_PIHOLE_API_KEY): str,
+        vol.Optional(CONF_PIHOLE_VERIFY_SSL): bool,
+        vol.Optional(CONF_PIHOLE_IOT_CIDR): vol.Any(str, None),
     }
 )
 @websocket_api.async_response
