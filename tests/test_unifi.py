@@ -601,6 +601,7 @@ def test_normalize_firewall_policy_network_source_ip_destination() -> None:
     assert row["order"] == 2
     assert row["name"] == "Block IoT to LAN"
     assert row["action"] == "BLOCK"
+    assert row["allow_return_traffic"] is None  # only meaningful for ALLOW
     assert row["enabled"] is True
     assert row["logging_enabled"] is True
     assert row["ip_version"] == "IPV4"
@@ -653,6 +654,47 @@ def test_normalize_firewall_policy_missing_zone_name_degrades_to_none() -> None:
     )
     assert row["source"]["zone"] is None
     assert row["destination"]["zone"] is None
+
+
+def test_normalize_firewall_policy_allow_return_traffic() -> None:
+    """allowReturnTraffic is ALLOW-only and required whenever action IS
+    "ALLOW" (confirmed against a live controller's own response) — the
+    field UniFi uses to auto-create the mirrored "X (Return)" policy."""
+    allow_row = _normalize_firewall_policy(
+        {
+            "id": "p1",
+            "index": 0,
+            "action": {"type": "ALLOW", "allowReturnTraffic": True},
+            "source": {"zoneId": "z1"},
+            "destination": {"zoneId": "z1"},
+        },
+        0,
+        {},
+        {},
+    )
+    assert allow_row["allow_return_traffic"] is True
+
+    allow_row_false = _normalize_firewall_policy(
+        {
+            "id": "p2",
+            "index": 0,
+            "action": {"type": "ALLOW", "allowReturnTraffic": False},
+            "source": {"zoneId": "z1"},
+            "destination": {"zoneId": "z1"},
+        },
+        0,
+        {},
+        {},
+    )
+    assert allow_row_false["allow_return_traffic"] is False
+
+    block_row = _normalize_firewall_policy(
+        {"id": "p3", "index": 0, "action": {"type": "BLOCK"}, "source": {"zoneId": "z1"}, "destination": {"zoneId": "z1"}},
+        0,
+        {},
+        {},
+    )
+    assert block_row["allow_return_traffic"] is None
 
 
 async def test_overview_firewall_policies_report(

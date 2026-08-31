@@ -603,6 +603,10 @@ export interface FirewallPolicy {
   description: string | null;
   enabled: boolean | null;
   action: string | null;
+  // ALLOW-only: whether UniFi auto-creates a mirrored policy on the
+  // reverse zone pair to allow the matching return traffic. null for
+  // BLOCK/REJECT, where the field doesn't apply.
+  allow_return_traffic: boolean | null;
   origin: string | null;
   custom: boolean | null;
   logging_enabled: boolean | null;

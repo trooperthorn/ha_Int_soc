@@ -2375,7 +2375,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           ${t.name??"—"}${this._renderCustomBadge(t.custom)}${r?B`<span class="sub">${r}</span>`:W}
         </td>
         <td>
-          ${t.action?B`<span class="match ${this._policyActionClass(t.action)}">${t.action}</span>`:B`<span class="muted">—</span>`}
+          ${t.action?B`<span class="match ${this._policyActionClass(t.action)}">${t.action}</span>`:B`<span class="muted">—</span>`}${t.allow_return_traffic?B`<span class="sub">+ mirrored return-traffic policy</span>`:W}
         </td>
         <td>${t.source.zone??B`<span class="muted">—</span>`}</td>
         <td>${t.destination.zone??B`<span class="muted">—</span>`}</td>

@@ -1263,6 +1263,15 @@ def _normalize_firewall_policy(
 
     action_obj = raw.get("action")
     action = action_obj.get("type") if isinstance(action_obj, dict) else None
+    # ALLOW-only, and required whenever action IS "ALLOW" (confirmed via a
+    # live controller's own response, not just its spec): whether UniFi
+    # auto-creates a derived policy on the mirrored zone pair to allow the
+    # matching return traffic — the reason a policy list often shows paired
+    # "X" / "X (Return)" entries. None for BLOCK/REJECT, where the field
+    # doesn't apply at all.
+    allow_return_traffic = (
+        action_obj.get("allowReturnTraffic") if isinstance(action_obj, dict) and action == "ALLOW" else None
+    )
 
     source_raw = raw.get("source") if isinstance(raw.get("source"), dict) else {}
     destination_raw = raw.get("destination") if isinstance(raw.get("destination"), dict) else {}
@@ -1290,6 +1299,7 @@ def _normalize_firewall_policy(
         "description": raw.get("description"),
         "enabled": bool(enabled) if enabled is not None else None,
         "action": action,
+        "allow_return_traffic": allow_return_traffic,
         "origin": origin,
         "custom": origin == "USER_DEFINED" if origin is not None else None,
         "logging_enabled": raw.get("loggingEnabled"),

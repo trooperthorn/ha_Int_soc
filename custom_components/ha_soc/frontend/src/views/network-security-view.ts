@@ -367,7 +367,11 @@ export class HaSocNetworkSecurityView extends LitElement {
         <td>
           ${r.action
             ? html`<span class="match ${this._policyActionClass(r.action)}">${r.action}</span>`
-            : html`<span class="muted">—</span>`}
+            : html`<span class="muted">—</span>`}${
+              r.allow_return_traffic
+                ? html`<span class="sub">+ mirrored return-traffic policy</span>`
+                : nothing
+            }
         </td>
         <td>${r.source.zone ?? html`<span class="muted">—</span>`}</td>
         <td>${r.destination.zone ?? html`<span class="muted">—</span>`}</td>
