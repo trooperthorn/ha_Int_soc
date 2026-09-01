@@ -1,0 +1,167 @@
+name: Compliance Evidence
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Monthly point-in-time evidence, offset from common midnight schedules.
+    - cron: "17 6 1 * *"
+
+permissions:
+  contents: read
+
+jobs:
+  collect:
+    name: Repository compliance evidence
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      actions: read
+      attestations: write
+      checks: read
+      contents: read
+      id-token: write
+      security-events: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.13"
+
+      - name: Collect normalized GitHub observations
+        env:
+          COMPLIANCE_ADMIN_TOKEN: ${{ secrets.COMPLIANCE_ADMIN_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build/evidence-input
+
+          if ! gh api "/repos/$GITHUB_REPOSITORY" --jq '{
+              full_name,
+              default_branch,
+              visibility,
+              archived,
+              disabled,
+              allow_auto_merge,
+              allow_update_branch,
+              delete_branch_on_merge,
+              security_and_analysis
+            }' > build/evidence-input/repository.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"repository metadata API unavailable"}' \
+              > build/evidence-input/repository.json
+          fi
+
+          # The branch metadata endpoint is available to the workflow's
+          # read-only token and exposes whether protection applies, its status
+          # check contexts, and whether enforcement includes administrators.
+          if ! gh api "/repos/$GITHUB_REPOSITORY/branches/main" --jq '{
+              name,
+              protected,
+              commit_sha: .commit.sha,
+              required_status_checks: .protection.required_status_checks
+            }' > build/evidence-input/branch.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"branch metadata API unavailable"}' \
+              > build/evidence-input/branch.json
+          fi
+
+          # GitHub requires Administration-read permission for this one
+          # settings endpoint. An optional fine-grained, read-only token makes
+          # it observable; without one the pack records the explicit boundary.
+          IMMUTABLE_TOKEN="${COMPLIANCE_ADMIN_TOKEN:-$GH_TOKEN}"
+          if ! GH_TOKEN="$IMMUTABLE_TOKEN" gh api -H "X-GitHub-Api-Version: 2026-03-10" \
+            "/repos/$GITHUB_REPOSITORY/immutable-releases" \
+            --jq '{enabled, enforced_by_owner}' \
+            > build/evidence-input/immutable_releases.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"immutable releases API unavailable"}' \
+              > build/evidence-input/immutable_releases.json
+          fi
+
+          if ! gh api "/repos/$GITHUB_REPOSITORY/releases/latest" --jq '{
+              tag_name,
+              target_commitish,
+              draft,
+              prerelease,
+              immutable,
+              published_at,
+              assets: [.assets[] | {name, size, digest, created_at, updated_at}]
+            }' > build/evidence-input/latest_release.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"latest release API unavailable"}' \
+              > build/evidence-input/latest_release.json
+          fi
+
+          if ! gh api "/repos/$GITHUB_REPOSITORY/actions/runs?branch=main&per_page=30" --jq '{
+              workflow_runs: [.workflow_runs[] | {
+                id,
+                name,
+                event,
+                status,
+                conclusion,
+                head_sha,
+                created_at,
+                updated_at,
+                html_url
+              }]
+            }' > build/evidence-input/recent_workflow_runs.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"workflow-runs API unavailable"}' \
+              > build/evidence-input/recent_workflow_runs.json
+          fi
+
+          # Retain counts by severity, not alert paths, descriptions, or
+          # source excerpts. A permission failure is evidence of a collection
+          # gap and makes the final job fail after preserving the partial pack.
+          if ! gh api "/repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&per_page=100" \
+            --jq '{
+              open_total: length,
+              result_truncated: (length == 100),
+              by_severity: (
+                group_by(.rule.security_severity_level // "unknown")
+                | map({key: (.[0].rule.security_severity_level // "unknown"), value: length})
+                | from_entries
+              )
+            }' > build/evidence-input/code_scanning_summary.json; then
+            printf '%s\n' \
+              '{"available":false,"reason":"code scanning summary API unavailable"}' \
+              > build/evidence-input/code_scanning_summary.json
+          fi
+
+      - name: Build evidence pack
+        id: build
+        run: >-
+          python scripts/build_compliance_evidence.py
+          --repository-root .
+          --snapshot-dir build/evidence-input
+          --output-dir build/compliance-evidence
+          --repository "$GITHUB_REPOSITORY"
+          --sha "$GITHUB_SHA"
+          --ref "$GITHUB_REF"
+          --run-id "$GITHUB_RUN_ID"
+          --github-output "$GITHUB_OUTPUT"
+
+      - name: Archive evidence pack
+        run: tar -czf build/ha-soc-compliance-evidence.tgz -C build compliance-evidence
+
+      - name: Attest evidence-pack provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: build/ha-soc-compliance-evidence.tgz
+
+      # GitHub's transport retention is intentionally explicit. The pack's
+      # summary directs operators to the approved longer-lived evidence store.
+      - name: Upload evidence pack
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ha-soc-compliance-evidence-${{ github.run_id }}
+          path: build/ha-soc-compliance-evidence.tgz
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Reject incomplete collection
+        if: steps.build.outputs.partial == 'true'
+        run: |
+          echo "::error::The evidence pack is partial or records a control deviation."
+          exit 1
