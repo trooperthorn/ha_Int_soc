@@ -1,92 +1,149 @@
-# Turns every pushed version tag into a GitHub Release that HACS installs
-# from. Guards that the tag, integration manifest, Probe add-on, and Probe
-# scanner versions agree, so shipped component identifiers cannot drift.
-# Uses the preinstalled `gh` CLI with the built-in GITHUB_TOKEN, so the only
-# third-party action in the release path is the pinned checkout.
+# Reconciles the version on main into a complete, verifiable GitHub Release.
+# A normal merge is the release trigger: maintainers never create or push tags
+# by hand. Reruns are safe; an already-published version is left immutable.
 name: Release
 
 on:
   push:
-    tags:
-      # vYYYY.MM.DD.N, the project's canonical release-tag form. Only the
-      # v-prefixed pattern triggers on purpose: a bare tag for the same
-      # version would otherwise create a second Release, and HACS installs
-      # by tag name, so one version must never exist as two tags.
-      - "v[0-9][0-9][0-9][0-9].[0-9][0-9].[0-9][0-9].*"
+    branches:
+      - main
+  workflow_dispatch:
 
-# Creating a GitHub Release requires contents: write. The called test
-# workflow narrows its own jobs to contents: read below, so only the release
-# job itself holds the write scope.
+concurrency:
+  group: release-${{ github.repository }}
+  cancel-in-progress: false
+
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  # The pytest suite and the bundle drift check must pass before a Release
-  # is created, so a tag pushed from a broken tree cannot ship (work plan
-  # item 0.6, CI-1). Calling test.yml reuses the exact jobs that gate every
-  # push and pull request instead of keeping a copy that could drift.
+  # Use the same authoritative suite that gates pull requests. The publishing
+  # job cannot begin until both pytest and the frontend drift check pass.
   tests:
     uses: ./.github/workflows/test.yml
     permissions:
       contents: read
 
   release:
+    if: github.ref == 'refs/heads/main'
     needs: tests
     runs-on: ubuntu-latest
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
     steps:
-      # Pinned by commit SHA so a moved or compromised tag cannot change the
-      # code this workflow runs; the matching release is documented in the
-      # trailing comment and is reviewed when Dependabot updates the digest.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Check out the exact main commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
 
-      - name: Verify the tag matches every component version
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          python3 - "$TAG" <<'PY'
-          import json
-          from pathlib import Path
-          import re
-          import sys
-
-          expected = sys.argv[1]
-          manifest = json.loads(
-              Path("custom_components/ha_soc/manifest.json").read_text(encoding="utf-8")
-          )["version"]
-          probe_text = Path("ha_soc_probe/config.yaml").read_text(encoding="utf-8")
-          scanner_text = Path(
-              "ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run"
-          ).read_text(encoding="utf-8")
-          probe_match = re.search(r'^version:\s*"([^"]+)"', probe_text, re.MULTILINE)
-          scanner_match = re.search(
-              r'^SCANNER_VERSION="([^"]+)"', scanner_text, re.MULTILINE
-          )
-          versions = {
-              "tag": expected,
-              "manifest": manifest,
-              "probe": probe_match.group(1) if probe_match else "<missing>",
-              "scanner": scanner_match.group(1) if scanner_match else "<missing>",
-          }
-          print("  ".join(f"{name}={value}" for name, value in versions.items()))
-          mismatched = {name: value for name, value in versions.items() if value != expected}
-          if mismatched:
-              sys.exit(
-                  "Version mismatch: "
-                  + ", ".join(f"{name}={value}" for name, value in mismatched.items())
-                  + ". Use scripts/release.sh so every component stays in lockstep."
-              )
-          PY
-
-      - name: Create the GitHub Release
+      - name: Resolve and validate the release version
+        id: version
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
         run: |
-          if gh release view "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Release ${GITHUB_REF_NAME} already exists; treating this rerun as complete."
+          set -euo pipefail
+          VERSION="$(python3 - <<'PY'
+          from pathlib import Path
+          from scripts.build_release_artifacts import validate_versions
+          print(validate_versions(Path.cwd()))
+          PY
+          )"
+          TAG="v${VERSION}"
+          printf 'version=%s\n' "$VERSION" >> "$GITHUB_OUTPUT"
+          printf 'tag=%s\n' "$TAG" >> "$GITHUB_OUTPUT"
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; no published asset will be replaced."
+            printf 'publish=false\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          gh release create "${GITHUB_REF_NAME}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --title "${GITHUB_REF_NAME}" \
+
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            TAG_COMMIT="$(git rev-list -n 1 "$TAG")"
+            if [ "$TAG_COMMIT" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $TAG already points to $TAG_COMMIT, not $GITHUB_SHA"
+              exit 1
+            fi
+          fi
+          printf 'publish=true\n' >> "$GITHUB_OUTPUT"
+
+      - name: Build deterministic HACS archive
+        if: steps.version.outputs.publish == 'true'
+        run: python3 scripts/build_release_artifacts.py --output dist/ha_soc.zip
+
+      # Pinned to the immutable commit behind anchore/sbom-action v0.24.2.
+      # GitHub's attestation guidance names this action as its SBOM generator.
+      - name: Generate SPDX SBOM
+        if: steps.version.outputs.publish == 'true'
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          file: dist/ha_soc.zip
+          format: spdx-json
+          output-file: dist/ha_soc.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+          dependency-snapshot: false
+
+      - name: Generate release checksums
+        if: steps.version.outputs.publish == 'true'
+        working-directory: dist
+        run: sha256sum ha_soc.zip ha_soc.spdx.json > SHA256SUMS
+
+      # Pinned to the immutable commit behind actions/attest v4.
+      - name: Attest build provenance
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/ha_soc.zip
+
+      - name: Attest the release SBOM
+        if: steps.version.outputs.publish == 'true'
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-path: dist/ha_soc.zip
+          sbom-path: dist/ha_soc.spdx.json
+
+      - name: Publish immutable tag and release assets
+        if: steps.version.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.version.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            gh api --method POST \
+              "/repos/${GITHUB_REPOSITORY}/git/refs" \
+              --field "ref=refs/tags/$TAG" \
+              --field "sha=$GITHUB_SHA" >/dev/null
+          fi
+
+          gh release create "$TAG" \
+            dist/ha_soc.zip \
+            dist/ha_soc.spdx.json \
+            dist/SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "$TAG" \
             --generate-notes \
             --verify-tag
+
+      - name: Publish verification instructions
+        if: steps.version.outputs.publish == 'true'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          {
+            echo '### Release verification'
+            echo
+            echo "Published \`$TAG\` from \`$GITHUB_SHA\`."
+            echo
+            echo '```bash'
+            echo "gh release download $TAG -R $GITHUB_REPOSITORY -p ha_soc.zip -p SHA256SUMS"
+            echo 'sha256sum --check SHA256SUMS --ignore-missing'
+            echo "gh attestation verify ha_soc.zip -R $GITHUB_REPOSITORY"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

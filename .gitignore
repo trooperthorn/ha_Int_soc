@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 .mypy_cache/
 .ruff_cache/
+/dist/
 
 # Frontend build artifacts (dist/ IS committed intentionally — only ignore
 # the node toolchain's own scratch state)
