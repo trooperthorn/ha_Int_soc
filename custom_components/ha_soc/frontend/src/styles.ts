@@ -9,7 +9,7 @@ import { css } from "lit";
 export const sharedStyles = css`
   :host {
     display: block;
-    padding: 16px;
+    padding: 20px clamp(14px, 2vw, 24px) 28px;
     max-width: 1400px;
     margin: 0 auto;
 
@@ -66,14 +66,16 @@ export const sharedStyles = css`
   .card {
     background: var(--card-background-color, #fff);
     border-radius: var(--ha-card-border-radius, 12px);
-    box-shadow: var(--ha-card-box-shadow, 0 1px 2px rgba(0, 0, 0, 0.08));
+    border: 1px solid var(--divider-color);
+    box-shadow: none;
     padding: 16px;
     margin-bottom: 16px;
   }
   .card h3 {
     margin: 0 0 12px;
     font-size: 15px;
-    font-weight: 600;
+    font-weight: 650;
+    letter-spacing: -0.005em;
     color: var(--primary-text-color);
   }
   table {
