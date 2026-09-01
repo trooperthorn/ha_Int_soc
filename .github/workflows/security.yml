@@ -49,5 +49,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Check shell programs
-        run: find ha_soc_probe/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' \) -print0 | xargs -0 shellcheck
-
+        # s6-overlay uses a with-contenv shebang, so declare its underlying
+        # shell explicitly. The add-on's absolute /usr/lib source exists in
+        # the image rather than the checkout; the helper is checked directly.
+        run: find ha_soc_probe/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' \) -print0 | xargs -0 shellcheck --shell=bash --exclude=SC1091
