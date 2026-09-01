@@ -85,6 +85,24 @@ export class HaSocPanel extends LitElement {
       font-weight: 500;
       color: var(--primary-text-color);
     }
+    .header .title {
+      flex: 1;
+    }
+    .customize-btn {
+      font-size: 13px;
+      font-weight: 500;
+      padding: 7px 14px;
+      border-radius: 100px;
+      border: 1px solid var(--divider-color);
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color);
+      cursor: pointer;
+    }
+    .customize-btn.active {
+      background: var(--primary-color);
+      border-color: var(--primary-color);
+      color: #fff;
+    }
     .denied {
       max-width: 480px;
       margin: 15vh auto 0;
@@ -120,6 +138,17 @@ export class HaSocPanel extends LitElement {
   @state() private _access: AccessInfo | null = null;
   @state() private _version: string | null = null;
   @state() private _probe: ProbeOverview | null = null;
+  // "Customize" mode — reorder/show/hide the cards on the current view.
+  // Not persisted itself (it's a transient editing mode, not a layout
+  // choice); each view persists its own resulting order/hidden list via
+  // ha_soc/layout/*. Reset on tab change so leaving a tab always exits
+  // edit mode rather than carrying it somewhere it wasn't turned on.
+  @state() private _customizeMode = false;
+  // Set by a ha-soc-navigate event carrying clientFilter (see nav.ts);
+  // consumed once by the Network tab's Clients table search box, then
+  // cleared so navigating there again without a filter doesn't reapply
+  // a stale one.
+  @state() private _pendingNetworkFilter: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -188,7 +217,20 @@ export class HaSocPanel extends LitElement {
       `;
     }
     return html`
-      <div class="header">🛡️ HA SOC</div>
+      <div class="header">
+        <span class="title">🛡️ HA SOC</span>
+        ${this._tab === "settings"
+          ? html``
+          : html`
+              <button
+                type="button"
+                class="customize-btn ${this._customizeMode ? "active" : ""}"
+                @click=${() => (this._customizeMode = !this._customizeMode)}
+              >
+                ${this._customizeMode ? "Done" : "Customize"}
+              </button>
+            `}
+      </div>
       <div class="tabs">
         ${TABS.map((t) => {
           const locked = !!t.ownerOnly && !this._access?.is_owner;
@@ -200,7 +242,7 @@ export class HaSocPanel extends LitElement {
             `;
           }
           return html`
-            <div class="tab ${this._tab === t.id ? "active" : ""}" @click=${() => (this._tab = t.id)}>
+            <div class="tab ${this._tab === t.id ? "active" : ""}" @click=${() => this._selectTab(t.id)}>
               ${t.label}
             </div>
           `;
@@ -211,32 +253,51 @@ export class HaSocPanel extends LitElement {
     `;
   }
 
+  private _selectTab(id: TabId) {
+    this._tab = id;
+    this._customizeMode = false;
+  }
+
   private _onNavigate(ev: CustomEvent<HaSocNavigateDetail>) {
     this._tab = ev.detail.tab;
+    this._customizeMode = false;
+    if (ev.detail.clientFilter) this._pendingNetworkFilter = ev.detail.clientFilter;
   }
 
   private _renderTab() {
+    const cm = this._customizeMode;
     switch (this._tab) {
       case "users":
-        return html`<ha-soc-users-view .hass=${this.hass}></ha-soc-users-view>`;
+        return html`<ha-soc-users-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-users-view>`;
       case "audit":
-        return html`<ha-soc-audit-view .hass=${this.hass}></ha-soc-audit-view>`;
+        return html`<ha-soc-audit-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-audit-view>`;
       case "permissions":
-        return html`<ha-soc-permissions-view .hass=${this.hass}></ha-soc-permissions-view>`;
+        return html`<ha-soc-permissions-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-permissions-view>`;
       case "scanner":
-        return html`<ha-soc-scanner-view .hass=${this.hass}></ha-soc-scanner-view>`;
+        return html`<ha-soc-scanner-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-scanner-view>`;
       case "logs":
-        return html`<ha-soc-logs-view .hass=${this.hass}></ha-soc-logs-view>`;
+        return html`<ha-soc-logs-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-logs-view>`;
       case "peripherals":
-        return html`<ha-soc-peripherals-view .hass=${this.hass}></ha-soc-peripherals-view>`;
+        return html`<ha-soc-peripherals-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-peripherals-view>`;
       case "network":
-        return html`<ha-soc-network-view .hass=${this.hass}></ha-soc-network-view>`;
+        return html`<ha-soc-network-view
+          .hass=${this.hass}
+          .customizeMode=${cm}
+          .initialClientFilter=${this._pendingNetworkFilter}
+          @client-filter-consumed=${() => (this._pendingNetworkFilter = null)}
+        ></ha-soc-network-view>`;
       case "network_security":
-        return html`<ha-soc-network-security-view .hass=${this.hass}></ha-soc-network-security-view>`;
+        return html`<ha-soc-network-security-view
+          .hass=${this.hass}
+          .customizeMode=${cm}
+        ></ha-soc-network-security-view>`;
       case "entity_remap":
-        return html`<ha-soc-entity-remap-view .hass=${this.hass}></ha-soc-entity-remap-view>`;
+        return html`<ha-soc-entity-remap-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-entity-remap-view>`;
       case "integration_security":
-        return html`<ha-soc-integration-security-view .hass=${this.hass}></ha-soc-integration-security-view>`;
+        return html`<ha-soc-integration-security-view
+          .hass=${this.hass}
+          .customizeMode=${cm}
+        ></ha-soc-integration-security-view>`;
       case "settings":
         // Defense in depth: even if a non-owner reached this tab, the
         // owner-only WS commands would reject them — so never render it.
@@ -247,7 +308,7 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-settings-view .hass=${this.hass}></ha-soc-settings-view>`;
       case "dashboard":
       default:
-        return html`<ha-soc-dashboard-view .hass=${this.hass}></ha-soc-dashboard-view>`;
+        return html`<ha-soc-dashboard-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-dashboard-view>`;
     }
   }
 }

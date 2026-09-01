@@ -1,8 +1,9 @@
-import { LitElement, html, nothing } from "lit";
+import { html, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
-import type { HomeAssistant } from "../types";
 import {
   HaSocUser,
   fetchUsers,
@@ -20,10 +21,12 @@ interface ViewRow {
 }
 
 @customElement("ha-soc-permissions-view")
-export class HaSocPermissionsView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocPermissionsView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "permissions";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _users: HaSocUser[] = [];
   @state() private _dashboards: Record<string, any>[] = [];
@@ -174,7 +177,12 @@ export class HaSocPermissionsView extends LitElement {
       (d) => ((d.url_path as string | null) ?? null) === (this._selected ?? null)
     );
 
-    return html`
+    const sections: LayoutSection[] = [
+      {
+        id: "permissions",
+        title: "Permissions Matrix",
+        hideable: false,
+        render: () => html`
       <div class="card">
         <h3>Permissions Matrix</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -293,6 +301,9 @@ export class HaSocPermissionsView extends LitElement {
             `;
             })()}
       </div>
-    `;
+        `,
+      },
+    ];
+    return this._renderSections(sections);
   }
 }

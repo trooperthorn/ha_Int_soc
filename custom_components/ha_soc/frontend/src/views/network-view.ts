@@ -1,7 +1,8 @@
-import { LitElement, html, css, nothing } from "lit";
+import { html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { navigate, navigateToHaPath, devicesForIntegrationPath } from "../nav";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
@@ -38,7 +39,10 @@ function safeExternalHref(href: string | null): string | null {
 // the Network tab to "look close to identical to Dashboard View". Same stat
 // tiles up top, same searchable/paginated table styling below.
 @customElement("ha-soc-network-view")
-export class HaSocNetworkView extends LitElement {
+export class HaSocNetworkView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "network";
+  }
   static styles = [
     sharedStyles,
     css`
@@ -244,7 +248,11 @@ export class HaSocNetworkView extends LitElement {
     `,
   ];
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  // Pre-fills the Clients table search box on arrival, when a rule/policy's
+  // resolved device on the Network Security tab was clicked (see nav.ts).
+  // Consumed once (see updated() below), then the panel clears it so a
+  // later plain navigate("network") doesn't reapply a stale filter.
+  @property({ attribute: false }) initialClientFilter: string | null = null;
 
   @state() private _overview: NetworkOverview | null = null;
   @state() private _loading = true;
@@ -266,6 +274,15 @@ export class HaSocNetworkView extends LitElement {
   connectedCallback(): void {
     super.connectedCallback();
     this._load();
+  }
+
+  updated(changed: Map<string, unknown>): void {
+    super.updated(changed);
+    if (changed.has("initialClientFilter") && this.initialClientFilter) {
+      this._clientSearch = this.initialClientFilter;
+      this._clientPage = 0;
+      this.dispatchEvent(new CustomEvent("client-filter-consumed"));
+    }
   }
 
   private async _load() {
@@ -410,10 +427,19 @@ export class HaSocNetworkView extends LitElement {
       `;
     }
 
+    const sections: LayoutSection[] = [
+      {
+        id: "overview",
+        title: "Status & Wireless Overview",
+        hideable: false,
+        render: () => html`${this._renderFailingBanner(o)} ${this._renderStats(o)} ${this._renderSsid(o)}`,
+      },
+      { id: "clients", title: "Clients", render: () => this._renderClientsTable(o) },
+      { id: "devices", title: "Network Devices", render: () => this._renderDevicesTable(o) },
+      { id: "protect", title: "UniFi Protect", render: () => this._renderProtectCard(o) },
+    ];
     return html`
-      ${this._renderFailingBanner(o)} ${this._renderStats(o)} ${this._renderSsid(o)}
-      ${this._renderClientsTable(o)} ${this._renderDevicesTable(o)}
-      ${this._renderProtectCard(o)}
+      ${this._renderSections(sections)}
       <div class="footer">
         <span>Last updated ${new Date(o.generated_at).toLocaleTimeString()}</span>
         <button class="ha-btn" style="margin-left:auto;" @click=${() => this._load()}>

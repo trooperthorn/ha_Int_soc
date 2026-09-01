@@ -1,4 +1,5 @@
 import type { HomeAssistant } from "../types";
+import type { LayoutState } from "../customize";
 
 /** Thin typed wrappers over hass.callWS for every ha_soc/* command. */
 
@@ -772,11 +773,23 @@ export interface NetworkSecurityFinding {
   detail: string;
 }
 
+// Mirrors network_security.py's _client_summaries() — a lightweight
+// projection of the Network tab's own client rows, just enough to match a
+// rule/policy's source/destination against a real device.
+export interface NetworkSecurityClient {
+  name: string | null;
+  ipv4: string | null;
+  ipv6: string | null;
+  mac: string | null;
+  vlan: string | number | null;
+}
+
 // Mirrors network_security.py's async_network_security_overview().
 export interface NetworkSecurityOverview {
   acl: AclReport;
   firewall_policies: FirewallPoliciesReport;
   server_ports: ServerPortsReport;
+  clients: NetworkSecurityClient[];
   unifi_reachable: boolean;
   unifi_error: string | null;
   pihole: PiHoleOverview;
@@ -1287,6 +1300,19 @@ export const fetchNetworkOverview = (hass: HomeAssistant) =>
 
 export const fetchNetworkSecurityOverview = (hass: HomeAssistant) =>
   ws<NetworkSecurityOverview>(hass, { type: "ha_soc/network_security/overview" });
+
+// The calling user's own "Customize" layout for one view — never another
+// user's (see websocket_api.py's ws_layout_get/set docstring).
+export const fetchLayout = (hass: HomeAssistant, viewId: string) =>
+  ws<LayoutState>(hass, { type: "ha_soc/layout/get", view_id: viewId });
+
+export const saveLayout = (hass: HomeAssistant, viewId: string, layout: LayoutState) =>
+  ws<LayoutState>(hass, {
+    type: "ha_soc/layout/set",
+    view_id: viewId,
+    order: layout.order,
+    hidden: layout.hidden,
+  });
 
 export const fetchSettings = (hass: HomeAssistant) =>
   ws<HaSocSettings>(hass, { type: "ha_soc/settings/get" });

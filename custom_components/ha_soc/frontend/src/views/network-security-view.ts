@@ -1,7 +1,9 @@
-import { LitElement, html, css, nothing } from "lit";
+import { html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
+import { navigate } from "../nav";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   AclReport,
@@ -14,6 +16,8 @@ import {
   ServerPortsReport,
   fetchNetworkSecurityOverview,
 } from "../data/ha-soc-ws";
+import { matchClientsForEntries } from "../device-match";
+import { buildZoneMatrix } from "../firewall-matrix";
 
 // The ACL Rules card, the HA-server-port correlation, and the Pi-hole DNS
 // section used to live scattered across the Network tab; this view is the
@@ -26,7 +30,11 @@ import {
 // under Settings -> Security -> Create Policy, and a controller can have
 // rules under either, both, or neither.
 @customElement("ha-soc-network-security-view")
-export class HaSocNetworkSecurityView extends LitElement {
+export class HaSocNetworkSecurityView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "network_security";
+  }
+
   static styles = [
     sharedStyles,
     css`
@@ -179,10 +187,95 @@ export class HaSocNetworkSecurityView extends LitElement {
       .domain-list .row:last-child {
         border-bottom: none;
       }
+      .view-toggle {
+        display: inline-flex;
+        border: 1px solid var(--divider-color);
+        border-radius: 100px;
+        overflow: hidden;
+        margin-bottom: 10px;
+      }
+      .view-toggle button {
+        border: none;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+        font-size: 12px;
+        font-weight: 600;
+        padding: 5px 14px;
+        cursor: pointer;
+      }
+      .view-toggle button.active {
+        background: var(--primary-color);
+        color: #fff;
+      }
+      .device-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.1);
+        color: var(--primary-color);
+        border: none;
+        border-radius: 100px;
+        padding: 1px 8px;
+        font-size: 10.5px;
+        cursor: pointer;
+        margin: 2px 3px 0 0;
+      }
+      .device-chip:hover {
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.2);
+      }
+      .matrix-wrap {
+        overflow-x: auto;
+      }
+      table.zone-matrix {
+        border-collapse: collapse;
+      }
+      table.zone-matrix th,
+      table.zone-matrix td {
+        border: 1px solid var(--divider-color);
+        padding: 6px;
+        text-align: center;
+        font-size: 11.5px;
+      }
+      table.zone-matrix th {
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.03);
+        font-weight: 600;
+      }
+      table.zone-matrix th.corner {
+        background: transparent;
+        border: none;
+      }
+      table.zone-matrix td.cell {
+        cursor: pointer;
+        min-width: 64px;
+      }
+      table.zone-matrix td.cell:hover {
+        outline: 2px solid var(--primary-color);
+        outline-offset: -2px;
+      }
+      table.zone-matrix td.cell.allow {
+        background: rgba(67, 160, 71, 0.15);
+        color: var(--success-color, #43a047);
+      }
+      table.zone-matrix td.cell.block {
+        background: rgba(var(--rgb-error-color, 219, 68, 55), 0.15);
+        color: var(--error-color, #db4437);
+      }
+      table.zone-matrix td.cell.mixed {
+        background: rgba(var(--status-warning, #fab219), 0.18);
+        color: #9a6a00;
+      }
+      table.zone-matrix td.cell.none {
+        color: var(--secondary-text-color);
+      }
+      .zone-pair-filter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 12.5px;
+        margin-bottom: 10px;
+      }
     `,
   ];
-
-  @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _overview: NetworkSecurityOverview | null = null;
   @state() private _loading = true;
@@ -190,6 +283,12 @@ export class HaSocNetworkSecurityView extends LitElement {
   @state() private _aclSort: SortState | null = null;
   @state() private _firewallPolicySort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
+  // Firewall Policies card: Table (the full sortable list) vs Matrix (a
+  // zone x zone at-a-glance grid). Selecting a matrix cell filters the
+  // table down to that one zone pair and switches back to Table view —
+  // set to null to clear the filter and see every policy again.
+  @state() private _fwViewMode: "table" | "matrix" = "table";
+  @state() private _fwZonePairFilter: { src: string; dst: string } | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -217,6 +316,17 @@ export class HaSocNetworkSecurityView extends LitElement {
     const o = this._overview;
     if (!o) return html`<div class="card">No data.</div>`;
 
+    const sections: LayoutSection[] = [
+      { id: "findings", title: "Suggestions", render: () => this._renderFindings(o.findings) },
+      {
+        id: "firewall_policies",
+        title: "Firewall Policies",
+        render: () => this._renderFirewallPolicies(o.firewall_policies),
+      },
+      { id: "acl", title: "ACL Rules", render: () => this._renderAcl(o.acl) },
+      { id: "server_ports", title: "Home Assistant Server Ports", render: () => this._renderServerPorts(o.server_ports) },
+      { id: "pihole", title: "Pi-hole DNS", render: () => this._renderPihole(o.pihole) },
+    ];
     return html`
       <div class="toolbar" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
         <button class="ha-btn" @click=${() => this._load()}>Refresh</button>
@@ -224,11 +334,7 @@ export class HaSocNetworkSecurityView extends LitElement {
           Advisory only — nothing on this tab changes UniFi or Pi-hole configuration.
         </span>
       </div>
-      ${this._renderFindings(o.findings)}
-      ${this._renderFirewallPolicies(o.firewall_policies)}
-      ${this._renderAcl(o.acl)}
-      ${this._renderServerPorts(o.server_ports)}
-      ${this._renderPihole(o.pihole)}
+      ${this._renderSections(sections)}
     `;
   }
 
@@ -273,6 +379,34 @@ export class HaSocNetworkSecurityView extends LitElement {
     return ` · ${customCount} custom / ${rows.length} total`;
   }
 
+  // -- Device tie-in: resolve a rule/policy's IP/subnet/MAC entries against
+  // the Network tab's own client list, so the reader sees a device name
+  // instead of a bare address, and can click through to it (task: "tie the
+  // Source/Destination to the devices in the Network Tab Clients Table").
+
+  private _renderDeviceChips(entries: string[]) {
+    const clients = this._overview?.clients ?? [];
+    const all = matchClientsForEntries(entries, clients);
+    const matches = all.slice(0, 6);
+    if (!matches.length) return nothing;
+    const overflow = all.length - matches.length;
+    return html`
+      <span class="sub" style="display:block;margin-top:3px;">
+        ${matches.map(
+          (m) => html`
+            <button
+              class="device-chip"
+              title="Jump to ${m.name} on the Network tab"
+              @click=${() => navigate(this, "network", m.matchedOn)}
+            >
+              📟 ${m.name}
+            </button>
+          `
+        )}${overflow > 0 ? html`<span class="muted" style="font-size:10.5px;">+${overflow} more</span>` : nothing}
+      </span>
+    `;
+  }
+
   private _policyActionClass(action: string | null): string {
     const a = (action ?? "").toLowerCase();
     if (a === "allow") return "healthy";
@@ -281,6 +415,13 @@ export class HaSocNetworkSecurityView extends LitElement {
   }
 
   private _renderFirewallPolicies(fw: FirewallPoliciesReport) {
+    const rows = this._fwZonePairFilter
+      ? fw.rules.filter(
+          (r) =>
+            r.source.zone === this._fwZonePairFilter!.src &&
+            r.destination.zone === this._fwZonePairFilter!.dst
+        )
+      : fw.rules;
     return html`
       <div class="card">
         <h3>
@@ -301,44 +442,141 @@ export class HaSocNetworkSecurityView extends LitElement {
           : !fw.rules.length
             ? html`<div class="empty">No Firewall Policies configured.</div>`
             : html`
-                <div class="table-wrap">
-                  <table>
-                    <thead>
-                      <tr>
-                        ${sortableTh("#", "order", this._firewallPolicySort, (n) => (this._firewallPolicySort = n), {
-                          numeric: true,
-                        })}
-                        ${sortableTh("Name", "name", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Action", "action", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Source zone", "source_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Dest. zone", "dest_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Protocol", "protocol", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Ports", "ports", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                        ${sortableTh("Enabled", "enabled", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      ${sortRows(fw.rules.slice(), this._firewallPolicySort, {
-                        order: (r) => r.order,
-                        name: (r) => r.name,
-                        action: (r) => r.action,
-                        source_zone: (r) => r.source.zone,
-                        dest_zone: (r) => r.destination.zone,
-                        protocol: (r) => r.protocol,
-                        ports: (r) => r.ports.length,
-                        enabled: (r) => r.enabled,
-                      }).map((r: FirewallPolicy, i) => this._renderFirewallPolicyRow(r, i))}
-                    </tbody>
-                  </table>
+                <div class="view-toggle">
+                  <button
+                    class=${this._fwViewMode === "table" ? "active" : ""}
+                    @click=${() => (this._fwViewMode = "table")}
+                  >
+                    Table
+                  </button>
+                  <button
+                    class=${this._fwViewMode === "matrix" ? "active" : ""}
+                    @click=${() => (this._fwViewMode = "matrix")}
+                  >
+                    Zone Matrix
+                  </button>
                 </div>
-                <div class="note">
-                  Every policy is scoped to a source/destination zone pair; the detail
-                  line under each name shows any additional network/IP/MAC/domain
-                  narrowing the controller reported.
-                </div>
+                ${this._fwViewMode === "matrix"
+                  ? this._renderZoneMatrix(fw)
+                  : this._renderFirewallPolicyTable(rows)}
               `}
       </div>
     `;
+  }
+
+  private _renderFirewallPolicyTable(rows: FirewallPolicy[]) {
+    return html`
+      ${this._fwZonePairFilter
+        ? html`
+            <div class="zone-pair-filter">
+              <span class="chip"
+                >${this._fwZonePairFilter.src} → ${this._fwZonePairFilter.dst}</span
+              >
+              <button
+                style="cursor:pointer;border:none;background:none;color:var(--primary-color);font-size:12px;"
+                @click=${() => (this._fwZonePairFilter = null)}
+              >
+                Clear filter
+              </button>
+            </div>
+          `
+        : nothing}
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              ${sortableTh("#", "order", this._firewallPolicySort, (n) => (this._firewallPolicySort = n), {
+                numeric: true,
+              })}
+              ${sortableTh("Name", "name", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Action", "action", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Source zone", "source_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Dest. zone", "dest_zone", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Protocol", "protocol", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Ports", "ports", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+              ${sortableTh("Enabled", "enabled", this._firewallPolicySort, (n) => (this._firewallPolicySort = n))}
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length
+              ? sortRows(rows.slice(), this._firewallPolicySort, {
+                  order: (r) => r.order,
+                  name: (r) => r.name,
+                  action: (r) => r.action,
+                  source_zone: (r) => r.source.zone,
+                  dest_zone: (r) => r.destination.zone,
+                  protocol: (r) => r.protocol,
+                  ports: (r) => r.ports.length,
+                  enabled: (r) => r.enabled,
+                }).map((r: FirewallPolicy, i) => this._renderFirewallPolicyRow(r, i))
+              : html`<tr><td colspan="8"><div class="empty">No policies for this zone pair.</div></td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        Every policy is scoped to a source/destination zone pair; the detail line under
+        each name shows any additional network/IP/MAC/domain narrowing the controller
+        reported, and a resolved device chip when it matches a known client.
+      </div>
+    `;
+  }
+
+  private _renderZoneMatrix(fw: FirewallPoliciesReport) {
+    if (!fw.zones.length) {
+      return html`<div class="empty">No firewall zones reported by this controller.</div>`;
+    }
+    const matrix = buildZoneMatrix(fw.zones, fw.rules);
+    const zoneNames = fw.zones.map((z) => z.name);
+    return html`
+      <div class="matrix-wrap">
+        <table class="zone-matrix">
+          <thead>
+            <tr>
+              <th class="corner"></th>
+              ${zoneNames.map((n) => html`<th>${n}</th>`)}
+            </tr>
+          </thead>
+          <tbody>
+            ${matrix.map(
+              (row, ri) => html`
+                <tr>
+                  <th>${zoneNames[ri]}</th>
+                  ${row.map(
+                    (cell) => html`
+                      <td
+                        class="cell ${cell.dominant}"
+                        title="${cell.policies.length} polic${cell.policies.length === 1 ? "y" : "ies"}"
+                        @click=${() => this._selectZonePair(cell.srcZone, cell.dstZone)}
+                      >
+                        ${cell.dominant === "none"
+                          ? "—"
+                          : cell.dominant === "mixed"
+                            ? "mixed"
+                            : cell.dominant === "allow"
+                              ? "allow"
+                              : "block"}${cell.policies.length ? html`<br /><span style="font-size:10px;">${cell.policies.length}</span>` : nothing}
+                      </td>
+                    `
+                  )}
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div class="note">
+        Rows are the source zone, columns the destination zone. Click a cell to see its
+        policies. "mixed" means both allow and block/reject policies exist for that pair
+        — which one actually governs a given connection depends on evaluation order and
+        UniFi's own implicit-deny fallback, neither of which this project models; open
+        the filtered table to read the real order.
+      </div>
+    `;
+  }
+
+  private _selectZonePair(src: string, dst: string) {
+    this._fwZonePairFilter = { src, dst };
+    this._fwViewMode = "table";
   }
 
   private _renderFirewallPolicyRow(r: FirewallPolicy, i: number) {
@@ -356,13 +594,19 @@ export class HaSocNetworkSecurityView extends LitElement {
     const srcDetail = detailFor(r.source);
     const dstDetail = detailFor(r.destination);
     const detail = [srcDetail && `from ${srcDetail}`, dstDetail && `to ${dstDetail}`].filter(Boolean).join(" · ");
+    const deviceEntries = [
+      ...r.source.ip_or_subnets,
+      ...r.source.macs,
+      ...r.destination.ip_or_subnets,
+      ...r.destination.macs,
+    ];
     return html`
       <tr>
         <td class="num">${r.order ?? i + 1}</td>
         <td style="font-weight:600;">
           ${r.name ?? "—"}${this._renderCustomBadge(r.custom)}${
             detail ? html`<span class="sub">${detail}</span>` : nothing
-          }
+          }${this._renderDeviceChips(deviceEntries)}
         </td>
         <td>
           ${r.action
@@ -470,13 +714,19 @@ export class HaSocNetworkSecurityView extends LitElement {
     if (r.destination.ip_or_subnets.length) dstBits.push(`to ${r.destination.ip_or_subnets.join(", ")}`);
     if (r.destination.macs.length) dstBits.push(`MAC ${r.destination.macs.join(", ")}`);
     const detail = [...srcBits, ...dstBits].join(" · ");
+    const deviceEntries = [
+      ...r.source.ip_or_subnets,
+      ...r.source.macs,
+      ...r.destination.ip_or_subnets,
+      ...r.destination.macs,
+    ];
     return html`
       <tr>
         <td class="num">${r.order ?? i + 1}</td>
         <td style="font-weight:600;">
           ${r.name ?? "—"}${this._renderCustomBadge(r.custom)}${
             detail ? html`<span class="sub">${detail}</span>` : nothing
-          }
+          }${this._renderDeviceChips(deviceEntries)}
         </td>
         <td>
           ${r.action

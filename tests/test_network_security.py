@@ -6,7 +6,25 @@ resulting findings list — no mocking needed.
 from __future__ import annotations
 
 from custom_components.ha_soc.const import SEVERITY_HIGH, SEVERITY_INFO, SEVERITY_MEDIUM
-from custom_components.ha_soc.network_security import build_findings
+from custom_components.ha_soc.network_security import _client_summaries, build_findings
+
+
+def test_client_summaries_projects_only_matching_fields() -> None:
+    clients = [
+        {
+            "name": "phone",
+            "ipv4": "192.168.1.10",
+            "ipv6": None,
+            "mac": "aa:bb:cc:00:00:01",
+            "vlan": 10,
+            "uptime": 3600,
+            "bandwidth": {"rx_bytes": 1, "tx_bytes": 2, "total_bytes": 3},
+            "integration_match": None,
+        }
+    ]
+    assert _client_summaries(clients) == [
+        {"name": "phone", "ipv4": "192.168.1.10", "ipv6": None, "mac": "aa:bb:cc:00:00:01", "vlan": 10}
+    ]
 
 _EMPTY_ACL = {"available": False, "rules": []}
 _EMPTY_FIREWALL_POLICIES = {"available": False, "rules": [], "zones": []}

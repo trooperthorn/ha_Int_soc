@@ -1,7 +1,8 @@
-import { LitElement, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   BrokenEntityReference,
@@ -31,10 +32,12 @@ const KIND_LABELS: Record<string, string> = {
 type ApplyResultWithBackups = EntityRemapApplyResult;
 
 @customElement("ha-soc-entity-remap-view")
-export class HaSocEntityRemapView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocEntityRemapView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "entity_remap";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _entities: EntityRegistryEntry[] = [];
   @state() private _oldEntityId = "";
@@ -234,7 +237,12 @@ export class HaSocEntityRemapView extends LitElement {
       this._newEntityId !== this._oldEntityId &&
       this._backupAck;
 
-    return html`
+    const sections: LayoutSection[] = [
+      {
+        id: "entity_remap",
+        title: "Entity ReMap",
+        hideable: false,
+        render: () => html`
       <div class="card" id="remap-card">
         <h3>Entity ReMap</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -401,7 +409,12 @@ export class HaSocEntityRemapView extends LitElement {
             `
           : nothing}
       </div>
-
+        `,
+      },
+      {
+        id: "broken_references",
+        title: "Entities referenced but not found",
+        render: () => html`
       <div class="card">
         <h3>
           Entities referenced but not found (${this._filteredBroken().length}${this._brokenFilter
@@ -471,6 +484,9 @@ export class HaSocEntityRemapView extends LitElement {
                 </table>
               `}
       </div>
-    `;
+        `,
+      },
+    ];
+    return this._renderSections(sections);
   }
 }

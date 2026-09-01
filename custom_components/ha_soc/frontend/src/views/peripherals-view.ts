@@ -1,7 +1,8 @@
-import { LitElement, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   PeripheralDevice,
@@ -11,10 +12,12 @@ import {
 } from "../data/ha-soc-ws";
 
 @customElement("ha-soc-peripherals-view")
-export class HaSocPeripheralsView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocPeripheralsView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "peripherals";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _overview: PeripheralOverview | null = null;
   @state() private _loading = true;
@@ -101,7 +104,12 @@ export class HaSocPeripheralsView extends LitElement {
     const active = overview.devices.filter((d) => !d.ignored);
     const ignored = overview.devices.filter((d) => d.ignored);
 
-    return html`
+    const sections: LayoutSection[] = [
+      {
+        id: "peripherals",
+        title: "Local Peripherals",
+        hideable: false,
+        render: () => html`
       <div class="card">
         <h3>Local Peripherals</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -169,9 +177,14 @@ export class HaSocPeripheralsView extends LitElement {
               </table>
             `}
       </div>
-
-      ${ignored.length
-        ? html`
+        `,
+      },
+      {
+        id: "ignored_peripherals",
+        title: "Ignored Peripherals",
+        render: () =>
+          ignored.length
+            ? html`
             <div class="card">
               <h3 style="cursor:pointer;" @click=${() => (this._showIgnored = !this._showIgnored)}>
                 Ignored (${ignored.length}) ${this._showIgnored ? "▲" : "▼"}
@@ -210,7 +223,9 @@ export class HaSocPeripheralsView extends LitElement {
                 : nothing}
             </div>
           `
-        : nothing}
-    `;
+            : nothing,
+      },
+    ];
+    return this._renderSections(sections);
   }
 }

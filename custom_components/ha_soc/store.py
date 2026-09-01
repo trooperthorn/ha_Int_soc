@@ -195,6 +195,14 @@ class StoreData(TypedDict):
     # Docker cap per add-on slug ({memory_mb, cpus}); hard_limit_state is
     # the Probe's last report of what's actually applied on the host.
     resource_watchdog: dict[str, Any]
+    # Per-user "Customize" layout for the panel's card-based views:
+    # user_id -> view_id -> {"order": [section_id, ...], "hidden": [section_id, ...]}.
+    # A personal UI preference, not a security setting — any user with SOC
+    # access may set their own (see websocket_api.ws_layout_set), unlike the
+    # owner-only Settings tab. Missing view_id/user_id both mean "use each
+    # view's own declared default order, nothing hidden" (see
+    # HaSocData.get_user_panel_layout) rather than an error.
+    panel_layout: dict[str, dict[str, dict[str, Any]]]
 
 
 def default_store_data() -> StoreData:
@@ -266,6 +274,7 @@ def default_store_data() -> StoreData:
             # the Probe's last report of the caps actually on the host.
             "hard_limit_state": {},
         },
+        panel_layout={},
     )
 
 
@@ -424,6 +433,24 @@ class HaSocData:
         self.data["permissions_matrix"].pop(user_id, None)
         self.data["user_baselines"].pop(user_id, None)
         self.data["mfa_grace_started"].pop(user_id, None)
+        self.data["panel_layout"].pop(user_id, None)
+        self.async_schedule_save()
+
+    # -- Panel "Customize" layout (per user, per view) -----------------------
+    def get_user_panel_layout(self, user_id: str, view_id: str) -> dict[str, Any]:
+        """{"order": [...], "hidden": [...]} for one user's one view, or
+        an empty dict when they've never customized it — the caller falls
+        back to that view's own declared default order with nothing
+        hidden, never an error."""
+        return self.data["panel_layout"].get(user_id, {}).get(view_id, {})
+
+    def async_set_user_panel_layout(
+        self, user_id: str, view_id: str, order: list[str], hidden: list[str]
+    ) -> None:
+        self.data["panel_layout"].setdefault(user_id, {})[view_id] = {
+            "order": order,
+            "hidden": hidden,
+        }
         self.async_schedule_save()
 
     # -- Generic finding-table helpers (vulns / misconfig / scanner) ------
