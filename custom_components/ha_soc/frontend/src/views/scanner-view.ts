@@ -1,7 +1,8 @@
-import { LitElement, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   Finding,
@@ -102,10 +103,12 @@ function bindClass(addr: string | null | undefined): {
 }
 
 @customElement("ha-soc-scanner-view")
-export class HaSocScannerView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocScannerView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "scanner";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _scannerFindings: Finding[] = [];
   // Per-domain coverage from listing_payload (work plan item 4.8): which
@@ -645,13 +648,11 @@ export class HaSocScannerView extends LitElement {
         </div>
       `;
 
-    return html`
-      ${this._scanError
-        ? html`<div class="card" style="border:1px solid var(--error-color,#db4437);">
-            <p style="font-size:13px;color:var(--error-color,#db4437);margin:0;">${this._scanError}</p>
-          </div>`
-        : nothing}
-
+    const sections: LayoutSection[] = [
+      {
+        id: "misconfig",
+        title: "Misconfiguration Findings",
+        render: () => html`
       <div class="card">
         <h3>Misconfiguration Findings</h3>
         ${!this._misconfigFindings.length
@@ -687,7 +688,12 @@ export class HaSocScannerView extends LitElement {
               </table>
             `}
       </div>
-
+        `,
+      },
+      {
+        id: "integration_scanner",
+        title: "Integration Security Scanner",
+        render: () => html`
       <div class="card">
         <h3>Integration Security Scanner</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -740,7 +746,12 @@ export class HaSocScannerView extends LitElement {
             `}
         ${this._renderScannerCoverage()}
       </div>
-
+        `,
+      },
+      {
+        id: "device_vulns",
+        title: "Device Vulnerabilities",
+        render: () => html`
       <div class="card">
         <h3>Device Vulnerabilities</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -792,9 +803,18 @@ export class HaSocScannerView extends LitElement {
               </table>
             `}
       </div>
-
-      ${this._renderProbeCard()}
-      ${this._renderFirewallCard()}
+        `,
+      },
+      { id: "host_probe", title: "Host Probe", render: () => this._renderProbeCard() },
+      { id: "firewall_rules", title: "Firewall Rules", render: () => this._renderFirewallCard() },
+    ];
+    return html`
+      ${this._scanError
+        ? html`<div class="card" style="border:1px solid var(--error-color,#db4437);">
+            <p style="font-size:13px;color:var(--error-color,#db4437);margin:0;">${this._scanError}</p>
+          </div>`
+        : nothing}
+      ${this._renderSections(sections)}
     `;
   }
 

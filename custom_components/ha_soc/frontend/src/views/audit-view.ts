@@ -1,7 +1,8 @@
-import { LitElement, html } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   AuditCategoryStats,
@@ -40,10 +41,12 @@ const CATEGORIES: [string, string][] = [
 ];
 
 @customElement("ha-soc-audit-view")
-export class HaSocAuditView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocAuditView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "audit";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _events: AuditEvent[] = [];
   @state() private _users: HaSocUser[] = [];
@@ -138,7 +141,12 @@ export class HaSocAuditView extends LitElement {
           : null,
       source: (e) => e.ip,
     });
-    return html`
+    const sections: LayoutSection[] = [
+      {
+        id: "audit",
+        title: "Audit Log",
+        hideable: false,
+        render: () => html`
       <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -234,6 +242,9 @@ export class HaSocAuditView extends LitElement {
               </table>
             `}
       </div>
-    `;
+        `,
+      },
+    ];
+    return this._renderSections(sections);
   }
 }

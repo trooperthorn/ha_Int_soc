@@ -1,7 +1,8 @@
-import { LitElement, html, css, nothing } from "lit";
+import { html, css, nothing } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   navigate,
@@ -98,7 +99,10 @@ const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
 const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
 
 @customElement("ha-soc-dashboard-view")
-export class HaSocDashboardView extends LitElement {
+export class HaSocDashboardView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "dashboard";
+  }
   static styles = [
     sharedStyles,
     css`
@@ -390,8 +394,6 @@ export class HaSocDashboardView extends LitElement {
       }
     `,
   ];
-
-  @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _summary: DashboardSummary | null = null;
   @state() private _deviceOverview: DeviceOverview | null = null;
@@ -710,9 +712,17 @@ export class HaSocDashboardView extends LitElement {
       { key: "low", color: "var(--status-good)", value: s.detection_severity_counts.low ?? 0 },
     ];
 
-    return html`
-      ${this._renderPostureCard()} ${this._renderSecurityCard()}
-
+    const sections: LayoutSection[] = [
+      {
+        id: "posture_security",
+        title: "Posture & Security",
+        hideable: false,
+        render: () => html`${this._renderPostureCard()} ${this._renderSecurityCard()}`,
+      },
+      {
+        id: "device_vuln_overview",
+        title: "Device & Vulnerability Overview",
+        render: () => html`
       <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
       <div class="row3">
         <div class="card device-status-card">
@@ -782,7 +792,12 @@ export class HaSocDashboardView extends LitElement {
           </div>
         </div>
       </div>
-
+        `,
+      },
+      {
+        id: "users_detections",
+        title: "Users & Detections",
+        render: () => html`
       <h2 class="section-title">Users &amp; Detections</h2>
       <div class="donuts-row">
         <div class="card clickable" @click=${() => this._goto("users")} title="View users">
@@ -875,7 +890,12 @@ export class HaSocDashboardView extends LitElement {
               </table>
             `}
       </div>
-
+        `,
+      },
+      {
+        id: "devices_integrations",
+        title: "Devices & Integrations",
+        render: () => html`
       <h2 class="section-title">Devices &amp; Integrations</h2>
       <div class="row2">
         <div class="card" id="devices-card">
@@ -1044,7 +1064,10 @@ export class HaSocDashboardView extends LitElement {
               `}
         </div>
       </div>
-    `;
+        `,
+      },
+    ];
+    return this._renderSections(sections);
   }
 
   private _renderSecurityCard() {

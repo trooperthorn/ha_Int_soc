@@ -735,6 +735,22 @@ exposes, **in evaluation order**, with:
 - The same **custom** badge and "N custom / M total" count as ACL Rules
   below, driven by the same `metadata.origin` field.
 
+A **Matrix / Table** toggle at the top of the card switches between the
+full sortable table above and a zone × zone grid — one cell per source/
+destination zone pair, colored by what's actually present there (all
+allow, all block/reject, a mix of both, or nothing) rather than by which
+policy "wins": UniFi evaluates policies in order with an implicit-deny
+fallback, and this project hasn't verified that evaluation closely enough
+to claim a winner, so "mixed" only means read the filtered table to see
+which policy actually governs. Clicking a cell switches back to Table
+view filtered to that one zone pair; a zone whose name no longer matches
+any policy (deleted after the policy list was last fetched) simply has
+nothing in its row/column rather than causing an error. Matching is by
+zone **name**, not id — the normalized policy rows don't carry the raw
+`zoneId`, only the name UniFi's own API already resolved it to (see
+`buildZoneMatrix` in
+[`firewall-matrix.ts`](custom_components/ha_soc/frontend/src/firewall-matrix.ts)).
+
 This reads the confirmed real endpoints `GET /sites/{siteId}/firewall/zones`
 and `GET /sites/{siteId}/firewall/policies`, whose schema (`action` as a
 typed ALLOW/BLOCK/REJECT object, `ipProtocolScope`, `source`/`destination`
@@ -781,6 +797,21 @@ could confirm it further — the same honesty posture as the Network tab's own
 field-mapping caveat above. If the controller's ACL endpoint doesn't
 respond, the report says so (and lists what it tried) rather than showing a
 fabricated ruleset.
+
+**Source/Destination device tie-in.** Every IP, subnet, or MAC address a
+rule or policy's name cell shows is also matched, client-side, against the
+Network tab's own Clients table (the same client list `network_security.py`
+already exposes as part of the overview): an IPv4 address or CIDR that
+contains a known client's address, or a MAC that matches one exactly,
+renders as a clickable chip carrying that client's display name instead of
+a bare address. Clicking it switches to the Network tab and filters its
+Clients table down to that device. This is a display convenience only — it
+never changes what the rule itself actually matches, and a miss (no chip,
+just the raw address) means no current client's IP/MAC falls inside that
+rule's filter, not that the address is unrecognized or unsafe. IPv6 subnet
+containment isn't implemented, only an exact IPv6 address can match; see
+`matchClientsForEntries` in
+[`device-match.ts`](custom_components/ha_soc/frontend/src/device-match.ts).
 
 > **What this API surface does not expose.** The same uploaded spec confirms
 > this controller's entire public Integration API surface — every path it
@@ -845,6 +876,43 @@ tracked through a dismiss/resolve lifecycle like the Scanner tab's findings:
 this is live network/DNS configuration that can change from one refresh to
 the next (a rule or policy edited in the UniFi app, blocking toggled from
 Pi-hole's own UI), and a persisted status here could go stale silently.
+
+## Customize (per-tab layout)
+
+A **Customize** button in the panel's top-right header (hidden on the
+Settings tab, whose cards are a config form rather than browsable
+resources) puts every other tab into an edit mode: each card/table gets a
+drag handle plus up/down buttons for reordering, and a show/hide toggle
+for the ones marked hideable. A tab's one primary resource — the
+Permissions Matrix, the Audit Log, Entity ReMap's own remap card, and a
+few others — stays pinned and un-hideable, since hiding it would leave the
+tab with nothing to look at. Leaving edit mode switches every view
+straight back to full, unfiltered content; nothing about which cards
+render is ever driven by edit mode itself, only by what's saved.
+
+Layout is stored **per Home Assistant account**, scoped by the caller's
+own `user_id` (`ha_soc/layout/get` and `ha_soc/layout/set` in
+[`websocket_api.py`](custom_components/ha_soc/websocket_api.py), backed by
+`panel_layout` in the store) — any user with SOC panel access manages
+their own arrangement, gated the same as any other read/write of the
+caller's own preferences (`@require_soc_access`, not owner-only), and can
+never read or write another user's layout. A user's saved layout is purged
+along with the rest of their data on `async_purge_user`. A failed load
+falls back to each view's own declared default order with nothing hidden
+— a transient WebSocket error never locks a view into a blank or
+scrambled state, it just ignores the saved arrangement for that session.
+Saves are fire-and-forget: a rearrangement applies immediately in the UI
+regardless of whether the save behind it succeeds, so the worst case of a
+failed save is that it doesn't survive a refresh, not that the click
+appears to do nothing.
+
+The framework is intentionally generic — every card-based view extends a
+shared `HaSocCustomizableView` base class
+([`customizable-view.ts`](custom_components/ha_soc/frontend/src/customizable-view.ts))
+that declares its cards as an ordered `LayoutSection[]`
+([`customize.ts`](custom_components/ha_soc/frontend/src/customize.ts)), so
+adding Customize support to a future tab means wrapping its existing
+render output in that array, not writing per-view reorder logic.
 
 ## Entity ReMap, config hygiene, and what's borrowed from Spook
 

@@ -297,13 +297,37 @@ def build_findings(
     return findings
 
 
+def _client_summaries(clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A lightweight projection of the Network tab's client rows — just
+    enough to match a rule/policy's source/destination IP/subnet/MAC
+    against a real device and show its name (see network-security-view.ts's
+    device tie-in). Deliberately drops bandwidth/uptime/integration-match/
+    every other field the Network tab's own table needs but a security-
+    rule audit doesn't, so this snapshot doesn't grow a second copy of the
+    full client detail payload."""
+    out = []
+    for c in clients:
+        out.append(
+            {
+                "name": c.get("name"),
+                "ipv4": c.get("ipv4"),
+                "ipv6": c.get("ipv6"),
+                "mac": c.get("mac"),
+                "vlan": c.get("vlan"),
+            }
+        )
+    return out
+
+
 async def async_network_security_overview(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
     """Everything the Network Security tab renders in one snapshot: the ACL
-    rules report and server-port correlation (both already computed inside
-    the UniFi overview), the Pi-hole overview, and the findings derived from
-    both. Never raises — both underlying fetchers already degrade to
+    rules report, Firewall Policies report, and server-port correlation
+    (all already computed inside the UniFi overview), a lightweight client
+    list for tying a rule's source/destination back to a real device on
+    the Network tab, the Pi-hole overview, and the findings derived from
+    all of it. Never raises — both underlying fetchers already degrade to
     reachable=False with a human-readable error on failure."""
     from .unifi import async_network_overview
 
@@ -317,6 +341,7 @@ async def async_network_security_overview(
         "acl": unifi_overview["acl"],
         "firewall_policies": unifi_overview["firewall_policies"],
         "server_ports": unifi_overview["server_ports"],
+        "clients": _client_summaries(unifi_overview.get("clients") or []),
         "unifi_reachable": unifi_overview["reachable"],
         "unifi_error": unifi_overview["error"],
         "pihole": pihole_overview,

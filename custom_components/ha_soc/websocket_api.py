@@ -301,6 +301,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_watchdog_set,
         ws_network_overview,
         ws_network_security_overview,
+        ws_layout_get,
+        ws_layout_set,
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
@@ -1810,6 +1812,50 @@ async def ws_network_security_overview(hass: HomeAssistant, connection, msg: dic
     runtime = _runtime(hass)
     overview = await async_network_security_overview(hass, runtime.store, runtime.secrets)
     connection.send_result(msg["id"], overview)
+
+
+# ----------------------------------------------------------------------------
+# Panel "Customize" layout — per-user card order/visibility for the card-
+# based views (Dashboard, Network, Network Security, etc.). A personal UI
+# preference, not a security control: @require_soc_access, not
+# @require_owner, and every command reads/writes only the CALLING user's
+# own layout (connection.user.id), never another user's — there is no
+# "set someone else's layout" command. Not audited (D-14's "ordinary
+# reads/writes of the caller's own preferences" carve-out, same reasoning
+# as why panel refreshes aren't logged): this is furniture-rearranging,
+# not a security-relevant change.
+# ----------------------------------------------------------------------------
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/layout/get", vol.Required("view_id"): str}
+)
+@websocket_api.async_response
+async def ws_layout_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    layout = runtime.store.get_user_panel_layout(connection.user.id, msg["view_id"])
+    connection.send_result(
+        msg["id"], {"order": layout.get("order", []), "hidden": layout.get("hidden", [])}
+    )
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/layout/set",
+        vol.Required("view_id"): str,
+        vol.Required("order"): [str],
+        vol.Required("hidden"): [str],
+    }
+)
+@websocket_api.async_response
+async def ws_layout_set(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    runtime.store.async_set_user_panel_layout(
+        connection.user.id, msg["view_id"], msg["order"], msg["hidden"]
+    )
+    connection.send_result(msg["id"], {"order": msg["order"], "hidden": msg["hidden"]})
 
 
 # ----------------------------------------------------------------------------

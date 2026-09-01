@@ -1,8 +1,9 @@
-import { LitElement, html, css, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, css, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
-import type { HomeAssistant } from "../types";
 import {
   ContainerLog,
   ContainerLogTargets,
@@ -45,7 +46,11 @@ function logLevelClass(level: string): string {
 const SOURCE_SYSTEM = "system";
 
 @customElement("ha-soc-logs-view")
-export class HaSocLogsView extends LitElement {
+export class HaSocLogsView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "logs";
+  }
+
   static styles = [
     sharedStyles,
     css`
@@ -120,8 +125,6 @@ export class HaSocLogsView extends LitElement {
       }
     `,
   ];
-
-  @property({ attribute: false }) hass!: HomeAssistant;
 
   @state() private _entries: HaLogEntry[] = [];
   @state() private _fault: FaultLogOverview | null = null;
@@ -309,9 +312,13 @@ export class HaSocLogsView extends LitElement {
     };
     const showingSystem = this._source === SOURCE_SYSTEM;
 
-    return html`
-      ${this._renderFaultLogCard()}
-
+    const sections: LayoutSection[] = [
+      { id: "fault_log", title: "Home Assistant Crash Log", render: () => this._renderFaultLogCard() },
+      {
+        id: "logs",
+        title: "Logs",
+        hideable: false,
+        render: () => html`
       <div class="card">
         <h3>Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -434,6 +441,9 @@ ${entry.exception}</pre
               </table>
             `}
       </div>
-    `;
+        `,
+      },
+    ];
+    return this._renderSections(sections);
   }
 }

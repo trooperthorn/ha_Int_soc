@@ -19,12 +19,17 @@ export const HA_SOC_NAVIGATE = "ha-soc-navigate";
 
 export interface HaSocNavigateDetail {
   tab: SocTab;
+  // Pre-fills the target tab's own search/filter box (currently only the
+  // Network tab's Clients table search consumes this) so "jump from a
+  // rule's resolved device to that device on the Network tab" lands
+  // already filtered to it, not just on the tab.
+  clientFilter?: string;
 }
 
-export function navigate(el: HTMLElement, tab: SocTab): void {
+export function navigate(el: HTMLElement, tab: SocTab, clientFilter?: string): void {
   el.dispatchEvent(
     new CustomEvent<HaSocNavigateDetail>(HA_SOC_NAVIGATE, {
-      detail: { tab },
+      detail: clientFilter ? { tab, clientFilter } : { tab },
       bubbles: true,
       composed: true,
     })

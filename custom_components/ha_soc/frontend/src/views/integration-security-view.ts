@@ -1,7 +1,8 @@
-import { LitElement, html, nothing } from "lit";
-import { customElement, property, state } from "lit/decorators.js";
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
-import type { HomeAssistant } from "../types";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   IntegrationSecurityOverview,
@@ -46,10 +47,12 @@ const FLAG_LABEL: Record<string, string> = {
 const PAGE_SIZE = 25;
 
 @customElement("ha-soc-integration-security-view")
-export class HaSocIntegrationSecurityView extends LitElement {
-  static styles = sharedStyles;
+export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "integration_security";
+  }
 
-  @property({ attribute: false }) hass!: HomeAssistant;
+  static styles = sharedStyles;
 
   @state() private _overview: IntegrationSecurityOverview | null = null;
   @state() private _loading = true;
@@ -191,7 +194,12 @@ export class HaSocIntegrationSecurityView extends LitElement {
       this._limit = PAGE_SIZE;
     };
 
-    return html`
+    const sections: LayoutSection[] = [
+      {
+        id: "integration_security",
+        title: "Integration Security",
+        hideable: false,
+        render: () => html`
       <div class="card">
         <h3>Integration Security</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -239,8 +247,6 @@ export class HaSocIntegrationSecurityView extends LitElement {
             </p>`
           : nothing}
       </div>
-
-      ${this._renderContainers()}
 
       <div class="card">
         <div class="toolbar">
@@ -305,7 +311,11 @@ export class HaSocIntegrationSecurityView extends LitElement {
               </p>
             `}
       </div>
-    `;
+        `,
+      },
+      { id: "container_resources", title: "Container Resource Usage", render: () => this._renderContainers() },
+    ];
+    return this._renderSections(sections);
   }
 
   private _notCollected() {
