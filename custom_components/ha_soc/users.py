@@ -267,6 +267,13 @@ class UsersManager:
         if user is None:
             return False
 
+        # Defense in depth for callers outside websocket_api: the generic
+        # update primitive must never be usable to deactivate the owner.
+        # The dedicated deactivate method already gets this protection from
+        # Home Assistant core, but async_update_user does not.
+        if user.is_owner and changes.get("is_active") is False:
+            return False
+
         try:
             await self.hass.auth.async_update_user(user, **changes)
         except (ValueError, HomeAssistantError):

@@ -1,0 +1,6 @@
+# Security-sensitive runtime and delivery surfaces require owner review.
+/custom_components/ha_soc/ @trooperthorn
+/ha_soc_probe/ @trooperthorn
+/.github/workflows/ @trooperthorn
+/SECURITY.md @trooperthorn
+

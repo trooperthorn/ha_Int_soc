@@ -33,7 +33,9 @@ panel refresh would bury the records that matter.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
+import re
 from functools import wraps
 from typing import Any
 
@@ -62,6 +64,11 @@ from .const import (
     CONF_SCANNER_ENABLED,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
+    CONF_SYSLOG_FACILITY,
+    CONF_SYSLOG_HOST,
+    CONF_SYSLOG_PORT,
+    CONF_SYSLOG_TLS_VERIFY,
+    CONF_SYSLOG_TRANSPORT,
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
@@ -76,12 +83,34 @@ from .const import (
     SECRET_SETTING_KEYS,
     SEVERITY_ORDER,
     SIGNAL_UPDATE,
+    SYSLOG_TRANSPORTS,
     WATCHDOG_ACTIONS,
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
 from .resource_watchdog import ADDON_SLUG_PATTERN
 
 _LOGGER = logging.getLogger(__name__)
+_SYSLOG_DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+
+
+def _syslog_host(value: Any) -> str | None:
+    """Accept only an IP literal or DNS hostname, never a URL/path."""
+    if value is None:
+        return None
+    host = cv.string(value).strip()
+    if not host:
+        return None
+    if len(host) > 253:
+        raise vol.Invalid("Syslog host is too long")
+    try:
+        ipaddress.ip_address(host)
+        return host
+    except ValueError:
+        pass
+    labels = host.rstrip(".").split(".")
+    if not labels or any(not _SYSLOG_DNS_LABEL.fullmatch(label) for label in labels):
+        raise vol.Invalid("Syslog host must be an IP address or DNS hostname")
+    return host
 
 
 def _detection_thresholds_schema() -> vol.Schema:
@@ -440,6 +469,26 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
         for k, v in msg.items()
         if k in ("name", "is_active", "group_ids", "local_only")
     }
+
+    # Updating an admin-group account is the same takeover surface as the
+    # dedicated deactivate/delete/revoke commands below: a non-owner admin
+    # must not be able to demote, deactivate, or otherwise rewrite the owner
+    # or another administrator through this more general endpoint.
+    if not connection.user.is_owner and await _async_target_is_admin(
+        hass, msg["user_id"]
+    ):
+        raise Unauthorized
+
+    # Home Assistant's dedicated deactivate path protects the owner, but
+    # async_update_user accepts is_active directly.  Preserve the same
+    # invariant here even for a request made by the owner themself.
+    target = await hass.auth.async_get_user(msg["user_id"])
+    if target is not None and target.is_owner and changes.get("is_active") is False:
+        connection.send_error(
+            msg["id"], "cannot_deactivate_owner", "The owner account cannot be deactivated"
+        )
+        return
+
     ok = await runtime.users.async_update_user(msg["user_id"], **changes)
     if not ok:
         connection.send_error(msg["id"], "update_failed", "Could not update this user")
@@ -1896,9 +1945,9 @@ async def _masked_settings(settings: dict, secrets) -> dict:
 @websocket_api.async_response
 async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    connection.send_result(
-        msg["id"], await _masked_settings(runtime.store.settings, runtime.secrets)
-    )
+    payload = await _masked_settings(runtime.store.settings, runtime.secrets)
+    payload["syslog_status"] = runtime.syslog.status
+    connection.send_result(msg["id"], payload)
 
 
 @require_owner
@@ -1910,6 +1959,13 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         ),
         vol.Optional(CONF_AUDIT_RETENTION_DAYS): vol.All(vol.Coerce(int), vol.Range(min=7, max=3650)),
         vol.Optional(CONF_AUDIT_MAX_BYTES): vol.All(vol.Coerce(int), vol.Range(min=1_000_000)),
+        vol.Optional(CONF_SYSLOG_TRANSPORT): vol.In(SYSLOG_TRANSPORTS),
+        vol.Optional(CONF_SYSLOG_HOST): _syslog_host,
+        vol.Optional(CONF_SYSLOG_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+        vol.Optional(CONF_SYSLOG_TLS_VERIFY): bool,
+        # local0 through local7; keeping this narrow avoids accidental use
+        # of kernel/auth facilities at a shared receiver.
+        vol.Optional(CONF_SYSLOG_FACILITY): vol.All(vol.Coerce(int), vol.Range(min=16, max=23)),
         # Work item 3.3 (D-6): how long resolved/dismissed detections and
         # findings are kept. The floor stops an accidental "1" from
         # erasing an incident's evidence trail a month later.
@@ -2000,6 +2056,18 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     if changes:
         runtime.store.async_update_settings(**changes)
 
+    if any(
+        key in changes
+        for key in (
+            CONF_SYSLOG_TRANSPORT,
+            CONF_SYSLOG_HOST,
+            CONF_SYSLOG_PORT,
+            CONF_SYSLOG_TLS_VERIFY,
+            CONF_SYSLOG_FACILITY,
+        )
+    ):
+        await runtime.syslog.async_reconfigure()
+
     if changes or secret_changes or threshold_diff:
         # The audit record names every changed key. Secret values are
         # replaced with the placeholder HERE so no raw secret even enters
@@ -2016,9 +2084,9 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
             user_id=connection.user.id,
             detail={"action": "settings_changed", "changes": audited_changes},
         )
-    connection.send_result(
-        msg["id"], await _masked_settings(runtime.store.settings, runtime.secrets)
-    )
+    payload = await _masked_settings(runtime.store.settings, runtime.secrets)
+    payload["syslog_status"] = runtime.syslog.status
+    connection.send_result(msg["id"], payload)
 
 
 # ----------------------------------------------------------------------------

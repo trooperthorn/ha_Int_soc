@@ -602,6 +602,12 @@ class AuditLog:
         # session is announced once more, which is cheap and errs toward
         # visibility rather than silence.
         self._seen_ws_token_ids: set[str] = set()
+        self._syslog_exporter: Any | None = None
+
+    @callback
+    def async_set_syslog_exporter(self, exporter: Any) -> None:
+        """Attach the off-box sink without creating an import cycle."""
+        self._syslog_exporter = exporter
 
     # -- Lifecycle ----------------------------------------------------------
 
@@ -1276,6 +1282,8 @@ class AuditLog:
                 self._sync_flush, records
             )
             if flushed_ok and records:
+                if self._syslog_exporter is not None:
+                    self._syslog_exporter.async_enqueue(records)
                 # Mirror the flushed head into the general store (work item
                 # 1.5) - on the event loop, after the executor job returned,
                 # because store.data must never be mutated off-loop. _seq

@@ -44,6 +44,10 @@ from .const import (
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
     DEFAULT_PIHOLE_VERIFY_SSL,
     DEFAULT_SECURITY_SOURCES_ENABLED,
+    DEFAULT_SYSLOG_FACILITY,
+    DEFAULT_SYSLOG_PORT,
+    DEFAULT_SYSLOG_TLS_VERIFY,
+    DEFAULT_SYSLOG_TRANSPORT,
     DEFAULT_UNIFI_VERIFY_SSL,
     DETECTION_RESOLVED,
     STATUS_DISMISSED,
@@ -85,6 +89,13 @@ class SettingsData(TypedDict):
     # websocket_api._masked_settings, never persisted here.
     audit_retention_days: int
     audit_max_bytes: int
+    # RFC 5424 off-box audit export. Disabled by default; UDP/TCP remain
+    # explicit compatibility modes and TLS is the recommended destination.
+    syslog_transport: str
+    syslog_host: str | None
+    syslog_port: int
+    syslog_tls_verify: bool
+    syslog_facility: int
     # How long resolved detections and resolved/dismissed findings are
     # retained (work item 3.3, D-6). Distinct from audit_retention_days,
     # which governs the audit chain's day files.
@@ -211,6 +222,11 @@ def default_store_data() -> StoreData:
         settings=SettingsData(
             audit_retention_days=DEFAULT_AUDIT_RETENTION_DAYS,
             audit_max_bytes=DEFAULT_AUDIT_MAX_BYTES,
+            syslog_transport=DEFAULT_SYSLOG_TRANSPORT,
+            syslog_host=None,
+            syslog_port=DEFAULT_SYSLOG_PORT,
+            syslog_tls_verify=DEFAULT_SYSLOG_TLS_VERIFY,
+            syslog_facility=DEFAULT_SYSLOG_FACILITY,
             evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,

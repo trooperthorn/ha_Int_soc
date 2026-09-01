@@ -300,10 +300,27 @@ export interface PeripheralOverview {
 // this Settings tab and the native "Configure" options-flow dialog.
 export type AccessLevel = "owner_only" | "owner_and_admins";
 export type MfaPolicy = "audit_only" | "auto_deactivate";
+export type SyslogTransport = "disabled" | "udp" | "tcp" | "tls";
 
 export interface HaSocSettings {
   audit_retention_days: number;
   audit_max_bytes: number;
+  syslog_transport: SyslogTransport;
+  syslog_host: string | null;
+  syslog_port: number;
+  syslog_tls_verify: boolean;
+  syslog_facility: number;
+  syslog_status?: {
+    enabled: boolean;
+    transport: SyslogTransport;
+    host_configured: boolean;
+    connected: boolean;
+    queued: number;
+    sent: number;
+    dropped: number;
+    last_sent_at: string | null;
+    last_error: string | null;
+  };
   // Work item 3.3 (D-6): retention for resolved/dismissed detections and
   // findings, distinct from the audit log's own retention above.
   evidence_retention_days: number;

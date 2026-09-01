@@ -775,21 +775,21 @@ async def test_protect_status_from_core_only(
     assert out["events_error"] is None
 
 
-async def test_protect_events_from_core_when_rest_events_missing(
+async def test_protect_events_from_core_when_subscription_history_is_needed(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    """The reported failure mode: cameras load over REST but /events 404s.
-    Core bootstrap events must fill the card and clear the error, and the
+    """Cameras load via Local API while core supplies subscription history.
+    Core bootstrap events must fill the card and clear the notice, and the
     REST camera row must gain the detail fields it was missing."""
     store.async_update_settings(unifi_protect_host="10.0.0.1")
     await secrets.async_set("unifi_protect_api_key", "k")
     _install_core_entry(hass, "unifiprotect", _protect_runtime(dt_util.utcnow()))
 
     async def _side_effect(hass_, conn, path):
-        if path.startswith("/cameras"):
+        if path == "/cameras":
             # Sparse REST row: same camera, no recording/ring/channel detail.
-            return {"data": [{"id": "cam1", "name": "Front Door", "state": "CONNECTED"}]}
-        raise UniFiError("Endpoint not found (/events?...)")
+            return [{"id": "cam1", "name": "Front Door", "state": "CONNECTED"}]
+        raise AssertionError(f"undocumented Protect path called: {path}")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
         out = await async_protect_status(hass, store, secrets)
@@ -808,18 +808,17 @@ async def test_protect_events_from_core_when_rest_events_missing(
     assert out["events_error"] is None
 
 
-async def test_protect_absent_core_keeps_rest_error(
+async def test_protect_absent_core_keeps_subscription_notice(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    """Without core unifiprotect the pre-existing behavior is untouched: the
-    events probe failure is still reported honestly."""
+    """Without core unifiprotect, the subscription limitation is explicit."""
     store.async_update_settings(unifi_protect_host="10.0.0.1")
     await secrets.async_set("unifi_protect_api_key", "k")
 
     async def _side_effect(hass_, conn, path):
-        if path.startswith("/cameras"):
-            return {"data": [{"id": "c1", "name": "cam", "state": "CONNECTED"}]}
-        raise UniFiError("events endpoint not found")
+        if path == "/cameras":
+            return [{"id": "c1", "name": "cam", "state": "CONNECTED"}]
+        raise AssertionError(f"undocumented Protect path called: {path}")
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
         out = await async_protect_status(hass, store, secrets)

@@ -884,12 +884,10 @@ async def test_protect_not_configured(hass: HomeAssistant, store: HaSocData, sec
     assert out["reachable"] is False
 
 
-def _dispatch_protect(cameras, events):
+def _dispatch_protect(cameras):
     async def _side_effect(hass, conn, path):
-        if path.startswith("/cameras"):
-            return {"data": cameras}
-        if path.startswith("/events"):
-            return {"data": events}
+        if path == "/cameras":
+            return cameras
         raise AssertionError(f"unexpected path {path}")
 
     return _side_effect
@@ -905,7 +903,7 @@ async def test_protect_status_counts_online_cameras(
         {"name": "back", "state": "DISCONNECTED"},
         {"name": "side", "state": "CONNECTED"},
     ]
-    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras))):
         out = await async_protect_status(hass, store, secrets)
     assert out["configured"] is True
     assert out["reachable"] is True
@@ -931,7 +929,7 @@ async def test_protect_camera_deep_link_and_fields(
             "state": "CONNECTED",
         }
     ]
-    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras, []))):
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_protect(cameras))):
         out = await async_protect_status(hass, store, secrets)
 
     cam = out["cameras"][0]
@@ -978,17 +976,16 @@ def test_normalize_event_smart_detection_and_plate() -> None:
     assert row["thumbnail_link"] == "https://192.168.30.2/protect/dashboard/devices/cam1"
 
 
-async def test_protect_events_error_still_returns_cameras(
+async def test_protect_official_event_subscription_notice_still_returns_cameras(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
-    """A failing events call must not wipe out the cameras table."""
+    """No undocumented event REST calls are made and cameras still load."""
     store.async_update_settings(unifi_protect_host="10.0.0.1")
     await secrets.async_set("unifi_protect_api_key", "k")
 
     async def _side_effect(hass, conn, path):
-        if path.startswith("/cameras"):
-            return {"data": [{"id": "c1", "name": "cam", "state": "CONNECTED"}]}
-        raise UniFiError("events endpoint not found")
+        assert path == "/cameras"
+        return [{"id": "c1", "name": "cam", "state": "CONNECTED"}]
 
     with patch.object(unifi, "_get", new=AsyncMock(side_effect=_side_effect)):
         out = await async_protect_status(hass, store, secrets)
@@ -996,9 +993,8 @@ async def test_protect_events_error_still_returns_cameras(
     assert out["reachable"] is True
     assert out["camera_count"] == 1
     assert out["events"] == []
-    # A "not found" on every candidate degrades to the friendly explanation.
     assert out["events_error"] is not None
-    assert "REST events list" in out["events_error"]
+    assert "/subscribe/events" in out["events_error"]
 
 
 # ---------------------------------------------------------------------------
