@@ -37,3 +37,15 @@ def test_release_zip_is_reproducible_and_hacs_compatible(tmp_path: Path) -> None
         assert not any(name.startswith("custom_components/") for name in names)
         assert not any("__pycache__" in name for name in names)
         assert archive.comment == f"HA SOC {EXPECTED_VERSION}".encode("ascii")
+
+
+def test_release_workflow_stages_assets_before_immutable_publish() -> None:
+    workflow = (REPOSITORY / ".github/workflows/release.yml").read_text(
+        encoding="utf-8"
+    )
+    draft = workflow.index("--draft")
+    upload = workflow.index('gh release upload "$TAG"')
+    publish = workflow.index('--draft=false')
+
+    assert draft < upload < publish
+    assert "--clobber" in workflow[draft:publish]
