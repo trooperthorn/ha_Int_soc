@@ -19,8 +19,25 @@ control owner, collection method, sampling period, result, exception, approval,
 and hash/signature. Do not export raw API keys, tokens, cookies, camera images,
 or unnecessary personal data.
 
-Required future product work is a signed evidence-pack generator and receiver-
-side chain verifier. Until then, retain HA SOC exports, SIEM records, GitHub
-workflow artifacts, configuration snapshots, and reviewer attestations as
-separate evidence sources.
+The `Compliance Evidence` workflow now produces a monthly and on-demand,
+provenance-attested repository/CI point-in-time pack. It hashes the control
+documents and workflow definitions and records protected-branch status checks,
+recent workflow runs, release asset digests, and a redacted CodeQL count. A
+missing required observation or control deviation makes the workflow fail
+after preserving the partial pack, so collection failure cannot look like a
+passing assessment. GitHub Actions retains the transport artifact for 90 days;
+copy it to the approved evidence repository to meet the longer retention
+period.
 
+GitHub restricts the immutable-release **settings** endpoint to an
+Administration-read token, which the default workflow token cannot request.
+The pack records that as a scope boundary. Optionally add a fine-grained
+repository secret named `COMPLIANCE_ADMIN_TOKEN` with Administration **read**
+permission to collect that setting automatically; it needs no write scope.
+
+Required future **runtime product work** remains a signed Home Assistant
+evidence-pack generator and receiver-side audit-chain verifier. Until that is
+implemented, retain HA SOC exports, SIEM records, GitHub workflow artifacts,
+configuration snapshots, and reviewer attestations as separate evidence
+sources. Certificate deployment is deferred pending the security-template
+research in `PKI-CERTIFICATE-TEMPLATE-SECURITY-RESEARCH.md`.

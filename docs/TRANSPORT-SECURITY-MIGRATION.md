@@ -13,6 +13,12 @@ SOC 2 logical/communications-control expectations. Credentials, tokens, logs,
 and security telemetry can be exposed to a device able to observe or alter the
 local path. Network isolation is compensating risk reduction, not encryption.
 
+Certificate deployment is deferred by owner decision as of 2026-09-01 while
+the AD CS hierarchy and certificate templates are researched as security
+controls rather than treated as a connectivity exercise. See
+`PKI-CERTIFICATE-TEMPLATE-SECURITY-RESEARCH.md`. This deferral does not close or
+suppress the HTTP, self-signed-certificate, or plaintext-Syslog findings.
+
 ## Migration sequence
 
 1. Inventory every origin, hostname, certificate subject/SAN, trust store,
