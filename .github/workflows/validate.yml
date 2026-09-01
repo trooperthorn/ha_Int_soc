@@ -26,7 +26,7 @@ jobs:
       # compromised tag cannot change the code this workflow runs. Each
       # digest was resolved from github.com on 2026-08-30 and the ref it
       # matched at that time is in the trailing comment.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
       # hacs/action is the canonical HACS validator and its documented ref is
       # @main; upstream stopped tagging releases at 22.5.0, so the pin is the
       # head of main at pin time. Bump the digest deliberately when the
@@ -39,7 +39,7 @@ jobs:
     name: hassfest (manifest sanity)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
       # home-assistant/actions documents @master and publishes no release
       # tags for hassfest, so the pin is the head of master at pin time.
       - uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master on 2026-08-30
