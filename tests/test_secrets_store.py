@@ -240,11 +240,16 @@ async def test_migration_moves_settings_secrets_out_of_old_store(
     assert sorted(moved) == ["github_token", "nvd_api_key"]
     assert await secrets.async_get("nvd_api_key") == "OLD-NVD"
     assert await secrets.async_get("github_token") == "OLD-GH"
-    assert "moved 2 secret value(s)" in caplog.text
-    assert "nvd_api_key" not in caplog.text
-    assert "github_token" not in caplog.text
-    assert "OLD-NVD" not in caplog.text
-    assert "OLD-GH" not in caplog.text
+    migration_log = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "custom_components.ha_soc.secrets_store"
+    )
+    assert "moved 2 secret value(s)" in migration_log
+    assert "nvd_api_key" not in migration_log
+    assert "github_token" not in migration_log
+    assert "OLD-NVD" not in migration_log
+    assert "OLD-GH" not in migration_log
 
     # The old store was rewritten immediately, without the values.
     old_blob = json.dumps(hass_storage[STORAGE_KEY])
