@@ -27,7 +27,7 @@ jobs:
       # digest was resolved from github.com on 2026-08-30 and the tag it
       # matched at that time is in the trailing comment.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
-      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0 (v6)
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v6.3.0 (v6)
         with:
           python-version: "3.13"
       # The harness pin brings Home Assistant core 2026.2.3, and the
