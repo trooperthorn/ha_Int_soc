@@ -1,7 +1,10 @@
 """HaSocData load/save round-trip and finding-lifecycle helpers."""
 from homeassistant.core import HomeAssistant
 
-from custom_components.ha_soc.const import DEFAULT_SECURITY_SOURCES_ENABLED
+from custom_components.ha_soc.const import (
+    DEFAULT_SECURITY_SOURCES_ENABLED,
+    SYSLOG_FORMAT_RFC5424_JSON,
+)
 from custom_components.ha_soc.store import HaSocData, default_store_data
 
 
@@ -63,6 +66,7 @@ async def test_load_merges_missing_nested_settings_keys(hass: HomeAssistant) -> 
 
     old_settings = dict(store.data["settings"])
     del old_settings["security_sources_enabled"]
+    del old_settings["syslog_format"]
     old_settings["scanner_enabled"] = False  # a real prior customization that must survive the merge
     store.data["settings"] = old_settings
     await store.async_save_now()
@@ -71,6 +75,7 @@ async def test_load_merges_missing_nested_settings_keys(hass: HomeAssistant) -> 
     had_data = await store2.async_load()
     assert had_data is True
     assert store2.settings["security_sources_enabled"] == DEFAULT_SECURITY_SOURCES_ENABLED
+    assert store2.settings["syslog_format"] == SYSLOG_FORMAT_RFC5424_JSON
     assert store2.settings["scanner_enabled"] is False
 
 

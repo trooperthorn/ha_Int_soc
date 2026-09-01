@@ -600,11 +600,38 @@ export class HaSocSettingsView extends LitElement {
       <div class="card">
         <h3>SIEM / Syslog Export</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          Exports finalized hash-chained audit records as RFC 5424 JSON. TCP and
-          TLS use RFC 6587 octet framing. This stays disabled until a destination
-          is configured; SolarWinds SEM and other standard Syslog receivers can
-          ingest the same stream.
+          Exports finalized hash-chained audit records as RFC 5424 with JSON or
+          CEF 0, or as bare canonical JSON for collectors that explicitly require
+          it. TCP and TLS retain RFC 6587 octet framing. This stays disabled until
+          a destination is configured.
         </p>
+        <label class="settings-row">
+          <span>
+            Payload format
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Independent of the UDP, TCP, or TLS transport below.</span
+            >
+          </span>
+          <select
+            .value=${s.syslog_format}
+            @change=${(e: Event) =>
+              this._update(
+                "syslog_format",
+                (e.target as HTMLSelectElement).value as HaSocSettings["syslog_format"]
+              )}
+          >
+            <option value="rfc5424_json">RFC 5424 + Raw audit JSON (default)</option>
+            <option value="cef">RFC 5424 + CEF 0</option>
+            <option value="raw_json">Bare Raw JSON (collector compatibility)</option>
+          </select>
+        </label>
+        ${s.syslog_format === "raw_json"
+          ? html`<p class="muted" style="font-size:12px;color:var(--warning-color,#ffa600);">
+              Bare Raw JSON has no RFC 5424 envelope. Use it only when the receiver
+              explicitly requires JSON-only input; RFC 5424 + JSON remains the
+              standards-based default.
+            </p>`
+          : ""}
         <label class="settings-row">
           <span>Transport</span>
           <select
@@ -685,7 +712,7 @@ export class HaSocSettingsView extends LitElement {
                     ? "waiting for first delivery"
                     : "disabled"}.
               Sent ${s.syslog_status.sent}; queued ${s.syslog_status.queued}; dropped
-              ${s.syslog_status.dropped}.
+              ${s.syslog_status.dropped}. Format ${s.syslog_status.format}.
             </p>`
           : ""}
       </div>

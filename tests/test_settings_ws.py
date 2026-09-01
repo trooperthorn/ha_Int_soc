@@ -14,7 +14,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 
-from custom_components.ha_soc.const import DOMAIN
+from custom_components.ha_soc.const import DOMAIN, SYSLOG_FORMAT_CEF
 from custom_components.ha_soc.websocket_api import ws_settings_get, ws_settings_set
 
 
@@ -62,6 +62,27 @@ async def test_set_updates_store_and_leaves_entry_options_empty(
 
     result = connection.send_result.call_args[0][1]
     assert result["scanner_enabled"] is False
+
+
+async def test_syslog_format_is_selectable_and_reported(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    connection = _connection()
+    ws_settings_set(
+        hass,
+        connection,
+        {
+            "id": 1,
+            "type": "ha_soc/settings/set",
+            "syslog_format": SYSLOG_FORMAT_CEF,
+        },
+    )
+    await hass.async_block_till_done()
+
+    assert entry.runtime_data.store.settings["syslog_format"] == SYSLOG_FORMAT_CEF
+    result = connection.send_result.call_args[0][1]
+    assert result["syslog_format"] == SYSLOG_FORMAT_CEF
+    assert result["syslog_status"]["format"] == SYSLOG_FORMAT_CEF
 
 
 async def test_set_with_no_changes_is_a_no_op_read(hass: HomeAssistant, entry: MockConfigEntry) -> None:

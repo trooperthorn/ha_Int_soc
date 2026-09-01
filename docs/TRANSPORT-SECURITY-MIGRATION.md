@@ -39,8 +39,26 @@ local path. Network isolation is compensating risk reduction, not encryption.
 - UDP: broadest compatibility and lowest assurance. Delivery is best effort;
   `sent` means accepted by the local network stack, not acknowledged by SIEM.
 
-All modes include HA SOC audit `seq`, `prev_hash`, and `hash` in the JSON body;
-the structured-data header carries `seq`, `hash`, and `category`. The receiver
-should alert on sequence gaps, chain failures, exporter drops/errors, and a
-disabled exporter. The local tamper-evident JSONL remains the system of record.
+Payload is selected independently from transport:
 
+- RFC 5424 + Raw audit JSON: backward-compatible default. The complete
+  canonical audit record is the RFC 5424 message body.
+- RFC 5424 + CEF 0: the RFC 5424 body starts with
+  `CEF:0|Home Assistant|HA SOC|...`; fixed CEF fields duplicate the audit
+  sequence and chain hashes for SIEM connectors that ignore RFC 5424
+  structured data.
+- Bare Raw JSON: compatibility mode for collectors that explicitly require a
+  JSON-only payload. It has no RFC 5424 envelope; TCP/TLS still retain bounded
+  RFC 6587 octet-count framing.
+
+All formats include HA SOC audit `seq`, `prev_hash`, and `hash`. In the two RFC
+5424 formats, the structured-data header also carries `seq`, `hash`, and
+`category`. The receiver should alert on sequence gaps, chain failures,
+exporter drops/errors, and a disabled exporter. The local tamper-evident JSONL
+remains the system of record.
+
+SolarWinds SEM receipt and normalization are separate acceptance checks. Use a
+dedicated `local0`-`local7` facility, confirm raw receipt first, and then verify
+that the selected SEM connector maps event ID, name, severity, source, user,
+and chain fields into normalized events. A standards-valid CEF message does not
+by itself establish that a product-specific SEM connector supports HA SOC.

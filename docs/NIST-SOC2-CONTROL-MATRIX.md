@@ -15,7 +15,7 @@ References: [NIST SP 800-53 Release 5.2.0](https://csrc.nist.gov/pubs/sp/800/53/
 |---|---|---|---|
 | Owner/admin authorization, least privilege, token/session actions | AC-2, AC-3, AC-5, AC-6, IA-2, IA-5 | CC6.1-CC6.3 | Implemented; org must review access and MFA evidence periodically |
 | Hash-chained audit with actor/category/time, retention and local-first flush | AU-2-AU-6, AU-8, AU-9, AU-11, AU-12 | CC2.2, CC4.1, CC7.2-CC7.4 | Implemented; protect backups and test restoration/chain verification |
-| RFC 5424 SIEM export over TLS/TCP/UDP, queue/drop status | AU-4, AU-5, AU-6, AU-9; SC-8, SC-23 | CC6.6, CC7.2-CC7.4 | Implemented, disabled by default; configure receiver/alerts and prefer verified TLS |
+| Selectable RFC 5424 JSON, RFC 5424 CEF 0, or bare JSON SIEM export over TLS/TCP/UDP; queue/drop/format status | AU-3-AU-6, AU-9, AU-12; SC-8, SC-23 | CC6.6, CC7.2-CC7.4 | Implemented, disabled by default; configure receiver/connector alerts, validate normalized fields, and prefer verified TLS |
 | Integration/device/security health, CVE and detection views | CA-7, RA-3, RA-5, SI-2, SI-4 | CC3.2, CC4.1, CC7.1 | Partial; define owners, SLAs, triage and closure evidence |
 | Config change audit, safe defaults, versioned store | CM-2, CM-3, CM-5, CM-6, CM-8 | CC8.1 | Partial; require protected branch, approvals, deployment records |
 | API limits, redirect refusal, validation, secret redaction | SC-7, SC-8, SC-23, SI-10, SI-11 | CC6.6, CC6.7, CC7.1 | Implemented at app boundary; verified TLS migration remains |
@@ -40,4 +40,3 @@ References: [NIST SP 800-53 Release 5.2.0](https://csrc.nist.gov/pubs/sp/800/53/
 6. Commission an independent penetration test after deploying a staging copy
    and again after material trust-boundary changes. A clean scan never proves
    that no security issue exists.
-

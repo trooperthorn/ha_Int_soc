@@ -1,9 +1,8 @@
 # Turns every pushed version tag into a GitHub Release that HACS installs
-# from. Guards that the tag and the integration manifest version agree, so
-# the two can never drift apart again (the drift is what caused HACS to
-# quote a version that matched no release and fail with an unresolved
-# domain). Uses the preinstalled `gh` CLI with the built-in GITHUB_TOKEN, so
-# the only third-party action in the release path is the pinned checkout.
+# from. Guards that the tag, integration manifest, Probe add-on, and Probe
+# scanner versions agree, so shipped component identifiers cannot drift.
+# Uses the preinstalled `gh` CLI with the built-in GITHUB_TOKEN, so the only
+# third-party action in the release path is the pinned checkout.
 name: Release
 
 on:
@@ -36,19 +35,46 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Pinned by commit SHA so a moved or compromised tag cannot change the
-      # code this workflow runs; the digest was resolved from github.com on
-      # 2026-08-30 and matched the tag in the trailing comment at that time.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
+      # code this workflow runs; the matching release is documented in the
+      # trailing comment and is reviewed when Dependabot updates the digest.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - name: Verify the tag matches the manifest version
+      - name: Verify the tag matches every component version
         run: |
           TAG="${GITHUB_REF_NAME#v}"
-          MANIFEST=$(python3 -c "import json;print(json.load(open('custom_components/ha_soc/manifest.json'))['version'])")
-          echo "tag=$TAG  manifest=$MANIFEST"
-          if [ "$TAG" != "$MANIFEST" ]; then
-            echo "::error::Tag ($TAG) != manifest version ($MANIFEST). Use scripts/release.sh so they always match."
-            exit 1
-          fi
+          python3 - "$TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import re
+          import sys
+
+          expected = sys.argv[1]
+          manifest = json.loads(
+              Path("custom_components/ha_soc/manifest.json").read_text(encoding="utf-8")
+          )["version"]
+          probe_text = Path("ha_soc_probe/config.yaml").read_text(encoding="utf-8")
+          scanner_text = Path(
+              "ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run"
+          ).read_text(encoding="utf-8")
+          probe_match = re.search(r'^version:\s*"([^"]+)"', probe_text, re.MULTILINE)
+          scanner_match = re.search(
+              r'^SCANNER_VERSION="([^"]+)"', scanner_text, re.MULTILINE
+          )
+          versions = {
+              "tag": expected,
+              "manifest": manifest,
+              "probe": probe_match.group(1) if probe_match else "<missing>",
+              "scanner": scanner_match.group(1) if scanner_match else "<missing>",
+          }
+          print("  ".join(f"{name}={value}" for name, value in versions.items()))
+          mismatched = {name: value for name, value in versions.items() if value != expected}
+          if mismatched:
+              sys.exit(
+                  "Version mismatch: "
+                  + ", ".join(f"{name}={value}" for name, value in mismatched.items())
+                  + ". Use scripts/release.sh so every component stays in lockstep."
+              )
+          PY
 
       - name: Create the GitHub Release
         env:
