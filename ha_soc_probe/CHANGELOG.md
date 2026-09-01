@@ -18,6 +18,10 @@
   overview and prioritized action counts, replaces the repeated donut charts
   with comparable bars and summary metrics, limits initial investigation
   queues to ten rows, and uses a quieter, sticky application navigation.
+- CodeQL follow-up: credential migration logs now expose only a count, never
+  credential key names, with a regression assertion covering both names and
+  values. A synthetic YAML-reference test fixture no longer uses a
+  secret-classified variable name that caused a test-only storage alert.
 
 Everything from the 2026-08-30 security review's sprints 0, 1, and 2
 (this section becomes the next version when it is cut; the sprints

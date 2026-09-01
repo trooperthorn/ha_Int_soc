@@ -140,8 +140,10 @@ async def async_migrate_legacy_secrets(secrets: HaSocSecretStore, store) -> list
     them. Runs on every setup but is a no-op once the legacy keys are gone,
     so it costs nothing on a migrated install.
 
-    Returns the list of key names that were moved; the caller logs them at
-    INFO. Key names only are ever logged, never values.
+    Returns the list of key names that were moved so the caller can verify
+    migration behavior internally. Logs expose only the count, never key
+    names or values; even the presence of a particular credential is
+    unnecessary operational metadata.
 
     The ``store`` parameter is typed loosely (HaSocData) to avoid a
     circular import between store.py and this module.
@@ -173,9 +175,8 @@ async def async_migrate_legacy_secrets(secrets: HaSocSecretStore, store) -> list
         await store.async_save_now()
         _LOGGER.info(
             "HA SOC: moved %d secret value(s) into the private secret store "
-            "(keys: %s). The old copies were removed from %s.",
+            "and removed the old copies from %s.",
             len(moved),
-            ", ".join(moved),
             f"{DOMAIN}.storage",
         )
     return moved

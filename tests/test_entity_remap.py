@@ -435,7 +435,7 @@ async def test_remap_backs_up_dashboard_and_helper(hass: HomeAssistant) -> None:
     assert entry.options["source"] == "sensor.new_name"
 
 
-_SECRET_TAINTED_AUTOMATIONS = """\
+_REFERENCE_TAGGED_AUTOMATIONS = """\
 - id: auto_taint
   alias: Tainted Automation
   trigger:
@@ -492,7 +492,7 @@ async def _assert_tainted_yaml_refused(hass: HomeAssistant, tainted_text: str) -
 
 
 async def test_remap_refuses_secret_tagged_yaml(hass: HomeAssistant) -> None:
-    await _assert_tainted_yaml_refused(hass, _SECRET_TAINTED_AUTOMATIONS)
+    await _assert_tainted_yaml_refused(hass, _REFERENCE_TAGGED_AUTOMATIONS)
 
 
 async def test_remap_refuses_include_tagged_yaml(hass: HomeAssistant) -> None:
