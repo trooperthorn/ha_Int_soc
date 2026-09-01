@@ -12,6 +12,8 @@
   now reject version drift across any of those identifiers. The synthetic
   hard-coded-credential regression fixture is assembled at runtime so GitHub
   secret scanning no longer mistakes test data for a live Google API key.
+- Security CI: CodeQL now analyzes Python and JavaScript/TypeScript and uploads
+  results to GitHub code scanning alongside Bandit, npm audit, and ShellCheck.
 
 Everything from the 2026-08-30 security review's sprints 0, 1, and 2
 (this section becomes the next version when it is cut; the sprints

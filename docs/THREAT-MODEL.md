@@ -20,7 +20,7 @@ NVD/GitHub; and HA to the SIEM.
 | Audit deletion, rollback, queue exhaustion, or SIEM outage | evidence loss | hash chain, mirrored head, Repairs issue, local-first flush, bounded queue, retry/status/gap detection | SIEM alerts, retention, evidence export, capacity test |
 | HTTP/plaintext Syslog or unverified certificates | interception/tampering | visible findings/warnings; no forced migration | complete certificate plan and segmentation |
 | Malicious integration in shared HA process | secret/data theft | advisory static scanner and provenance findings | allowlist/review code; isolate high-risk workloads |
-| Dependency or CI compromise | shipped vulnerable code | lockfile, pinned Actions, npm audit, Bandit, ShellCheck, Dependabot, owner review | add signed releases/SBOM/provenance |
+| Dependency or CI compromise | shipped vulnerable code | lockfile, pinned Actions, CodeQL, npm audit, Bandit, ShellCheck, Dependabot, owner review | enable vulnerability alerts; add signed releases/SBOM/provenance |
 | Availability attack or response amplification | HA/SIEM degradation | time/body/fan-out/queue bounds, cancellation-safe lifecycle, rate-conscious polling | load/failure drills and monitoring |
 
 ## Assumptions
@@ -32,4 +32,3 @@ the host defeats most integration-level controls.
 
 Review this model for every new data source, write operation, network listener,
 credential, or trust-boundary change and at least annually.
-

@@ -11,6 +11,34 @@ permissions:
   contents: read
 
 jobs:
+  codeql:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        language:
+          - python
+          - javascript-typescript
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # CodeQL's floating v4 tag is resolved to an immutable commit. Both
+      # languages use the action's no-build analysis because this repository
+      # contains interpreted Python and TypeScript compiled only for its
+      # checked-in browser bundle.
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4
+        with:
+          category: "/language:${{ matrix.language }}"
+
   python-security:
     name: Python static security checks
     runs-on: ubuntu-latest
