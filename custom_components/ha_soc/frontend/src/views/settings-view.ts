@@ -598,6 +598,99 @@ export class HaSocSettingsView extends LitElement {
       </div>
 
       <div class="card">
+        <h3>SIEM / Syslog Export</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Exports finalized hash-chained audit records as RFC 5424 JSON. TCP and
+          TLS use RFC 6587 octet framing. This stays disabled until a destination
+          is configured; SolarWinds SEM and other standard Syslog receivers can
+          ingest the same stream.
+        </p>
+        <label class="settings-row">
+          <span>Transport</span>
+          <select
+            .value=${s.syslog_transport}
+            @change=${(e: Event) =>
+              this._update(
+                "syslog_transport",
+                (e.target as HTMLSelectElement).value as HaSocSettings["syslog_transport"]
+              )}
+          >
+            <option value="disabled">Disabled</option>
+            <option value="udp">UDP (unencrypted fallback)</option>
+            <option value="tcp">TCP (unencrypted fallback)</option>
+            <option value="tls">TLS over TCP</option>
+          </select>
+        </label>
+        ${s.syslog_transport === "udp" || s.syslog_transport === "tcp"
+          ? html`<p class="muted" style="font-size:12px;color:var(--warning-color,#ffa600);">
+              UDP/TCP Syslog is unencrypted. Restrict it to a dedicated management
+              VLAN or VPN path and migrate to TLS when certificates are assigned.
+            </p>`
+          : ""}
+        <label class="settings-row">
+          <span>SIEM host or IP</span>
+          <input
+            type="text"
+            placeholder="e.g. sem.example.lan"
+            .value=${s.syslog_host ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("syslog_host", v ? v : null);
+            }}
+          />
+        </label>
+        <label class="settings-row">
+          <span>Port <span class="muted" style="display:block;font-size:11.5px;">Common: 514 UDP/TCP, 6514 TLS</span></span>
+          <input
+            type="number"
+            min="1"
+            max="65535"
+            .value=${String(s.syslog_port)}
+            @change=${(e: Event) => this._update("syslog_port", Number((e.target as HTMLInputElement).value))}
+          />
+        </label>
+        <label class="settings-row">
+          <span>Facility</span>
+          <select
+            .value=${String(s.syslog_facility)}
+            @change=${(e: Event) => this._update("syslog_facility", Number((e.target as HTMLSelectElement).value))}
+          >
+            ${Array.from({ length: 8 }, (_, i) => html`<option value=${String(16 + i)}>local${i}</option>`)}
+          </select>
+        </label>
+        ${s.syslog_transport === "tls"
+          ? html`<label class="settings-row">
+              <span>
+                Verify SIEM TLS certificate
+                <span class="muted" style="display:block;font-size:11.5px;"
+                  >On by default. Turn off only while the receiver uses a self-signed
+                  certificate, then re-enable after certificate assignment.</span
+                >
+              </span>
+              <input
+                type="checkbox"
+                .checked=${s.syslog_tls_verify}
+                @change=${(e: Event) =>
+                  this._update("syslog_tls_verify", (e.target as HTMLInputElement).checked)}
+              />
+            </label>`
+          : ""}
+        ${s.syslog_status
+          ? html`<p class="muted" style="font-size:12px;">
+              Status: ${s.syslog_status.last_error
+                ? `error — ${s.syslog_status.last_error}`
+                : s.syslog_status.connected
+                  ? "connected"
+                  : s.syslog_status.enabled
+                    ? "waiting for first delivery"
+                    : "disabled"}.
+              Sent ${s.syslog_status.sent}; queued ${s.syslog_status.queued}; dropped
+              ${s.syslog_status.dropped}.
+            </p>`
+          : ""}
+      </div>
+
+      <div class="card">
         <h3>Security Integrations Health</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           What shows up in the always-present Dashboard security card. A source stays on

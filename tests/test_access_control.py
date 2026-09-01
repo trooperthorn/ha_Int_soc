@@ -32,6 +32,7 @@ from custom_components.ha_soc.websocket_api import (
     ws_users_delete,
     ws_users_revoke_all_sessions,
     ws_users_revoke_token,
+    ws_users_update,
     ws_version_get,
 )
 
@@ -147,7 +148,7 @@ async def test_version_get_reads_manifest_version(
 
 # ---------------------------------------------------------------------------
 # D-23 option (a): owner-only whenever the TARGET is an admin-group user
-# (deactivate, delete, revoke_token, revoke_all_sessions), and owner-only
+# (update, deactivate, delete, revoke_token, revoke_all_sessions), and owner-only
 # outright for entity_remap/apply and permissions/sidebar/push.
 # ---------------------------------------------------------------------------
 
@@ -172,7 +173,7 @@ def _unauthorized_raised(connection: MagicMock) -> bool:
 async def test_admin_target_requires_owner(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
-    """Each of the four user commands: refused for a non-owner admin when
+    """Each target-user command is refused for a non-owner admin when
     the target is an admin-group user (deactivated admins included, since
     group membership, not the is_admin flag, is what the gate resolves),
     still allowed for the owner, and still allowed to a non-owner admin
@@ -196,12 +197,14 @@ async def test_admin_target_requires_owner(
     # The command machinery under the gate is mocked out: what is under
     # test is who may reach it, not the user mutation itself.
     runtime.users.async_deactivate_user = AsyncMock(return_value=(True, None))
+    runtime.users.async_update_user = AsyncMock(return_value=True)
     runtime.users.async_delete_user = AsyncMock(return_value=(True, None))
     runtime.users.async_revoke_token = AsyncMock(return_value=True)
     runtime.users.async_revoke_all_sessions = AsyncMock(
         return_value={"sessions": 0, "long_lived_tokens": 0}
     )
     mocks = {
+        ws_users_update: runtime.users.async_update_user,
         ws_users_deactivate: runtime.users.async_deactivate_user,
         ws_users_delete: runtime.users.async_delete_user,
         ws_users_revoke_token: runtime.users.async_revoke_token,
@@ -210,6 +213,8 @@ async def test_admin_target_requires_owner(
 
     def _msg(handler, target_id: str) -> dict:
         msg = {"id": 1, "type": "x", "user_id": target_id}
+        if handler is ws_users_update:
+            msg["name"] = "Updated name"
         if handler is ws_users_revoke_token:
             msg["token_id"] = "tok1"
         return msg
@@ -246,6 +251,35 @@ async def test_admin_target_requires_owner(
         await hass.async_block_till_done()
         connection.send_result.assert_called_once()
         users_mock.assert_awaited_once()
+
+
+async def test_owner_cannot_be_deactivated_through_generic_update(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The generic update endpoint must preserve core's owner invariant."""
+    runtime = entry.runtime_data
+    runtime.audit._async_schedule_flush = lambda: None
+    runtime.users.async_update_user = AsyncMock(return_value=True)
+    target = MagicMock(is_owner=True)
+    connection = _ws_connection(is_owner=True)
+
+    with patch.object(hass.auth, "async_get_user", AsyncMock(return_value=target)):
+        ws_users_update(
+            hass,
+            connection,
+            {
+                "id": 1,
+                "type": "ha_soc/users/update",
+                "user_id": "owner1",
+                "is_active": False,
+            },
+        )
+        await hass.async_block_till_done()
+
+    connection.send_error.assert_called_once_with(
+        1, "cannot_deactivate_owner", "The owner account cannot be deactivated"
+    )
+    runtime.users.async_update_user.assert_not_awaited()
 
 
 async def test_remap_apply_owner_only(hass: HomeAssistant, entry: MockConfigEntry) -> None:

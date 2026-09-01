@@ -1,0 +1,53 @@
+name: Security
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 7 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  python-security:
+    name: Python static security checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Install pinned scanner
+        run: pip install "bandit==1.8.6"
+      - name: Compile Python
+        run: python -m compileall -q custom_components tests
+      - name: Bandit medium/high findings
+        # B104 flags the intentionally all-interface probe listener. The
+        # add-on firewall and authenticated request boundary are its controls.
+        run: bandit -q -r custom_components/ha_soc -ll -s B104
+
+  frontend-security:
+    name: Frontend dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5.0.0
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: custom_components/ha_soc/frontend/package-lock.json
+      - working-directory: custom_components/ha_soc/frontend
+        run: npm ci
+      - working-directory: custom_components/ha_soc/frontend
+        run: npm audit --audit-level=moderate
+
+  shell-security:
+    name: ShellCheck probe boundary
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Check shell programs
+        run: find ha_soc_probe/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' \) -print0 | xargs -0 shellcheck
+

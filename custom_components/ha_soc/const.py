@@ -66,9 +66,32 @@ CONF_NVD_API_KEY = "nvd_api_key"
 CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
 
+# -- Off-box SIEM export --------------------------------------------------
+# Disabled until the owner supplies a destination. UDP/TCP are compatibility
+# fallbacks; TLS is the recommended transport once certificate work is done.
+SYSLOG_TRANSPORT_DISABLED = "disabled"
+SYSLOG_TRANSPORT_UDP = "udp"
+SYSLOG_TRANSPORT_TCP = "tcp"
+SYSLOG_TRANSPORT_TLS = "tls"
+SYSLOG_TRANSPORTS = (
+    SYSLOG_TRANSPORT_DISABLED,
+    SYSLOG_TRANSPORT_UDP,
+    SYSLOG_TRANSPORT_TCP,
+    SYSLOG_TRANSPORT_TLS,
+)
+DEFAULT_SYSLOG_TRANSPORT = SYSLOG_TRANSPORT_DISABLED
+DEFAULT_SYSLOG_PORT = 514
+DEFAULT_SYSLOG_TLS_VERIFY = True
+DEFAULT_SYSLOG_FACILITY = 16  # local0
+CONF_SYSLOG_TRANSPORT = "syslog_transport"
+CONF_SYSLOG_HOST = "syslog_host"
+CONF_SYSLOG_PORT = "syslog_port"
+CONF_SYSLOG_TLS_VERIFY = "syslog_tls_verify"
+CONF_SYSLOG_FACILITY = "syslog_facility"
+
 # -- UniFi Network / Protect (local API keys, direct to the devices) ------
-# The user provides a local controller host and an API key (UniFi OS →
-# Control Plane → Integrations / API), and HA SOC calls the console
+# The user provides a local controller host and an API key (Local Site →
+# Settings → Integrations), and HA SOC calls the console
 # directly over the LAN with an X-API-KEY header. See unifi.py.
 CONF_UNIFI_NETWORK_HOST = "unifi_network_host"
 CONF_UNIFI_NETWORK_API_KEY = "unifi_network_api_key"

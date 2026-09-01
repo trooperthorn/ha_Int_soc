@@ -178,6 +178,12 @@ valid_source_for_family() {
 DOCKER_SOCK="/var/run/docker.sock"
 LIMITS_FILE="${STATE_DIR}/ha_soc_resource_limits.json"
 LIMIT_APPLY_EVERY=12  # x POLL_INTERVAL_SECONDS = ~60s
+# The Core service is authenticated but is still treated as a hostile input
+# boundary because this process holds the Docker socket.  These pure helpers
+# validate the complete delivered and persisted documents before any Docker
+# URL or update body is constructed.
+# shellcheck source=/usr/lib/ha_soc/resource_limits.sh
+source /usr/lib/ha_soc/resource_limits.sh
 
 # Create the per-install probe secret once (atomically, so the two services
 # racing to create it can't end up with two different values; noclobber
@@ -408,9 +414,17 @@ docker_update() {
 # pass, and reports per-slug state back to Core via ingest_probe_result.
 # Never exits non-zero — a cap that can't be applied is REPORTED, not fatal.
 apply_resource_limits() {
-    local limits prev_slugs slug entry memory_mb cpus body code status detail state_entries
-    limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
-    prev_slugs=$(cat "${LIMITS_FILE}.applied" 2>/dev/null || echo "[]")
+    local limits prev_slugs slug entry body code status detail state_entries raw_limits raw_prev
+    raw_limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
+    if ! limits=$(printf '%s' "${raw_limits}" | validate_resource_limits); then
+        bashio::log.error "Resource caps: rejecting an invalid persisted limit document; no Docker updates were attempted."
+        return 0
+    fi
+    raw_prev=$(cat "${LIMITS_FILE}.applied" 2>/dev/null || echo "[]")
+    if ! prev_slugs=$(printf '%s' "${raw_prev}" | validate_applied_resource_slugs); then
+        bashio::log.warning "Resource caps: ignoring an invalid previously-applied slug list."
+        prev_slugs="[]"
+    fi
     state_entries="{}"
 
     # Every slug loop below is a quoted `while IFS= read -r` over jq output
@@ -448,18 +462,10 @@ apply_resource_limits() {
                 continue
             fi
             entry=$(echo "${limits}" | jq -c --arg s "${slug}" '.[$s]')
-            memory_mb=$(echo "${entry}" | jq -r '.memory_mb // empty')
-            cpus=$(echo "${entry}" | jq -r '.cpus // empty')
             # Memory cap implies the swap cap too (MemorySwap = Memory):
             # without it Docker rejects the update, and a cap that the
             # container can dodge by swapping isn't a cap.
-            body="{}"
-            if [ -n "${memory_mb}" ]; then
-                body=$(echo "${body}" | jq -c --argjson b "$(( memory_mb * 1024 * 1024 ))" '. + {Memory: $b, MemorySwap: $b}')
-            fi
-            if [ -n "${cpus}" ]; then
-                body=$(echo "${body}" | jq -c --argjson n "$(awk -v c="${cpus}" 'BEGIN{printf "%.0f", c * 1000000000}')" '. + {NanoCpus: $n}')
-            fi
+            body=$(printf '%s' "${entry}" | docker_body_for_resource_limit)
             code=$(docker_update "addon_${slug}" "${body}")
             case "${code}" in
                 200) status="applied"; detail="" ;;
@@ -808,11 +814,15 @@ while true; do
     # so idempotent re-application is the only way a cap actually persists.
     new_limits=$(echo "${response}" | jq -c '.service_response.resource_limits.limits // empty' 2>/dev/null || echo "")
     if [ -n "${new_limits}" ]; then
-        old_limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
-        if [ "${new_limits}" != "${old_limits}" ]; then
-            echo "${new_limits}" > "${LIMITS_FILE}"
-            bashio::log.info "Resource cap set changed — applying now."
-            apply_resource_limits
+        if ! new_limits=$(printf '%s' "${new_limits}" | validate_resource_limits); then
+            bashio::log.error "Resource caps: rejecting an invalid limit document delivered by Core; the last valid set remains active."
+        else
+            old_limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
+            if [ "${new_limits}" != "${old_limits}" ]; then
+                printf '%s\n' "${new_limits}" > "${LIMITS_FILE}"
+                bashio::log.info "Resource cap set changed — applying now."
+                apply_resource_limits
+            fi
         fi
     elif [ -s "${LIMITS_FILE}" ] && [ "$(cat "${LIMITS_FILE}")" != "{}" ]; then
         # Core no longer sends any caps — clear ours (resets containers).

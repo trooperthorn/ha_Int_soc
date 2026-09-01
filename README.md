@@ -33,6 +33,11 @@ imply otherwise.
   and deleting or rolling back the on-disk chain is detected against a
   head mirrored in the main store, raising a Repairs issue and chaining
   the discontinuity itself.
+- **SIEM export** — finalized audit records can be exported as RFC 5424
+  Syslog over verified TLS (preferred), TCP, or UDP. TCP/TLS use RFC 6587
+  octet-counting; every JSON message retains `seq`, `prev_hash`, and `hash`
+  for receiver-side gap/chain checks. Export is disabled by default, bounded,
+  retried without blocking Home Assistant, and exposes queue/drop/error status.
 - **Permissions Matrix** — one grid for per-user dashboard/view visibility
   across every dashboard, labeled `enforced` or `cosmetic` on every toggle —
   because `lovelace/config` has no permission check at all; visibility
@@ -111,7 +116,8 @@ imply otherwise.
   dialog) can open it to every administrator. Enforced server-side on each
   command, not just on sidebar visibility.
 - **Network (UniFi Network / Protect)** — a Dashboard-style tab that talks
-  directly to a UniFi console over the LAN with a local API key (read-only):
+  directly to a UniFi console over the LAN with a local Integration API key
+  (read-only), verified against Network 10.4.57 and Protect 7.2.105:
   network/internet status, WAN-port bandwidth, wireless-client and per-SSID
   counts, and Clients / Network Devices tables. Every client and device IP
   is correlated against Home Assistant's own config-entry hosts, so an
@@ -638,7 +644,7 @@ for the add-on side of the same design.
 ## Network tab (UniFi Network / Protect)
 
 The **Network** tab talks directly to a UniFi console over your LAN with a
-**local API key** (UniFi OS → Settings → Control Plane → Integrations),
+**local API key** (Local Site → Settings → Integrations),
 using an `X-API-KEY` header — no cloud round-trip, no second add-on, and
 nothing ever leaves your network. It is entirely **read-only**: it lists
 clients and network devices and derives a WAN/internet status; it never
@@ -660,9 +666,8 @@ two tables:
   card filters the table to it.
 - **Network Devices** — Device, IPv4, MAC, VLAN, Model, **Firmware
   Updatable**, Bandwidth, Last Seen, Integration (no IPv6/Uptime — not
-  applicable to infrastructure). Each device is enriched from its
-  `/devices/{id}` detail endpoint for bandwidth / last-seen / firmware
-  status.
+  applicable to infrastructure). Each device is enriched from the documented
+  `/devices/{id}` detail and `/devices/{id}/statistics/latest` endpoints.
 
 **Firewall Policies**, **ACL Rules — Security Audit**, the HA server's own
 port coverage, and the Pi-hole DNS section live on their own tab — see
@@ -674,7 +679,7 @@ port coverage, and the Pi-hole DNS section live on their own tab — see
   Each device name deep-links to that camera on the Protect console
   (`https://<host>/protect/dashboard/devices/<id>`), built from the device
   `id` the API returns.
-- **Events & AI Smart Detections** (last 24h) — event type, smart-detection
+- **Events & AI Smart Detections** — recent in-memory event type, smart-detection
   types, score, start, duration, thumbnail, and license plate. A thumbnail
   that's a direct URL links out; one that needs an authenticated fetch is
   marked "available" and links to the camera page instead of showing a
@@ -688,21 +693,23 @@ network but whose integration won't load is exactly the "an integration IP
 is failing" case — the device is reachable, so the fault is the
 integration, not the network — and it's surfaced with a banner at the top.
 
-> **Field-mapping caveat.** Ubiquiti's local API field names could not be
-> verified against a live controller while building this, so
+> **Contract and field caveat.** The calls and response schemas were verified
+> against Ubiquiti's versioned Network 10.4.57 and Protect 7.2.105 OpenAPI and
+> Postman artifacts, but not against this installation's live controller. See
+> [`docs/UNIFI-LOCAL-API-CONTRACT.md`](docs/UNIFI-LOCAL-API-CONTRACT.md). Thus
 > [`unifi.py`](custom_components/ha_soc/unifi.py) resolves every field from a
 > list of candidate names spanning the Integration API (camelCase) and the
 > legacy controller API (snake_case), and anything a given controller
 > doesn't return renders as `—` rather than being guessed. Fields most
-> likely to need confirmation against your firmware (VLAN, IPv6, the
+> likely to need confirmation against live data (VLAN, IPv6, the
 > client→SSID reference key, bandwidth, the WAN-port stats, the ACL/firewall
-> endpoint path and rule fields, device `firmwareUpdatable`, and — on the
-> Protect side — `isRecording`, `channels`, the events path, and the
+> rule fields, device `firmwareUpdatable`, and — on the Protect side —
+> `isRecording`, `channels`, and the
 > license-plate location) are marked `# VERIFY` in that module. If a column
 > reads `—` for you, that field name is the thing to confirm against your
-> console's API response. Protect events in particular are delivered over a
-> websocket subscription on current firmware rather than a REST list, so the
-> Events table degrades to an explanatory note there.
+> console's API response. Protect 7.2.105 events are delivered through
+> `/subscribe/events`, not a historical REST list; HA SOC uses Home Assistant's
+> loaded Protect integration for its recent event buffer or shows a limitation.
 
 ## Network Security tab
 

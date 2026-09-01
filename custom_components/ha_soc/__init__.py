@@ -35,6 +35,7 @@ from .scanner import IntegrationScanner
 from .secrets_store import HaSocSecretStore, async_migrate_legacy_secrets
 from .resource_watchdog import ResourceWatchdog
 from .store import HaSocData
+from .syslog_export import SyslogExporter
 from .users import LiveSessionRegistry, UsersManager
 from .vulns import DeviceVulnerabilityTracker
 from .websocket_api import async_register_websocket_api
@@ -68,6 +69,7 @@ class HaSocRuntimeData:
     risk: RiskEngine
     detections: DetectionEngine
     watchdog: "ResourceWatchdog"
+    syslog: SyslogExporter
 
 
 # Plain generic alias rather than a PEP 695 `type` statement — keeps this
@@ -120,6 +122,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     users = UsersManager(hass)
     live_sessions = LiveSessionRegistry()
     audit = AuditLog(hass, store)
+    syslog = SyslogExporter(hass, store)
+    audit.async_set_syslog_exporter(syslog)
     permissions = PermissionsMatrix(hass, store)
     health = IntegrationHealth(hass, store)
     vulns = DeviceVulnerabilityTracker(hass, store, secrets)
@@ -141,9 +145,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         risk=risk,
         detections=detections,
         watchdog=watchdog,
+        syslog=syslog,
     )
 
     await audit.async_start()
+    syslog.async_start(entry)
     await permissions.async_start()
     await health.async_start()
     scanner.async_start(hass)
@@ -220,10 +226,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     # Kick off a first pass shortly after startup rather than waiting a full
     # interval, so the dashboard isn't empty on a fresh install.
-    hass.async_create_task(_async_periodic_analysis())
-    hass.async_create_task(_async_config_check())
+    entry.async_create_task(
+        hass, _async_periodic_analysis(), "HA SOC initial analysis"
+    )
+    entry.async_create_task(hass, _async_config_check(), "HA SOC initial config check")
     if store.settings.get("scanner_enabled", True):
-        hass.async_create_task(_async_scanner_sweep())
+        entry.async_create_task(
+            hass, _async_scanner_sweep(), "HA SOC initial integration scan"
+        )
 
     return True
 
@@ -236,6 +246,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
     runtime = entry.runtime_data
     if runtime is not None:
         await runtime.audit.async_stop()
+        await runtime.syslog.async_stop(drain=True)
         await runtime.permissions.async_stop()
         await runtime.health.async_stop()
         runtime.scanner.async_stop()

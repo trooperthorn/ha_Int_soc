@@ -93,16 +93,10 @@ _MAX_BODY_BYTES = 8 * 1024 * 1024
 # (/devices/{id}) for bandwidth / last-seen / firmware-updatable, which the
 # list endpoint doesn't carry. Cap the N+1 fan-out for a huge install.
 _MAX_DEVICE_DETAILS = 50
-# Candidate ACL / firewall endpoints, tried in order (see _fetch_acl_rules).
-# The Integration API surface varies by controller version, so we probe
-# rather than assume. All are relative to /sites/{siteId}/.
-_ACL_ENDPOINT_SUFFIXES = (
-    "acl-rules",
-    "firewall/rules",
-    "firewall-rules",
-    "firewall-policies",
-    "traffic-rules",
-)
+# UniFi Network 10.4.57 Local API contract.  Do not add private-controller
+# fallback paths here: the user explicitly selected the supported Local
+# Integration API, whose OpenAPI contract exposes ACLs at this one route.
+_ACL_ENDPOINT_SUFFIXES = ("acl-rules",)
 
 # Config-entry keys that commonly hold a device host or IP. Matched against
 # UniFi client/device IPs so a failing integration whose endpoint shows up on
@@ -811,32 +805,45 @@ async def _fetch_broadcast_map(
 async def _fetch_device_details(
     hass: HomeAssistant, conn: _Conn, site_id: str, devices: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Enrich each device with its /devices/{id} detail (bandwidth, last-seen,
-    firmware-updatable), which the list endpoint doesn't carry. Each detail
-    fetch is independent and non-fatal — a device whose detail fails keeps its
-    list-level data. Bounded by _MAX_DEVICE_DETAILS."""
+    """Enrich devices using the two documented Network 10.4.57 routes.
+
+    ``/devices/{id}`` supplies configuration/detail fields and
+    ``/devices/{id}/statistics/latest`` supplies heartbeat, utilization,
+    uptime, and uplink rates.  Each request is independent and non-fatal; a
+    partial failure keeps every field obtained from the list or other route.
+    """
 
     async def _one(dev: dict[str, Any]) -> dict[str, Any]:
         did = _first(dev, "id", "_id", "deviceId")
         if not did:
             return dev
+        merged = dict(dev)
         try:
             detail = await _get(hass, conn, f"/sites/{site_id}/devices/{did}")
         except UniFiError:
-            # The intended narrow handling (work plan item 4.11): a failed
-            # detail fetch keeps the device's list-level row; a
-            # programming error propagates through asyncio.gather to the
-            # overview's outer handler instead of being silently eaten.
-            return dev
+            detail = None
         if isinstance(detail, dict):
             inner = detail.get("data")
             if isinstance(inner, dict):
                 detail = inner
             if isinstance(detail, dict):
-                merged = dict(dev)
                 merged.update(detail)  # detail wins
-                return merged
-        return dev
+
+        try:
+            statistics = await _get(
+                hass,
+                conn,
+                f"/sites/{site_id}/devices/{did}/statistics/latest",
+            )
+        except UniFiError:
+            statistics = None
+        if isinstance(statistics, dict):
+            inner = statistics.get("data")
+            if isinstance(inner, dict):
+                statistics = inner
+            if isinstance(statistics, dict):
+                merged["statistics"] = statistics
+        return merged
 
     head = devices[:_MAX_DEVICE_DETAILS]
     enriched = await asyncio.gather(*[_one(d) for d in head])
@@ -848,7 +855,7 @@ async def _fetch_network_map(
 ) -> dict[str, str]:
     """{network_id: display_name} so an ACL rule that references networks by
     id can be shown by name. Best-effort — {} if the endpoint is absent."""
-    for suffix in ("networks", "network-confs"):
+    for suffix in ("networks",):
         try:
             rows = await _get_paginated(hass, conn, f"/sites/{site_id}/{suffix}")
         except UniFiError:
@@ -2055,8 +2062,9 @@ async def _fill_protect_from_api(
     Kept separate so the core in-memory enrichment can run whether or not
     this path succeeded."""
     try:
-        # VERIFY: Protect Integration API camera collection path.
-        payload = await _get_paginated(hass, conn, "/cameras")
+        # Protect 7.2.105 defines this as an unpaginated JSON array. Do not
+        # append Network-style offset/limit parameters to the Protect route.
+        payload = _rows(await _get(hass, conn, "/cameras"))
     except UniFiError as err:
         out["error"] = str(err)
         return
@@ -2075,52 +2083,16 @@ async def _fill_protect_from_api(
         }
     )
 
-    # Events are a separate, non-fatal call. The Protect Integration API
-    # doesn't guarantee a REST events list — on many firmwares events are
-    # delivered over a websocket subscription (/subscribe/events) rather than
-    # a GET, so /events returns 404. Probe the candidate REST paths and, if
-    # none respond, explain that honestly instead of showing a raw error.
-    now = dt_util.utcnow()
-    end_ms = int(now.timestamp() * 1000)
-    start_ms = end_ms - 24 * 3600 * 1000  # last 24h
-    # VERIFY: events REST path + time-window param names.
-    event_paths = (
-        f"/events?start={start_ms}&end={end_ms}",
-        f"/events?startTime={start_ms}&endTime={end_ms}",
-        f"/detections?start={start_ms}&end={end_ms}",
-        f"/alarms?start={start_ms}&end={end_ms}",
+    # Protect 7.2.105 exposes events only as the persistent WebSocket
+    # subscription GET /subscribe/events; it defines no historical REST
+    # /events, /detections, or /alarms collection.  This snapshot therefore
+    # makes no undocumented calls.  The loaded core unifiprotect integration
+    # can still provide its recent in-memory event buffer below.
+    out["events_error"] = (
+        "Protect 7.2.105 provides events through the /subscribe/events "
+        "WebSocket, not a historical REST endpoint. Load Home Assistant's "
+        "UniFi Protect integration to populate recent event history."
     )
-    tried_bases: list[str] = []
-    got: list[dict[str, Any]] | None = None
-    saw_non_404 = False
-    for path in event_paths:
-        base = path.split("?", 1)[0]
-        if base not in tried_bases:
-            tried_bases.append(base)
-        try:
-            got = await _get_paginated(hass, conn, path)
-            break
-        except UniFiError as err:
-            if "not found" not in str(err).lower():
-                saw_non_404 = True
-                out["events_error"] = str(err)
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.exception("Unexpected UniFi Protect events error")
-            saw_non_404 = True
-            out["events_error"] = f"Unexpected error: {err}"
-
-    if got is not None:
-        events = [_normalize_event(e, conn.origin) for e in got]
-        events.sort(key=lambda e: e["start"] or 0, reverse=True)
-        out["events"] = events
-        out["events_error"] = None
-    elif not saw_non_404:
-        out["events_error"] = (
-            "This Protect Integration API doesn't expose a REST events list "
-            f"(tried: {', '.join(tried_bases)}). On this API version events are "
-            "delivered over a websocket subscription, which a read-only snapshot "
-            "can't consume."
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -2130,8 +2102,8 @@ async def _fill_protect_from_api(
 
 def _apply_core_protect_data(hass: HomeAssistant, out: dict[str, Any]) -> None:
     """Fill the Protect status from the core unifiprotect integration's
-    in-memory bootstrap: camera details the REST probe missed, and the recent
-    events the REST /events endpoint refuses to serve on many firmwares.
+    in-memory bootstrap: camera details the Local API left blank, and recent
+    events retained from the official subscription stream.
     Failure-isolated the same way the Network enrichment is: any surprise in
     the private core objects leaves the API-only payload untouched."""
     try:
