@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- SIEM export: operators can retain the default RFC 5424 JSON wire format,
+  select standards-based CEF 0 inside RFC 5424 for SolarWinds SEM and other
+  CEF receivers, or select raw canonical JSON. UDP remains one event per
+  datagram; TCP and TLS retain RFC 6587 octet counting, bounded queueing,
+  retries, delivery status, and TLS verification.
+- Release integrity: the integration, Probe add-on, and Probe scanner are
+  synchronized at `2026.09.01.2`; a repository test and the tag-release gate
+  now reject version drift across any of those identifiers. The synthetic
+  hard-coded-credential regression fixture is assembled at runtime so GitHub
+  secret scanning no longer mistakes test data for a live Google API key.
+- Security CI: CodeQL now analyzes Python and JavaScript/TypeScript and uploads
+  results to GitHub code scanning alongside Bandit, npm audit, and ShellCheck.
+- Panel redesign: the dashboard now opens with a compact security command
+  overview and prioritized action counts, replaces the repeated donut charts
+  with comparable bars and summary metrics, limits initial investigation
+  queues to ten rows, and uses a quieter, sticky application navigation.
+
 Everything from the 2026-08-30 security review's sprints 0, 1, and 2
 (this section becomes the next version when it is cut; the sprints
 landed after v2026.08.30.2 shipped, which is why they are not in that

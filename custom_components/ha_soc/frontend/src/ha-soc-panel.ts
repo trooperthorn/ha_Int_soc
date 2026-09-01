@@ -48,24 +48,40 @@ export class HaSocPanel extends LitElement {
     }
     .tabs {
       display: flex;
-      gap: 4px;
+      gap: 6px;
+      border-top: 1px solid var(--divider-color);
       border-bottom: 1px solid var(--divider-color);
-      padding: 0 16px;
+      padding: 9px max(16px, calc((100% - 1400px) / 2));
       background: var(--card-background-color, #fff);
       overflow-x: auto;
+      position: sticky;
+      top: 0;
+      z-index: 5;
+      scrollbar-width: thin;
     }
     .tab {
-      padding: 14px 16px;
+      appearance: none;
+      font: inherit;
+      background: transparent;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      padding: 8px 11px;
       cursor: pointer;
-      font-size: 14px;
-      font-weight: 500;
+      font-size: 13px;
+      font-weight: 550;
       color: var(--secondary-text-color);
-      border-bottom: 2px solid transparent;
       white-space: nowrap;
+    }
+    .tab:hover,
+    .tab:focus-visible {
+      color: var(--primary-text-color);
+      background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.045);
+      outline: none;
     }
     .tab.active {
       color: var(--primary-color);
-      border-bottom-color: var(--primary-color);
+      border-color: rgba(var(--rgb-primary-color, 3, 155, 229), 0.24);
+      background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.1);
     }
     .tab.disabled {
       color: var(--disabled-text-color, #b0b0b0);
@@ -79,14 +95,41 @@ export class HaSocPanel extends LitElement {
     .header {
       display: flex;
       align-items: center;
-      gap: 8px;
-      padding: 12px 16px 0;
-      font-size: 20px;
-      font-weight: 500;
+      gap: 12px;
+      padding: 17px max(16px, calc((100% - 1400px) / 2)) 14px;
       color: var(--primary-text-color);
+      background: var(--card-background-color, #fff);
     }
-    .header .title {
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
       flex: 1;
+    }
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 10px;
+      background: var(--primary-color);
+      color: #fff;
+      font-size: 12px;
+      font-weight: 750;
+      letter-spacing: 0.04em;
+    }
+    .brand-title {
+      display: block;
+      font-size: 18px;
+      font-weight: 680;
+      line-height: 1.15;
+    }
+    .brand-context {
+      display: block;
+      margin-top: 2px;
+      color: var(--secondary-text-color);
+      font-size: 11.5px;
     }
     .customize-btn {
       font-size: 13px;
@@ -127,6 +170,17 @@ export class HaSocPanel extends LitElement {
       font-size: 11px;
       color: var(--secondary-text-color);
       text-align: center;
+    }
+    @media (max-width: 600px) {
+      .header {
+        padding-top: 12px;
+      }
+      .brand-context {
+        display: none;
+      }
+      .customize-btn {
+        padding: 7px 10px;
+      }
     }
   `;
 
@@ -216,9 +270,16 @@ export class HaSocPanel extends LitElement {
         ${this._renderFooter()}
       `;
     }
+    const activeTabLabel = TABS.find((tab) => tab.id === this._tab)?.label ?? "Dashboard";
     return html`
       <div class="header">
-        <span class="title">🛡️ HA SOC</span>
+        <div class="brand">
+          <span class="brand-mark">SOC</span>
+          <span>
+            <span class="brand-title">HA SOC</span>
+            <span class="brand-context">${activeTabLabel}</span>
+          </span>
+        </div>
         ${this._tab === "settings"
           ? html``
           : html`
@@ -236,15 +297,20 @@ export class HaSocPanel extends LitElement {
           const locked = !!t.ownerOnly && !this._access?.is_owner;
           if (locked) {
             return html`
-              <div class="tab disabled" title="Only available to the account owner">
+              <button type="button" class="tab disabled" title="Only available to the account owner" disabled>
                 ${t.label}<span class="lock">🔒</span>
-              </div>
+              </button>
             `;
           }
           return html`
-            <div class="tab ${this._tab === t.id ? "active" : ""}" @click=${() => this._selectTab(t.id)}>
+            <button
+              type="button"
+              class="tab ${this._tab === t.id ? "active" : ""}"
+              aria-pressed=${this._tab === t.id ? "true" : "false"}
+              @click=${() => this._selectTab(t.id)}
+            >
               ${t.label}
-            </div>
+            </button>
           `;
         })}
       </div>

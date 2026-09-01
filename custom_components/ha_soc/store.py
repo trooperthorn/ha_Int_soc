@@ -45,6 +45,7 @@ from .const import (
     DEFAULT_PIHOLE_VERIFY_SSL,
     DEFAULT_SECURITY_SOURCES_ENABLED,
     DEFAULT_SYSLOG_FACILITY,
+    DEFAULT_SYSLOG_FORMAT,
     DEFAULT_SYSLOG_PORT,
     DEFAULT_SYSLOG_TLS_VERIFY,
     DEFAULT_SYSLOG_TRANSPORT,
@@ -92,6 +93,10 @@ class SettingsData(TypedDict):
     # RFC 5424 off-box audit export. Disabled by default; UDP/TCP remain
     # explicit compatibility modes and TLS is the recommended destination.
     syslog_transport: str
+    # Payload format is independent of transport. RFC 5424 with canonical
+    # JSON remains the backward-compatible default; CEF and bare JSON are
+    # explicit receiver-compatibility choices.
+    syslog_format: str
     syslog_host: str | None
     syslog_port: int
     syslog_tls_verify: bool
@@ -223,6 +228,7 @@ def default_store_data() -> StoreData:
             audit_retention_days=DEFAULT_AUDIT_RETENTION_DAYS,
             audit_max_bytes=DEFAULT_AUDIT_MAX_BYTES,
             syslog_transport=DEFAULT_SYSLOG_TRANSPORT,
+            syslog_format=DEFAULT_SYSLOG_FORMAT,
             syslog_host=None,
             syslog_port=DEFAULT_SYSLOG_PORT,
             syslog_tls_verify=DEFAULT_SYSLOG_TLS_VERIFY,

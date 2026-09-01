@@ -95,8 +95,8 @@ const ISSUE_CATEGORY_RANK: Record<IntegrationIssueCategory, number> = Object.fro
   Object.keys(ISSUE_CATEGORY_LABELS).map((key, i) => [key, i])
 ) as Record<IntegrationIssueCategory, number>;
 
-const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
-const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [20, 50, 100, "all"];
+const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [10, 20, 50, 100, "all"];
+const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [10, 20, 50, 100, "all"];
 
 @customElement("ha-soc-dashboard-view")
 export class HaSocDashboardView extends HaSocCustomizableView {
@@ -107,12 +107,11 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     sharedStyles,
     css`
       h2.section-title {
-        font-size: 13px;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        color: var(--secondary-text-color);
-        margin: 28px 0 12px;
-        font-weight: 600;
+        font-size: 18px;
+        letter-spacing: -0.01em;
+        color: var(--primary-text-color);
+        margin: 30px 0 4px;
+        font-weight: 650;
       }
       h2.section-title:first-child {
         margin-top: 0;
@@ -120,13 +119,13 @@ export class HaSocDashboardView extends HaSocCustomizableView {
 
       .row3 {
         display: grid;
-        grid-template-columns: 1.3fr 1fr 1fr 1fr;
+        grid-template-columns: minmax(320px, 1.35fr) repeat(3, minmax(190px, 1fr));
         gap: 12px;
         margin-bottom: 16px;
       }
       .row2 {
         display: grid;
-        grid-template-columns: 1.4fr 1fr;
+        grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
         gap: 12px;
         margin-bottom: 16px;
       }
@@ -151,6 +150,189 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       .clickable:hover {
         box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
         transform: translateY(-1px);
+      }
+
+      .section-subtitle {
+        color: var(--secondary-text-color);
+        font-size: 13px;
+        line-height: 1.45;
+        margin: 0 0 14px;
+      }
+      .command-grid {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.85fr) minmax(0, 2fr);
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+      .posture-card {
+        margin: 0;
+        border-left: 5px solid var(--status-critical);
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        min-height: 142px;
+      }
+      .posture-card.good {
+        border-left-color: var(--status-good);
+      }
+      .posture-card.warning {
+        border-left-color: var(--status-warning);
+      }
+      .posture-kicker,
+      .metric-label {
+        color: var(--secondary-text-color);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.055em;
+        text-transform: uppercase;
+      }
+      .posture-main {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        margin: 8px 0 14px;
+      }
+      .posture-grade {
+        font-size: 52px;
+        font-weight: 750;
+        letter-spacing: -0.045em;
+        line-height: 0.9;
+      }
+      .posture-score {
+        font-size: 18px;
+        font-weight: 650;
+      }
+      .score-track,
+      .severity-track,
+      .mfa-track {
+        height: 7px;
+        border-radius: 999px;
+        overflow: hidden;
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09);
+      }
+      .score-fill,
+      .mfa-fill {
+        height: 100%;
+        border-radius: inherit;
+        background: var(--primary-color);
+      }
+      .priority-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(120px, 1fr));
+        gap: 10px;
+      }
+      button.priority-item {
+        appearance: none;
+        font: inherit;
+        color: var(--primary-text-color);
+        text-align: left;
+        background: var(--card-background-color, #fff);
+        border: 1px solid var(--divider-color);
+        border-radius: var(--ha-card-border-radius, 12px);
+        padding: 15px;
+        cursor: pointer;
+        min-height: 142px;
+        display: flex;
+        flex-direction: column;
+        justify-content: space-between;
+        transition: border-color 0.12s ease, transform 0.12s ease;
+      }
+      button.priority-item:hover,
+      button.priority-item:focus-visible {
+        border-color: var(--primary-color);
+        transform: translateY(-1px);
+        outline: none;
+      }
+      .priority-value {
+        font-size: 31px;
+        font-weight: 720;
+        line-height: 1;
+        margin: 10px 0 5px;
+        font-variant-numeric: tabular-nums;
+      }
+      .priority-value.critical {
+        color: var(--status-critical);
+      }
+      .priority-value.warning {
+        color: var(--status-serious);
+      }
+      .priority-help {
+        color: var(--secondary-text-color);
+        font-size: 11.5px;
+        line-height: 1.35;
+      }
+      .summary-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .summary-grid > .card {
+        margin: 0;
+      }
+      .card-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 14px;
+      }
+      .card-head h3 {
+        margin: 0;
+      }
+      .metric-number {
+        font-size: 34px;
+        font-weight: 720;
+        line-height: 1;
+        letter-spacing: -0.025em;
+        font-variant-numeric: tabular-nums;
+      }
+      .metric-context {
+        color: var(--secondary-text-color);
+        font-size: 12px;
+        margin-top: 5px;
+      }
+      .severity-track {
+        display: flex;
+        margin: 16px 0 12px;
+      }
+      .severity-track > span {
+        min-width: 2px;
+      }
+      .compact-legend {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 7px 12px;
+        font-size: 12px;
+      }
+      .compact-legend .item {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .compact-legend .item strong {
+        margin-left: auto;
+        font-variant-numeric: tabular-nums;
+      }
+      .compact-legend .swatch {
+        width: 8px;
+        height: 8px;
+        border-radius: 2px;
+      }
+      .identity-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+      .identity-stat {
+        border: 1px solid var(--divider-color);
+        border-radius: 10px;
+        padding: 12px;
+      }
+      .identity-stat .value {
+        font-size: 24px;
+        font-weight: 700;
+        margin-top: 5px;
       }
 
       /* -- Status tiles -------------------------------------------------- */
@@ -195,20 +377,19 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         line-height: 1.3;
       }
       .status-tile.partial {
-        background: var(--status-warning);
-        color: #3a2900;
+        border-top: 3px solid var(--status-warning);
       }
       .status-tile.unavailable {
-        background: var(--status-critical);
-        color: #fff;
+        border-top: 3px solid var(--status-critical);
+      }
+      .status-tile.unavailable .value {
+        color: var(--status-critical);
       }
       .status-tile.disabled {
-        background: var(--cat-other);
-        color: #fff;
+        border-top: 3px solid var(--cat-other);
       }
       .status-tile.no_entities {
-        background: var(--primary-color);
-        color: #fff;
+        border-top: 3px solid var(--primary-color);
       }
 
       .filter-chip {
@@ -222,95 +403,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         border-radius: 100px;
         cursor: pointer;
         margin-bottom: 10px;
-      }
-
-      /* -- Donut ----------------------------------------------------------- */
-      .donut-wrap {
-        display: flex;
-        align-items: center;
-        gap: 14px;
-      }
-      .donut {
-        width: 100px;
-        height: 100px;
-        border-radius: 50%;
-        position: relative;
-        flex: none;
-      }
-      .donut::after {
-        content: "";
-        position: absolute;
-        inset: 22%;
-        border-radius: 50%;
-        background: var(--card-background-color, #fff);
-      }
-      .donut .center {
-        position: absolute;
-        inset: 0;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-weight: 700;
-        font-size: 18px;
-        z-index: 1;
-      }
-      .legend {
-        font-size: 12px;
-        display: flex;
-        flex-direction: column;
-        gap: 6px;
-        flex: 1;
-        min-width: 0;
-      }
-      .legend .row {
-        display: flex;
-        align-items: center;
-        gap: 6px;
-      }
-      .legend .sw {
-        width: 9px;
-        height: 9px;
-        border-radius: 2px;
-        flex: none;
-      }
-      .legend .val {
-        margin-left: auto;
-        font-weight: 700;
-        font-variant-numeric: tabular-nums;
-      }
-
-      /* -- Risk gauge ------------------------------------------------------ */
-      .gauge-card .gauge-value {
-        font-size: 30px;
-        font-weight: 700;
-        margin-bottom: 10px;
-      }
-      .gauge-track {
-        position: relative;
-        height: 12px;
-        border-radius: 6px;
-        background: linear-gradient(
-          90deg,
-          var(--status-good) 0%,
-          var(--status-warning) 40%,
-          var(--status-serious) 70%,
-          var(--status-critical) 100%
-        );
-      }
-      .gauge-marker {
-        position: absolute;
-        top: -10px;
-        width: 0;
-        height: 0;
-        border-left: 7px solid transparent;
-        border-right: 7px solid transparent;
-        border-top: 9px solid var(--primary-text-color);
-        transform: translateX(-50%);
-      }
-      .gauge-caption {
-        margin-top: 10px;
-        font-size: 11.5px;
-        color: var(--secondary-text-color);
       }
 
       /* -- All Devices table --------------------------------------------------- */
@@ -370,13 +462,13 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       .security-health-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-        gap: 12px;
+        gap: 8px;
         margin-top: 8px;
       }
       .security-source-tile {
         border: 1px solid var(--divider-color);
         border-radius: 8px;
-        padding: 10px 12px;
+        padding: 9px 11px;
       }
       .security-source-tile .label {
         font-size: 12px;
@@ -384,13 +476,38 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         margin-bottom: 4px;
       }
       .security-source-tile .value {
-        font-size: 20px;
+        font-size: 18px;
         font-weight: 700;
       }
       .security-source-tile .sub {
         font-size: 11px;
         color: var(--secondary-text-color);
         margin-top: 2px;
+      }
+      @media (max-width: 1100px) {
+        .command-grid {
+          grid-template-columns: 1fr;
+        }
+        .priority-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+        button.priority-item {
+          min-height: 116px;
+        }
+      }
+      @media (max-width: 900px) {
+        .summary-grid,
+        .identity-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+      @media (max-width: 560px) {
+        .priority-grid {
+          grid-template-columns: 1fr 1fr;
+        }
+        .status-tiles {
+          grid-template-columns: repeat(2, 1fr);
+        }
       }
     `,
   ];
@@ -412,10 +529,10 @@ export class HaSocDashboardView extends HaSocCustomizableView {
   @state() private _deviceStatusFilter: DeviceStatus | null = null;
   // Same default order the view has always had: riskiest devices first.
   @state() private _deviceSort: SortState | null = { key: "risk_score", dir: -1 };
-  @state() private _devicePageSize: number | "all" = 20;
+  @state() private _devicePageSize: number | "all" = 10;
   @state() private _integrationSearch = "";
   @state() private _integrationSort: SortState | null = null;
-  @state() private _integrationPageSize: number | "all" = 20;
+  @state() private _integrationPageSize: number | "all" = 10;
   @state() private _detectionSort: SortState | null = null;
 
   connectedCallback(): void {
@@ -477,18 +594,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
 
   private _goto(tab: SocTab) {
     navigate(this, tab);
-  }
-
-  private _donutGradient(segments: { color: string; value: number }[]): string {
-    const total = segments.reduce((s, x) => s + x.value, 0) || 1;
-    let acc = 0;
-    const parts = segments.map((s) => {
-      const start = (acc / total) * 100;
-      acc += s.value;
-      const end = (acc / total) * 100;
-      return `${s.color} ${start}% ${end}%`;
-    });
-    return `conic-gradient(${parts.join(", ")})`;
   }
 
   private _onStatusTileClick(status: DeviceStatus) {
@@ -563,30 +668,62 @@ export class HaSocDashboardView extends HaSocCustomizableView {
 
   private _renderPostureCard() {
     const posture = this._summary?.posture;
-    if (!posture) return nothing;
+    const summary = this._summary;
+    const devices = this._deviceOverview;
+    if (!posture || !summary || !devices) return nothing;
     const missing = (posture.missing_terms ?? []).map(
       (t) => HaSocDashboardView.POSTURE_TERM_LABELS[t] ?? t
     );
+    const openDetections = this._detections.filter((det) => det.status === "open").length;
+    const criticalVulnerabilities = devices.devices.reduce(
+      (total, device) => total + device.severity_counts.critical,
+      0
+    );
+    const unavailableDevices = devices.status_counts.unavailable ?? 0;
+    const noMfa = summary.mfa_counts.disabled ?? 0;
+    const scoreClass = posture.score >= 85 ? "good" : posture.score >= 70 ? "warning" : "critical";
     return html`
-      <h2 class="section-title">Security Posture</h2>
-      <div class="card">
-        <div style="display:flex;align-items:center;gap:16px;flex-wrap:wrap;">
-          <div style="font-size:36px;font-weight:700;line-height:1;">${posture.grade}</div>
+      <h2 class="section-title">Security command overview</h2>
+      <p class="section-subtitle">The conditions most likely to require action, with direct paths to investigate them.</p>
+      <div class="command-grid">
+        <div class="card posture-card ${scoreClass}">
           <div>
-            <div style="font-size:15px;font-weight:600;">Score ${posture.score} / 100</div>
-            ${posture.provisional
-              ? html`
-                  <span
-                    class="tag cosmetic"
-                    title="Not every posture term has computed from real data yet; the grade may move once they have."
-                    >provisional</span
-                  >
-                  <span class="muted" style="font-size:12px;">
-                    waiting on first data for: ${missing.join(", ")}
-                  </span>
-                `
-              : nothing}
+            <div class="posture-kicker">Overall posture</div>
+            <div class="posture-main">
+              <div class="posture-grade">${posture.grade}</div>
+              <div>
+                <div class="posture-score">${posture.score} / 100</div>
+                ${posture.provisional
+                  ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
+                  : html`<span class="tag enforced">fully calculated</span>`}
+              </div>
+            </div>
           </div>
+          <div class="score-track" aria-label="Posture score ${posture.score} out of 100">
+            <div class="score-fill" style="width:${Math.max(0, Math.min(100, posture.score))}%"></div>
+          </div>
+        </div>
+        <div class="priority-grid">
+          <button class="priority-item" type="button" @click=${() => this._goto("audit")}>
+            <span class="metric-label">Open detections</span>
+            <span class="priority-value ${openDetections ? "critical" : ""}">${openDetections}</span>
+            <span class="priority-help">Review active security signals</span>
+          </button>
+          <button class="priority-item" type="button" @click=${() => this._goto("scanner")}>
+            <span class="metric-label">Critical CVEs</span>
+            <span class="priority-value ${criticalVulnerabilities ? "critical" : ""}">${criticalVulnerabilities.toLocaleString()}</span>
+            <span class="priority-help">Across inventoried devices</span>
+          </button>
+          <button class="priority-item" type="button" @click=${() => this._onStatusTileClick("unavailable")}>
+            <span class="metric-label">Unavailable devices</span>
+            <span class="priority-value ${unavailableDevices ? "warning" : ""}">${unavailableDevices}</span>
+            <span class="priority-help">Filter the investigation queue</span>
+          </button>
+          <button class="priority-item" type="button" @click=${() => this._goto("users")}>
+            <span class="metric-label">Accounts without MFA</span>
+            <span class="priority-value ${noMfa ? "warning" : ""}">${noMfa}</span>
+            <span class="priority-help">Close identity protection gaps</span>
+          </button>
         </div>
       </div>
     `;
@@ -667,14 +804,8 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       { key: "low", label: "Low", color: "var(--status-good)", value: vulnSeverityTotals.low },
     ];
 
-    const riskGaugePercent = Math.max(0, Math.min(100, (d.combined_risk_score / 10) * 100));
-
     const entityCounts = s.entity_state_counts ?? { unavailable: 0, unknown: 0, total: 0 };
     const failedUnknownTotal = entityCounts.unavailable + entityCounts.unknown;
-    const failedUnknownSegments = [
-      { key: "unavailable", label: "Failed (unavailable)", color: "var(--status-critical)", value: entityCounts.unavailable },
-      { key: "unknown", label: "Unknown", color: "var(--status-warning)", value: entityCounts.unknown },
-    ];
 
     const allFilteredDevices = this._sortedFilteredDevices();
     const shownDevices =
@@ -695,16 +826,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         ? allFilteredIntegrations
         : allFilteredIntegrations.slice(0, this._integrationPageSize);
 
-    const riskSegments = [
-      { key: "low", color: "var(--status-good)", value: s.risk_band_counts.low ?? 0 },
-      { key: "moderate", color: "var(--status-warning)", value: s.risk_band_counts.moderate ?? 0 },
-      { key: "high", color: "var(--status-serious)", value: s.risk_band_counts.high ?? 0 },
-      { key: "critical", color: "var(--status-critical)", value: s.risk_band_counts.critical ?? 0 },
-    ];
-    const mfaSegments = [
-      { key: "enabled", color: "var(--cat-1)", value: s.mfa_counts.enabled },
-      { key: "disabled", color: "var(--cat-2)", value: s.mfa_counts.disabled },
-    ];
     const detSegments = [
       { key: "critical", color: "var(--status-critical)", value: s.detection_severity_counts.critical ?? 0 },
       { key: "high", color: "var(--status-serious)", value: s.detection_severity_counts.high ?? 0 },
@@ -723,10 +844,16 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         id: "device_vuln_overview",
         title: "Device & Vulnerability Overview",
         render: () => html`
-      <h2 class="section-title">Device &amp; Vulnerability Overview</h2>
-      <div class="row3">
+      <h2 class="section-title">Exposure at a glance</h2>
+      <p class="section-subtitle">Availability, vulnerability concentration, and entity reliability without the chart clutter.</p>
+      <div class="summary-grid">
         <div class="card device-status-card">
-          <h3>Device Status</h3>
+          <div class="card-head">
+            <div>
+              <h3>Device availability</h3>
+              <div class="metric-context">${d.devices.length.toLocaleString()} inventoried devices</div>
+            </div>
+          </div>
           <div class="status-tiles">
             ${STATUS_TILES.map(
               (t) => html`
@@ -744,50 +871,46 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         </div>
 
         <div class="card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
-          <h3>Vulnerability Count by Severity</h3>
-          <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(vulnSegments)}">
-              <div class="center">${vulnTotal.toLocaleString()}</div>
+          <div class="card-head">
+            <div>
+              <h3>Vulnerability exposure</h3>
+              <div class="metric-context">Weighted risk score ${d.combined_risk_score.toFixed(1)} / 10</div>
             </div>
-            <div class="legend">
-              ${vulnSegments.map(
-                (seg) => html`
-                  <div class="row">
-                    <span class="sw" style="background:${seg.color}"></span>${seg.label}
-                    <span class="val">${seg.value.toLocaleString()}</span>
-                  </div>
-                `
-              )}
-            </div>
+            <div class="metric-number">${vulnTotal.toLocaleString()}</div>
           </div>
-        </div>
-
-        <div class="card gauge-card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
-          <h3>Risk Score</h3>
-          <div class="gauge-value">${d.combined_risk_score.toFixed(1)}</div>
-          <div class="gauge-track">
-            <div class="gauge-marker" style="left:${riskGaugePercent}%"></div>
+          <div class="severity-track" aria-label="Vulnerability findings by severity">
+            ${vulnSegments.map(
+              (seg) => html`<span style="width:${vulnTotal ? (seg.value / vulnTotal) * 100 : 0}%;background:${seg.color}"></span>`
+            )}
           </div>
-          <div class="gauge-caption">
-            Combined risk score of all devices — weighted so higher-severity CVEs count more.
+          <div class="compact-legend">
+            ${vulnSegments.map(
+              (seg) => html`
+                <div class="item">
+                  <span class="swatch" style="background:${seg.color}"></span>${seg.label}
+                  <strong>${seg.value.toLocaleString()}</strong>
+                </div>
+              `
+            )}
           </div>
         </div>
 
         <div class="card clickable" @click=${() => this._goto("entity_remap")} title="Fix broken entity references">
-          <h3>Failed / Unknown Entities</h3>
-          <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(failedUnknownSegments)}">
-              <div class="center">${failedUnknownTotal.toLocaleString()}</div>
+          <div class="card-head">
+            <div>
+              <h3>Entity reliability</h3>
+              <div class="metric-context">Failed and unknown entity states</div>
             </div>
-            <div class="legend">
-              ${failedUnknownSegments.map(
-                (seg) => html`
-                  <div class="row">
-                    <span class="sw" style="background:${seg.color}"></span>${seg.label}
-                    <span class="val">${seg.value.toLocaleString()}</span>
-                  </div>
-                `
-              )}
+            <div class="metric-number">${failedUnknownTotal.toLocaleString()}</div>
+          </div>
+          <div class="identity-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));">
+            <div class="identity-stat">
+              <div class="metric-label">Unavailable</div>
+              <div class="value" style="color:var(--status-critical)">${entityCounts.unavailable.toLocaleString()}</div>
+            </div>
+            <div class="identity-stat">
+              <div class="metric-label">Unknown</div>
+              <div class="value" style="color:var(--status-warning)">${entityCounts.unknown.toLocaleString()}</div>
             </div>
           </div>
         </div>
@@ -798,68 +921,81 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         id: "users_detections",
         title: "Users & Detections",
         render: () => html`
-      <h2 class="section-title">Users &amp; Detections</h2>
-      <div class="donuts-row">
+      <h2 class="section-title">Identity and active detections</h2>
+      <p class="section-subtitle">Account protection and the security signals that need review.</p>
+      <div class="row2">
         <div class="card clickable" @click=${() => this._goto("users")} title="View users">
-          <h3>Users by Risk Band</h3>
-          <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(riskSegments)}">
-              <div class="center">${s.total_users_count}</div>
+          <div class="card-head">
+            <div>
+              <h3>Identity protection</h3>
+              <div class="metric-context">MFA adoption across eligible accounts</div>
             </div>
-            <div class="legend">
-              ${riskSegments.map(
-                (seg) => html`
-                  <div class="row">
-                    <span class="sw" style="background:${seg.color}"></span>${seg.key}
-                    <span class="val">${seg.value}</span>
-                  </div>
-                `
-              )}
+            <div class="metric-number">
+              ${s.mfa_counts.enabled + s.mfa_counts.disabled > 0
+                ? `${Math.round((s.mfa_counts.enabled / (s.mfa_counts.enabled + s.mfa_counts.disabled)) * 100)}%`
+                : "—"}
             </div>
           </div>
-        </div>
-
-        <div class="card clickable" @click=${() => this._goto("users")} title="View users">
-          <h3>MFA Adoption</h3>
-          <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(mfaSegments)}">
-              <div class="center">
-                ${s.mfa_counts.enabled + s.mfa_counts.disabled > 0
-                  ? `${Math.round((s.mfa_counts.enabled / (s.mfa_counts.enabled + s.mfa_counts.disabled)) * 100)}%`
-                  : "—"}
-              </div>
+          <div class="mfa-track" aria-label="MFA adoption">
+            <div
+              class="mfa-fill"
+              style="width:${s.mfa_counts.enabled + s.mfa_counts.disabled > 0
+                ? (s.mfa_counts.enabled / (s.mfa_counts.enabled + s.mfa_counts.disabled)) * 100
+                : 0}%"
+            ></div>
+          </div>
+          <div class="identity-grid" style="margin-top:14px;">
+            <div class="identity-stat">
+              <div class="metric-label">Users</div>
+              <div class="value">${s.total_users_count}</div>
             </div>
-            <div class="legend">
-              <div class="row"><span class="sw" style="background:var(--cat-1)"></span>Enabled<span class="val">${s.mfa_counts.enabled}</span></div>
-              <div class="row"><span class="sw" style="background:var(--cat-2)"></span>No MFA<span class="val">${s.mfa_counts.disabled}</span></div>
+            <div class="identity-stat">
+              <div class="metric-label">High / critical risk</div>
+              <div class="value">${(s.risk_band_counts.high ?? 0) + (s.risk_band_counts.critical ?? 0)}</div>
+            </div>
+            <div class="identity-stat">
+              <div class="metric-label">No MFA</div>
+              <div class="value" style="color:var(--status-serious)">${s.mfa_counts.disabled}</div>
             </div>
           </div>
         </div>
 
         <div class="card clickable" @click=${() => this._goto("audit")} title="View audit / detections">
-          <h3>Detections by Severity</h3>
-          <div class="donut-wrap">
-            <div class="donut" style="background:${this._donutGradient(detSegments)}">
-              <div class="center">${this._detections.length}</div>
+          <div class="card-head">
+            <div>
+              <h3>Detection coverage</h3>
+              <div class="metric-context">${openDetections.length} currently open</div>
             </div>
-            <div class="legend">
-              ${detSegments.map(
-                (seg) => html`
-                  <div class="row">
-                    <span class="sw" style="background:${seg.color}"></span>${seg.key}
-                    <span class="val">${seg.value}</span>
-                  </div>
-                `
-              )}
-            </div>
+            <div class="metric-number">${this._detections.length}</div>
           </div>
+          <div class="severity-track" aria-label="Detections by severity">
+            ${detSegments.map(
+              (seg) => html`<span style="width:${this._detections.length ? (seg.value / this._detections.length) * 100 : 0}%;background:${seg.color}"></span>`
+            )}
+          </div>
+          <div class="compact-legend">
+            ${detSegments.map(
+              (seg) => html`
+                <div class="item">
+                  <span class="swatch" style="background:${seg.color}"></span>${seg.key}
+                  <strong>${seg.value}</strong>
+                </div>
+              `
+            )}
+          </div>
+        </div>
         </div>
       </div>
 
       <div class="card">
-        <h3>Recent suspicious activity</h3>
+        <div class="card-head">
+          <div>
+            <h3>Active investigation queue</h3>
+            <div class="metric-context">Open detections, newest activity first</div>
+          </div>
+        </div>
         ${!openDetections.length
-          ? html`<div class="empty">No open detections.</div>`
+          ? html`<div class="empty">No open detections. The active queue is clear.</div>`
           : html`
               <table>
                 <thead>
@@ -896,10 +1032,16 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         id: "devices_integrations",
         title: "Devices & Integrations",
         render: () => html`
-      <h2 class="section-title">Devices &amp; Integrations</h2>
+      <h2 class="section-title">Investigation queues</h2>
+      <p class="section-subtitle">The highest-risk devices and integration failures, sorted for triage.</p>
       <div class="row2">
         <div class="card" id="devices-card">
-          <h3>All Devices</h3>
+          <div class="card-head">
+            <div>
+              <h3>Highest-risk devices</h3>
+              <div class="metric-context">Select a row to open the Home Assistant device record</div>
+            </div>
+          </div>
           ${this._deviceStatusFilter
             ? html`
                 <div class="filter-chip" @click=${() => (this._deviceStatusFilter = null)}>
@@ -938,7 +1080,14 @@ export class HaSocDashboardView extends HaSocCustomizableView {
                             title="Open in Home Assistant's Devices page"
                             @click=${() => navigateToHaPath(deviceDetailPath(device.device_id))}
                           >
-                            <td><span class="health-dot" style="background:${this._statusDotColor(device.status)}"></span></td>
+                            <td>
+                              <span
+                                class="health-dot"
+                                title=${device.status.replace("_", " ")}
+                                aria-label=${device.status.replace("_", " ")}
+                                style="background:${this._statusDotColor(device.status)}"
+                              ></span>
+                            </td>
                             <td>${device.name}</td>
                             <td class="muted">${device.vendor}</td>
                             <td class="num">${device.risk_score.toFixed(1)}</td>
@@ -994,7 +1143,12 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         </div>
 
         <div class="card">
-          <h3>Issues by Integration</h3>
+          <div class="card-head">
+            <div>
+              <h3>Integration issues</h3>
+              <div class="metric-context">Setup, credential, communication, and logging health</div>
+            </div>
+          </div>
           ${integ.integrations.length === 0
             ? html`<div class="empty">No integration issues detected.</div>`
             : html`
@@ -1031,7 +1185,9 @@ export class HaSocDashboardView extends HaSocCustomizableView {
                                     <span class="sev-cell">
                                       <span class="sev-dot" style="background:${status.colorVar}"></span>
                                       ${status.label}
-                                      <span class="num">${row.error_count_24h}</span>
+                                      ${row.error_count_24h
+                                        ? html`<span class="num">${row.error_count_24h} error${row.error_count_24h === 1 ? "" : "s"}</span>`
+                                        : nothing}
                                     </span>
                                   </td>
                                 </tr>
@@ -1081,20 +1237,17 @@ export class HaSocDashboardView extends HaSocCustomizableView {
 
     return html`
       <div class="card">
-        <h3>
-          Security Integrations Health
+        <div class="card-head">
+          <div>
+            <h3>Security-source health</h3>
+            <div class="metric-context">Locks, sirens, valves, and local peripherals</div>
+          </div>
           ${sec.problem_count || sec.low_battery_count
             ? html`<span class="tag" style="background:rgba(219,68,55,0.15);color:var(--error-color,#db4437);">
-                ${sec.problem_count} problem${sec.problem_count === 1 ? "" : "s"}, ${sec.low_battery_count} low
-                battery
+                ${sec.problem_count} problem${sec.problem_count === 1 ? "" : "s"} · ${sec.low_battery_count} low battery
               </span>`
             : html`<span class="tag enforced">all clear</span>`}
-        </h3>
-        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
-          Every lock/siren/valve entity regardless of integration, plus local USB/serial
-          peripherals. The curated security-integration health list (Kidde, Elk-M1, UniFi
-          Protect, Keymaster, Emporia Vue) moved to Settings — configurable there too.
-        </p>
+        </div>
         <div class="security-health-grid">
           ${Object.entries(SECURITY_ENTITY_DOMAIN_LABELS)
             .filter(([domain]) => sec.sources_enabled[domain] ?? true)

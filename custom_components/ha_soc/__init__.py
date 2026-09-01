@@ -16,6 +16,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.loader import async_get_integration
 
 from .audit import AuditLog
 from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
@@ -122,7 +123,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     users = UsersManager(hass)
     live_sessions = LiveSessionRegistry()
     audit = AuditLog(hass, store)
-    syslog = SyslogExporter(hass, store)
+    integration = await async_get_integration(hass, DOMAIN)
+    syslog = SyslogExporter(
+        hass,
+        store,
+        integration_version=str(integration.version) if integration.version else "-",
+    )
     audit.async_set_syslog_exporter(syslog)
     permissions = PermissionsMatrix(hass, store)
     health = IntegrationHealth(hass, store)

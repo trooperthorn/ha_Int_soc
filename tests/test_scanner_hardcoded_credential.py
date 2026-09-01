@@ -26,6 +26,16 @@ def _hits(source: str) -> list[dict]:
     return _rule_hardcoded_credential(tree, lines)
 
 
+def _synthetic_key_shaped_secret() -> str:
+    """Build a credential-shaped test value without committing a provider key.
+
+    GitHub provider-pattern scanning is intentionally literal-oriented. Keeping
+    the pieces separate in this test source exercises HA SOC's scanner without
+    publishing a complete Google-key-shaped token in the repository.
+    """
+    return "".join(("AIza", "SySynthetic", "Regression", "Value1234567890"))
+
+
 def test_conf_constant_is_not_flagged() -> None:
     assert _hits('CONF_NVD_API_KEY = "nvd_api_key"\n') == []
     assert _hits('CONF_API_KEY = "api_key"\n') == []
@@ -33,7 +43,8 @@ def test_conf_constant_is_not_flagged() -> None:
 
 
 def test_real_looking_hardcoded_secret_is_still_flagged() -> None:
-    hits = _hits('nvd_api_key = "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY"\n')
+    secret = _synthetic_key_shaped_secret()
+    hits = _hits(f'nvd_api_key = "{secret}"\n')
     assert len(hits) == 1
     assert hits[0]["cwe"] == "CWE-798"
 
@@ -43,22 +54,17 @@ def test_short_or_placeholder_values_still_excluded_regardless_of_name() -> None
     assert _hits('api_key = "changeme"\n') == []
 
 
-# A syntactically valid key-shaped literal for the masking tests below. If
-# the match is real in the wild, this literal is a live credential, so the
-# scanner must never store it (work plan item 1.3).
-_FAKE_SECRET = "AIzaSyD-9tSrke72PouQMnMX-a7eZSW0jkFMBWY"
-
-
 def test_scanner_snippet_masks_credential_value(tmp_path: Path) -> None:
     """The stored snippet is the assignment target plus a masked value; the
     matched literal appears nowhere in the finding or the GHSA export."""
-    source = f'nvd_api_key = "{_FAKE_SECRET}"\n'
+    fake_secret = _synthetic_key_shaped_secret()
+    source = f'nvd_api_key = "{fake_secret}"\n'
 
     # Rule level: the hit's snippet is already the masked form.
     hits = _hits(source)
     assert len(hits) == 1
-    assert hits[0]["snippet"] == f'nvd_api_key = "[redacted, {len(_FAKE_SECRET)} chars]"'
-    assert _FAKE_SECRET not in json.dumps(hits[0])
+    assert hits[0]["snippet"] == f'nvd_api_key = "[redacted, {len(fake_secret)} chars]"'
+    assert fake_secret not in json.dumps(hits[0])
 
     # End to end: the finding built by a directory scan (the exact dict the
     # store persists and every WebSocket listing returns) carries only the
@@ -68,14 +74,14 @@ def test_scanner_snippet_masks_credential_value(tmp_path: Path) -> None:
     assert len(findings) == 1
     finding = findings[0]
     assert finding["pattern"] == "hardcoded_credential"
-    assert _FAKE_SECRET not in json.dumps(finding)
-    assert finding["snippet"] == f'nvd_api_key = "[redacted, {len(_FAKE_SECRET)} chars]"'
+    assert fake_secret not in json.dumps(finding)
+    assert finding["snippet"] == f'nvd_api_key = "[redacted, {len(fake_secret)} chars]"'
 
     # export_ghsa reads nothing but the finding dict, so constructing the
     # scanner without __init__ keeps this test free of a running hass.
     scanner = IntegrationScanner.__new__(IntegrationScanner)
     export = scanner.export_ghsa(finding)
-    assert _FAKE_SECRET not in json.dumps(export)
+    assert fake_secret not in json.dumps(export)
     assert "[redacted," in export["description"]
 
 

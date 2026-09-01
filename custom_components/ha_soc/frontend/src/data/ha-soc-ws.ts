@@ -301,11 +301,13 @@ export interface PeripheralOverview {
 export type AccessLevel = "owner_only" | "owner_and_admins";
 export type MfaPolicy = "audit_only" | "auto_deactivate";
 export type SyslogTransport = "disabled" | "udp" | "tcp" | "tls";
+export type SyslogPayloadFormat = "rfc5424_json" | "cef" | "raw_json";
 
 export interface HaSocSettings {
   audit_retention_days: number;
   audit_max_bytes: number;
   syslog_transport: SyslogTransport;
+  syslog_format: SyslogPayloadFormat;
   syslog_host: string | null;
   syslog_port: number;
   syslog_tls_verify: boolean;
@@ -313,6 +315,7 @@ export interface HaSocSettings {
   syslog_status?: {
     enabled: boolean;
     transport: SyslogTransport;
+    format: SyslogPayloadFormat;
     host_configured: boolean;
     connected: boolean;
     queued: number;

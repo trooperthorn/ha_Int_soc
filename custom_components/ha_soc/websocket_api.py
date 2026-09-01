@@ -65,6 +65,7 @@ from .const import (
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
     CONF_SYSLOG_FACILITY,
+    CONF_SYSLOG_FORMAT,
     CONF_SYSLOG_HOST,
     CONF_SYSLOG_PORT,
     CONF_SYSLOG_TLS_VERIFY,
@@ -84,6 +85,7 @@ from .const import (
     SEVERITY_ORDER,
     SIGNAL_UPDATE,
     SYSLOG_TRANSPORTS,
+    SYSLOG_FORMATS,
     WATCHDOG_ACTIONS,
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
@@ -1960,6 +1962,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_AUDIT_RETENTION_DAYS): vol.All(vol.Coerce(int), vol.Range(min=7, max=3650)),
         vol.Optional(CONF_AUDIT_MAX_BYTES): vol.All(vol.Coerce(int), vol.Range(min=1_000_000)),
         vol.Optional(CONF_SYSLOG_TRANSPORT): vol.In(SYSLOG_TRANSPORTS),
+        vol.Optional(CONF_SYSLOG_FORMAT): vol.In(SYSLOG_FORMATS),
         vol.Optional(CONF_SYSLOG_HOST): _syslog_host,
         vol.Optional(CONF_SYSLOG_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         vol.Optional(CONF_SYSLOG_TLS_VERIFY): bool,
@@ -2060,6 +2063,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
         key in changes
         for key in (
             CONF_SYSLOG_TRANSPORT,
+            CONF_SYSLOG_FORMAT,
             CONF_SYSLOG_HOST,
             CONF_SYSLOG_PORT,
             CONF_SYSLOG_TLS_VERIFY,

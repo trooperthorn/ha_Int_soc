@@ -33,11 +33,15 @@ imply otherwise.
   and deleting or rolling back the on-disk chain is detected against a
   head mirrored in the main store, raising a Repairs issue and chaining
   the discontinuity itself.
-- **SIEM export** — finalized audit records can be exported as RFC 5424
-  Syslog over verified TLS (preferred), TCP, or UDP. TCP/TLS use RFC 6587
-  octet-counting; every JSON message retains `seq`, `prev_hash`, and `hash`
+- **SIEM export** — finalized audit records can be exported as RFC 5424 with
+  canonical audit JSON (the backward-compatible default), RFC 5424 with a
+  genuine HA SOC CEF 0 payload, or bare canonical JSON for collectors that
+  explicitly require JSON-only input. Transport is selected independently:
+  verified TLS is preferred, with TCP and UDP plaintext fallbacks. TCP/TLS use
+  RFC 6587 octet-counting; every format retains `seq`, `prev_hash`, and `hash`
   for receiver-side gap/chain checks. Export is disabled by default, bounded,
-  retried without blocking Home Assistant, and exposes queue/drop/error status.
+  retried without blocking Home Assistant, and exposes format/queue/drop/error
+  status.
 - **Permissions Matrix** — one grid for per-user dashboard/view visibility
   across every dashboard, labeled `enforced` or `cosmetic` on every toggle —
   because `lovelace/config` has no permission check at all; visibility
@@ -241,10 +245,10 @@ the bare number instead - `custom_components/ha_soc/manifest.json`
 `version`, `ha_soc_probe/config.yaml` `version`, and the probe's
 `SCANNER_VERSION` - because Home Assistant, the Supervisor, and the
 release workflow compare those values with the prefix stripped. The
-mapping is enforced, not remembered: the Release workflow refuses to cut
-a release unless the pushed tag (minus its `v`) equals the manifest
-version, and `scripts/release.sh` bumps all three fields and cuts the
-`v`-prefixed tag in one step.
+mapping is enforced, not remembered: CI refuses a version mismatch, and the
+Release workflow refuses to cut a release unless the pushed tag (minus its
+`v`) equals the manifest, Probe, and scanner versions. `scripts/release.sh`
+bumps all three fields and cuts the `v`-prefixed tag in one step.
 
 ### Cutting a release (and why HACS needs one)
 
@@ -267,7 +271,7 @@ add-on's `SCANNER_VERSION` together, runs the test suite, commits, and
 pushes the tag **`v<version>`** (e.g. `v2026.08.30.2`). Pushing that tag runs
 [`.github/workflows/release.yml`](.github/workflows/release.yml), which
 creates the GitHub Release HACS installs from — after first asserting the
-tag equals the manifest version, so they can never disagree again.
+tag equals all three component versions, so they can never disagree again.
 [`.github/workflows/validate.yml`](.github/workflows/validate.yml) runs the
 HACS validator on every push, catching a manifest/`hacs.json` problem
 before it can ship.
