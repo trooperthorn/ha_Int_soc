@@ -26,7 +26,7 @@ jobs:
       # compromised tag cannot change the code this workflow runs. Each
       # digest was resolved from github.com on 2026-08-30 and the tag it
       # matched at that time is in the trailing comment.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0 (v6)
         with:
           python-version: "3.13"
@@ -47,7 +47,7 @@ jobs:
     name: Frontend bundle matches source
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0 (v4)
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v4.4.0 (v4)
       # frontend/package.json declares no engines constraint, so CI pins the
       # Node line here. Node 22 is the active LTS line and the line the
       # committed bundle was verified to rebuild byte-for-byte under.
