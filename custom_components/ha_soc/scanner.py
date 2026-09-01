@@ -55,7 +55,7 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigEntryChange,
 )
-from homeassistant.core import HomeAssistant, valid_domain
+from homeassistant.core import HomeAssistant, callback, valid_domain
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.loader import async_get_integration
 
@@ -1143,6 +1143,7 @@ class IntegrationScanner:
             self._unsub_config_entry_changed()
             self._unsub_config_entry_changed = None
 
+    @callback
     def _on_config_entry_changed(self, change: ConfigEntryChange, entry: ConfigEntry) -> None:
         if change != ConfigEntryChange.ADDED:
             return
