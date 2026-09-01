@@ -15,3 +15,7 @@ npm run watch   # rebuild on change, for local development
 static path and registers it as a custom panel via `panel_custom`. If the
 bundle is missing, `panel.py` logs a warning and skips panel registration
 rather than failing integration setup.
+
+The protected console's workspace hierarchy, data boundary, retained
+per-user Customize behavior, and visual delivery gates are documented in
+[`docs/FRONTEND-VISUAL-ARCHITECTURE.md`](../../../docs/FRONTEND-VISUAL-ARCHITECTURE.md).

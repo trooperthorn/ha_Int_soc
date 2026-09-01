@@ -158,27 +158,132 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         line-height: 1.45;
         margin: 0 0 14px;
       }
-      .command-grid {
+      .overview-kpis {
         display: grid;
-        grid-template-columns: minmax(280px, 0.85fr) minmax(0, 2fr);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
         margin-bottom: 12px;
       }
-      .posture-card {
-        margin: 0;
-        border-left: 5px solid var(--status-critical);
+      .overview-kpi {
+        appearance: none;
+        min-width: 0;
+        min-height: 126px;
+        padding: 16px;
+        border: 1px solid var(--divider-color);
+        border-radius: var(--ha-card-border-radius, 12px);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+        font: inherit;
+        text-align: left;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-        min-height: 142px;
       }
-      .posture-card.good {
-        border-left-color: var(--status-good);
+      button.overview-kpi {
+        cursor: pointer;
       }
-      .posture-card.warning {
-        border-left-color: var(--status-warning);
+      button.overview-kpi:hover,
+      button.overview-kpi:focus-visible {
+        border-color: var(--primary-color);
+        outline: none;
       }
-      .posture-kicker,
+      .overview-kpi-value {
+        display: block;
+        margin: 10px 0 4px;
+        font-size: 34px;
+        font-weight: 720;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+      .overview-kpi-context {
+        color: var(--secondary-text-color);
+        font-size: 11.5px;
+        line-height: 1.35;
+      }
+      .overview-visuals {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.7fr);
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .posture-visual-card,
+      .trend-card {
+        margin: 0;
+      }
+      .posture-ring-wrap {
+        display: grid;
+        grid-template-columns: 132px minmax(0, 1fr);
+        align-items: center;
+        gap: 16px;
+      }
+      .posture-ring {
+        width: 126px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: conic-gradient(
+          var(--posture-color) 0 var(--posture-angle),
+          rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09) var(--posture-angle) 360deg
+        );
+        position: relative;
+      }
+      .posture-ring::before {
+        content: "";
+        position: absolute;
+        inset: 13px;
+        border-radius: 50%;
+        background: var(--card-background-color, #fff);
+      }
+      .posture-ring-value {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+      }
+      .posture-ring-value strong {
+        display: block;
+        font-size: 32px;
+        line-height: 1;
+      }
+      .posture-ring-value span {
+        display: block;
+        margin-top: 4px;
+        color: var(--secondary-text-color);
+        font-size: 11px;
+      }
+      .posture-grade-line {
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .posture-description {
+        color: var(--secondary-text-color);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .posture-trend {
+        width: 100%;
+        height: 142px;
+        display: block;
+      }
+      .posture-trend .grid-line {
+        stroke: var(--divider-color);
+        stroke-width: 1;
+      }
+      .posture-trend .trend-area {
+        fill: rgba(var(--rgb-primary-color, 3, 155, 229), 0.14);
+      }
+      .posture-trend .trend-line {
+        fill: none;
+        stroke: var(--primary-color);
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .posture-trend text {
+        fill: var(--secondary-text-color);
+        font-size: 10px;
+      }
       .metric-label {
         color: var(--secondary-text-color);
         font-size: 11px;
@@ -186,23 +291,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         letter-spacing: 0.055em;
         text-transform: uppercase;
       }
-      .posture-main {
-        display: flex;
-        align-items: baseline;
-        gap: 12px;
-        margin: 8px 0 14px;
-      }
-      .posture-grade {
-        font-size: 52px;
-        font-weight: 750;
-        letter-spacing: -0.045em;
-        line-height: 0.9;
-      }
-      .posture-score {
-        font-size: 18px;
-        font-weight: 650;
-      }
-      .score-track,
       .severity-track,
       .mfa-track {
         height: 7px;
@@ -210,60 +298,14 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         overflow: hidden;
         background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09);
       }
-      .score-fill,
       .mfa-fill {
         height: 100%;
         border-radius: inherit;
         background: var(--primary-color);
       }
-      .priority-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(120px, 1fr));
-        gap: 10px;
-      }
-      button.priority-item {
-        appearance: none;
-        font: inherit;
-        color: var(--primary-text-color);
-        text-align: left;
-        background: var(--card-background-color, #fff);
-        border: 1px solid var(--divider-color);
-        border-radius: var(--ha-card-border-radius, 12px);
-        padding: 15px;
-        cursor: pointer;
-        min-height: 142px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        transition: border-color 0.12s ease, transform 0.12s ease;
-      }
-      button.priority-item:hover,
-      button.priority-item:focus-visible {
-        border-color: var(--primary-color);
-        transform: translateY(-1px);
-        outline: none;
-      }
-      .priority-value {
-        font-size: 31px;
-        font-weight: 720;
-        line-height: 1;
-        margin: 10px 0 5px;
-        font-variant-numeric: tabular-nums;
-      }
-      .priority-value.critical {
-        color: var(--status-critical);
-      }
-      .priority-value.warning {
-        color: var(--status-serious);
-      }
-      .priority-help {
-        color: var(--secondary-text-color);
-        font-size: 11.5px;
-        line-height: 1.35;
-      }
       .summary-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: minmax(420px, 1.5fr) repeat(2, minmax(240px, 1fr));
         gap: 12px;
         margin-bottom: 16px;
       }
@@ -319,6 +361,33 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         height: 8px;
         border-radius: 2px;
       }
+      .donut-layout {
+        display: grid;
+        grid-template-columns: 126px minmax(0, 1fr);
+        gap: 15px;
+        align-items: center;
+      }
+      .severity-donut {
+        width: 126px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        position: relative;
+      }
+      .severity-donut::before {
+        content: "";
+        position: absolute;
+        inset: 16px;
+        border-radius: 50%;
+        background: var(--card-background-color, #fff);
+      }
+      .severity-donut strong {
+        position: relative;
+        z-index: 1;
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+      }
       .identity-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -353,7 +422,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         border-radius: 10px;
         padding: 10px 6px;
         text-align: center;
-        background: var(--card-background-color, #fff);
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.035);
         border: 1px solid var(--divider-color);
         display: flex;
         flex-direction: column;
@@ -366,9 +435,8 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         outline-offset: -2px;
       }
       .status-tile .label {
-        font-size: 11px;
+        font-size: 11.5px;
         font-weight: 600;
-        text-transform: uppercase;
         opacity: 0.85;
       }
       .status-tile .value {
@@ -376,20 +444,20 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         font-weight: 700;
         line-height: 1.3;
       }
+      .status-tile.available {
+        background: rgba(12, 163, 12, 0.11);
+        color: var(--status-good);
+      }
       .status-tile.partial {
-        border-top: 3px solid var(--status-warning);
+        background: rgba(250, 178, 25, 0.15);
+        color: var(--status-warning);
       }
       .status-tile.unavailable {
-        border-top: 3px solid var(--status-critical);
-      }
-      .status-tile.unavailable .value {
+        background: rgba(208, 59, 59, 0.12);
         color: var(--status-critical);
       }
-      .status-tile.disabled {
-        border-top: 3px solid var(--cat-other);
-      }
       .status-tile.no_entities {
-        border-top: 3px solid var(--primary-color);
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.09);
       }
 
       .filter-chip {
@@ -485,14 +553,11 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         margin-top: 2px;
       }
       @media (max-width: 1100px) {
-        .command-grid {
-          grid-template-columns: 1fr;
-        }
-        .priority-grid {
+        .overview-kpis {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        button.priority-item {
-          min-height: 116px;
+        .overview-visuals {
+          grid-template-columns: 1fr;
         }
       }
       @media (max-width: 900px) {
@@ -502,8 +567,13 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         }
       }
       @media (max-width: 560px) {
-        .priority-grid {
-          grid-template-columns: 1fr 1fr;
+        .overview-kpis {
+          grid-template-columns: 1fr;
+        }
+        .posture-ring-wrap,
+        .donut-layout {
+          grid-template-columns: 1fr;
+          justify-items: center;
         }
         .status-tiles {
           grid-template-columns: repeat(2, 1fr);
@@ -666,6 +736,52 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     p_detection: "detections",
   };
 
+  private _postureTrendGeometry(history: DashboardSummary["posture_history"], currentScore: number) {
+    const samples = history
+      .filter((item) => Number.isFinite(item.score))
+      .map((item) => ({ ...item, score: Math.max(0, Math.min(100, item.score)) }));
+    if (!samples.length) {
+      samples.push({ date: "Current", score: currentScore, grade: this._summary?.posture.grade ?? "—" });
+    }
+    if (samples.length === 1) samples.push({ ...samples[0], date: "Current" });
+
+    const scores = samples.map((item) => item.score);
+    let minScore = Math.max(0, Math.min(...scores) - 4);
+    let maxScore = Math.min(100, Math.max(...scores) + 4);
+    if (maxScore <= minScore) {
+      minScore = Math.max(0, minScore - 1);
+      maxScore = Math.min(100, maxScore + 1);
+    }
+
+    const left = 12;
+    const right = 548;
+    const top = 12;
+    const bottom = 118;
+    const xFor = (index: number) => left + (index / (samples.length - 1)) * (right - left);
+    const yFor = (score: number) => bottom - ((score - minScore) / (maxScore - minScore)) * (bottom - top);
+    const points = samples.map((item, index) => `${xFor(index).toFixed(1)},${yFor(item.score).toFixed(1)}`).join(" ");
+    const area = `${left},${bottom} ${points} ${right},${bottom}`;
+    const formatDate = (value: string) => {
+      // Posture history stores a local calendar date (YYYY-MM-DD), not a
+      // UTC timestamp. Parsing that form directly with new Date(value)
+      // treats it as UTC and can display the previous day west of UTC.
+      const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+      const parsed = dateOnly
+        ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
+        : new Date(value);
+      return Number.isNaN(parsed.getTime())
+        ? value
+        : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+    };
+    return {
+      points,
+      area,
+      firstLabel: formatDate(samples[0].date),
+      lastLabel: formatDate(samples[samples.length - 1].date),
+      delta: samples[samples.length - 1].score - samples[0].score,
+    };
+  }
+
   private _renderPostureCard() {
     const posture = this._summary?.posture;
     const summary = this._summary;
@@ -675,55 +791,85 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       (t) => HaSocDashboardView.POSTURE_TERM_LABELS[t] ?? t
     );
     const openDetections = this._detections.filter((det) => det.status === "open").length;
-    const criticalVulnerabilities = devices.devices.reduce(
-      (total, device) => total + device.severity_counts.critical,
+    const criticalHighFindings = devices.devices.reduce(
+      (total, device) => total + device.severity_counts.critical + device.severity_counts.high,
       0
     );
-    const unavailableDevices = devices.status_counts.unavailable ?? 0;
-    const noMfa = summary.mfa_counts.disabled ?? 0;
     const scoreClass = posture.score >= 85 ? "good" : posture.score >= 70 ? "warning" : "critical";
+    const postureColor =
+      scoreClass === "good"
+        ? "var(--status-good)"
+        : scoreClass === "warning"
+        ? "var(--status-warning)"
+        : "var(--status-critical)";
+    const trend = this._postureTrendGeometry(summary.posture_history, posture.score);
+    const trendDelta = `${trend.delta >= 0 ? "+" : ""}${trend.delta.toFixed(0)}`;
     return html`
-      <h2 class="section-title">Security command overview</h2>
-      <p class="section-subtitle">The conditions most likely to require action, with direct paths to investigate them.</p>
-      <div class="command-grid">
-        <div class="card posture-card ${scoreClass}">
-          <div>
-            <div class="posture-kicker">Overall posture</div>
-            <div class="posture-main">
-              <div class="posture-grade">${posture.grade}</div>
-              <div>
-                <div class="posture-score">${posture.score} / 100</div>
-                ${posture.provisional
-                  ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
-                  : html`<span class="tag enforced">fully calculated</span>`}
-              </div>
+      <h2 class="section-title">Security overview</h2>
+      <p class="section-subtitle">What needs attention now, with operational availability kept separate from security severity.</p>
+      <div class="overview-kpis">
+        <div class="overview-kpi">
+          <span class="metric-label">Posture score</span>
+          <span class="overview-kpi-value">${posture.score}</span>
+          <span class="overview-kpi-context">Grade ${posture.grade}${posture.provisional ? " · provisional" : " · fully calculated"}</span>
+        </div>
+        <button class="overview-kpi" type="button" @click=${() => this._goto("audit")}>
+          <span class="metric-label">Open detections</span>
+          <span class="overview-kpi-value" style="color:${openDetections ? "var(--status-critical)" : "inherit"}">${openDetections}</span>
+          <span class="overview-kpi-context">Review active security signals</span>
+        </button>
+        <button class="overview-kpi" type="button" @click=${() => this._goto("scanner")}>
+          <span class="metric-label">Critical / high findings</span>
+          <span class="overview-kpi-value" style="color:${criticalHighFindings ? "var(--status-serious)" : "inherit"}">${criticalHighFindings.toLocaleString()}</span>
+          <span class="overview-kpi-context">Across inventoried assets</span>
+        </button>
+        <button class="overview-kpi" type="button" @click=${() => this._goto("network")}>
+          <span class="metric-label">Monitored assets</span>
+          <span class="overview-kpi-value">${devices.devices.length.toLocaleString()}</span>
+          <span class="overview-kpi-context">Open asset and network inventory</span>
+        </button>
+      </div>
+      <div class="overview-visuals">
+        <div class="card posture-visual-card">
+          <div class="card-head">
+            <div><h3>Posture</h3><div class="metric-context">Current weighted security posture</div></div>
+          </div>
+          <div class="posture-ring-wrap">
+            <div
+              class="posture-ring"
+              role="img"
+              aria-label="Posture score ${posture.score} out of 100"
+              style="--posture-angle:${Math.max(0, Math.min(100, posture.score)) * 3.6}deg;--posture-color:${postureColor};"
+            >
+              <div class="posture-ring-value"><strong>${posture.score}</strong><span>of 100</span></div>
+            </div>
+            <div>
+              <div class="posture-grade-line">Grade ${posture.grade}</div>
+              ${posture.provisional
+                ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
+                : html`<span class="tag enforced">fully calculated</span>`}
+              <p class="posture-description">
+                ${trend.delta < 0
+                  ? "Posture declined over the displayed period. Review the priority queue below."
+                  : "No downward posture trend in the displayed period."}
+              </p>
             </div>
           </div>
-          <div class="score-track" aria-label="Posture score ${posture.score} out of 100">
-            <div class="score-fill" style="width:${Math.max(0, Math.min(100, posture.score))}%"></div>
-          </div>
         </div>
-        <div class="priority-grid">
-          <button class="priority-item" type="button" @click=${() => this._goto("audit")}>
-            <span class="metric-label">Open detections</span>
-            <span class="priority-value ${openDetections ? "critical" : ""}">${openDetections}</span>
-            <span class="priority-help">Review active security signals</span>
-          </button>
-          <button class="priority-item" type="button" @click=${() => this._goto("scanner")}>
-            <span class="metric-label">Critical CVEs</span>
-            <span class="priority-value ${criticalVulnerabilities ? "critical" : ""}">${criticalVulnerabilities.toLocaleString()}</span>
-            <span class="priority-help">Across inventoried devices</span>
-          </button>
-          <button class="priority-item" type="button" @click=${() => this._onStatusTileClick("unavailable")}>
-            <span class="metric-label">Unavailable devices</span>
-            <span class="priority-value ${unavailableDevices ? "warning" : ""}">${unavailableDevices}</span>
-            <span class="priority-help">Filter the investigation queue</span>
-          </button>
-          <button class="priority-item" type="button" @click=${() => this._goto("users")}>
-            <span class="metric-label">Accounts without MFA</span>
-            <span class="priority-value ${noMfa ? "warning" : ""}">${noMfa}</span>
-            <span class="priority-help">Close identity protection gaps</span>
-          </button>
+        <div class="card trend-card">
+          <div class="card-head">
+            <div><h3>Posture trend</h3><div class="metric-context">${summary.posture_history.length ? "Thirty-day score history" : "History begins after the first completed posture calculation"}</div></div>
+            <span class="tag ${trend.delta >= 0 ? "enforced" : "cosmetic"}">${trendDelta}</span>
+          </div>
+          <svg class="posture-trend" viewBox="0 0 560 142" role="img" aria-label="Posture score trend, ${trendDelta} points">
+            <line class="grid-line" x1="12" y1="22" x2="548" y2="22"></line>
+            <line class="grid-line" x1="12" y1="70" x2="548" y2="70"></line>
+            <line class="grid-line" x1="12" y1="118" x2="548" y2="118"></line>
+            <polygon class="trend-area" points=${trend.area}></polygon>
+            <polyline class="trend-line" points=${trend.points}></polyline>
+            <text x="12" y="138">${trend.firstLabel}</text>
+            <text x="548" y="138" text-anchor="end">${trend.lastLabel}</text>
+          </svg>
         </div>
       </div>
     `;
@@ -803,6 +949,16 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       { key: "medium", label: "Medium", color: "var(--status-warning)", value: vulnSeverityTotals.medium },
       { key: "low", label: "Low", color: "var(--status-good)", value: vulnSeverityTotals.low },
     ];
+    const vulnCriticalEnd = vulnTotal ? (vulnSeverityTotals.critical / vulnTotal) * 100 : 0;
+    const vulnHighEnd = vulnTotal
+      ? ((vulnSeverityTotals.critical + vulnSeverityTotals.high) / vulnTotal) * 100
+      : 0;
+    const vulnMediumEnd = vulnTotal
+      ? ((vulnSeverityTotals.critical + vulnSeverityTotals.high + vulnSeverityTotals.medium) / vulnTotal) * 100
+      : 0;
+    const vulnerabilityDonut = vulnTotal
+      ? `conic-gradient(var(--status-critical) 0 ${vulnCriticalEnd}%, var(--status-serious) ${vulnCriticalEnd}% ${vulnHighEnd}%, var(--status-warning) ${vulnHighEnd}% ${vulnMediumEnd}%, var(--status-good) ${vulnMediumEnd}% 100%)`
+      : "rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09)";
 
     const entityCounts = s.entity_state_counts ?? { unavailable: 0, unknown: 0, total: 0 };
     const failedUnknownTotal = entityCounts.unavailable + entityCounts.unknown;
@@ -844,8 +1000,8 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         id: "device_vuln_overview",
         title: "Device & Vulnerability Overview",
         render: () => html`
-      <h2 class="section-title">Exposure at a glance</h2>
-      <p class="section-subtitle">Availability, vulnerability concentration, and entity reliability without the chart clutter.</p>
+      <h2 class="section-title">Operational health and exposure</h2>
+      <p class="section-subtitle">Availability is an operational condition; vulnerability severity remains a separate security measure.</p>
       <div class="summary-grid">
         <div class="card device-status-card">
           <div class="card-head">
@@ -873,25 +1029,27 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         <div class="card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
           <div class="card-head">
             <div>
-              <h3>Vulnerability exposure</h3>
+              <h3>Finding severity</h3>
               <div class="metric-context">Weighted risk score ${d.combined_risk_score.toFixed(1)} / 10</div>
             </div>
-            <div class="metric-number">${vulnTotal.toLocaleString()}</div>
           </div>
-          <div class="severity-track" aria-label="Vulnerability findings by severity">
-            ${vulnSegments.map(
-              (seg) => html`<span style="width:${vulnTotal ? (seg.value / vulnTotal) * 100 : 0}%;background:${seg.color}"></span>`
-            )}
-          </div>
-          <div class="compact-legend">
-            ${vulnSegments.map(
-              (seg) => html`
-                <div class="item">
-                  <span class="swatch" style="background:${seg.color}"></span>${seg.label}
-                  <strong>${seg.value.toLocaleString()}</strong>
-                </div>
-              `
-            )}
+          <div class="donut-layout">
+            <div
+              class="severity-donut"
+              role="img"
+              aria-label="${vulnTotal.toLocaleString()} vulnerability findings by severity"
+              style="background:${vulnerabilityDonut}"
+            ><strong>${vulnTotal.toLocaleString()}</strong></div>
+            <div class="compact-legend">
+              ${vulnSegments.map(
+                (seg) => html`
+                  <div class="item">
+                    <span class="swatch" style="background:${seg.color}"></span>${seg.label}
+                    <strong>${seg.value.toLocaleString()}</strong>
+                  </div>
+                `
+              )}
+            </div>
           </div>
         </div>
 
