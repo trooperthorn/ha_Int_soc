@@ -1,7 +1,13 @@
 import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
-import type { HaSocNavigateDetail, SocTab } from "./nav";
+import {
+  labelForTab,
+  SOC_WORKSPACES,
+  workspaceForTab,
+  type HaSocNavigateDetail,
+  type SocTab,
+} from "./nav";
 import { AccessInfo, ProbeOverview, fetchAccessInfo, fetchProbeStatus, fetchVersion } from "./data/ha-soc-ws";
 
 import "./views/users-view";
@@ -18,25 +24,6 @@ import "./views/integration-security-view";
 import "./views/settings-view";
 
 type TabId = SocTab;
-
-// ownerOnly tabs render disabled (with an "only available to owner"
-// tooltip) for a non-owner admin — matching the owner-only WS gate on
-// their commands, so a non-owner never lands on a tab that would just
-// error underneath.
-const TABS: { id: TabId; label: string; ownerOnly?: boolean }[] = [
-  { id: "dashboard", label: "Dashboard" },
-  { id: "network", label: "Network" },
-  { id: "network_security", label: "Network Security" },
-  { id: "entity_remap", label: "Entity ReMap" },
-  { id: "integration_security", label: "Integration Security" },
-  { id: "users", label: "Users & Access" },
-  { id: "permissions", label: "Permissions" },
-  { id: "audit", label: "Audit Log" },
-  { id: "peripherals", label: "Local Peripherals" },
-  { id: "scanner", label: "Scanner" },
-  { id: "logs", label: "Logs" },
-  { id: "settings", label: "Settings", ownerOnly: true },
-];
 
 @customElement("ha-soc-panel")
 export class HaSocPanel extends LitElement {
@@ -57,6 +44,15 @@ export class HaSocPanel extends LitElement {
       position: sticky;
       top: 0;
       z-index: 5;
+      scrollbar-width: thin;
+    }
+    .subtabs {
+      display: flex;
+      gap: 4px;
+      padding: 7px max(16px, calc((100% - 1400px) / 2));
+      overflow-x: auto;
+      background: var(--primary-background-color);
+      border-bottom: 1px solid var(--divider-color);
       scrollbar-width: thin;
     }
     .tab {
@@ -91,6 +87,28 @@ export class HaSocPanel extends LitElement {
       font-size: 11px;
       margin-left: 4px;
       opacity: 0.8;
+    }
+    .subtab {
+      appearance: none;
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 10px;
+      background: transparent;
+      color: var(--secondary-text-color);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    .subtab:hover,
+    .subtab:focus-visible {
+      color: var(--primary-text-color);
+      background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.045);
+    }
+    .subtab.active {
+      color: var(--primary-color);
+      background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.09);
+      font-weight: 600;
     }
     .header {
       display: flex;
@@ -270,7 +288,8 @@ export class HaSocPanel extends LitElement {
         ${this._renderFooter()}
       `;
     }
-    const activeTabLabel = TABS.find((tab) => tab.id === this._tab)?.label ?? "Dashboard";
+    const activeWorkspace = workspaceForTab(this._tab);
+    const activeTabLabel = labelForTab(this._tab);
     return html`
       <div class="header">
         <div class="brand">
@@ -292,28 +311,46 @@ export class HaSocPanel extends LitElement {
               </button>
             `}
       </div>
-      <div class="tabs">
-        ${TABS.map((t) => {
-          const locked = !!t.ownerOnly && !this._access?.is_owner;
+      <nav class="tabs" aria-label="HA SOC workspaces">
+        ${SOC_WORKSPACES.map((workspace) => {
+          const locked = !!workspace.ownerOnly && !this._access?.is_owner;
           if (locked) {
             return html`
               <button type="button" class="tab disabled" title="Only available to the account owner" disabled>
-                ${t.label}<span class="lock">🔒</span>
+                ${workspace.label}<span class="lock">🔒</span>
               </button>
             `;
           }
           return html`
             <button
               type="button"
-              class="tab ${this._tab === t.id ? "active" : ""}"
-              aria-pressed=${this._tab === t.id ? "true" : "false"}
-              @click=${() => this._selectTab(t.id)}
+              class="tab ${activeWorkspace.id === workspace.id ? "active" : ""}"
+              aria-current=${activeWorkspace.id === workspace.id ? "page" : "false"}
+              @click=${() => this._selectTab(workspace.defaultTab)}
             >
-              ${t.label}
+              ${workspace.label}
             </button>
           `;
         })}
-      </div>
+      </nav>
+      ${activeWorkspace.tabs.length > 1
+        ? html`
+            <nav class="subtabs" aria-label="${activeWorkspace.label} views">
+              ${activeWorkspace.tabs.map(
+                (item) => html`
+                  <button
+                    type="button"
+                    class="subtab ${this._tab === item.id ? "active" : ""}"
+                    aria-current=${this._tab === item.id ? "page" : "false"}
+                    @click=${() => this._selectTab(item.id)}
+                  >
+                    ${item.label}
+                  </button>
+                `
+              )}
+            </nav>
+          `
+        : html``}
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
       ${this._renderFooter()}
     `;

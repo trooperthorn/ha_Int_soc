@@ -4,7 +4,7 @@ function t(t,e,s,i){var a,r=arguments.length,o=r<3?e:null===i?i=Object.getOwnPro
  * Copyright 2019 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
  */
-const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"adoptedStyleSheets"in Document.prototype&&"replace"in CSSStyleSheet.prototype,i=Symbol(),a=new WeakMap;let r=class{constructor(t,e,s){if(this._$cssResult$=!0,s!==i)throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");this.cssText=t,this.t=e}get styleSheet(){let t=this.o;const e=this.t;if(s&&void 0===t){const s=void 0!==e&&1===e.length;s&&(t=a.get(e)),void 0===t&&((this.o=t=new CSSStyleSheet).replaceSync(this.cssText),s&&a.set(e,t))}return t}toString(){return this.cssText}};const o=(t,...e)=>{const s=1===t.length?t[0]:e.reduce((e,s,i)=>e+(t=>{if(!0===t._$cssResult$)return t.cssText;if("number"==typeof t)return t;throw Error("Value passed to 'css' function must be a 'css' function result: "+t+". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.")})(s)+t[i+1],t[0]);return new r(s,t,i)},n=s?t=>t:t=>t instanceof CSSStyleSheet?(t=>{let e="";for(const s of t.cssRules)e+=s.cssText;return(t=>new r("string"==typeof t?t:t+"",void 0,i))(e)})(t):t,{is:l,defineProperty:d,getOwnPropertyDescriptor:c,getOwnPropertyNames:p,getOwnPropertySymbols:h,getPrototypeOf:u}=Object,g=globalThis,_=g.trustedTypes,v=_?_.emptyScript:"",m=g.reactiveElementPolyfillSupport,y=(t,e)=>t,b={toAttribute(t,e){switch(e){case Boolean:t=t?v:null;break;case Object:case Array:t=null==t?t:JSON.stringify(t)}return t},fromAttribute(t,e){let s=t;switch(e){case Boolean:s=null!==t;break;case Number:s=null===t?null:Number(t);break;case Object:case Array:try{s=JSON.parse(t)}catch(t){s=null}}return s}},f=(t,e)=>!l(t,e),$={attribute:!0,type:String,converter:b,reflect:!1,useDefault:!1,hasChanged:f};
+const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow)&&"adoptedStyleSheets"in Document.prototype&&"replace"in CSSStyleSheet.prototype,i=Symbol(),a=new WeakMap;let r=class{constructor(t,e,s){if(this._$cssResult$=!0,s!==i)throw Error("CSSResult is not constructable. Use `unsafeCSS` or `css` instead.");this.cssText=t,this.t=e}get styleSheet(){let t=this.o;const e=this.t;if(s&&void 0===t){const s=void 0!==e&&1===e.length;s&&(t=a.get(e)),void 0===t&&((this.o=t=new CSSStyleSheet).replaceSync(this.cssText),s&&a.set(e,t))}return t}toString(){return this.cssText}};const o=(t,...e)=>{const s=1===t.length?t[0]:e.reduce((e,s,i)=>e+(t=>{if(!0===t._$cssResult$)return t.cssText;if("number"==typeof t)return t;throw Error("Value passed to 'css' function must be a 'css' function result: "+t+". Use 'unsafeCSS' to pass non-literal values, but take care to ensure page security.")})(s)+t[i+1],t[0]);return new r(s,t,i)},n=s?t=>t:t=>t instanceof CSSStyleSheet?(t=>{let e="";for(const s of t.cssRules)e+=s.cssText;return(t=>new r("string"==typeof t?t:t+"",void 0,i))(e)})(t):t,{is:l,defineProperty:d,getOwnPropertyDescriptor:c,getOwnPropertyNames:p,getOwnPropertySymbols:h,getPrototypeOf:u}=Object,g=globalThis,v=g.trustedTypes,_=v?v.emptyScript:"",m=g.reactiveElementPolyfillSupport,y=(t,e)=>t,b={toAttribute(t,e){switch(e){case Boolean:t=t?_:null;break;case Object:case Array:t=null==t?t:JSON.stringify(t)}return t},fromAttribute(t,e){let s=t;switch(e){case Boolean:s=null!==t;break;case Number:s=null===t?null:Number(t);break;case Object:case Array:try{s=JSON.parse(t)}catch(t){s=null}}return s}},f=(t,e)=>!l(t,e),$={attribute:!0,type:String,converter:b,reflect:!1,useDefault:!1,hasChanged:f};
 /**
  * @license
  * Copyright 2017 Google LLC
@@ -15,7 +15,7 @@ const e=globalThis,s=e.ShadowRoot&&(void 0===e.ShadyCSS||e.ShadyCSS.nativeShadow
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
  */
-const x=globalThis,k=t=>t,S=x.trustedTypes,C=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,A="$lit$",P=`lit$${Math.random().toFixed(9).slice(2)}$`,z="?"+P,E=`<${z}>`,R=document,I=()=>R.createComment(""),F=t=>null===t||"object"!=typeof t&&"function"!=typeof t,T=Array.isArray,N="[ \t\n\f\r]",L=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,O=/-->/g,D=/>/g,U=RegExp(`>|${N}(?:([^\\s"'>=/]+)(${N}*=${N}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),M=/'/g,H=/"/g,V=/^(?:script|style|textarea|title)$/i,B=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),j=Symbol.for("lit-noChange"),W=Symbol.for("lit-nothing"),q=new WeakMap,K=R.createTreeWalker(R,129);function G(t,e){if(!T(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==C?C.createHTML(e):e}const Z=(t,e)=>{const s=t.length-1,i=[];let a,r=2===e?"<svg>":3===e?"<math>":"",o=L;for(let e=0;e<s;e++){const s=t[e];let n,l,d=-1,c=0;for(;c<s.length&&(o.lastIndex=c,l=o.exec(s),null!==l);)c=o.lastIndex,o===L?"!--"===l[1]?o=O:void 0!==l[1]?o=D:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),o=U):void 0!==l[3]&&(o=U):o===U?">"===l[0]?(o=a??L,d=-1):void 0===l[1]?d=-2:(d=o.lastIndex-l[2].length,n=l[1],o=void 0===l[3]?U:'"'===l[3]?H:M):o===H||o===M?o=U:o===O||o===D?o=L:(o=U,a=void 0);const p=o===U&&t[e+1].startsWith("/>")?" ":"";r+=o===L?s+E:d>=0?(i.push(n),s.slice(0,d)+A+s.slice(d)+P+p):s+P+(-2===d?e:p)}return[G(t,r+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,r=0;const o=t.length-1,n=this.parts,[l,d]=Z(t,e);if(this.el=J.createElement(l,s),K.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=K.nextNode())&&n.length<o;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(A)){const e=d[r++],s=i.getAttribute(t).split(P),o=/([.?@])?(.*)/.exec(e);n.push({type:1,index:a,name:o[2],strings:s,ctor:"."===o[1]?et:"?"===o[1]?st:"@"===o[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(P)&&(n.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(P),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],I()),K.nextNode(),n.push({type:2,index:++a});i.append(t[e],I())}}}else if(8===i.nodeType)if(i.data===z)n.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(P,t+1));)n.push({type:7,index:a}),t+=P.length-1}a++}}static createElement(t,e){const s=R.createElement("template");return s.innerHTML=t,s}}function Y(t,e,s=t,i){if(e===j)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const r=F(e)?void 0:e._$litDirective$;return a?.constructor!==r&&(a?._$AO?.(!1),void 0===r?a=void 0:(a=new r(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Y(t,a._$AS(t,e.values),a,i)),e}class Q{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??R).importNode(e,!0);K.currentNode=i;let a=K.nextNode(),r=0,o=0,n=s[0];for(;void 0!==n;){if(r===n.index){let e;2===n.type?e=new X(a,a.nextSibling,this,t):1===n.type?e=new n.ctor(a,n.name,n.strings,this,t):6===n.type&&(e=new at(a,this,t)),this._$AV.push(e),n=s[++o]}r!==n?.index&&(a=K.nextNode(),r++)}return K.currentNode=R,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class X{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=W,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Y(this,t,e),F(t)?t===W||null==t||""===t?(this._$AH!==W&&this._$AR(),this._$AH=W):t!==this._$AH&&t!==j&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>T(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==W&&F(this._$AH)?this._$AA.nextSibling.data=t:this.T(R.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(G(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new Q(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=q.get(t.strings);return void 0===e&&q.set(t.strings,e=new J(t)),e}k(t){T(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new X(this.O(I()),this.O(I()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=W,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=W}_$AI(t,e=this,s,i){const a=this.strings;let r=!1;if(void 0===a)t=Y(this,t,e,0),r=!F(t)||t!==this._$AH&&t!==j,r&&(this._$AH=t);else{const i=t;let o,n;for(t=a[0],o=0;o<a.length-1;o++)n=Y(this,i[s+o],e,o),n===j&&(n=this._$AH[o]),r||=!F(n)||n!==this._$AH[o],n===W?t=W:t!==W&&(t+=(n??"")+a[o+1]),this._$AH[o]=n}r&&!i&&this.j(t)}j(t){t===W?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===W?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==W)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Y(this,t,e,0)??W)===j)return;const s=this._$AH,i=t===W&&s!==W||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==W&&(s===W||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Y(this,t)}}const rt=x.litHtmlPolyfillSupport;rt?.(J,X),(x.litHtmlVersions??=[]).push("3.3.3");const ot=globalThis;
+const x=globalThis,k=t=>t,S=x.trustedTypes,C=S?S.createPolicy("lit-html",{createHTML:t=>t}):void 0,A="$lit$",P=`lit$${Math.random().toFixed(9).slice(2)}$`,z="?"+P,E=`<${z}>`,R=document,I=()=>R.createComment(""),F=t=>null===t||"object"!=typeof t&&"function"!=typeof t,T=Array.isArray,N="[ \t\n\f\r]",L=/<(?:(!--|\/[^a-zA-Z])|(\/?[a-zA-Z][^>\s]*)|(\/?$))/g,O=/-->/g,D=/>/g,M=RegExp(`>|${N}(?:([^\\s"'>=/]+)(${N}*=${N}*(?:[^ \t\n\f\r"'\`<>=]|("|')|))|$)`,"g"),U=/'/g,H=/"/g,V=/^(?:script|style|textarea|title)$/i,B=(t=>(e,...s)=>({_$litType$:t,strings:e,values:s}))(1),j=Symbol.for("lit-noChange"),W=Symbol.for("lit-nothing"),q=new WeakMap,G=R.createTreeWalker(R,129);function K(t,e){if(!T(t)||!t.hasOwnProperty("raw"))throw Error("invalid template strings array");return void 0!==C?C.createHTML(e):e}const Z=(t,e)=>{const s=t.length-1,i=[];let a,r=2===e?"<svg>":3===e?"<math>":"",o=L;for(let e=0;e<s;e++){const s=t[e];let n,l,d=-1,c=0;for(;c<s.length&&(o.lastIndex=c,l=o.exec(s),null!==l);)c=o.lastIndex,o===L?"!--"===l[1]?o=O:void 0!==l[1]?o=D:void 0!==l[2]?(V.test(l[2])&&(a=RegExp("</"+l[2],"g")),o=M):void 0!==l[3]&&(o=M):o===M?">"===l[0]?(o=a??L,d=-1):void 0===l[1]?d=-2:(d=o.lastIndex-l[2].length,n=l[1],o=void 0===l[3]?M:'"'===l[3]?H:U):o===H||o===U?o=M:o===O||o===D?o=L:(o=M,a=void 0);const p=o===M&&t[e+1].startsWith("/>")?" ":"";r+=o===L?s+E:d>=0?(i.push(n),s.slice(0,d)+A+s.slice(d)+P+p):s+P+(-2===d?e:p)}return[K(t,r+(t[s]||"<?>")+(2===e?"</svg>":3===e?"</math>":"")),i]};class J{constructor({strings:t,_$litType$:e},s){let i;this.parts=[];let a=0,r=0;const o=t.length-1,n=this.parts,[l,d]=Z(t,e);if(this.el=J.createElement(l,s),G.currentNode=this.el.content,2===e||3===e){const t=this.el.content.firstChild;t.replaceWith(...t.childNodes)}for(;null!==(i=G.nextNode())&&n.length<o;){if(1===i.nodeType){if(i.hasAttributes())for(const t of i.getAttributeNames())if(t.endsWith(A)){const e=d[r++],s=i.getAttribute(t).split(P),o=/([.?@])?(.*)/.exec(e);n.push({type:1,index:a,name:o[2],strings:s,ctor:"."===o[1]?et:"?"===o[1]?st:"@"===o[1]?it:tt}),i.removeAttribute(t)}else t.startsWith(P)&&(n.push({type:6,index:a}),i.removeAttribute(t));if(V.test(i.tagName)){const t=i.textContent.split(P),e=t.length-1;if(e>0){i.textContent=S?S.emptyScript:"";for(let s=0;s<e;s++)i.append(t[s],I()),G.nextNode(),n.push({type:2,index:++a});i.append(t[e],I())}}}else if(8===i.nodeType)if(i.data===z)n.push({type:2,index:a});else{let t=-1;for(;-1!==(t=i.data.indexOf(P,t+1));)n.push({type:7,index:a}),t+=P.length-1}a++}}static createElement(t,e){const s=R.createElement("template");return s.innerHTML=t,s}}function Y(t,e,s=t,i){if(e===j)return e;let a=void 0!==i?s._$Co?.[i]:s._$Cl;const r=F(e)?void 0:e._$litDirective$;return a?.constructor!==r&&(a?._$AO?.(!1),void 0===r?a=void 0:(a=new r(t),a._$AT(t,s,i)),void 0!==i?(s._$Co??=[])[i]=a:s._$Cl=a),void 0!==a&&(e=Y(t,a._$AS(t,e.values),a,i)),e}class Q{constructor(t,e){this._$AV=[],this._$AN=void 0,this._$AD=t,this._$AM=e}get parentNode(){return this._$AM.parentNode}get _$AU(){return this._$AM._$AU}u(t){const{el:{content:e},parts:s}=this._$AD,i=(t?.creationScope??R).importNode(e,!0);G.currentNode=i;let a=G.nextNode(),r=0,o=0,n=s[0];for(;void 0!==n;){if(r===n.index){let e;2===n.type?e=new X(a,a.nextSibling,this,t):1===n.type?e=new n.ctor(a,n.name,n.strings,this,t):6===n.type&&(e=new at(a,this,t)),this._$AV.push(e),n=s[++o]}r!==n?.index&&(a=G.nextNode(),r++)}return G.currentNode=R,i}p(t){let e=0;for(const s of this._$AV)void 0!==s&&(void 0!==s.strings?(s._$AI(t,s,e),e+=s.strings.length-2):s._$AI(t[e])),e++}}class X{get _$AU(){return this._$AM?._$AU??this._$Cv}constructor(t,e,s,i){this.type=2,this._$AH=W,this._$AN=void 0,this._$AA=t,this._$AB=e,this._$AM=s,this.options=i,this._$Cv=i?.isConnected??!0}get parentNode(){let t=this._$AA.parentNode;const e=this._$AM;return void 0!==e&&11===t?.nodeType&&(t=e.parentNode),t}get startNode(){return this._$AA}get endNode(){return this._$AB}_$AI(t,e=this){t=Y(this,t,e),F(t)?t===W||null==t||""===t?(this._$AH!==W&&this._$AR(),this._$AH=W):t!==this._$AH&&t!==j&&this._(t):void 0!==t._$litType$?this.$(t):void 0!==t.nodeType?this.T(t):(t=>T(t)||"function"==typeof t?.[Symbol.iterator])(t)?this.k(t):this._(t)}O(t){return this._$AA.parentNode.insertBefore(t,this._$AB)}T(t){this._$AH!==t&&(this._$AR(),this._$AH=this.O(t))}_(t){this._$AH!==W&&F(this._$AH)?this._$AA.nextSibling.data=t:this.T(R.createTextNode(t)),this._$AH=t}$(t){const{values:e,_$litType$:s}=t,i="number"==typeof s?this._$AC(t):(void 0===s.el&&(s.el=J.createElement(K(s.h,s.h[0]),this.options)),s);if(this._$AH?._$AD===i)this._$AH.p(e);else{const t=new Q(i,this),s=t.u(this.options);t.p(e),this.T(s),this._$AH=t}}_$AC(t){let e=q.get(t.strings);return void 0===e&&q.set(t.strings,e=new J(t)),e}k(t){T(this._$AH)||(this._$AH=[],this._$AR());const e=this._$AH;let s,i=0;for(const a of t)i===e.length?e.push(s=new X(this.O(I()),this.O(I()),this,this.options)):s=e[i],s._$AI(a),i++;i<e.length&&(this._$AR(s&&s._$AB.nextSibling,i),e.length=i)}_$AR(t=this._$AA.nextSibling,e){for(this._$AP?.(!1,!0,e);t!==this._$AB;){const e=k(t).nextSibling;k(t).remove(),t=e}}setConnected(t){void 0===this._$AM&&(this._$Cv=t,this._$AP?.(t))}}class tt{get tagName(){return this.element.tagName}get _$AU(){return this._$AM._$AU}constructor(t,e,s,i,a){this.type=1,this._$AH=W,this._$AN=void 0,this.element=t,this.name=e,this._$AM=i,this.options=a,s.length>2||""!==s[0]||""!==s[1]?(this._$AH=Array(s.length-1).fill(new String),this.strings=s):this._$AH=W}_$AI(t,e=this,s,i){const a=this.strings;let r=!1;if(void 0===a)t=Y(this,t,e,0),r=!F(t)||t!==this._$AH&&t!==j,r&&(this._$AH=t);else{const i=t;let o,n;for(t=a[0],o=0;o<a.length-1;o++)n=Y(this,i[s+o],e,o),n===j&&(n=this._$AH[o]),r||=!F(n)||n!==this._$AH[o],n===W?t=W:t!==W&&(t+=(n??"")+a[o+1]),this._$AH[o]=n}r&&!i&&this.j(t)}j(t){t===W?this.element.removeAttribute(this.name):this.element.setAttribute(this.name,t??"")}}class et extends tt{constructor(){super(...arguments),this.type=3}j(t){this.element[this.name]=t===W?void 0:t}}class st extends tt{constructor(){super(...arguments),this.type=4}j(t){this.element.toggleAttribute(this.name,!!t&&t!==W)}}class it extends tt{constructor(t,e,s,i,a){super(t,e,s,i,a),this.type=5}_$AI(t,e=this){if((t=Y(this,t,e,0)??W)===j)return;const s=this._$AH,i=t===W&&s!==W||t.capture!==s.capture||t.once!==s.once||t.passive!==s.passive,a=t!==W&&(s===W||i);i&&this.element.removeEventListener(this.name,this,s),a&&this.element.addEventListener(this.name,this,t),this._$AH=t}handleEvent(t){"function"==typeof this._$AH?this._$AH.call(this.options?.host??this.element,t):this._$AH.handleEvent(t)}}class at{constructor(t,e,s){this.element=t,this.type=6,this._$AN=void 0,this._$AM=e,this.options=s}get _$AU(){return this._$AM._$AU}_$AI(t){Y(this,t)}}const rt=x.litHtmlPolyfillSupport;rt?.(J,X),(x.litHtmlVersions??=[]).push("3.3.3");const ot=globalThis;
 /**
  * @license
  * Copyright 2017 Google LLC
@@ -36,7 +36,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
  * @license
  * Copyright 2017 Google LLC
  * SPDX-License-Identifier: BSD-3-Clause
- */function ut(t){return ht({...t,state:!0,attribute:!1})}const gt=(t,e)=>t.callWS(e),_t=t=>gt(t,{type:"ha_soc/users/list"}).then(t=>t.users),vt=t=>gt(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),mt=(t,e)=>gt(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),yt=(t,e,s)=>gt(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),bt=t=>gt(t,{type:"ha_soc/detections/thresholds"}).then(t=>t.rules),ft=t=>gt(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),$t=t=>gt(t,{type:"ha_soc/logs/fault"}),wt=t=>gt(t,{type:"ha_soc/logs/targets"}),xt=t=>gt(t,{type:"ha_soc/health/list"}),kt=t=>gt(t,{type:"ha_soc/dashboard/devices"}),St=t=>gt(t,{type:"ha_soc/dashboard/integrations"}),Ct=t=>gt(t,{type:"ha_soc/access/info"}),At=t=>gt(t,{type:"ha_soc/probe/status"}),Pt=t=>gt(t,{type:"ha_soc/firewall/status"}),zt=t=>gt(t,{type:"ha_soc/peripherals/list"}),Et=t=>gt(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),Rt=t=>gt(t,{type:"ha_soc/security_health/list"}),It=(t,e)=>gt(t,{type:"ha_soc/settings/set",...e}),Ft=o`
+ */function ut(t){return ht({...t,state:!0,attribute:!1})}const gt=[{id:"overview",label:"Overview",defaultTab:"dashboard",tabs:[{id:"dashboard",label:"Security Overview"}]},{id:"assets",label:"Assets",defaultTab:"network",tabs:[{id:"network",label:"Network"},{id:"peripherals",label:"Local Peripherals"},{id:"entity_remap",label:"Entity ReMap"},{id:"integration_security",label:"Integration Security"}]},{id:"findings",label:"Findings",defaultTab:"scanner",tabs:[{id:"scanner",label:"Vulnerability Scanner"},{id:"network_security",label:"Network Security"}]},{id:"identity",label:"Identity",defaultTab:"users",tabs:[{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"}]},{id:"siem",label:"SIEM & Audit",defaultTab:"audit",tabs:[{id:"audit",label:"Audit Log"},{id:"logs",label:"Logs"}]},{id:"settings",label:"Settings",defaultTab:"settings",ownerOnly:!0,tabs:[{id:"settings",label:"Security Settings"}]}];function vt(t,e,s){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:s?{tab:e,clientFilter:s}:{tab:e},bubbles:!0,composed:!0}))}function _t(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function mt(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}const yt=(t,e)=>t.callWS(e),bt=t=>yt(t,{type:"ha_soc/users/list"}).then(t=>t.users),ft=t=>yt(t,{type:"ha_soc/risk/list"}).then(t=>t.risk),$t=(t,e)=>yt(t,{type:"ha_soc/detections/list",status:e}).then(t=>t.detections),wt=(t,e,s)=>yt(t,{type:"ha_soc/detections/set_status",detection_id:e,status:s}),xt=t=>yt(t,{type:"ha_soc/detections/thresholds"}).then(t=>t.rules),kt=t=>yt(t,{type:"ha_soc/vulns/list"}).then(t=>t.findings),St=t=>yt(t,{type:"ha_soc/logs/fault"}),Ct=t=>yt(t,{type:"ha_soc/logs/targets"}),At=t=>yt(t,{type:"ha_soc/health/list"}),Pt=t=>yt(t,{type:"ha_soc/dashboard/devices"}),zt=t=>yt(t,{type:"ha_soc/dashboard/integrations"}),Et=t=>yt(t,{type:"ha_soc/access/info"}),Rt=t=>yt(t,{type:"ha_soc/probe/status"}),It=t=>yt(t,{type:"ha_soc/firewall/status"}),Ft=t=>yt(t,{type:"ha_soc/peripherals/list"}),Tt=t=>yt(t,{type:"ha_soc/entity_remap/broken_references"}).then(t=>t.broken),Nt=t=>yt(t,{type:"ha_soc/security_health/list"}),Lt=(t,e)=>yt(t,{type:"ha_soc/settings/set",...e}),Ot=o`
   :host {
     display: block;
     padding: 20px clamp(14px, 2vw, 24px) 28px;
@@ -314,7 +314,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
     opacity: 1;
     color: var(--primary-color);
   }
-`,Tt={order:[],hidden:[]};function Nt(t,e){const s=new Map(t.map(t=>[t.id,t])),i=new Set,a=[];for(const t of e.order){const e=s.get(t);e&&!i.has(t)&&(a.push(e),i.add(t))}for(const e of t)i.has(e.id)||(a.push(e),i.add(e.id));return a}let Lt=class extends nt{constructor(){super(...arguments),this.sections=[],this.layout=Tt,this.editMode=!1,this._dragId=null}render(){const t=Nt(this.sections,this.layout),e=new Set(this.layout.hidden);return this.editMode?B`
+`,Dt={order:[],hidden:[]};function Mt(t,e){const s=new Map(t.map(t=>[t.id,t])),i=new Set,a=[];for(const t of e.order){const e=s.get(t);e&&!i.has(t)&&(a.push(e),i.add(t))}for(const e of t)i.has(e.id)||(a.push(e),i.add(e.id));return a}let Ut=class extends nt{constructor(){super(...arguments),this.sections=[],this.layout=Dt,this.editMode=!1,this._dragId=null}render(){const t=Mt(this.sections,this.layout),e=new Set(this.layout.hidden);return this.editMode?B`
       <div class="customize-list">
         <p class="customize-hint">
           Drag the handle, or use ▲/▼, to reorder. Hide a section to remove it from this
@@ -362,7 +362,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               </button>
             `}
       </div>
-    `}_move(t,e){const s=Nt(this.sections,this.layout).map(t=>t.id),i=s.indexOf(t),a=i+e;i<0||a<0||a>=s.length||([s[i],s[a]]=[s[a],s[i]],this._emitChange(s,this.layout.hidden))}_toggleHidden(t){const e=this.layout.hidden.includes(t)?this.layout.hidden.filter(e=>e!==t):[...this.layout.hidden,t],s=Nt(this.sections,this.layout).map(t=>t.id);this._emitChange(s,e)}_onDragStart(t,e){this._dragId=e,t.dataTransfer?.setData("text/plain",e),t.dataTransfer&&(t.dataTransfer.effectAllowed="move"),this.requestUpdate()}_onDrop(t,e){t.preventDefault();const s=this._dragId;if(!s||s===e)return;const i=Nt(this.sections,this.layout).map(t=>t.id),a=i.indexOf(s),r=i.indexOf(e);a<0||r<0||(i.splice(a,1),i.splice(r,0,s),this._emitChange(i,this.layout.hidden))}_onDragEnd(){this._dragId=null,this.requestUpdate()}_emitChange(t,e){this.dispatchEvent(new CustomEvent("layout-change",{detail:{order:t,hidden:e},bubbles:!0,composed:!0}))}};Lt.styles=o`
+    `}_move(t,e){const s=Mt(this.sections,this.layout).map(t=>t.id),i=s.indexOf(t),a=i+e;i<0||a<0||a>=s.length||([s[i],s[a]]=[s[a],s[i]],this._emitChange(s,this.layout.hidden))}_toggleHidden(t){const e=this.layout.hidden.includes(t)?this.layout.hidden.filter(e=>e!==t):[...this.layout.hidden,t],s=Mt(this.sections,this.layout).map(t=>t.id);this._emitChange(s,e)}_onDragStart(t,e){this._dragId=e,t.dataTransfer?.setData("text/plain",e),t.dataTransfer&&(t.dataTransfer.effectAllowed="move"),this.requestUpdate()}_onDrop(t,e){t.preventDefault();const s=this._dragId;if(!s||s===e)return;const i=Mt(this.sections,this.layout).map(t=>t.id),a=i.indexOf(s),r=i.indexOf(e);a<0||r<0||(i.splice(a,1),i.splice(r,0,s),this._emitChange(i,this.layout.hidden))}_onDragEnd(){this._dragId=null,this.requestUpdate()}_emitChange(t,e){this.dispatchEvent(new CustomEvent("layout-change",{detail:{order:t,hidden:e},bubbles:!0,composed:!0}))}};Ut.styles=o`
     :host {
       display: block;
     }
@@ -432,14 +432,14 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
       color: var(--primary-color);
       border-color: var(--primary-color);
     }
-  `,t([ht({attribute:!1})],Lt.prototype,"sections",void 0),t([ht({attribute:!1})],Lt.prototype,"layout",void 0),t([ht({type:Boolean})],Lt.prototype,"editMode",void 0),Lt=t([dt("ha-soc-customize-list")],Lt);class Ot extends nt{constructor(){super(...arguments),this.customizeMode=!1,this._layout=Tt,this._onLayoutChange=t=>{var e,s,i;this._layout=t.detail,(e=this.hass,s=this.viewId,i=t.detail,gt(e,{type:"ha_soc/layout/set",view_id:s,order:i.order,hidden:i.hidden})).catch(()=>{})}}connectedCallback(){super.connectedCallback(),this._loadLayout()}async _loadLayout(){try{this._layout=await(t=this.hass,e=this.viewId,gt(t,{type:"ha_soc/layout/get",view_id:e}))}catch{this._layout=Tt}var t,e}_renderSections(t){return B`
+  `,t([ht({attribute:!1})],Ut.prototype,"sections",void 0),t([ht({attribute:!1})],Ut.prototype,"layout",void 0),t([ht({type:Boolean})],Ut.prototype,"editMode",void 0),Ut=t([dt("ha-soc-customize-list")],Ut);class Ht extends nt{constructor(){super(...arguments),this.customizeMode=!1,this._layout=Dt,this._onLayoutChange=t=>{var e,s,i;this._layout=t.detail,(e=this.hass,s=this.viewId,i=t.detail,yt(e,{type:"ha_soc/layout/set",view_id:s,order:i.order,hidden:i.hidden})).catch(()=>{})}}connectedCallback(){super.connectedCallback(),this._loadLayout()}async _loadLayout(){try{this._layout=await(t=this.hass,e=this.viewId,yt(t,{type:"ha_soc/layout/get",view_id:e}))}catch{this._layout=Dt}var t,e}_renderSections(t){return B`
       <ha-soc-customize-list
         .sections=${t}
         .layout=${this._layout}
         .editMode=${this.customizeMode}
         @layout-change=${this._onLayoutChange}
       ></ha-soc-customize-list>
-    `}}function Dt(t,e,s){if(!e)return t;const i=s[e.key];return i?t.map((t,e)=>({row:t,i:e})).sort((t,s)=>{const a=i(t.row),r=i(s.row),o=null==a||""===a,n=null==r||""===r;if(o&&n)return t.i-s.i;if(o)return 1;if(n)return-1;let l;return l="number"==typeof a&&"number"==typeof r?a-r:"boolean"==typeof a&&"boolean"==typeof r?Number(a)-Number(r):String(a).localeCompare(String(r),void 0,{sensitivity:"base",numeric:!0}),0!==l?l*e.dir:t.i-s.i}).map(t=>t.row):t}function Ut(t,e,s,i,a={}){const r=s?.key===e,o=r?1===s.dir?"ascending":"descending":"none",n=r?1===s.dir?"▲":"▼":"⇅";return B`
+    `}}function Vt(t,e,s){if(!e)return t;const i=s[e.key];return i?t.map((t,e)=>({row:t,i:e})).sort((t,s)=>{const a=i(t.row),r=i(s.row),o=null==a||""===a,n=null==r||""===r;if(o&&n)return t.i-s.i;if(o)return 1;if(n)return-1;let l;return l="number"==typeof a&&"number"==typeof r?a-r:"boolean"==typeof a&&"boolean"==typeof r?Number(a)-Number(r):String(a).localeCompare(String(r),void 0,{sensitivity:"base",numeric:!0}),0!==l?l*e.dir:t.i-s.i}).map(t=>t.row):t}function Bt(t,e,s,i,a={}){const r=s?.key===e,o=r?1===s.dir?"ascending":"descending":"none",n=r?1===s.dir?"▲":"▼":"⇅";return B`
     <th class="sortable ${a.numeric?"num":""}" aria-sort=${o}>
       <button
         type="button"
@@ -450,7 +450,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         ${t}<span class="sort-arrow ${r?"active":""}" aria-hidden="true">${n}</span>
       </button>
     </th>
-  `}t([ht({attribute:!1})],Ot.prototype,"hass",void 0),t([ht({type:Boolean})],Ot.prototype,"customizeMode",void 0),t([ut()],Ot.prototype,"_layout",void 0);let Mt=class extends Ot{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._error=null,this._busyUserId=null,this._sort=null,this._pwUserId=null,this._pwValue="",this._pwKeepSessions=!1,this._pwError=null,this._pwNotice=null,this._isOwner=!1}get viewId(){return"users"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[t,e,s]=await Promise.all([_t(this.hass),vt(this.hass),Ct(this.hass).catch(()=>({is_owner:!1}))]);this._users=t,this._risk=e,this._isOwner=!!s.is_owner}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}_adminTargetLocked(t){return!this._isOwner&&(t.is_owner||t.groups.includes("system-admin"))}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>gt(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>gt(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}_onToggleResetPanel(t){this._pwUserId=this._pwUserId===t?null:t,this._pwValue="",this._pwKeepSessions=!1,this._pwError=null,this._pwNotice=null}async _onSubmitPassword(t){if(this._pwValue){this._busyUserId=t,this._pwError=null,this._pwNotice=null;try{const e=await((t,e,s,i)=>gt(t,{type:"ha_soc/users/set_password",user_id:e,password:s,revoke_sessions:i}))(this.hass,t,this._pwValue,!this._pwKeepSessions);this._pwNotice=e.sessions_revoked>0?`Password set. ${e.sessions_revoked} interactive session${1===e.sessions_revoked?"":"s"} revoked; long-lived tokens were kept.`:this._pwKeepSessions?"Password set. Existing sessions were kept at your request.":"Password set. No interactive sessions were active.",this._pwUserId=null,this._pwValue="",this._pwKeepSessions=!1}catch(t){this._pwError=t?.message??"Could not set the password."}finally{this._busyUserId=null}}}_renderPasswordPanel(t){return B`
+  `}t([ht({attribute:!1})],Ht.prototype,"hass",void 0),t([ht({type:Boolean})],Ht.prototype,"customizeMode",void 0),t([ut()],Ht.prototype,"_layout",void 0);let jt=class extends Ht{constructor(){super(...arguments),this._users=[],this._risk={},this._loading=!0,this._error=null,this._busyUserId=null,this._sort=null,this._pwUserId=null,this._pwValue="",this._pwKeepSessions=!1,this._pwError=null,this._pwNotice=null,this._isOwner=!1}get viewId(){return"users"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[t,e,s]=await Promise.all([bt(this.hass),ft(this.hass),Et(this.hass).catch(()=>({is_owner:!1}))]);this._users=t,this._risk=e,this._isOwner=!!s.is_owner}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}_adminTargetLocked(t){return!this._isOwner&&(t.is_owner||t.groups.includes("system-admin"))}_fmtDate(t){if(!t)return"never";return new Date(t).toLocaleString()}async _onDeactivate(t){if(confirm("Deactivate this user? All their sessions will be revoked.")){this._busyUserId=t;try{await((t,e)=>yt(t,{type:"ha_soc/users/deactivate",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}async _onRevokeAll(t){if(confirm("Revoke every interactive session for this user? Long-lived tokens are kept.")){this._busyUserId=t;try{await((t,e)=>yt(t,{type:"ha_soc/users/revoke_all_sessions",user_id:e}))(this.hass,t),await this._load()}finally{this._busyUserId=null}}}_onToggleResetPanel(t){this._pwUserId=this._pwUserId===t?null:t,this._pwValue="",this._pwKeepSessions=!1,this._pwError=null,this._pwNotice=null}async _onSubmitPassword(t){if(this._pwValue){this._busyUserId=t,this._pwError=null,this._pwNotice=null;try{const e=await((t,e,s,i)=>yt(t,{type:"ha_soc/users/set_password",user_id:e,password:s,revoke_sessions:i}))(this.hass,t,this._pwValue,!this._pwKeepSessions);this._pwNotice=e.sessions_revoked>0?`Password set. ${e.sessions_revoked} interactive session${1===e.sessions_revoked?"":"s"} revoked; long-lived tokens were kept.`:this._pwKeepSessions?"Password set. Existing sessions were kept at your request.":"Password set. No interactive sessions were active.",this._pwUserId=null,this._pwValue="",this._pwKeepSessions=!1}catch(t){this._pwError=t?.message??"Could not set the password."}finally{this._busyUserId=null}}}_renderPasswordPanel(t){return B`
       <tr>
         <td colspan="7" style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.03);">
           <div style="display:flex;flex-direction:column;gap:8px;max-width:560px;">
@@ -504,7 +504,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           <p style="font-size:13px;">${this._error}</p>
           <button class="ha-btn" @click=${()=>this._load()}>Retry</button>
         </div>
-      `;if(!this._users.length)return B`<div class="empty">No users found.</div>`;const t=this._sort,e=t=>{this._sort=t},s=Dt(this._users,t,{user:t=>t.name??t.id,role:t=>`${t.is_admin?"Admin":"User"}${t.local_only?" · local only":""}`,mfa:t=>t.mfa_enabled,risk:t=>this._risk[t.id]?.score??null,last_login:t=>t.last_login_at?Date.parse(t.last_login_at):null,tokens:t=>t.llat_count}),i=[{id:"users",title:"Users & Access",hideable:!1,render:()=>B`
+      `;if(!this._users.length)return B`<div class="empty">No users found.</div>`;const t=this._sort,e=t=>{this._sort=t},s=Vt(this._users,t,{user:t=>t.name??t.id,role:t=>`${t.is_admin?"Admin":"User"}${t.local_only?" · local only":""}`,mfa:t=>t.mfa_enabled,risk:t=>this._risk[t.id]?.score??null,last_login:t=>t.last_login_at?Date.parse(t.last_login_at):null,tokens:t=>t.llat_count}),i=[{id:"users",title:"Users & Access",hideable:!1,render:()=>B`
       <div class="card">
         <h3>Users &amp; Access</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -516,12 +516,12 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <table>
           <thead>
             <tr>
-              ${Ut("User","user",t,e)}
-              ${Ut("Role","role",t,e)}
-              ${Ut("MFA","mfa",t,e)}
-              ${Ut("Risk","risk",t,e)}
-              ${Ut("Last login","last_login",t,e)}
-              ${Ut("Tokens","tokens",t,e)}
+              ${Bt("User","user",t,e)}
+              ${Bt("Role","role",t,e)}
+              ${Bt("MFA","mfa",t,e)}
+              ${Bt("Risk","risk",t,e)}
+              ${Bt("Last login","last_login",t,e)}
+              ${Bt("Tokens","tokens",t,e)}
               <th></th>
             </tr>
           </thead>
@@ -586,7 +586,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </tbody>
         </table>
       </div>
-        `}];return this._renderSections(i)}};Mt.styles=Ft,t([ut()],Mt.prototype,"_users",void 0),t([ut()],Mt.prototype,"_risk",void 0),t([ut()],Mt.prototype,"_loading",void 0),t([ut()],Mt.prototype,"_error",void 0),t([ut()],Mt.prototype,"_busyUserId",void 0),t([ut()],Mt.prototype,"_sort",void 0),t([ut()],Mt.prototype,"_pwUserId",void 0),t([ut()],Mt.prototype,"_pwValue",void 0),t([ut()],Mt.prototype,"_pwKeepSessions",void 0),t([ut()],Mt.prototype,"_pwError",void 0),t([ut()],Mt.prototype,"_pwNotice",void 0),t([ut()],Mt.prototype,"_isOwner",void 0),Mt=t([dt("ha-soc-users-view")],Mt);const Ht=[["","All categories"],["service_call","Service call"],["login_ok","Login OK"],["login_fail","Login failed"],["token_created","Token created"],["session_seen","Session first seen"],["user_added","User added"],["user_updated","User updated"],["user_removed","User removed"],["lovelace_change","Dashboard edit"],["dashboard_panels_change","Panel set changed"],["entity_registry_change","Entity registry"],["device_registry_change","Device registry"],["area_registry_change","Area registry"],["floor_registry_change","Floor registry"],["label_registry_change","Label registry"],["category_registry_change","Category registry"],["config_entry_change","Config entry"],["core_config_change","Core config"],["watchdog_triggered","Watchdog triggered"],["soc_config_change","SOC config change"]];let Vt=class extends Ot{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._error=null,this._category="",this._userId="",this._verifyResult=null,this._sort=null,this._stats=null}get viewId(){return"audit"}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await _t(this.hass)}async _load(){this._loading=!0,this._error=null;try{this._events=await((t,e={})=>gt(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,gt(t,{type:"ha_soc/audit/verify_chain"}))}async _onCategoryStats(){var t;this._stats=await(t=this.hass,gt(t,{type:"ha_soc/audit/category_stats"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){const t=this._sort,e=t=>{this._sort=t},s=Dt(this._events,t,{time:t=>Date.parse(t.ts),category:t=>t.category,user:t=>t.user_id?this._nameFor(t.user_id):null,action:t=>t.domain?`${t.domain}.${t.service}${t.entity_ids?.length?` (${t.entity_ids.join(", ")})`:""}`:null,source:t=>t.ip}),i=[{id:"audit",title:"Audit Log",hideable:!1,render:()=>B`
+        `}];return this._renderSections(i)}};jt.styles=Ot,t([ut()],jt.prototype,"_users",void 0),t([ut()],jt.prototype,"_risk",void 0),t([ut()],jt.prototype,"_loading",void 0),t([ut()],jt.prototype,"_error",void 0),t([ut()],jt.prototype,"_busyUserId",void 0),t([ut()],jt.prototype,"_sort",void 0),t([ut()],jt.prototype,"_pwUserId",void 0),t([ut()],jt.prototype,"_pwValue",void 0),t([ut()],jt.prototype,"_pwKeepSessions",void 0),t([ut()],jt.prototype,"_pwError",void 0),t([ut()],jt.prototype,"_pwNotice",void 0),t([ut()],jt.prototype,"_isOwner",void 0),jt=t([dt("ha-soc-users-view")],jt);const Wt=[["","All categories"],["service_call","Service call"],["login_ok","Login OK"],["login_fail","Login failed"],["token_created","Token created"],["session_seen","Session first seen"],["user_added","User added"],["user_updated","User updated"],["user_removed","User removed"],["lovelace_change","Dashboard edit"],["dashboard_panels_change","Panel set changed"],["entity_registry_change","Entity registry"],["device_registry_change","Device registry"],["area_registry_change","Area registry"],["floor_registry_change","Floor registry"],["label_registry_change","Label registry"],["category_registry_change","Category registry"],["config_entry_change","Config entry"],["core_config_change","Core config"],["watchdog_triggered","Watchdog triggered"],["soc_config_change","SOC config change"]];let qt=class extends Ht{constructor(){super(...arguments),this._events=[],this._users=[],this._loading=!0,this._error=null,this._category="",this._userId="",this._verifyResult=null,this._sort=null,this._stats=null}get viewId(){return"audit"}connectedCallback(){super.connectedCallback(),this._loadUsers(),this._load()}async _loadUsers(){this._users=await bt(this.hass)}async _load(){this._loading=!0,this._error=null;try{this._events=await((t,e={})=>yt(t,{type:"ha_soc/audit/query",...e}).then(t=>t.events))(this.hass,{category:this._category||void 0,user_id:this._userId||void 0,limit:200})}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"—"}async _onVerify(){var t;this._verifyResult=await(t=this.hass,yt(t,{type:"ha_soc/audit/verify_chain"}))}async _onCategoryStats(){var t;this._stats=await(t=this.hass,yt(t,{type:"ha_soc/audit/category_stats"}))}_onCategoryChange(t){this._category=t.target.value,this._load()}_onUserChange(t){this._userId=t.target.value,this._load()}render(){const t=this._sort,e=t=>{this._sort=t},s=Vt(this._events,t,{time:t=>Date.parse(t.ts),category:t=>t.category,user:t=>t.user_id?this._nameFor(t.user_id):null,action:t=>t.domain?`${t.domain}.${t.service}${t.entity_ids?.length?` (${t.entity_ids.join(", ")})`:""}`:null,source:t=>t.ip}),i=[{id:"audit",title:"Audit Log",hideable:!1,render:()=>B`
       <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -596,7 +596,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         </p>
         <div class="toolbar">
           <select @change=${this._onCategoryChange}>
-            ${Ht.map(([t,e])=>B`<option value=${t} ?selected=${t===this._category}>${e}</option>`)}
+            ${Wt.map(([t,e])=>B`<option value=${t} ?selected=${t===this._category}>${e}</option>`)}
           </select>
           <select @change=${this._onUserChange}>
             <option value="" ?selected=${""===this._userId}>All users</option>
@@ -624,11 +624,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Time","time",t,e)}
-                    ${Ut("Category","category",t,e)}
-                    ${Ut("User","user",t,e)}
-                    ${Ut("Action","action",t,e)}
-                    ${Ut("Source","source",t,e)}
+                    ${Bt("Time","time",t,e)}
+                    ${Bt("Category","category",t,e)}
+                    ${Bt("User","user",t,e)}
+                    ${Bt("Action","action",t,e)}
+                    ${Bt("Source","source",t,e)}
                   </tr>
                 </thead>
                 <tbody>
@@ -645,7 +645,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               </table>
             `:B`<div class="empty">No matching events.</div>`}
       </div>
-        `}];return this._renderSections(i)}};Vt.styles=Ft,t([ut()],Vt.prototype,"_events",void 0),t([ut()],Vt.prototype,"_users",void 0),t([ut()],Vt.prototype,"_loading",void 0),t([ut()],Vt.prototype,"_error",void 0),t([ut()],Vt.prototype,"_category",void 0),t([ut()],Vt.prototype,"_userId",void 0),t([ut()],Vt.prototype,"_verifyResult",void 0),t([ut()],Vt.prototype,"_sort",void 0),t([ut()],Vt.prototype,"_stats",void 0),Vt=t([dt("ha-soc-audit-view")],Vt);let Bt=class extends Ot{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._error=null,this._drift=[],this._viewsError=null,this._writeError=null,this._sort=null}get viewId(){return"permissions"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[e,s]=await Promise.all([_t(this.hass),(t=this.hass,gt(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,gt(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e,s){const i=t.target,a=e.visibleUserIds??this._users.map(t=>t.id),r=a.includes(s),o=r?a.filter(t=>t!==s):[...a,s],n=o.length===this._users.length?[]:o;this._writeError=null;try{await((t,e,s,i)=>gt(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,e.path,n),await this._loadViews()}catch(t){i.checked=r,this._writeError=`The visibility change for "${e.title}" was rejected: ${t?.message??t?.code??"unknown error"}. The checkbox was restored to the saved state.`}}async _onToggleFlag(t,e,s,i){const a=t.target;this._writeError=null;try{await((t,e,s)=>gt(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,e,{[s]:i}),await this._load()}catch(t){a.checked=!i,this._writeError=`The ${s} change was rejected: ${t?.message??t?.code??"unknown error"}. The checkbox was restored to the saved state.`}}async _onCheckDrift(){this._writeError=null;try{this._drift=await(t=this.hass,gt(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}catch(t){this._writeError=`Drift check failed: ${t?.message??t}`}var t}render(){if(this._loading)return B`<div class="empty">Loading dashboards…</div>`;if(this._error)return B`
+        `}];return this._renderSections(i)}};qt.styles=Ot,t([ut()],qt.prototype,"_events",void 0),t([ut()],qt.prototype,"_users",void 0),t([ut()],qt.prototype,"_loading",void 0),t([ut()],qt.prototype,"_error",void 0),t([ut()],qt.prototype,"_category",void 0),t([ut()],qt.prototype,"_userId",void 0),t([ut()],qt.prototype,"_verifyResult",void 0),t([ut()],qt.prototype,"_sort",void 0),t([ut()],qt.prototype,"_stats",void 0),qt=t([dt("ha-soc-audit-view")],qt);let Gt=class extends Ht{constructor(){super(...arguments),this._users=[],this._dashboards=[],this._selected=void 0,this._views=[],this._loading=!0,this._error=null,this._drift=[],this._viewsError=null,this._writeError=null,this._sort=null}get viewId(){return"permissions"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[e,s]=await Promise.all([bt(this.hass),(t=this.hass,yt(t,{type:"ha_soc/permissions/dashboards/list"}).then(t=>t.dashboards))]);this._users=e.filter(t=>t.is_active),this._dashboards=s,void 0===this._selected&&s.length&&(this._selected=s[0].url_path??null),void 0!==this._selected&&await this._loadViews()}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadViews(){this._viewsError=null;try{const s=await(t=this.hass,e=this._selected??null,yt(t,{type:"ha_soc/permissions/dashboard_config",url_path:e}).then(t=>t.config)),i=s?.views??[];this._views=i.map((t,e)=>({path:t.path??String(e),title:t.title??t.path??`View ${e+1}`,visibleUserIds:Array.isArray(t.visible)?t.visible.map(t=>t.user):null}))}catch(t){this._views=[],this._viewsError="not_found"===t?.code?"This dashboard has no saved layout yet — Home Assistant is showing an auto-generated default until someone opens and customizes it in the dashboard editor. There's nothing here for the permissions matrix to manage until then.":`Could not load this dashboard's views: ${t?.message??t}`}var t,e}async _onSelectDashboard(t){const e=t.target.value;this._selected="__default__"===e?null:e,await this._loadViews()}async _onToggleUser(t,e,s){const i=t.target,a=e.visibleUserIds??this._users.map(t=>t.id),r=a.includes(s),o=r?a.filter(t=>t!==s):[...a,s],n=o.length===this._users.length?[]:o;this._writeError=null;try{await((t,e,s,i)=>yt(t,{type:"ha_soc/permissions/view_visibility/set",url_path:e,view_path:s,user_ids:i}))(this.hass,this._selected??null,e.path,n),await this._loadViews()}catch(t){i.checked=r,this._writeError=`The visibility change for "${e.title}" was rejected: ${t?.message??t?.code??"unknown error"}. The checkbox was restored to the saved state.`}}async _onToggleFlag(t,e,s,i){const a=t.target;this._writeError=null;try{await((t,e,s)=>yt(t,{type:"ha_soc/permissions/dashboard_flags/set",dashboard_id:e,...s}))(this.hass,e,{[s]:i}),await this._load()}catch(t){a.checked=!i,this._writeError=`The ${s} change was rejected: ${t?.message??t?.code??"unknown error"}. The checkbox was restored to the saved state.`}}async _onCheckDrift(){this._writeError=null;try{this._drift=await(t=this.hass,yt(t,{type:"ha_soc/permissions/drift/check"}).then(t=>t.drift))}catch(t){this._writeError=`Drift check failed: ${t?.message??t}`}var t}render(){if(this._loading)return B`<div class="empty">Loading dashboards…</div>`;if(this._error)return B`
         <div class="card" style="border:1px solid var(--error-color,#db4437);">
           <h3>Could not load the Permissions Matrix</h3>
           <p style="font-size:13px;">${this._error}</p>
@@ -696,12 +696,12 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               ${this._drift.length} view(s) no longer match the policy last applied here — likely edited directly in the dashboard editor.
             </p>`:W}
 
-        ${this._views.length?(()=>{const t={view:t=>t.title};for(const e of this._users)t[`user:${e.id}`]=t=>null===t.visibleUserIds||t.visibleUserIds.includes(e.id);const e=Dt(this._views,this._sort,t),s=this._sort,i=t=>this._sort=t;return B`
+        ${this._views.length?(()=>{const t={view:t=>t.title};for(const e of this._users)t[`user:${e.id}`]=t=>null===t.visibleUserIds||t.visibleUserIds.includes(e.id);const e=Vt(this._views,this._sort,t),s=this._sort,i=t=>this._sort=t;return B`
               <table>
                 <thead>
                   <tr>
-                    ${Ut("View","view",s,i)}
-                    ${this._users.map(t=>Ut(t.name??t.id,`user:${t.id}`,s,i))}
+                    ${Bt("View","view",s,i)}
+                    ${this._users.map(t=>Bt(t.name??t.id,`user:${t.id}`,s,i))}
                   </tr>
                 </thead>
                 <tbody>
@@ -725,7 +725,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               ${this._viewsError??"This dashboard has no views, or is YAML-managed (read-only)."}
             </div>`}
       </div>
-        `}];return this._renderSections(e)}};var jt;Bt.styles=Ft,t([ut()],Bt.prototype,"_users",void 0),t([ut()],Bt.prototype,"_dashboards",void 0),t([ut()],Bt.prototype,"_selected",void 0),t([ut()],Bt.prototype,"_views",void 0),t([ut()],Bt.prototype,"_loading",void 0),t([ut()],Bt.prototype,"_error",void 0),t([ut()],Bt.prototype,"_drift",void 0),t([ut()],Bt.prototype,"_viewsError",void 0),t([ut()],Bt.prototype,"_writeError",void 0),t([ut()],Bt.prototype,"_sort",void 0),Bt=t([dt("ha-soc-permissions-view")],Bt);const Wt=["new","confirmed","dismissed","resolved"],qt=["critical","high","medium","low","info"];function Kt(t){const e=qt.indexOf(t);return-1===e?qt.length:e}function Gt(t,e){const s=t.indexOf(String(e));return-1===s?null:s}const Zt=["high","medium","advisory"],Jt=["exact_cpe","curated_map","keyword","heuristic"];function Yt(t){return"4"===t?"IPv4":"6"===t?"IPv6":"IPv4+IPv6"}function Qt(t){return t?t.includes(":")?"6":"4":null}function Xt(t){return"0.0.0.0"===t?{priority:0,label:"all interfaces",cls:"high"}:t?t.startsWith("127.")||t.startsWith("169.254.")?{priority:3,label:"loopback / link-local",cls:"good"}:function(t){const e=t.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);if(!e)return!1;const[s,i]=[Number(e[1]),Number(e[2])];return 10===s||172===s&&i>=16&&i<=31||192===s&&168===i}(t)?{priority:2,label:"private (RFC 1918)",cls:"low"}:{priority:1,label:"public / routable",cls:"high"}:{priority:4,label:"unresolved (IPv6)",cls:"info"}}let te=jt=class extends Ot{constructor(){super(...arguments),this._scannerFindings=[],this._coverage=null,this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._error=null,this._scanning=!1,this._scanError=null,this._exportNotice=null,this._firewall=null,this._fwDraftRules=[{action:"allow",proto:"tcp",port:0,source:"",family:"both"}],this._fwBackupAck=!1,this._fwSubmitting=!1,this._fwError=null,this._fwPollHandle=null,this._isOwner=!1,this._misconfigSort=null,this._scannerSort=null,this._vulnSort=null,this._portSort=null,this._fwRulesSort=null,this._coverageSort=null}get viewId(){return"scanner"}connectedCallback(){super.connectedCallback(),this._load()}disconnectedCallback(){super.disconnectedCallback(),null!==this._fwPollHandle&&(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _load(){this._loading=!0,this._error=null;try{const[e,s,i,a,r]=await Promise.all([(t=this.hass,gt(t,{type:"ha_soc/scanner/list"})),ft(this.hass),xt(this.hass),At(this.hass),Ct(this.hass).catch(()=>({is_owner:!1}))]);this._scannerFindings=e.findings,this._coverage=e.coverage??null,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a,this._isOwner=!!r.is_owner,this._firewall=this._isOwner?await Pt(this.hass).catch(()=>null):null,this._maybeManageFirewallPolling()}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}_maybeManageFirewallPolling(){const t=null!=this._firewall?.pending;t&&null===this._fwPollHandle?this._fwPollHandle=window.setInterval(()=>this._pollFirewallStatus(),2e3):t||null===this._fwPollHandle||(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _pollFirewallStatus(){this._applyFirewallStatus(await Pt(this.hass))}_applyFirewallStatus(t){const e=null!=this._firewall?.pending;this._firewall=t,e&&!t.pending&&(this._fwBackupAck=!1),this._maybeManageFirewallPolling()}_fwRuleValid(t){const e=t.family??"both",s=Qt(t.source??"");return Number.isInteger(t.port)&&t.port>=1&&t.port<=65535&&("allow"===t.action||"deny"===t.action)&&("tcp"===t.proto||"udp"===t.proto)&&("4"===e||"6"===e||"both"===e)&&(null===s||s===e)}_fwUpdateRule(t,e){this._fwDraftRules=this._fwDraftRules.map((s,i)=>i===t?{...s,...e}:s)}_fwAddRule(){this._fwDraftRules=[...this._fwDraftRules,{action:"allow",proto:"tcp",port:0,source:"",family:"both"}]}_fwRemoveRule(t){this._fwDraftRules=this._fwDraftRules.filter((e,s)=>s!==t)}async _onProposeTest(){this._fwError=null,this._fwSubmitting=!0;try{const t=this._fwDraftRules.map(t=>({action:t.action,proto:t.proto,port:t.port,source:t.source?t.source:null,family:t.family??"both"}));await((t,e,s)=>gt(t,{type:"ha_soc/firewall/test",rules:e,backup_acknowledged:s}))(this.hass,t,this._fwBackupAck),this._applyFirewallStatus(await Pt(this.hass))}catch(t){this._fwError=t?.message??"Failed to propose the firewall change."}finally{this._fwSubmitting=!1}}async _onConfirmTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,gt(t,{type:"ha_soc/firewall/confirm",test_id:e})),this._applyFirewallStatus(await Pt(this.hass))}catch(t){this._fwError=t?.message??"Failed to confirm the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onCancelTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,gt(t,{type:"ha_soc/firewall/cancel",test_id:e})),this._applyFirewallStatus(await Pt(this.hass))}catch(t){this._fwError=t?.message??"Failed to cancel the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onDiscardPending(){if(!this._firewall?.pending)return;if(confirm("Discard this unreported firewall test?\n\nThe add-on never reported its outcome, so HA SOC does not know what is live on the host. The record is archived as 'discarded_unreported' and new tests become possible again. Nothing is changed on the host by discarding.")){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,gt(t,{type:"ha_soc/firewall/discard_pending"})),this._applyFirewallStatus(await Pt(this.hass))}catch(t){this._fwError=t?.message??"Failed to discard the pending firewall test."}finally{this._fwSubmitting=!1}var t}}async _onScanIntegrations(){this._scanning=!0,this._scanError=null;try{await(t=this.hass,gt(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}catch(t){this._scanError=`Integration scan failed: ${t?.message??t}`}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0,this._scanError=null;try{await(t=this.hass,gt(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}catch(t){this._scanError=`Device vulnerability scan failed: ${t?.message??t}`}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){this._scanError=null;try{await((t,e,s,i)=>gt(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e)}catch(t){this._scanError=`Status change failed: ${t?.message??t}`}await this._load()}async _onExportFinding(t){if(confirm(`Copy a GHSA-shaped advisory draft to the clipboard?\n\nIntegration: ${t.domain}\nMatched code: ${t.snippet}\n\nNothing is submitted anywhere. The text is only placed on your clipboard for you to review and paste yourself.`)){this._exportNotice=null;try{const i=await(e=this.hass,s=t.id,gt(e,{type:"ha_soc/scanner/export",finding_id:s})),a=[`Title: ${i.title}`,`Severity: ${i.severity}`,`CWE: ${i.cwe}`,`Package: ${i.affected.package} (${i.affected.ecosystem})`,"",i.description].join("\n");await navigator.clipboard.writeText(a),this._exportNotice=`Copied the advisory draft for ${t.domain} (${t.file}:${t.line}) to the clipboard.`}catch(t){this._exportNotice=`Export failed: ${t?.message??"could not copy to the clipboard"}`}var e,s}}async _onMisconfigStatus(t,e){this._scanError=null;try{await((t,e,s,i)=>gt(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e)}catch(t){this._scanError=`Status change failed: ${t?.message??t}`}await this._load()}_groupedVulnFindings(){const t=new Map;for(const e of this._vulnFindings){const s=String(e.device_name??"Unknown device"),i=t.get(s);i?i.push(e):t.set(s,[e])}const e=this._vulnSort,s=Array.from(t.entries()).map(([t,s])=>({device_name:t,worst:Math.min(...s.map(t=>Kt(t.severity))),findings:e?Dt(s,e,jt.VULN_SORT):[...s].sort((t,e)=>Kt(t.severity)-Kt(e.severity))}));return"cve"===e?.key?s.sort((t,s)=>t.device_name.localeCompare(s.device_name,void 0,{sensitivity:"base",numeric:!0})*e.dir):s.sort((t,e)=>t.worst-e.worst),s}_renderScannerCoverage(){if(!this._coverage)return W;const t=new Set(Object.keys(this._coverage)),e=new Set(this._scannerFindings.map(t=>String(t.domain))),s=Array.from(e).filter(e=>!t.has(e)).sort((t,e)=>t.localeCompare(e)),i=Object.entries(this._coverage).map(([t,e])=>({domain:t,cov:e})),a=this._coverageSort?Dt(i,this._coverageSort,jt.COVERAGE_SORT):i.slice().sort((t,e)=>t.domain.localeCompare(e.domain));return B`
+        `}];return this._renderSections(e)}};var Kt;Gt.styles=Ot,t([ut()],Gt.prototype,"_users",void 0),t([ut()],Gt.prototype,"_dashboards",void 0),t([ut()],Gt.prototype,"_selected",void 0),t([ut()],Gt.prototype,"_views",void 0),t([ut()],Gt.prototype,"_loading",void 0),t([ut()],Gt.prototype,"_error",void 0),t([ut()],Gt.prototype,"_drift",void 0),t([ut()],Gt.prototype,"_viewsError",void 0),t([ut()],Gt.prototype,"_writeError",void 0),t([ut()],Gt.prototype,"_sort",void 0),Gt=t([dt("ha-soc-permissions-view")],Gt);const Zt=["new","confirmed","dismissed","resolved"],Jt=["critical","high","medium","low","info"];function Yt(t){const e=Jt.indexOf(t);return-1===e?Jt.length:e}function Qt(t,e){const s=t.indexOf(String(e));return-1===s?null:s}const Xt=["high","medium","advisory"],te=["exact_cpe","curated_map","keyword","heuristic"];function ee(t){return"4"===t?"IPv4":"6"===t?"IPv6":"IPv4+IPv6"}function se(t){return t?t.includes(":")?"6":"4":null}function ie(t){return"0.0.0.0"===t?{priority:0,label:"all interfaces",cls:"high"}:t?t.startsWith("127.")||t.startsWith("169.254.")?{priority:3,label:"loopback / link-local",cls:"good"}:function(t){const e=t.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);if(!e)return!1;const[s,i]=[Number(e[1]),Number(e[2])];return 10===s||172===s&&i>=16&&i<=31||192===s&&168===i}(t)?{priority:2,label:"private (RFC 1918)",cls:"low"}:{priority:1,label:"public / routable",cls:"high"}:{priority:4,label:"unresolved (IPv6)",cls:"info"}}let ae=Kt=class extends Ht{constructor(){super(...arguments),this._scannerFindings=[],this._coverage=null,this._vulnFindings=[],this._misconfigFindings=[],this._probe=null,this._loading=!0,this._error=null,this._scanning=!1,this._scanError=null,this._exportNotice=null,this._firewall=null,this._fwDraftRules=[{action:"allow",proto:"tcp",port:0,source:"",family:"both"}],this._fwBackupAck=!1,this._fwSubmitting=!1,this._fwError=null,this._fwPollHandle=null,this._isOwner=!1,this._misconfigSort=null,this._scannerSort=null,this._vulnSort=null,this._portSort=null,this._fwRulesSort=null,this._coverageSort=null}get viewId(){return"scanner"}connectedCallback(){super.connectedCallback(),this._load()}disconnectedCallback(){super.disconnectedCallback(),null!==this._fwPollHandle&&(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _load(){this._loading=!0,this._error=null;try{const[e,s,i,a,r]=await Promise.all([(t=this.hass,yt(t,{type:"ha_soc/scanner/list"})),kt(this.hass),At(this.hass),Rt(this.hass),Et(this.hass).catch(()=>({is_owner:!1}))]);this._scannerFindings=e.findings,this._coverage=e.coverage??null,this._vulnFindings=s,this._misconfigFindings=i.misconfig_findings,this._probe=a,this._isOwner=!!r.is_owner,this._firewall=this._isOwner?await It(this.hass).catch(()=>null):null,this._maybeManageFirewallPolling()}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}_maybeManageFirewallPolling(){const t=null!=this._firewall?.pending;t&&null===this._fwPollHandle?this._fwPollHandle=window.setInterval(()=>this._pollFirewallStatus(),2e3):t||null===this._fwPollHandle||(window.clearInterval(this._fwPollHandle),this._fwPollHandle=null)}async _pollFirewallStatus(){this._applyFirewallStatus(await It(this.hass))}_applyFirewallStatus(t){const e=null!=this._firewall?.pending;this._firewall=t,e&&!t.pending&&(this._fwBackupAck=!1),this._maybeManageFirewallPolling()}_fwRuleValid(t){const e=t.family??"both",s=se(t.source??"");return Number.isInteger(t.port)&&t.port>=1&&t.port<=65535&&("allow"===t.action||"deny"===t.action)&&("tcp"===t.proto||"udp"===t.proto)&&("4"===e||"6"===e||"both"===e)&&(null===s||s===e)}_fwUpdateRule(t,e){this._fwDraftRules=this._fwDraftRules.map((s,i)=>i===t?{...s,...e}:s)}_fwAddRule(){this._fwDraftRules=[...this._fwDraftRules,{action:"allow",proto:"tcp",port:0,source:"",family:"both"}]}_fwRemoveRule(t){this._fwDraftRules=this._fwDraftRules.filter((e,s)=>s!==t)}async _onProposeTest(){this._fwError=null,this._fwSubmitting=!0;try{const t=this._fwDraftRules.map(t=>({action:t.action,proto:t.proto,port:t.port,source:t.source?t.source:null,family:t.family??"both"}));await((t,e,s)=>yt(t,{type:"ha_soc/firewall/test",rules:e,backup_acknowledged:s}))(this.hass,t,this._fwBackupAck),this._applyFirewallStatus(await It(this.hass))}catch(t){this._fwError=t?.message??"Failed to propose the firewall change."}finally{this._fwSubmitting=!1}}async _onConfirmTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,yt(t,{type:"ha_soc/firewall/confirm",test_id:e})),this._applyFirewallStatus(await It(this.hass))}catch(t){this._fwError=t?.message??"Failed to confirm the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onCancelTest(){if(this._firewall?.pending){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,e=this._firewall.pending.test_id,yt(t,{type:"ha_soc/firewall/cancel",test_id:e})),this._applyFirewallStatus(await It(this.hass))}catch(t){this._fwError=t?.message??"Failed to cancel the firewall change."}finally{this._fwSubmitting=!1}var t,e}}async _onDiscardPending(){if(!this._firewall?.pending)return;if(confirm("Discard this unreported firewall test?\n\nThe add-on never reported its outcome, so HA SOC does not know what is live on the host. The record is archived as 'discarded_unreported' and new tests become possible again. Nothing is changed on the host by discarding.")){this._fwError=null,this._fwSubmitting=!0;try{await(t=this.hass,yt(t,{type:"ha_soc/firewall/discard_pending"})),this._applyFirewallStatus(await It(this.hass))}catch(t){this._fwError=t?.message??"Failed to discard the pending firewall test."}finally{this._fwSubmitting=!1}var t}}async _onScanIntegrations(){this._scanning=!0,this._scanError=null;try{await(t=this.hass,yt(t,{type:"ha_soc/scanner/scan_now",domain:e})),await this._load()}catch(t){this._scanError=`Integration scan failed: ${t?.message??t}`}finally{this._scanning=!1}var t,e}async _onScanVulns(){this._scanning=!0,this._scanError=null;try{await(t=this.hass,yt(t,{type:"ha_soc/vulns/scan_now"}).then(t=>t.findings)),await this._load()}catch(t){this._scanError=`Device vulnerability scan failed: ${t?.message??t}`}finally{this._scanning=!1}var t}async _onVulnStatus(t,e){this._scanError=null;try{await((t,e,s,i)=>yt(t,{type:"ha_soc/vulns/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e)}catch(t){this._scanError=`Status change failed: ${t?.message??t}`}await this._load()}async _onExportFinding(t){if(confirm(`Copy a GHSA-shaped advisory draft to the clipboard?\n\nIntegration: ${t.domain}\nMatched code: ${t.snippet}\n\nNothing is submitted anywhere. The text is only placed on your clipboard for you to review and paste yourself.`)){this._exportNotice=null;try{const i=await(e=this.hass,s=t.id,yt(e,{type:"ha_soc/scanner/export",finding_id:s})),a=[`Title: ${i.title}`,`Severity: ${i.severity}`,`CWE: ${i.cwe}`,`Package: ${i.affected.package} (${i.affected.ecosystem})`,"",i.description].join("\n");await navigator.clipboard.writeText(a),this._exportNotice=`Copied the advisory draft for ${t.domain} (${t.file}:${t.line}) to the clipboard.`}catch(t){this._exportNotice=`Export failed: ${t?.message??"could not copy to the clipboard"}`}var e,s}}async _onMisconfigStatus(t,e){this._scanError=null;try{await((t,e,s,i)=>yt(t,{type:"ha_soc/misconfig/set_status",finding_id:e,status:s,note:i}))(this.hass,t,e)}catch(t){this._scanError=`Status change failed: ${t?.message??t}`}await this._load()}_groupedVulnFindings(){const t=new Map;for(const e of this._vulnFindings){const s=String(e.device_name??"Unknown device"),i=t.get(s);i?i.push(e):t.set(s,[e])}const e=this._vulnSort,s=Array.from(t.entries()).map(([t,s])=>({device_name:t,worst:Math.min(...s.map(t=>Yt(t.severity))),findings:e?Vt(s,e,Kt.VULN_SORT):[...s].sort((t,e)=>Yt(t.severity)-Yt(e.severity))}));return"cve"===e?.key?s.sort((t,s)=>t.device_name.localeCompare(s.device_name,void 0,{sensitivity:"base",numeric:!0})*e.dir):s.sort((t,e)=>t.worst-e.worst),s}_renderScannerCoverage(){if(!this._coverage)return W;const t=new Set(Object.keys(this._coverage)),e=new Set(this._scannerFindings.map(t=>String(t.domain))),s=Array.from(e).filter(e=>!t.has(e)).sort((t,e)=>t.localeCompare(e)),i=Object.entries(this._coverage).map(([t,e])=>({domain:t,cov:e})),a=this._coverageSort?Vt(i,this._coverageSort,Kt.COVERAGE_SORT):i.slice().sort((t,e)=>t.domain.localeCompare(e.domain));return B`
       <h4 class="fw-subhead">Scan coverage</h4>
       <p class="muted" style="font-size:12px;margin-top:-6px;">
         What the most recent completed pass over each domain actually looked at.
@@ -735,12 +735,12 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             <table>
               <thead>
                 <tr>
-                  ${Ut("Domain","domain",this._coverageSort,t=>this._coverageSort=t)}
-                  ${Ut("Files scanned","files",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
-                  ${Ut("Skipped (too large)","oversize",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
-                  ${Ut("Skipped (over cap)","over_cap",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
-                  ${Ut("Parse failures","parse_failures",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
-                  ${Ut("Scanned at","scanned_at",this._coverageSort,t=>this._coverageSort=t)}
+                  ${Bt("Domain","domain",this._coverageSort,t=>this._coverageSort=t)}
+                  ${Bt("Files scanned","files",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
+                  ${Bt("Skipped (too large)","oversize",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
+                  ${Bt("Skipped (over cap)","over_cap",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
+                  ${Bt("Parse failures","parse_failures",this._coverageSort,t=>this._coverageSort=t,{numeric:!0})}
+                  ${Bt("Scanned at","scanned_at",this._coverageSort,t=>this._coverageSort=t)}
                 </tr>
               </thead>
               <tbody>
@@ -764,9 +764,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </p>`:W}
     `}_renderStatusSelect(t,e,s){return B`
       <select @change=${t=>s(t.target.value)}>
-        ${Wt.map(t=>B`<option value=${t} ?selected=${t===e}>${t}</option>`)}
+        ${Zt.map(t=>B`<option value=${t} ?selected=${t===e}>${t}</option>`)}
       </select>
-    `}_sortedMisconfigFindings(){return this._misconfigSort?Dt(this._misconfigFindings,this._misconfigSort,jt.MISCONFIG_SORT):[...this._misconfigFindings].sort((t,e)=>Kt(t.severity)-Kt(e.severity))}render(){if(this._loading)return B`<div class="empty">Loading findings…</div>`;if(this._error)return B`
+    `}_sortedMisconfigFindings(){return this._misconfigSort?Vt(this._misconfigFindings,this._misconfigSort,Kt.MISCONFIG_SORT):[...this._misconfigFindings].sort((t,e)=>Yt(t.severity)-Yt(e.severity))}render(){if(this._loading)return B`<div class="empty">Loading findings…</div>`;if(this._error)return B`
         <div class="card" style="border:1px solid var(--error-color,#db4437);">
           <h3>Could not load the Scanner tab</h3>
           <p style="font-size:13px;">${this._error}</p>
@@ -779,9 +779,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Check","check",this._misconfigSort,t=>this._misconfigSort=t)}
-                    ${Ut("Severity","severity",this._misconfigSort,t=>this._misconfigSort=t)}
-                    ${Ut("Summary","summary",this._misconfigSort,t=>this._misconfigSort=t)}
+                    ${Bt("Check","check",this._misconfigSort,t=>this._misconfigSort=t)}
+                    ${Bt("Severity","severity",this._misconfigSort,t=>this._misconfigSort=t)}
+                    ${Bt("Summary","summary",this._misconfigSort,t=>this._misconfigSort=t)}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -822,17 +822,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Domain","domain",this._scannerSort,t=>this._scannerSort=t)}
-                    ${Ut("Pattern","pattern",this._scannerSort,t=>this._scannerSort=t)}
-                    ${Ut("Location","location",this._scannerSort,t=>this._scannerSort=t)}
-                    ${Ut("Confidence","confidence",this._scannerSort,t=>this._scannerSort=t)}
-                    ${Ut("CWE","cwe",this._scannerSort,t=>this._scannerSort=t)}
+                    ${Bt("Domain","domain",this._scannerSort,t=>this._scannerSort=t)}
+                    ${Bt("Pattern","pattern",this._scannerSort,t=>this._scannerSort=t)}
+                    ${Bt("Location","location",this._scannerSort,t=>this._scannerSort=t)}
+                    ${Bt("Confidence","confidence",this._scannerSort,t=>this._scannerSort=t)}
+                    ${Bt("CWE","cwe",this._scannerSort,t=>this._scannerSort=t)}
                     <th>Status</th>
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${Dt(this._scannerFindings,this._scannerSort,jt.SCANNER_SORT).map(t=>B`
+                  ${Vt(this._scannerFindings,this._scannerSort,Kt.SCANNER_SORT).map(t=>B`
                       <tr>
                         <td>${t.domain}</td>
                         <td><span class="pill ${t.severity}"><span class="dot"></span>${t.pattern}</span></td>
@@ -866,9 +866,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("CVE","cve",this._vulnSort,t=>this._vulnSort=t)}
-                    ${Ut("CVSS","cvss",this._vulnSort,t=>this._vulnSort=t)}
-                    ${Ut("Confidence","confidence",this._vulnSort,t=>this._vulnSort=t)}
+                    ${Bt("CVE","cve",this._vulnSort,t=>this._vulnSort=t)}
+                    ${Bt("CVSS","cvss",this._vulnSort,t=>this._vulnSort=t)}
+                    ${Bt("Confidence","confidence",this._vulnSort,t=>this._vulnSort=t)}
                     <th>Status</th>
                   </tr>
                 </thead>
@@ -947,21 +947,21 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
       <td>
         <span
           class="pill ${"allow"===e.action?"good":"critical"}"
-          title=${`Covered by the ${e.action} ${e.proto}/${e.port} rule (${Yt(e.family)}, ${i}).`+(e.source?" Source-scoped: traffic from other sources is not affected by it.":"")+s}
+          title=${`Covered by the ${e.action} ${e.proto}/${e.port} rule (${ee(e.family)}, ${i}).`+(e.source?" Source-scoped: traffic from other sources is not affected by it.":"")+s}
           ><span class="dot"></span>${e.action}${t.address?"":" (by port)"}</span
         >
       </td>
-    `}_renderPortsByBindAddress(t){const e=new Map;for(const s of t){const t=s.address??"__unresolved__",i=e.get(t);i?i.push(s):e.set(t,[s])}const s=Array.from(e.entries()).sort((t,e)=>{const s=Xt("__unresolved__"===t[0]?null:t[0]),i=Xt("__unresolved__"===e[0]?null:e[0]);return s.priority!==i.priority?s.priority-i.priority:t[0].localeCompare(e[0])}),i=!!this._firewall?.known_rules?.length,a=i?4:3;return B`
+    `}_renderPortsByBindAddress(t){const e=new Map;for(const s of t){const t=s.address??"__unresolved__",i=e.get(t);i?i.push(s):e.set(t,[s])}const s=Array.from(e.entries()).sort((t,e)=>{const s=ie("__unresolved__"===t[0]?null:t[0]),i=ie("__unresolved__"===e[0]?null:e[0]);return s.priority!==i.priority?s.priority-i.priority:t[0].localeCompare(e[0])}),i=!!this._firewall?.known_rules?.length,a=i?4:3;return B`
       <table>
         <thead>
           <tr>
-            ${Ut("Port","port",this._portSort,t=>this._portSort=t)}
-            ${Ut("Protocol","proto",this._portSort,t=>this._portSort=t)}
-            ${Ut("Interface","interface",this._portSort,t=>this._portSort=t)}
+            ${Bt("Port","port",this._portSort,t=>this._portSort=t)}
+            ${Bt("Protocol","proto",this._portSort,t=>this._portSort=t)}
+            ${Bt("Interface","interface",this._portSort,t=>this._portSort=t)}
             ${i?B`<th>Covered by rule</th>`:W}
           </tr>
         </thead>
-        ${s.map(([t,e])=>{const s="__unresolved__"===t?null:t,r=Xt(s);return B`
+        ${s.map(([t,e])=>{const s="__unresolved__"===t?null:t,r=ie(s);return B`
             <tbody>
               <tr>
                 <td colspan=${a} style="background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
@@ -974,7 +974,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   >
                 </td>
               </tr>
-              ${(this._portSort?Dt(e,this._portSort,jt.PORT_SORT):e.slice().sort((t,e)=>t.port-e.port)).map(t=>B`
+              ${(this._portSort?Vt(e,this._portSort,Kt.PORT_SORT):e.slice().sort((t,e)=>t.port-e.port)).map(t=>B`
                     <tr>
                       <td>${t.port}</td>
                       <td>${t.proto}</td>
@@ -989,7 +989,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
       </table>
     `}_renderFamilyCell(t){return B`
       <td>
-        ${Yt(t.family)}
+        ${ee(t.family)}
         ${t.partially_applied?B`<span
               class="pill high"
               style="margin-left:6px;"
@@ -1028,15 +1028,15 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Action","action",this._fwRulesSort,t=>this._fwRulesSort=t)}
-                    ${Ut("Protocol","proto",this._fwRulesSort,t=>this._fwRulesSort=t)}
-                    ${Ut("Port","port",this._fwRulesSort,t=>this._fwRulesSort=t)}
-                    ${Ut("Source","source",this._fwRulesSort,t=>this._fwRulesSort=t)}
-                    ${Ut("Family","family",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${Bt("Action","action",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${Bt("Protocol","proto",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${Bt("Port","port",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${Bt("Source","source",this._fwRulesSort,t=>this._fwRulesSort=t)}
+                    ${Bt("Family","family",this._fwRulesSort,t=>this._fwRulesSort=t)}
                   </tr>
                 </thead>
                 <tbody>
-                  ${Dt(e.known_rules,this._fwRulesSort,jt.FW_RULE_SORT).map(t=>B`
+                  ${Vt(e.known_rules,this._fwRulesSort,Kt.FW_RULE_SORT).map(t=>B`
                       <tr>
                         <td>
                           <span class="pill ${"allow"===t.action?"good":"critical"}"
@@ -1139,7 +1139,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </tr>
         </thead>
         <tbody>
-          ${this._fwDraftRules.map((t,e)=>{const s=Qt(t.source??""),i=s??t.family??"both";return B`
+          ${this._fwDraftRules.map((t,e)=>{const s=se(t.source??""),i=s??t.family??"both";return B`
               <tr>
                 <td>
                   <select
@@ -1173,7 +1173,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     placeholder="e.g. 192.168.10.0/24 or fd00::/8"
                     .value=${t.source??""}
                     style="width:170px;"
-                    @input=${t=>{const s=t.target.value,i=Qt(s);this._fwUpdateRule(e,{source:s,family:i??"both"})}}
+                    @input=${t=>{const s=t.target.value,i=se(s);this._fwUpdateRule(e,{source:s,family:i??"both"})}}
                   />
                 </td>
                 <td>
@@ -1216,46 +1216,68 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         </button>
       </div>
       ${t?B`<p class="muted" style="font-size:12px;margin:6px 0 0;">${t}</p>`:W}
-    `}};te.styles=Ft,te.MISCONFIG_SORT={check:t=>t.check,severity:t=>Kt(String(t.severity)),summary:t=>t.summary},te.COVERAGE_SORT={domain:t=>t.domain,files:t=>t.cov.scanned_files,oversize:t=>t.cov.skipped_oversize,over_cap:t=>t.cov.skipped_over_cap,parse_failures:t=>t.cov.parse_failures,scanned_at:t=>t.cov.scanned_at},te.SCANNER_SORT={domain:t=>t.domain,pattern:t=>t.pattern,location:t=>`${t.file}:${t.line}`,confidence:t=>Gt(Zt,t.confidence),cwe:t=>t.cwe},te.VULN_SORT={cve:t=>t.cve_id,cvss:t=>{if(null==t.cvss)return null;const e=Number(t.cvss);return Number.isNaN(e)?null:e},confidence:t=>Gt(Jt,t.confidence)},te.PORT_SORT={port:t=>t.port,proto:t=>t.proto,interface:t=>t.interface},te.FW_RULE_SORT={action:t=>t.action,proto:t=>t.proto,port:t=>t.port,source:t=>t.source??"any",family:t=>Yt(t.family)},t([ut()],te.prototype,"_scannerFindings",void 0),t([ut()],te.prototype,"_coverage",void 0),t([ut()],te.prototype,"_vulnFindings",void 0),t([ut()],te.prototype,"_misconfigFindings",void 0),t([ut()],te.prototype,"_probe",void 0),t([ut()],te.prototype,"_loading",void 0),t([ut()],te.prototype,"_error",void 0),t([ut()],te.prototype,"_scanning",void 0),t([ut()],te.prototype,"_scanError",void 0),t([ut()],te.prototype,"_exportNotice",void 0),t([ut()],te.prototype,"_firewall",void 0),t([ut()],te.prototype,"_fwDraftRules",void 0),t([ut()],te.prototype,"_fwBackupAck",void 0),t([ut()],te.prototype,"_fwSubmitting",void 0),t([ut()],te.prototype,"_fwError",void 0),t([ut()],te.prototype,"_isOwner",void 0),t([ut()],te.prototype,"_misconfigSort",void 0),t([ut()],te.prototype,"_scannerSort",void 0),t([ut()],te.prototype,"_vulnSort",void 0),t([ut()],te.prototype,"_portSort",void 0),t([ut()],te.prototype,"_fwRulesSort",void 0),t([ut()],te.prototype,"_coverageSort",void 0),te=jt=t([dt("ha-soc-scanner-view")],te);function ee(t,e,s){t.dispatchEvent(new CustomEvent("ha-soc-navigate",{detail:s?{tab:e,clientFilter:s}:{tab:e},bubbles:!0,composed:!0}))}function se(t){window.history.pushState(null,"",t),window.dispatchEvent(new CustomEvent("location-changed",{bubbles:!0,composed:!0}))}function ie(t){return`/config/devices/dashboard?historyBack=1&config_entry=${t}`}var ae;const re={lock:"Locks",siren:"Sirens",valve:"Valves"},oe=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],ne=["critical","high","medium","low"],le={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},de={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},ce=Object.fromEntries(Object.keys(le).map((t,e)=>[t,e])),pe=[10,20,50,100,"all"],he=[10,20,50,100,"all"];let ue=ae=class extends Ot{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._error=null,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:-1},this._devicePageSize=10,this._integrationSearch="",this._integrationSort=null,this._integrationPageSize=10,this._detectionSort=null}get viewId(){return"dashboard"}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0,this._error=null;try{const[e,s,i,a,r,o,n,l]=await Promise.all([(t=this.hass,gt(t,{type:"ha_soc/dashboard/summary"})),kt(this.hass),St(this.hass),zt(this.hass),Rt(this.hass),mt(this.hass),vt(this.hass),_t(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=r,this._detections=o,this._risk=n,this._users=l}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _onAck(t){await yt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await yt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){ee(this,t)}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e))));return Dt(s,this._deviceSort,ae.DEVICE_SORT)}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return Dt(e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t,this._integrationSort,ae.INTEGRATION_SORT)}_renderPostureCard(){const t=this._summary?.posture,e=this._summary,s=this._deviceOverview;if(!t||!e||!s)return W;const i=(t.missing_terms??[]).map(t=>ae.POSTURE_TERM_LABELS[t]??t),a=this._detections.filter(t=>"open"===t.status).length,r=s.devices.reduce((t,e)=>t+e.severity_counts.critical,0),o=s.status_counts.unavailable??0,n=e.mfa_counts.disabled??0,l=t.score>=85?"good":t.score>=70?"warning":"critical";return B`
-      <h2 class="section-title">Security command overview</h2>
-      <p class="section-subtitle">The conditions most likely to require action, with direct paths to investigate them.</p>
-      <div class="command-grid">
-        <div class="card posture-card ${l}">
-          <div>
-            <div class="posture-kicker">Overall posture</div>
-            <div class="posture-main">
-              <div class="posture-grade">${t.grade}</div>
-              <div>
-                <div class="posture-score">${t.score} / 100</div>
-                ${t.provisional?B`<span class="tag cosmetic" title="Waiting on: ${i.join(", ")}">provisional</span>`:B`<span class="tag enforced">fully calculated</span>`}
-              </div>
+    `}};var re;ae.styles=Ot,ae.MISCONFIG_SORT={check:t=>t.check,severity:t=>Yt(String(t.severity)),summary:t=>t.summary},ae.COVERAGE_SORT={domain:t=>t.domain,files:t=>t.cov.scanned_files,oversize:t=>t.cov.skipped_oversize,over_cap:t=>t.cov.skipped_over_cap,parse_failures:t=>t.cov.parse_failures,scanned_at:t=>t.cov.scanned_at},ae.SCANNER_SORT={domain:t=>t.domain,pattern:t=>t.pattern,location:t=>`${t.file}:${t.line}`,confidence:t=>Qt(Xt,t.confidence),cwe:t=>t.cwe},ae.VULN_SORT={cve:t=>t.cve_id,cvss:t=>{if(null==t.cvss)return null;const e=Number(t.cvss);return Number.isNaN(e)?null:e},confidence:t=>Qt(te,t.confidence)},ae.PORT_SORT={port:t=>t.port,proto:t=>t.proto,interface:t=>t.interface},ae.FW_RULE_SORT={action:t=>t.action,proto:t=>t.proto,port:t=>t.port,source:t=>t.source??"any",family:t=>ee(t.family)},t([ut()],ae.prototype,"_scannerFindings",void 0),t([ut()],ae.prototype,"_coverage",void 0),t([ut()],ae.prototype,"_vulnFindings",void 0),t([ut()],ae.prototype,"_misconfigFindings",void 0),t([ut()],ae.prototype,"_probe",void 0),t([ut()],ae.prototype,"_loading",void 0),t([ut()],ae.prototype,"_error",void 0),t([ut()],ae.prototype,"_scanning",void 0),t([ut()],ae.prototype,"_scanError",void 0),t([ut()],ae.prototype,"_exportNotice",void 0),t([ut()],ae.prototype,"_firewall",void 0),t([ut()],ae.prototype,"_fwDraftRules",void 0),t([ut()],ae.prototype,"_fwBackupAck",void 0),t([ut()],ae.prototype,"_fwSubmitting",void 0),t([ut()],ae.prototype,"_fwError",void 0),t([ut()],ae.prototype,"_isOwner",void 0),t([ut()],ae.prototype,"_misconfigSort",void 0),t([ut()],ae.prototype,"_scannerSort",void 0),t([ut()],ae.prototype,"_vulnSort",void 0),t([ut()],ae.prototype,"_portSort",void 0),t([ut()],ae.prototype,"_fwRulesSort",void 0),t([ut()],ae.prototype,"_coverageSort",void 0),ae=Kt=t([dt("ha-soc-scanner-view")],ae);const oe={lock:"Locks",siren:"Sirens",valve:"Valves"},ne=[{key:"available",label:"Available"},{key:"partial",label:"Partial"},{key:"unavailable",label:"Unavailable"},{key:"disabled",label:"Disabled"},{key:"no_entities",label:"No Entities"}],le=["critical","high","medium","low"],de={failing:"Failing",credential:"Credential issue",communication:"Communication issue",collection:"Collection issue",errors:"Logging errors",debug_logging:"Debug logging enabled",disabled:"Disabled"},ce={failing:{label:"Unavailable",colorVar:"var(--status-critical)"},credential:{label:"Unavailable",colorVar:"var(--status-critical)"},communication:{label:"Unavailable",colorVar:"var(--status-critical)"},collection:{label:"Unavailable",colorVar:"var(--status-critical)"},errors:{label:"Warning",colorVar:"var(--status-warning)"},debug_logging:{label:"Warning",colorVar:"var(--status-warning)"},disabled:{label:"Disabled",colorVar:"var(--cat-other)"}},pe=Object.fromEntries(Object.keys(de).map((t,e)=>[t,e])),he=[10,20,50,100,"all"],ue=[10,20,50,100,"all"];let ge=re=class extends Ht{constructor(){super(...arguments),this._summary=null,this._deviceOverview=null,this._integrationOverview=null,this._peripherals=null,this._security=null,this._detections=[],this._risk={},this._users=[],this._loading=!0,this._error=null,this._deviceSearch="",this._deviceStatusFilter=null,this._deviceSort={key:"risk_score",dir:-1},this._devicePageSize=10,this._integrationSearch="",this._integrationSort=null,this._integrationPageSize=10,this._detectionSort=null}get viewId(){return"dashboard"}connectedCallback(){super.connectedCallback(),this._load()}updated(){this.classList.toggle("dark",!!this.hass?.themes?.darkMode)}async _load(){this._loading=!0,this._error=null;try{const[e,s,i,a,r,o,n,l]=await Promise.all([(t=this.hass,yt(t,{type:"ha_soc/dashboard/summary"})),Pt(this.hass),zt(this.hass),Ft(this.hass),Nt(this.hass),$t(this.hass),ft(this.hass),bt(this.hass)]);this._summary=e,this._deviceOverview=s,this._integrationOverview=i,this._peripherals=a,this._security=r,this._detections=o,this._risk=n,this._users=l}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _onAck(t){await wt(this.hass,t,"ack"),await this._load()}async _onResolve(t){await wt(this.hass,t,"resolved"),await this._load()}_nameFor(t){return t?this._users.find(e=>e.id===t)?.name??t:"unknown"}_goto(t){vt(this,t)}_onStatusTileClick(t){this._deviceStatusFilter=this._deviceStatusFilter===t?null:t,this.renderRoot.querySelector("#devices-card")?.scrollIntoView({behavior:"smooth",block:"start"})}_sortedFilteredDevices(){const t=this._deviceOverview?.devices??[],e=this._deviceSearch.trim().toLowerCase(),s=t.filter(t=>(!this._deviceStatusFilter||t.status===this._deviceStatusFilter)&&(!e||(t.name.toLowerCase().includes(e)||t.vendor.toLowerCase().includes(e)||t.os.toLowerCase().includes(e))));return Vt(s,this._deviceSort,re.DEVICE_SORT)}_filteredIntegrations(){const t=this._integrationOverview?.integrations??[],e=this._integrationSearch.trim().toLowerCase();return Vt(e?t.filter(t=>t.title.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e)):t,this._integrationSort,re.INTEGRATION_SORT)}_postureTrendGeometry(t,e){const s=t.filter(t=>Number.isFinite(t.score)).map(t=>({...t,score:Math.max(0,Math.min(100,t.score))}));s.length||s.push({date:"Current",score:e,grade:this._summary?.posture.grade??"—"}),1===s.length&&s.push({...s[0],date:"Current"});const i=s.map(t=>t.score);let a=Math.max(0,Math.min(...i)-4),r=Math.min(100,Math.max(...i)+4);r<=a&&(a=Math.max(0,a-1),r=Math.min(100,r+1));const o=118,n=s.map((t,e)=>{return`${(t=>12+t/(s.length-1)*536)(e).toFixed(1)},${(i=t.score,o-(i-a)/(r-a)*106).toFixed(1)}`;var i}).join(" "),l=t=>{const e=/^(\d{4})-(\d{2})-(\d{2})$/.exec(t),s=e?new Date(Number(e[1]),Number(e[2])-1,Number(e[3])):new Date(t);return Number.isNaN(s.getTime())?t:s.toLocaleDateString(void 0,{month:"short",day:"numeric"})};return{points:n,area:`12,118 ${n} 548,118`,firstLabel:l(s[0].date),lastLabel:l(s[s.length-1].date),delta:s[s.length-1].score-s[0].score}}_renderPostureCard(){const t=this._summary?.posture,e=this._summary,s=this._deviceOverview;if(!t||!e||!s)return W;const i=(t.missing_terms??[]).map(t=>re.POSTURE_TERM_LABELS[t]??t),a=this._detections.filter(t=>"open"===t.status).length,r=s.devices.reduce((t,e)=>t+e.severity_counts.critical+e.severity_counts.high,0),o=t.score>=85?"good":t.score>=70?"warning":"critical",n="good"===o?"var(--status-good)":"warning"===o?"var(--status-warning)":"var(--status-critical)",l=this._postureTrendGeometry(e.posture_history,t.score),d=`${l.delta>=0?"+":""}${l.delta.toFixed(0)}`;return B`
+      <h2 class="section-title">Security overview</h2>
+      <p class="section-subtitle">What needs attention now, with operational availability kept separate from security severity.</p>
+      <div class="overview-kpis">
+        <div class="overview-kpi">
+          <span class="metric-label">Posture score</span>
+          <span class="overview-kpi-value">${t.score}</span>
+          <span class="overview-kpi-context">Grade ${t.grade}${t.provisional?" · provisional":" · fully calculated"}</span>
+        </div>
+        <button class="overview-kpi" type="button" @click=${()=>this._goto("audit")}>
+          <span class="metric-label">Open detections</span>
+          <span class="overview-kpi-value" style="color:${a?"var(--status-critical)":"inherit"}">${a}</span>
+          <span class="overview-kpi-context">Review active security signals</span>
+        </button>
+        <button class="overview-kpi" type="button" @click=${()=>this._goto("scanner")}>
+          <span class="metric-label">Critical / high findings</span>
+          <span class="overview-kpi-value" style="color:${r?"var(--status-serious)":"inherit"}">${r.toLocaleString()}</span>
+          <span class="overview-kpi-context">Across inventoried assets</span>
+        </button>
+        <button class="overview-kpi" type="button" @click=${()=>this._goto("network")}>
+          <span class="metric-label">Monitored assets</span>
+          <span class="overview-kpi-value">${s.devices.length.toLocaleString()}</span>
+          <span class="overview-kpi-context">Open asset and network inventory</span>
+        </button>
+      </div>
+      <div class="overview-visuals">
+        <div class="card posture-visual-card">
+          <div class="card-head">
+            <div><h3>Posture</h3><div class="metric-context">Current weighted security posture</div></div>
+          </div>
+          <div class="posture-ring-wrap">
+            <div
+              class="posture-ring"
+              role="img"
+              aria-label="Posture score ${t.score} out of 100"
+              style="--posture-angle:${3.6*Math.max(0,Math.min(100,t.score))}deg;--posture-color:${n};"
+            >
+              <div class="posture-ring-value"><strong>${t.score}</strong><span>of 100</span></div>
+            </div>
+            <div>
+              <div class="posture-grade-line">Grade ${t.grade}</div>
+              ${t.provisional?B`<span class="tag cosmetic" title="Waiting on: ${i.join(", ")}">provisional</span>`:B`<span class="tag enforced">fully calculated</span>`}
+              <p class="posture-description">
+                ${l.delta<0?"Posture declined over the displayed period. Review the priority queue below.":"No downward posture trend in the displayed period."}
+              </p>
             </div>
           </div>
-          <div class="score-track" aria-label="Posture score ${t.score} out of 100">
-            <div class="score-fill" style="width:${Math.max(0,Math.min(100,t.score))}%"></div>
-          </div>
         </div>
-        <div class="priority-grid">
-          <button class="priority-item" type="button" @click=${()=>this._goto("audit")}>
-            <span class="metric-label">Open detections</span>
-            <span class="priority-value ${a?"critical":""}">${a}</span>
-            <span class="priority-help">Review active security signals</span>
-          </button>
-          <button class="priority-item" type="button" @click=${()=>this._goto("scanner")}>
-            <span class="metric-label">Critical CVEs</span>
-            <span class="priority-value ${r?"critical":""}">${r.toLocaleString()}</span>
-            <span class="priority-help">Across inventoried devices</span>
-          </button>
-          <button class="priority-item" type="button" @click=${()=>this._onStatusTileClick("unavailable")}>
-            <span class="metric-label">Unavailable devices</span>
-            <span class="priority-value ${o?"warning":""}">${o}</span>
-            <span class="priority-help">Filter the investigation queue</span>
-          </button>
-          <button class="priority-item" type="button" @click=${()=>this._goto("users")}>
-            <span class="metric-label">Accounts without MFA</span>
-            <span class="priority-value ${n?"warning":""}">${n}</span>
-            <span class="priority-help">Close identity protection gaps</span>
-          </button>
+        <div class="card trend-card">
+          <div class="card-head">
+            <div><h3>Posture trend</h3><div class="metric-context">${e.posture_history.length?"Thirty-day score history":"History begins after the first completed posture calculation"}</div></div>
+            <span class="tag ${l.delta>=0?"enforced":"cosmetic"}">${d}</span>
+          </div>
+          <svg class="posture-trend" viewBox="0 0 560 142" role="img" aria-label="Posture score trend, ${d} points">
+            <line class="grid-line" x1="12" y1="22" x2="548" y2="22"></line>
+            <line class="grid-line" x1="12" y1="70" x2="548" y2="70"></line>
+            <line class="grid-line" x1="12" y1="118" x2="548" y2="118"></line>
+            <polygon class="trend-area" points=${l.area}></polygon>
+            <polyline class="trend-line" points=${l.points}></polyline>
+            <text x="12" y="138">${l.firstLabel}</text>
+            <text x="548" y="138" text-anchor="end">${l.lastLabel}</text>
+          </svg>
         </div>
       </div>
     `}_statusDotColor(t){switch(t){case"unavailable":return"var(--status-critical)";case"partial":return"var(--status-warning)";case"disabled":return"var(--cat-other)";case"no_entities":return"var(--primary-color)";default:return"var(--status-good)"}}render(){if(this._loading)return B`<div class="empty">Loading dashboard…</div>`;if(this._error||!this._summary||!this._deviceOverview||!this._integrationOverview)return B`
@@ -1266,9 +1288,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </p>
           <button class="ha-btn" @click=${()=>this._load()}>Retry</button>
         </div>
-      `;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=Dt(this._detections.filter(t=>"open"===t.status),this._detectionSort,{time:t=>t.last_seen,rule:t=>t.title,severity:t=>{const e=ne.indexOf(t.severity);return-1===e?ne.length:e},user:t=>this._nameFor(t.user_id)}),a=t=>{this._detectionSort=t},r=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),o=r.critical+r.high+r.medium+r.low,n=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:r.critical},{key:"high",label:"High",color:"var(--status-serious)",value:r.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:r.medium},{key:"low",label:"Low",color:"var(--status-good)",value:r.low}],l=t.entity_state_counts??{unavailable:0,unknown:0},d=l.unavailable+l.unknown,c=this._sortedFilteredDevices(),p="all"===this._devicePageSize?c:c.slice(0,this._devicePageSize),h=t=>{this._deviceSort=t},u=t=>{this._integrationSort=t},g=this._filteredIntegrations(),_="all"===this._integrationPageSize?g:g.slice(0,this._integrationPageSize),v=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}],m=[{id:"posture_security",title:"Posture & Security",hideable:!1,render:()=>B`${this._renderPostureCard()} ${this._renderSecurityCard()}`},{id:"device_vuln_overview",title:"Device & Vulnerability Overview",render:()=>B`
-      <h2 class="section-title">Exposure at a glance</h2>
-      <p class="section-subtitle">Availability, vulnerability concentration, and entity reliability without the chart clutter.</p>
+      `;const t=this._summary,e=this._deviceOverview,s=this._integrationOverview,i=Vt(this._detections.filter(t=>"open"===t.status),this._detectionSort,{time:t=>t.last_seen,rule:t=>t.title,severity:t=>{const e=le.indexOf(t.severity);return-1===e?le.length:e},user:t=>this._nameFor(t.user_id)}),a=t=>{this._detectionSort=t},r=e.devices.reduce((t,e)=>(t.critical+=e.severity_counts.critical,t.high+=e.severity_counts.high,t.medium+=e.severity_counts.medium,t.low+=e.severity_counts.low,t),{critical:0,high:0,medium:0,low:0}),o=r.critical+r.high+r.medium+r.low,n=[{key:"critical",label:"Critical",color:"var(--status-critical)",value:r.critical},{key:"high",label:"High",color:"var(--status-serious)",value:r.high},{key:"medium",label:"Medium",color:"var(--status-warning)",value:r.medium},{key:"low",label:"Low",color:"var(--status-good)",value:r.low}],l=o?r.critical/o*100:0,d=o?(r.critical+r.high)/o*100:0,c=o?(r.critical+r.high+r.medium)/o*100:0,p=o?`conic-gradient(var(--status-critical) 0 ${l}%, var(--status-serious) ${l}% ${d}%, var(--status-warning) ${d}% ${c}%, var(--status-good) ${c}% 100%)`:"rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09)",h=t.entity_state_counts??{unavailable:0,unknown:0},u=h.unavailable+h.unknown,g=this._sortedFilteredDevices(),v="all"===this._devicePageSize?g:g.slice(0,this._devicePageSize),_=t=>{this._deviceSort=t},m=t=>{this._integrationSort=t},y=this._filteredIntegrations(),b="all"===this._integrationPageSize?y:y.slice(0,this._integrationPageSize),f=[{key:"critical",color:"var(--status-critical)",value:t.detection_severity_counts.critical??0},{key:"high",color:"var(--status-serious)",value:t.detection_severity_counts.high??0},{key:"medium",color:"var(--status-warning)",value:t.detection_severity_counts.medium??0},{key:"low",color:"var(--status-good)",value:t.detection_severity_counts.low??0}],$=[{id:"posture_security",title:"Posture & Security",hideable:!1,render:()=>B`${this._renderPostureCard()} ${this._renderSecurityCard()}`},{id:"device_vuln_overview",title:"Device & Vulnerability Overview",render:()=>B`
+      <h2 class="section-title">Operational health and exposure</h2>
+      <p class="section-subtitle">Availability is an operational condition; vulnerability severity remains a separate security measure.</p>
       <div class="summary-grid">
         <div class="card device-status-card">
           <div class="card-head">
@@ -1278,7 +1300,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             </div>
           </div>
           <div class="status-tiles">
-            ${oe.map(t=>B`
+            ${ne.map(t=>B`
                 <div
                   class="status-tile clickable ${t.key} ${this._deviceStatusFilter===t.key?"active":""}"
                   title="Filter the devices table below"
@@ -1294,21 +1316,25 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="card clickable" @click=${()=>this._goto("scanner")} title="View vulnerability findings">
           <div class="card-head">
             <div>
-              <h3>Vulnerability exposure</h3>
+              <h3>Finding severity</h3>
               <div class="metric-context">Weighted risk score ${e.combined_risk_score.toFixed(1)} / 10</div>
             </div>
-            <div class="metric-number">${o.toLocaleString()}</div>
           </div>
-          <div class="severity-track" aria-label="Vulnerability findings by severity">
-            ${n.map(t=>B`<span style="width:${o?t.value/o*100:0}%;background:${t.color}"></span>`)}
-          </div>
-          <div class="compact-legend">
-            ${n.map(t=>B`
-                <div class="item">
-                  <span class="swatch" style="background:${t.color}"></span>${t.label}
-                  <strong>${t.value.toLocaleString()}</strong>
-                </div>
-              `)}
+          <div class="donut-layout">
+            <div
+              class="severity-donut"
+              role="img"
+              aria-label="${o.toLocaleString()} vulnerability findings by severity"
+              style="background:${p}"
+            ><strong>${o.toLocaleString()}</strong></div>
+            <div class="compact-legend">
+              ${n.map(t=>B`
+                  <div class="item">
+                    <span class="swatch" style="background:${t.color}"></span>${t.label}
+                    <strong>${t.value.toLocaleString()}</strong>
+                  </div>
+                `)}
+            </div>
           </div>
         </div>
 
@@ -1318,16 +1344,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <h3>Entity reliability</h3>
               <div class="metric-context">Failed and unknown entity states</div>
             </div>
-            <div class="metric-number">${d.toLocaleString()}</div>
+            <div class="metric-number">${u.toLocaleString()}</div>
           </div>
           <div class="identity-grid" style="grid-template-columns:repeat(2,minmax(0,1fr));">
             <div class="identity-stat">
               <div class="metric-label">Unavailable</div>
-              <div class="value" style="color:var(--status-critical)">${l.unavailable.toLocaleString()}</div>
+              <div class="value" style="color:var(--status-critical)">${h.unavailable.toLocaleString()}</div>
             </div>
             <div class="identity-stat">
               <div class="metric-label">Unknown</div>
-              <div class="value" style="color:var(--status-warning)">${l.unknown.toLocaleString()}</div>
+              <div class="value" style="color:var(--status-warning)">${h.unknown.toLocaleString()}</div>
             </div>
           </div>
         </div>
@@ -1377,10 +1403,10 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             <div class="metric-number">${this._detections.length}</div>
           </div>
           <div class="severity-track" aria-label="Detections by severity">
-            ${v.map(t=>B`<span style="width:${this._detections.length?t.value/this._detections.length*100:0}%;background:${t.color}"></span>`)}
+            ${f.map(t=>B`<span style="width:${this._detections.length?t.value/this._detections.length*100:0}%;background:${t.color}"></span>`)}
           </div>
           <div class="compact-legend">
-            ${v.map(t=>B`
+            ${f.map(t=>B`
                 <div class="item">
                   <span class="swatch" style="background:${t.color}"></span>${t.key}
                   <strong>${t.value}</strong>
@@ -1402,10 +1428,10 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Time","time",this._detectionSort,a)}
-                    ${Ut("Rule","rule",this._detectionSort,a)}
-                    ${Ut("Severity","severity",this._detectionSort,a)}
-                    ${Ut("User","user",this._detectionSort,a)}
+                    ${Bt("Time","time",this._detectionSort,a)}
+                    ${Bt("Rule","rule",this._detectionSort,a)}
+                    ${Bt("Severity","severity",this._detectionSort,a)}
+                    ${Bt("User","user",this._detectionSort,a)}
                     <th></th>
                   </tr>
                 </thead>
@@ -1439,7 +1465,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           </div>
           ${this._deviceStatusFilter?B`
                 <div class="filter-chip" @click=${()=>this._deviceStatusFilter=null}>
-                  ${oe.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
+                  ${ne.find(t=>t.key===this._deviceStatusFilter)?.label} ✕
                 </div>
               `:W}
           <div class="devices-toolbar">
@@ -1450,25 +1476,25 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               @input=${t=>this._deviceSearch=t.target.value}
             />
           </div>
-          ${0===c.length?B`<div class="empty">No devices found.</div>`:B`
+          ${0===g.length?B`<div class="empty">No devices found.</div>`:B`
                 <div style="overflow-x:auto;">
                   <table>
                     <thead>
                       <tr>
-                        ${Ut("Health","status",this._deviceSort,h)}
-                        ${Ut("Device","name",this._deviceSort,h)}
-                        ${Ut("Vendor","vendor",this._deviceSort,h)}
-                        ${Ut("Risk Score","risk_score",this._deviceSort,h,{numeric:!0})}
-                        ${Ut("Total","total_findings",this._deviceSort,h,{numeric:!0})}
-                        ${Ut("Severity","severity",this._deviceSort,h)}
+                        ${Bt("Health","status",this._deviceSort,_)}
+                        ${Bt("Device","name",this._deviceSort,_)}
+                        ${Bt("Vendor","vendor",this._deviceSort,_)}
+                        ${Bt("Risk Score","risk_score",this._deviceSort,_,{numeric:!0})}
+                        ${Bt("Total","total_findings",this._deviceSort,_,{numeric:!0})}
+                        ${Bt("Severity","severity",this._deviceSort,_)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${p.map(t=>B`
+                      ${v.map(t=>B`
                           <tr
                             class="clickable"
                             title="Open in Home Assistant's Devices page"
-                            @click=${()=>se(`/config/devices/device/${t.device_id}`)}
+                            @click=${()=>_t(`/config/devices/device/${t.device_id}`)}
                           >
                             <td>
                               <span
@@ -1484,7 +1510,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                             <td class="num">${t.total_findings}</td>
                             <td>
                               <span class="sev-cell">
-                                ${ne.map(e=>B`
+                                ${le.map(e=>B`
                                     <span>
                                       <span
                                         class="sev-dot"
@@ -1502,13 +1528,13 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 </div>
                 <div class="devices-footer">
                   <span
-                    >Showing ${p.length} of ${c.length} device${1===c.length?"":"s"}</span
+                    >Showing ${v.length} of ${g.length} device${1===g.length?"":"s"}</span
                   >
                   <select
                     .value=${String(this._devicePageSize)}
                     @change=${t=>{const e=t.target.value;this._devicePageSize="all"===e?"all":Number(e)}}
                   >
-                    ${pe.map(t=>B`
+                    ${he.map(t=>B`
                         <option value=${String(t)} ?selected=${t===this._devicePageSize}>
                           ${"all"===t?"Show all":`Show ${t}`}
                         </option>
@@ -1534,21 +1560,21 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                     @input=${t=>this._integrationSearch=t.target.value}
                   />
                 </div>
-                ${0===g.length?B`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:B`
+                ${0===y.length?B`<div class="empty">No integration matches "${this._integrationSearch}".</div>`:B`
                       <div style="overflow-x:auto;">
                         <table>
                           <thead>
                             <tr>
-                              ${Ut("Integration","title",this._integrationSort,u)}
-                              ${Ut("Severity","severity",this._integrationSort,u)}
+                              ${Bt("Integration","title",this._integrationSort,m)}
+                              ${Bt("Severity","severity",this._integrationSort,m)}
                             </tr>
                           </thead>
                           <tbody>
-                            ${_.map(t=>{const e=de[t.issue_category];return B`
+                            ${b.map(t=>{const e=ce[t.issue_category];return B`
                                 <tr
                                   class="clickable"
-                                  title="${t.title} — ${le[t.issue_category]}. Open in Home Assistant's Devices page"
-                                  @click=${()=>se(ie(t.entry_id))}
+                                  title="${t.title} — ${de[t.issue_category]}. Open in Home Assistant's Devices page"
+                                  @click=${()=>_t(mt(t.entry_id))}
                                 >
                                   <td>${t.title}</td>
                                   <td>
@@ -1565,13 +1591,13 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       </div>
                       <div class="devices-footer">
                         <span
-                          >Showing ${_.length} of ${g.length} integration${1===g.length?"":"s"}</span
+                          >Showing ${b.length} of ${y.length} integration${1===y.length?"":"s"}</span
                         >
                         <select
                           .value=${String(this._integrationPageSize)}
                           @change=${t=>{const e=t.target.value;this._integrationPageSize="all"===e?"all":Number(e)}}
                         >
-                          ${he.map(t=>B`
+                          ${ue.map(t=>B`
                               <option value=${String(t)} ?selected=${t===this._integrationPageSize}>
                                 ${"all"===t?"Show all":`Show ${t}`}
                               </option>
@@ -1582,7 +1608,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               `}
         </div>
       </div>
-        `}];return this._renderSections(m)}_renderSecurityCard(){const t=this._security;if(!t)return W;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return B`
+        `}];return this._renderSections($)}_renderSecurityCard(){const t=this._security;if(!t)return W;const e={};for(const s of t.entities)(e[s.domain]??=[]).push(s);return B`
       <div class="card">
         <div class="card-head">
           <div>
@@ -1594,11 +1620,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               </span>`:B`<span class="tag enforced">all clear</span>`}
         </div>
         <div class="security-health-grid">
-          ${Object.entries(re).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem),r=a.length,o=i.filter(t=>t.low_battery).length,n=a.slice(0,8).map(t=>`${t.entity_id}: ${t.reason??t.state??"problem"}`);r>8&&n.push(`and ${r-8} more`);const l=i.length?[`View ${s.toLowerCase()} in Home Assistant's Devices page`,...n].join("\n"):"";return B`
+          ${Object.entries(oe).filter(([e])=>t.sources_enabled[e]??!0).map(([t,s])=>{const i=e[t]??[],a=i.filter(t=>t.problem),r=a.length,o=i.filter(t=>t.low_battery).length,n=a.slice(0,8).map(t=>`${t.entity_id}: ${t.reason??t.state??"problem"}`);r>8&&n.push(`and ${r-8} more`);const l=i.length?[`View ${s.toLowerCase()} in Home Assistant's Devices page`,...n].join("\n"):"";return B`
                 <div
                   class="security-source-tile ${i.length?"clickable":""}"
                   title=${l}
-                  @click=${()=>i.length&&se(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
+                  @click=${()=>i.length&&_t(function(t){return`/config/devices/dashboard?historyBack=1&domain=${t}`}(t))}
                 >
                   <div class="label">${s}</div>
                   <div class="value" style="color:${r?"var(--error-color,#db4437)":"inherit"}">
@@ -1626,7 +1652,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           ${t.total_count?`${t.total_count} total`:"no USB serial devices detected"}
         </div>
       </div>
-    `:W}};var ge;ue.styles=[Ft,o`
+    `:W}};var ve;ge.styles=[Ot,o`
       h2.section-title {
         font-size: 18px;
         letter-spacing: -0.01em;
@@ -1679,27 +1705,132 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         line-height: 1.45;
         margin: 0 0 14px;
       }
-      .command-grid {
+      .overview-kpis {
         display: grid;
-        grid-template-columns: minmax(280px, 0.85fr) minmax(0, 2fr);
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
         margin-bottom: 12px;
       }
-      .posture-card {
-        margin: 0;
-        border-left: 5px solid var(--status-critical);
+      .overview-kpi {
+        appearance: none;
+        min-width: 0;
+        min-height: 126px;
+        padding: 16px;
+        border: 1px solid var(--divider-color);
+        border-radius: var(--ha-card-border-radius, 12px);
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+        font: inherit;
+        text-align: left;
         display: flex;
         flex-direction: column;
         justify-content: space-between;
-        min-height: 142px;
       }
-      .posture-card.good {
-        border-left-color: var(--status-good);
+      button.overview-kpi {
+        cursor: pointer;
       }
-      .posture-card.warning {
-        border-left-color: var(--status-warning);
+      button.overview-kpi:hover,
+      button.overview-kpi:focus-visible {
+        border-color: var(--primary-color);
+        outline: none;
       }
-      .posture-kicker,
+      .overview-kpi-value {
+        display: block;
+        margin: 10px 0 4px;
+        font-size: 34px;
+        font-weight: 720;
+        line-height: 1;
+        font-variant-numeric: tabular-nums;
+      }
+      .overview-kpi-context {
+        color: var(--secondary-text-color);
+        font-size: 11.5px;
+        line-height: 1.35;
+      }
+      .overview-visuals {
+        display: grid;
+        grid-template-columns: minmax(280px, 0.8fr) minmax(0, 1.7fr);
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .posture-visual-card,
+      .trend-card {
+        margin: 0;
+      }
+      .posture-ring-wrap {
+        display: grid;
+        grid-template-columns: 132px minmax(0, 1fr);
+        align-items: center;
+        gap: 16px;
+      }
+      .posture-ring {
+        width: 126px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        background: conic-gradient(
+          var(--posture-color) 0 var(--posture-angle),
+          rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09) var(--posture-angle) 360deg
+        );
+        position: relative;
+      }
+      .posture-ring::before {
+        content: "";
+        position: absolute;
+        inset: 13px;
+        border-radius: 50%;
+        background: var(--card-background-color, #fff);
+      }
+      .posture-ring-value {
+        position: relative;
+        z-index: 1;
+        text-align: center;
+      }
+      .posture-ring-value strong {
+        display: block;
+        font-size: 32px;
+        line-height: 1;
+      }
+      .posture-ring-value span {
+        display: block;
+        margin-top: 4px;
+        color: var(--secondary-text-color);
+        font-size: 11px;
+      }
+      .posture-grade-line {
+        font-size: 22px;
+        font-weight: 700;
+        margin-bottom: 8px;
+      }
+      .posture-description {
+        color: var(--secondary-text-color);
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      .posture-trend {
+        width: 100%;
+        height: 142px;
+        display: block;
+      }
+      .posture-trend .grid-line {
+        stroke: var(--divider-color);
+        stroke-width: 1;
+      }
+      .posture-trend .trend-area {
+        fill: rgba(var(--rgb-primary-color, 3, 155, 229), 0.14);
+      }
+      .posture-trend .trend-line {
+        fill: none;
+        stroke: var(--primary-color);
+        stroke-width: 3;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+      }
+      .posture-trend text {
+        fill: var(--secondary-text-color);
+        font-size: 10px;
+      }
       .metric-label {
         color: var(--secondary-text-color);
         font-size: 11px;
@@ -1707,23 +1838,6 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         letter-spacing: 0.055em;
         text-transform: uppercase;
       }
-      .posture-main {
-        display: flex;
-        align-items: baseline;
-        gap: 12px;
-        margin: 8px 0 14px;
-      }
-      .posture-grade {
-        font-size: 52px;
-        font-weight: 750;
-        letter-spacing: -0.045em;
-        line-height: 0.9;
-      }
-      .posture-score {
-        font-size: 18px;
-        font-weight: 650;
-      }
-      .score-track,
       .severity-track,
       .mfa-track {
         height: 7px;
@@ -1731,60 +1845,14 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         overflow: hidden;
         background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09);
       }
-      .score-fill,
       .mfa-fill {
         height: 100%;
         border-radius: inherit;
         background: var(--primary-color);
       }
-      .priority-grid {
-        display: grid;
-        grid-template-columns: repeat(4, minmax(120px, 1fr));
-        gap: 10px;
-      }
-      button.priority-item {
-        appearance: none;
-        font: inherit;
-        color: var(--primary-text-color);
-        text-align: left;
-        background: var(--card-background-color, #fff);
-        border: 1px solid var(--divider-color);
-        border-radius: var(--ha-card-border-radius, 12px);
-        padding: 15px;
-        cursor: pointer;
-        min-height: 142px;
-        display: flex;
-        flex-direction: column;
-        justify-content: space-between;
-        transition: border-color 0.12s ease, transform 0.12s ease;
-      }
-      button.priority-item:hover,
-      button.priority-item:focus-visible {
-        border-color: var(--primary-color);
-        transform: translateY(-1px);
-        outline: none;
-      }
-      .priority-value {
-        font-size: 31px;
-        font-weight: 720;
-        line-height: 1;
-        margin: 10px 0 5px;
-        font-variant-numeric: tabular-nums;
-      }
-      .priority-value.critical {
-        color: var(--status-critical);
-      }
-      .priority-value.warning {
-        color: var(--status-serious);
-      }
-      .priority-help {
-        color: var(--secondary-text-color);
-        font-size: 11.5px;
-        line-height: 1.35;
-      }
       .summary-grid {
         display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: minmax(420px, 1.5fr) repeat(2, minmax(240px, 1fr));
         gap: 12px;
         margin-bottom: 16px;
       }
@@ -1840,6 +1908,33 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         height: 8px;
         border-radius: 2px;
       }
+      .donut-layout {
+        display: grid;
+        grid-template-columns: 126px minmax(0, 1fr);
+        gap: 15px;
+        align-items: center;
+      }
+      .severity-donut {
+        width: 126px;
+        aspect-ratio: 1;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        position: relative;
+      }
+      .severity-donut::before {
+        content: "";
+        position: absolute;
+        inset: 16px;
+        border-radius: 50%;
+        background: var(--card-background-color, #fff);
+      }
+      .severity-donut strong {
+        position: relative;
+        z-index: 1;
+        font-size: 28px;
+        font-variant-numeric: tabular-nums;
+      }
       .identity-grid {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -1874,7 +1969,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         border-radius: 10px;
         padding: 10px 6px;
         text-align: center;
-        background: var(--card-background-color, #fff);
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.035);
         border: 1px solid var(--divider-color);
         display: flex;
         flex-direction: column;
@@ -1887,9 +1982,8 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         outline-offset: -2px;
       }
       .status-tile .label {
-        font-size: 11px;
+        font-size: 11.5px;
         font-weight: 600;
-        text-transform: uppercase;
         opacity: 0.85;
       }
       .status-tile .value {
@@ -1897,20 +1991,20 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         font-weight: 700;
         line-height: 1.3;
       }
+      .status-tile.available {
+        background: rgba(12, 163, 12, 0.11);
+        color: var(--status-good);
+      }
       .status-tile.partial {
-        border-top: 3px solid var(--status-warning);
+        background: rgba(250, 178, 25, 0.15);
+        color: var(--status-warning);
       }
       .status-tile.unavailable {
-        border-top: 3px solid var(--status-critical);
-      }
-      .status-tile.unavailable .value {
+        background: rgba(208, 59, 59, 0.12);
         color: var(--status-critical);
       }
-      .status-tile.disabled {
-        border-top: 3px solid var(--cat-other);
-      }
       .status-tile.no_entities {
-        border-top: 3px solid var(--primary-color);
+        background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.09);
       }
 
       .filter-chip {
@@ -2006,14 +2100,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         margin-top: 2px;
       }
       @media (max-width: 1100px) {
-        .command-grid {
-          grid-template-columns: 1fr;
-        }
-        .priority-grid {
+        .overview-kpis {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
-        button.priority-item {
-          min-height: 116px;
+        .overview-visuals {
+          grid-template-columns: 1fr;
         }
       }
       @media (max-width: 900px) {
@@ -2023,18 +2114,23 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         }
       }
       @media (max-width: 560px) {
-        .priority-grid {
-          grid-template-columns: 1fr 1fr;
+        .overview-kpis {
+          grid-template-columns: 1fr;
+        }
+        .posture-ring-wrap,
+        .donut-layout {
+          grid-template-columns: 1fr;
+          justify-items: center;
         }
         .status-tiles {
           grid-template-columns: repeat(2, 1fr);
         }
       }
-    `],ue.DEVICE_SORT={status:t=>oe.findIndex(e=>e.key===t.status),name:t=>t.name,vendor:t=>t.vendor,risk_score:t=>t.risk_score,total_findings:t=>t.total_findings,severity:t=>1e9*t.severity_counts.critical+1e6*t.severity_counts.high+1e3*t.severity_counts.medium+t.severity_counts.low},ue.INTEGRATION_SORT={title:t=>t.title,severity:t=>ce[t.issue_category]},ue.POSTURE_TERM_LABELS={p_user:"user risk",p_vuln:"device vulnerabilities",p_misconfig:"misconfigurations",p_integration:"integration health",p_detection:"detections"},t([ut()],ue.prototype,"_summary",void 0),t([ut()],ue.prototype,"_deviceOverview",void 0),t([ut()],ue.prototype,"_integrationOverview",void 0),t([ut()],ue.prototype,"_peripherals",void 0),t([ut()],ue.prototype,"_security",void 0),t([ut()],ue.prototype,"_detections",void 0),t([ut()],ue.prototype,"_risk",void 0),t([ut()],ue.prototype,"_users",void 0),t([ut()],ue.prototype,"_loading",void 0),t([ut()],ue.prototype,"_error",void 0),t([ut()],ue.prototype,"_deviceSearch",void 0),t([ut()],ue.prototype,"_deviceStatusFilter",void 0),t([ut()],ue.prototype,"_deviceSort",void 0),t([ut()],ue.prototype,"_devicePageSize",void 0),t([ut()],ue.prototype,"_integrationSearch",void 0),t([ut()],ue.prototype,"_integrationSort",void 0),t([ut()],ue.prototype,"_integrationPageSize",void 0),t([ut()],ue.prototype,"_detectionSort",void 0),ue=ae=t([dt("ha-soc-dashboard-view")],ue);const _e=[25,50,100,"all"];function ve(t){if(!t)return null;try{const e=new URL(t).protocol;return"http:"===e||"https:"===e?t:null}catch{return null}}let me=ge=class extends Ot{constructor(){super(...arguments),this.initialClientFilter=null,this._overview=null,this._loading=!0,this._error=null,this._clientSearch="",this._clientPage=0,this._clientPageSize=25,this._clientVlanFilter="",this._clientSsidFilter="",this._clientSort=null,this._deviceSearch="",this._devicePage=0,this._devicePageSize=25,this._deviceSort=null,this._protectSort=null,this._eventSort=null}get viewId(){return"network"}connectedCallback(){super.connectedCallback(),this._load()}updated(t){super.updated(t),t.has("initialClientFilter")&&this.initialClientFilter&&(this._clientSearch=this.initialClientFilter,this._clientPage=0,this.dispatchEvent(new CustomEvent("client-filter-consumed")))}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,gt(t,{type:"ha_soc/network/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}_fmtBytes(t){if(null==t)return"—";if(t<1024)return`${t} B`;const e=["KB","MB","GB","TB","PB"];let s=t/1024,i=0;for(;s>=1024&&i<e.length-1;)s/=1024,i++;return`${s.toFixed(s>=100?0:1)} ${e[i]}`}_fmtRate(t){if(null==t)return"—";const e=8*t;if(e<1e3)return`${e} bps`;const s=["kbps","Mbps","Gbps"];let i=e/1e3,a=0;for(;i>=1e3&&a<s.length-1;)i/=1e3,a++;return`${i.toFixed(i>=100?0:1)} ${s[a]}`}_fmtBandwidth(t){return t?`↓ ${this._fmtBytes(t.rx_bytes)} · ↑ ${this._fmtBytes(t.tx_bytes)}`:"—"}_fmtUptime(t){if(null==t)return"—";const e=Math.floor(t/86400),s=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return e>0?`${e}d ${s}h`:s>0?`${s}h ${i}m`:`${i}m`}_fmtLastSeen(t){if(null==t)return"—";const e=Date.now()/1e3,s=Math.max(0,e-t);return s<60?"just now":s<3600?`${Math.floor(s/60)}m ago`:s<86400?`${Math.floor(s/3600)}h ago`:s<2592e3?`${Math.floor(s/86400)}d ago`:new Date(1e3*t).toLocaleDateString()}_fmtVlan(t){return null==t||""===t?"—":String(t)}_renderMatch(t){const e=t.integration_match;if(!e)return B`<span class="muted">—</span>`;const s=e.failing?"failing":e.healthy?"healthy":"other",i=e.failing?"⚠":e.healthy?"●":"○",a=`${e.domain} — config entry state: ${e.state}. Click to open in Home Assistant.`;return B`
+    `],ge.DEVICE_SORT={status:t=>ne.findIndex(e=>e.key===t.status),name:t=>t.name,vendor:t=>t.vendor,risk_score:t=>t.risk_score,total_findings:t=>t.total_findings,severity:t=>1e9*t.severity_counts.critical+1e6*t.severity_counts.high+1e3*t.severity_counts.medium+t.severity_counts.low},ge.INTEGRATION_SORT={title:t=>t.title,severity:t=>pe[t.issue_category]},ge.POSTURE_TERM_LABELS={p_user:"user risk",p_vuln:"device vulnerabilities",p_misconfig:"misconfigurations",p_integration:"integration health",p_detection:"detections"},t([ut()],ge.prototype,"_summary",void 0),t([ut()],ge.prototype,"_deviceOverview",void 0),t([ut()],ge.prototype,"_integrationOverview",void 0),t([ut()],ge.prototype,"_peripherals",void 0),t([ut()],ge.prototype,"_security",void 0),t([ut()],ge.prototype,"_detections",void 0),t([ut()],ge.prototype,"_risk",void 0),t([ut()],ge.prototype,"_users",void 0),t([ut()],ge.prototype,"_loading",void 0),t([ut()],ge.prototype,"_error",void 0),t([ut()],ge.prototype,"_deviceSearch",void 0),t([ut()],ge.prototype,"_deviceStatusFilter",void 0),t([ut()],ge.prototype,"_deviceSort",void 0),t([ut()],ge.prototype,"_devicePageSize",void 0),t([ut()],ge.prototype,"_integrationSearch",void 0),t([ut()],ge.prototype,"_integrationSort",void 0),t([ut()],ge.prototype,"_integrationPageSize",void 0),t([ut()],ge.prototype,"_detectionSort",void 0),ge=re=t([dt("ha-soc-dashboard-view")],ge);const _e=[25,50,100,"all"];function me(t){if(!t)return null;try{const e=new URL(t).protocol;return"http:"===e||"https:"===e?t:null}catch{return null}}let ye=ve=class extends Ht{constructor(){super(...arguments),this.initialClientFilter=null,this._overview=null,this._loading=!0,this._error=null,this._clientSearch="",this._clientPage=0,this._clientPageSize=25,this._clientVlanFilter="",this._clientSsidFilter="",this._clientSort=null,this._deviceSearch="",this._devicePage=0,this._devicePageSize=25,this._deviceSort=null,this._protectSort=null,this._eventSort=null}get viewId(){return"network"}connectedCallback(){super.connectedCallback(),this._load()}updated(t){super.updated(t),t.has("initialClientFilter")&&this.initialClientFilter&&(this._clientSearch=this.initialClientFilter,this._clientPage=0,this.dispatchEvent(new CustomEvent("client-filter-consumed")))}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,yt(t,{type:"ha_soc/network/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}_fmtBytes(t){if(null==t)return"—";if(t<1024)return`${t} B`;const e=["KB","MB","GB","TB","PB"];let s=t/1024,i=0;for(;s>=1024&&i<e.length-1;)s/=1024,i++;return`${s.toFixed(s>=100?0:1)} ${e[i]}`}_fmtRate(t){if(null==t)return"—";const e=8*t;if(e<1e3)return`${e} bps`;const s=["kbps","Mbps","Gbps"];let i=e/1e3,a=0;for(;i>=1e3&&a<s.length-1;)i/=1e3,a++;return`${i.toFixed(i>=100?0:1)} ${s[a]}`}_fmtBandwidth(t){return t?`↓ ${this._fmtBytes(t.rx_bytes)} · ↑ ${this._fmtBytes(t.tx_bytes)}`:"—"}_fmtUptime(t){if(null==t)return"—";const e=Math.floor(t/86400),s=Math.floor(t%86400/3600),i=Math.floor(t%3600/60);return e>0?`${e}d ${s}h`:s>0?`${s}h ${i}m`:`${i}m`}_fmtLastSeen(t){if(null==t)return"—";const e=Date.now()/1e3,s=Math.max(0,e-t);return s<60?"just now":s<3600?`${Math.floor(s/60)}m ago`:s<86400?`${Math.floor(s/3600)}h ago`:s<2592e3?`${Math.floor(s/86400)}d ago`:new Date(1e3*t).toLocaleDateString()}_fmtVlan(t){return null==t||""===t?"—":String(t)}_renderMatch(t){const e=t.integration_match;if(!e)return B`<span class="muted">—</span>`;const s=e.failing?"failing":e.healthy?"healthy":"other",i=e.failing?"⚠":e.healthy?"●":"○",a=`${e.domain} — config entry state: ${e.state}. Click to open in Home Assistant.`;return B`
       <span
         class="match ${s}"
         title=${a}
-        @click=${()=>se(ie(e.entry_id))}
+        @click=${()=>_t(mt(e.entry_id))}
       >
         ${i} ${e.domain}${e.failing?" failing":""}
       </span>
@@ -2048,7 +2144,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             local one generated on the console under
             <em>Settings → Control Plane → Integrations</em>; nothing leaves your LAN.
           </p>
-          <button class="ha-btn" @click=${()=>ee(this,"settings")}>
+          <button class="ha-btn" @click=${()=>vt(this,"settings")}>
             Open Settings
           </button>
         </div>
@@ -2130,16 +2226,16 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
       </div>
     `}_colHeaders(){const t=this._clientSort,e=t=>{this._clientSort=t,this._clientPage=0};return B`
       <tr>
-        ${Ut("Client","name",t,e)}
-        ${Ut("IPv4","ipv4",t,e)}
-        ${Ut("IPv6","ipv6",t,e)}
-        ${Ut("MAC","mac",t,e)}
-        ${Ut("VLAN","vlan",t,e,{numeric:!0})}
-        ${Ut("SSID","ssid",t,e)}
-        ${Ut("Uptime","uptime",t,e,{numeric:!0})}
-        ${Ut("Bandwidth","bandwidth",t,e)}
-        ${Ut("Last Seen","last_seen",t,e)}
-        ${Ut("Integration","integration",t,e)}
+        ${Bt("Client","name",t,e)}
+        ${Bt("IPv4","ipv4",t,e)}
+        ${Bt("IPv6","ipv6",t,e)}
+        ${Bt("MAC","mac",t,e)}
+        ${Bt("VLAN","vlan",t,e,{numeric:!0})}
+        ${Bt("SSID","ssid",t,e)}
+        ${Bt("Uptime","uptime",t,e,{numeric:!0})}
+        ${Bt("Bandwidth","bandwidth",t,e)}
+        ${Bt("Last Seen","last_seen",t,e)}
+        ${Bt("Integration","integration",t,e)}
       </tr>
     `}_renderRow(t,e={}){const s=t;return B`
       <tr>
@@ -2158,7 +2254,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <td>${this._fmtLastSeen(t.last_seen)}</td>
         <td>${this._renderMatch(t)}</td>
       </tr>
-    `}_renderClientsTable(t){const e=Array.from(new Set(t.clients.map(t=>null==t.vlan||""===t.vlan?null:String(t.vlan)).filter(Boolean))).sort((t,e)=>Number(t)-Number(e)),s=Array.from(new Set(t.clients.map(t=>t.ssid).filter(Boolean))).sort();let i=this._filter(t.clients,this._clientSearch);this._clientVlanFilter&&(i=i.filter(t=>String(t.vlan??"")===this._clientVlanFilter)),this._clientSsidFilter&&(i=i.filter(t=>t.ssid===this._clientSsidFilter)),i=Dt(i,this._clientSort,ge.CLIENT_SORT);const a=this._paginate(i,this._clientPage,this._clientPageSize);return B`
+    `}_renderClientsTable(t){const e=Array.from(new Set(t.clients.map(t=>null==t.vlan||""===t.vlan?null:String(t.vlan)).filter(Boolean))).sort((t,e)=>Number(t)-Number(e)),s=Array.from(new Set(t.clients.map(t=>t.ssid).filter(Boolean))).sort();let i=this._filter(t.clients,this._clientSearch);this._clientVlanFilter&&(i=i.filter(t=>String(t.vlan??"")===this._clientVlanFilter)),this._clientSsidFilter&&(i=i.filter(t=>t.ssid===this._clientSsidFilter)),i=Vt(i,this._clientSort,ve.CLIENT_SORT);const a=this._paginate(i,this._clientPage,this._clientPageSize);return B`
       <div class="card" id="clients-card">
         <h3>Clients (${i.length})</h3>
         <div class="filters">
@@ -2216,7 +2312,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
           firmware/API version.
         </div>
       </div>
-    `}_renderDevicesTable(t){const e=Dt(this._filter(t.devices,this._deviceSearch),this._deviceSort,ge.DEVICE_SORT),s=this._paginate(e,this._devicePage,this._devicePageSize),i=this._deviceSort,a=t=>{this._deviceSort=t,this._devicePage=0};return B`
+    `}_renderDevicesTable(t){const e=Vt(this._filter(t.devices,this._deviceSearch),this._deviceSort,ve.DEVICE_SORT),s=this._paginate(e,this._devicePage,this._devicePageSize),i=this._deviceSort,a=t=>{this._deviceSort=t,this._devicePage=0};return B`
       <div class="card">
         <h3>Network Devices (${e.length})</h3>
         <div class="toolbar">
@@ -2232,15 +2328,15 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 <table>
                   <thead>
                     <tr>
-                      ${Ut("Device","name",i,a)}
-                      ${Ut("IPv4","ipv4",i,a)}
-                      ${Ut("MAC","mac",i,a)}
-                      ${Ut("VLAN","vlan",i,a,{numeric:!0})}
-                      ${Ut("Model","model",i,a)}
-                      ${Ut("Firmware","firmware",i,a)}
-                      ${Ut("Bandwidth","bandwidth",i,a)}
-                      ${Ut("Last Seen","last_seen",i,a)}
-                      ${Ut("Integration","integration",i,a)}
+                      ${Bt("Device","name",i,a)}
+                      ${Bt("IPv4","ipv4",i,a)}
+                      ${Bt("MAC","mac",i,a)}
+                      ${Bt("VLAN","vlan",i,a,{numeric:!0})}
+                      ${Bt("Model","model",i,a)}
+                      ${Bt("Firmware","firmware",i,a)}
+                      ${Bt("Bandwidth","bandwidth",i,a)}
+                      ${Bt("Last Seen","last_seen",i,a)}
+                      ${Bt("Integration","integration",i,a)}
                     </tr>
                   </thead>
                   <tbody>
@@ -2299,22 +2395,22 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             Configured but not reachable${e.error?B` — ${e.error}`:""}.
           </div>
         </div>
-      `:W}_renderProtectDevices(t){if(!t.length)return B`<div class="empty">No Protect devices reported.</div>`;const e=this._protectSort,s=t=>this._protectSort=t,i=Dt(t.slice(),e,{name:t=>t.name,ip:t=>t.ip,mac:t=>t.mac,recording:t=>t.is_recording,last_ring:t=>t.last_ring,channels:t=>t.channel_count});return B`
+      `:W}_renderProtectDevices(t){if(!t.length)return B`<div class="empty">No Protect devices reported.</div>`;const e=this._protectSort,s=t=>this._protectSort=t,i=Vt(t.slice(),e,{name:t=>t.name,ip:t=>t.ip,mac:t=>t.mac,recording:t=>t.is_recording,last_ring:t=>t.last_ring,channels:t=>t.channel_count});return B`
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
-              ${Ut("Name","name",e,s)}
-              ${Ut("IP","ip",e,s)}
-              ${Ut("MAC","mac",e,s)}
-              ${Ut("Recording","recording",e,s)}
-              ${Ut("Last Ring","last_ring",e,s)}
-              ${Ut("Channels","channels",e,s)}
+              ${Bt("Name","name",e,s)}
+              ${Bt("IP","ip",e,s)}
+              ${Bt("MAC","mac",e,s)}
+              ${Bt("Recording","recording",e,s)}
+              ${Bt("Last Ring","last_ring",e,s)}
+              ${Bt("Channels","channels",e,s)}
               <th></th>
             </tr>
           </thead>
           <tbody>
-            ${i.map(t=>{const e=ve(t.link);return B`
+            ${i.map(t=>{const e=me(t.link);return B`
                 <tr>
                   <td>
                     <div style="font-weight:600;">
@@ -2353,17 +2449,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   <table>
                     <thead>
                       <tr>
-                        ${Ut("Type","type",this._eventSort,t=>this._eventSort=t)}
-                        ${Ut("Smart Detections","detections",this._eventSort,t=>this._eventSort=t)}
-                        ${Ut("Score","score",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
-                        ${Ut("Start","start",this._eventSort,t=>this._eventSort=t)}
-                        ${Ut("Duration","duration",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
+                        ${Bt("Type","type",this._eventSort,t=>this._eventSort=t)}
+                        ${Bt("Smart Detections","detections",this._eventSort,t=>this._eventSort=t)}
+                        ${Bt("Score","score",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
+                        ${Bt("Start","start",this._eventSort,t=>this._eventSort=t)}
+                        ${Bt("Duration","duration",this._eventSort,t=>this._eventSort=t,{numeric:!0})}
                         <th>Thumbnail</th>
-                        ${Ut("License Plate","plate",this._eventSort,t=>this._eventSort=t)}
+                        ${Bt("License Plate","plate",this._eventSort,t=>this._eventSort=t)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${Dt(t.events.slice(),this._eventSort,{type:t=>t.type,detections:t=>t.smart_detect_types.join(", ")||null,score:t=>t.score,start:t=>t.start,duration:t=>t.duration,plate:t=>t.license_plate}).map(t=>B`
+                      ${Vt(t.events.slice(),this._eventSort,{type:t=>t.type,detections:t=>t.smart_detect_types.join(", ")||null,score:t=>t.score,start:t=>t.start,duration:t=>t.duration,plate:t=>t.license_plate}).map(t=>B`
                           <tr>
                             <td>${t.type??"—"}</td>
                             <td>
@@ -2375,9 +2471,9 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                             <td>${this._fmtLastSeen(t.start)}</td>
                             <td class="num">${this._fmtDuration(t.duration)}</td>
                             <td>
-                              ${ve(t.thumbnail_link)?B`<a
+                              ${me(t.thumbnail_link)?B`<a
                                     class="thumb-link"
-                                    href=${ve(t.thumbnail_link)}
+                                    href=${me(t.thumbnail_link)}
                                     target="_blank"
                                     rel="noopener"
                                     >view ↗</a
@@ -2391,7 +2487,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 </div>
               `:B`<div class="empty">No events in the last 24 hours.</div>`}
       </div>
-    `}};me.styles=[Ft,o`
+    `}};ye.styles=[Ot,o`
       .stat-row {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -2591,7 +2687,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         margin-top: 8px;
         line-height: 1.5;
       }
-    `],me.CLIENT_SORT={name:t=>t.name,ipv4:t=>t.ipv4,ipv6:t=>t.ipv6,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),ssid:t=>t.ssid??(t.wired?"wired":null),uptime:t=>t.uptime,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},me.DEVICE_SORT={name:t=>t.name,ipv4:t=>t.ipv4,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),model:t=>t.model,firmware:t=>t.firmware_updatable,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},t([ht({attribute:!1})],me.prototype,"initialClientFilter",void 0),t([ut()],me.prototype,"_overview",void 0),t([ut()],me.prototype,"_loading",void 0),t([ut()],me.prototype,"_error",void 0),t([ut()],me.prototype,"_clientSearch",void 0),t([ut()],me.prototype,"_clientPage",void 0),t([ut()],me.prototype,"_clientPageSize",void 0),t([ut()],me.prototype,"_clientVlanFilter",void 0),t([ut()],me.prototype,"_clientSsidFilter",void 0),t([ut()],me.prototype,"_clientSort",void 0),t([ut()],me.prototype,"_deviceSearch",void 0),t([ut()],me.prototype,"_devicePage",void 0),t([ut()],me.prototype,"_devicePageSize",void 0),t([ut()],me.prototype,"_deviceSort",void 0),t([ut()],me.prototype,"_protectSort",void 0),t([ut()],me.prototype,"_eventSort",void 0),me=ge=t([dt("ha-soc-network-view")],me);const ye=/^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/i;function be(t){const e=t.split(".");if(4!==e.length)return null;let s=0;for(const t of e){if(!/^\d{1,3}$/.test(t))return null;const e=Number(t);if(e>255)return null;s=s<<8|e}return s>>>0}function fe(t,e){const s=e.indexOf("/");if(s<0)return!1;const i=e.slice(0,s),a=Number(e.slice(s+1));if(!Number.isInteger(a)||a<0||a>32)return!1;const r=be(t),o=be(i);if(null===r||null===o)return!1;const n=0===a?0:4294967295<<32-a>>>0;return(r&n)===(o&n)}function $e(t,e){const s=[];if(ye.test(t)){const i=t.toLowerCase();for(const a of e)a.mac&&a.mac.toLowerCase()===i&&s.push({name:a.name||a.mac,matchedOn:t});return s}if(t.includes("/")){for(const i of e)i.ipv4&&fe(i.ipv4,t)&&s.push({name:i.name||i.ipv4,matchedOn:i.ipv4});return s}for(const i of e)i.ipv4!==t&&i.ipv6!==t||s.push({name:i.name||t,matchedOn:t});return s}let we=class extends Ot{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._aclSort=null,this._firewallPolicySort=null,this._portSort=null,this._fwViewMode="table",this._fwZonePairFilter=null}get viewId(){return"network_security"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,gt(t,{type:"ha_soc/network_security/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}render(){if(this._loading)return B`<div class="card">Loading…</div>`;if(this._error)return B`<div class="card"><div class="alert">${this._error}</div></div>`;const t=this._overview;if(!t)return B`<div class="card">No data.</div>`;const e=[{id:"findings",title:"Suggestions",render:()=>this._renderFindings(t.findings)},{id:"firewall_policies",title:"Firewall Policies",render:()=>this._renderFirewallPolicies(t.firewall_policies)},{id:"acl",title:"ACL Rules",render:()=>this._renderAcl(t.acl)},{id:"server_ports",title:"Home Assistant Server Ports",render:()=>this._renderServerPorts(t.server_ports)},{id:"pihole",title:"Pi-hole DNS",render:()=>this._renderPihole(t.pihole)}];return B`
+    `],ye.CLIENT_SORT={name:t=>t.name,ipv4:t=>t.ipv4,ipv6:t=>t.ipv6,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),ssid:t=>t.ssid??(t.wired?"wired":null),uptime:t=>t.uptime,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},ye.DEVICE_SORT={name:t=>t.name,ipv4:t=>t.ipv4,mac:t=>t.mac,vlan:t=>null==t.vlan||""===t.vlan?null:Number(t.vlan),model:t=>t.model,firmware:t=>t.firmware_updatable,bandwidth:t=>t.bandwidth?.total_bytes??null,last_seen:t=>t.last_seen,integration:t=>t.integration_match?.domain??null},t([ht({attribute:!1})],ye.prototype,"initialClientFilter",void 0),t([ut()],ye.prototype,"_overview",void 0),t([ut()],ye.prototype,"_loading",void 0),t([ut()],ye.prototype,"_error",void 0),t([ut()],ye.prototype,"_clientSearch",void 0),t([ut()],ye.prototype,"_clientPage",void 0),t([ut()],ye.prototype,"_clientPageSize",void 0),t([ut()],ye.prototype,"_clientVlanFilter",void 0),t([ut()],ye.prototype,"_clientSsidFilter",void 0),t([ut()],ye.prototype,"_clientSort",void 0),t([ut()],ye.prototype,"_deviceSearch",void 0),t([ut()],ye.prototype,"_devicePage",void 0),t([ut()],ye.prototype,"_devicePageSize",void 0),t([ut()],ye.prototype,"_deviceSort",void 0),t([ut()],ye.prototype,"_protectSort",void 0),t([ut()],ye.prototype,"_eventSort",void 0),ye=ve=t([dt("ha-soc-network-view")],ye);const be=/^([0-9a-f]{1,2}:){5}[0-9a-f]{1,2}$/i;function fe(t){const e=t.split(".");if(4!==e.length)return null;let s=0;for(const t of e){if(!/^\d{1,3}$/.test(t))return null;const e=Number(t);if(e>255)return null;s=s<<8|e}return s>>>0}function $e(t,e){const s=e.indexOf("/");if(s<0)return!1;const i=e.slice(0,s),a=Number(e.slice(s+1));if(!Number.isInteger(a)||a<0||a>32)return!1;const r=fe(t),o=fe(i);if(null===r||null===o)return!1;const n=0===a?0:4294967295<<32-a>>>0;return(r&n)===(o&n)}function we(t,e){const s=[];if(be.test(t)){const i=t.toLowerCase();for(const a of e)a.mac&&a.mac.toLowerCase()===i&&s.push({name:a.name||a.mac,matchedOn:t});return s}if(t.includes("/")){for(const i of e)i.ipv4&&$e(i.ipv4,t)&&s.push({name:i.name||i.ipv4,matchedOn:i.ipv4});return s}for(const i of e)i.ipv4!==t&&i.ipv6!==t||s.push({name:i.name||t,matchedOn:t});return s}let xe=class extends Ht{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._aclSort=null,this._firewallPolicySort=null,this._portSort=null,this._fwViewMode="table",this._fwZonePairFilter=null}get viewId(){return"network_security"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,yt(t,{type:"ha_soc/network_security/overview"}))}catch(t){this._error=t instanceof Error?t.message:String(t),this._overview=null}finally{this._loading=!1}var t}render(){if(this._loading)return B`<div class="card">Loading…</div>`;if(this._error)return B`<div class="card"><div class="alert">${this._error}</div></div>`;const t=this._overview;if(!t)return B`<div class="card">No data.</div>`;const e=[{id:"findings",title:"Suggestions",render:()=>this._renderFindings(t.findings)},{id:"firewall_policies",title:"Firewall Policies",render:()=>this._renderFirewallPolicies(t.firewall_policies)},{id:"acl",title:"ACL Rules",render:()=>this._renderAcl(t.acl)},{id:"server_ports",title:"Home Assistant Server Ports",render:()=>this._renderServerPorts(t.server_ports)},{id:"pihole",title:"Pi-hole DNS",render:()=>this._renderPihole(t.pihole)}];return B`
       <div class="toolbar" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
         <button class="ha-btn" @click=${()=>this._load()}>Refresh</button>
         <span class="muted" style="font-size:12px;">
@@ -2612,13 +2708,13 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 </div>
               `)}`:B`<div class="empty">Nothing stood out — no advisory findings right now.</div>`}
       </div>
-    `}_renderCustomBadge(t){return t?B`<span class="badge-custom">custom</span>`:W}_customCountLabel(t){const e=t.filter(t=>null!=t.custom);if(!e.length)return"";const s=e.filter(t=>t.custom).length;return` · ${s} custom / ${t.length} total`}_renderDeviceChips(t){const e=function(t,e){if(!t.length||!e.length)return[];const s=new Set,i=[];for(const a of t)for(const t of $e(a,e)){const e=`${t.name}\0${t.matchedOn}`;s.has(e)||(s.add(e),i.push(t))}return i}(t,this._overview?.clients??[]),s=e.slice(0,6);if(!s.length)return W;const i=e.length-s.length;return B`
+    `}_renderCustomBadge(t){return t?B`<span class="badge-custom">custom</span>`:W}_customCountLabel(t){const e=t.filter(t=>null!=t.custom);if(!e.length)return"";const s=e.filter(t=>t.custom).length;return` · ${s} custom / ${t.length} total`}_renderDeviceChips(t){const e=function(t,e){if(!t.length||!e.length)return[];const s=new Set,i=[];for(const a of t)for(const t of we(a,e)){const e=`${t.name}\0${t.matchedOn}`;s.has(e)||(s.add(e),i.push(t))}return i}(t,this._overview?.clients??[]),s=e.slice(0,6);if(!s.length)return W;const i=e.length-s.length;return B`
       <span class="sub" style="display:block;margin-top:3px;">
         ${s.map(t=>B`
             <button
               class="device-chip"
               title="Jump to ${t.name} on the Network tab"
-              @click=${()=>ee(this,"network",t.matchedOn)}
+              @click=${()=>vt(this,"network",t.matchedOn)}
             >
               📟 ${t.name}
             </button>
@@ -2673,18 +2769,18 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <table>
           <thead>
             <tr>
-              ${Ut("#","order",this._firewallPolicySort,t=>this._firewallPolicySort=t,{numeric:!0})}
-              ${Ut("Name","name",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Action","action",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Source zone","source_zone",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Dest. zone","dest_zone",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Protocol","protocol",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Ports","ports",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
-              ${Ut("Enabled","enabled",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("#","order",this._firewallPolicySort,t=>this._firewallPolicySort=t,{numeric:!0})}
+              ${Bt("Name","name",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Action","action",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Source zone","source_zone",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Dest. zone","dest_zone",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Protocol","protocol",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Ports","ports",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
+              ${Bt("Enabled","enabled",this._firewallPolicySort,t=>this._firewallPolicySort=t)}
             </tr>
           </thead>
           <tbody>
-            ${t.length?Dt(t.slice(),this._firewallPolicySort,{order:t=>t.order,name:t=>t.name,action:t=>t.action,source_zone:t=>t.source.zone,dest_zone:t=>t.destination.zone,protocol:t=>t.protocol,ports:t=>t.ports.length,enabled:t=>t.enabled}).map((t,e)=>this._renderFirewallPolicyRow(t,e)):B`<tr><td colspan="8"><div class="empty">No policies for this zone pair.</div></td></tr>`}
+            ${t.length?Vt(t.slice(),this._firewallPolicySort,{order:t=>t.order,name:t=>t.name,action:t=>t.action,source_zone:t=>t.source.zone,dest_zone:t=>t.destination.zone,protocol:t=>t.protocol,ports:t=>t.ports.length,enabled:t=>t.enabled}).map((t,e)=>this._renderFirewallPolicyRow(t,e)):B`<tr><td colspan="8"><div class="empty">No policies for this zone pair.</div></td></tr>`}
           </tbody>
         </table>
       </div>
@@ -2759,17 +2855,17 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                   <table>
                     <thead>
                       <tr>
-                        ${Ut("#","order",this._aclSort,t=>this._aclSort=t,{numeric:!0})}
-                        ${Ut("Name","name",this._aclSort,t=>this._aclSort=t)}
-                        ${Ut("Action","action",this._aclSort,t=>this._aclSort=t)}
-                        ${Ut("Protocols","protocols",this._aclSort,t=>this._aclSort=t)}
-                        ${Ut("Networks","networks",this._aclSort,t=>this._aclSort=t)}
-                        ${Ut("Ports","ports",this._aclSort,t=>this._aclSort=t,{numeric:!0})}
-                        ${Ut("Enabled","enabled",this._aclSort,t=>this._aclSort=t)}
+                        ${Bt("#","order",this._aclSort,t=>this._aclSort=t,{numeric:!0})}
+                        ${Bt("Name","name",this._aclSort,t=>this._aclSort=t)}
+                        ${Bt("Action","action",this._aclSort,t=>this._aclSort=t)}
+                        ${Bt("Protocols","protocols",this._aclSort,t=>this._aclSort=t)}
+                        ${Bt("Networks","networks",this._aclSort,t=>this._aclSort=t)}
+                        ${Bt("Ports","ports",this._aclSort,t=>this._aclSort=t,{numeric:!0})}
+                        ${Bt("Enabled","enabled",this._aclSort,t=>this._aclSort=t)}
                       </tr>
                     </thead>
                     <tbody>
-                      ${Dt(t.rules.slice(),this._aclSort,{order:t=>t.order,name:t=>t.name,action:t=>t.action,protocols:t=>t.protocols.join(", ")||null,networks:t=>t.networks.join(", ")||null,ports:t=>t.ports.length,enabled:t=>t.enabled}).map((t,e)=>this._renderAclRow(t,e))}
+                      ${Vt(t.rules.slice(),this._aclSort,{order:t=>t.order,name:t=>t.name,action:t=>t.action,protocols:t=>t.protocols.join(", ")||null,networks:t=>t.networks.join(", ")||null,ports:t=>t.ports.length,enabled:t=>t.enabled}).map((t,e)=>this._renderAclRow(t,e))}
                     </tbody>
                   </table>
                 </div>
@@ -2818,15 +2914,15 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                 <table>
                   <thead>
                     <tr>
-                      ${Ut("Port","port",this._portSort,t=>this._portSort=t,{numeric:!0})}
-                      ${Ut("Proto","proto",this._portSort,t=>this._portSort=t)}
-                      ${Ut("Address","address",this._portSort,t=>this._portSort=t)}
-                      ${Ut("Process","process",this._portSort,t=>this._portSort=t)}
-                      ${Ut("Coverage","status",this._portSort,t=>this._portSort=t)}
+                      ${Bt("Port","port",this._portSort,t=>this._portSort=t,{numeric:!0})}
+                      ${Bt("Proto","proto",this._portSort,t=>this._portSort=t)}
+                      ${Bt("Address","address",this._portSort,t=>this._portSort=t)}
+                      ${Bt("Process","process",this._portSort,t=>this._portSort=t)}
+                      ${Bt("Coverage","status",this._portSort,t=>this._portSort=t)}
                     </tr>
                   </thead>
                   <tbody>
-                    ${Dt(t.ports.slice(),this._portSort,{port:t=>t.port,proto:t=>t.proto,address:t=>t.address,process:t=>t.process,status:t=>t.status}).map(t=>B`
+                    ${Vt(t.ports.slice(),this._portSort,{port:t=>t.port,proto:t=>t.proto,address:t=>t.address,process:t=>t.process,status:t=>t.status}).map(t=>B`
                         <tr>
                           <td class="num">${t.port}</td>
                           <td>${t.proto??"—"}</td>
@@ -2916,7 +3012,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
             status, IoT client group scoping, and recently blocked domains here.
           </div>
         </div>
-      `}};var xe;function ke(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}we.styles=[Ft,o`
+      `}};var ke;function Se(t){const e=t.match(/^homeassistant\.components\.([^.]+)/);if(e)return e[1];const s=t.match(/^custom_components\.([^.]+)/);return s?s[1]:t.split(".")[0]}xe.styles=[Ot,o`
       .table-wrap {
         overflow-x: auto;
       }
@@ -3153,7 +3249,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         font-size: 12.5px;
         margin-bottom: 10px;
       }
-    `],t([ut()],we.prototype,"_overview",void 0),t([ut()],we.prototype,"_loading",void 0),t([ut()],we.prototype,"_error",void 0),t([ut()],we.prototype,"_aclSort",void 0),t([ut()],we.prototype,"_firewallPolicySort",void 0),t([ut()],we.prototype,"_portSort",void 0),t([ut()],we.prototype,"_fwViewMode",void 0),t([ut()],we.prototype,"_fwZonePairFilter",void 0),we=t([dt("ha-soc-network-security-view")],we);const Se=["DEBUG","INFO","WARNING","ERROR","CRITICAL"];const Ce="system";let Ae=xe=class extends Ot{constructor(){super(...arguments),this._entries=[],this._fault=null,this._loading=!0,this._error=null,this._domainFilter="",this._levelFilter="",this._expanded=new Set,this._sort=null,this._targets=null,this._source=Ce,this._containerLog=null,this._containerLoading=!1}get viewId(){return"logs"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[e,s,i]=await Promise.all([(t=this.hass,gt(t,{type:"system_log/list"})),$t(this.hass),wt(this.hass).catch(()=>null)]);this._entries=e,this._fault=s,this._targets=i}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadContainer(t){this._containerLoading=!0;try{this._containerLog=await((t,e)=>gt(t,{type:"ha_soc/logs/container",target:e}))(this.hass,t)}catch(e){this._containerLog={available:!1,target:t,content:null,truncated:!1,error:String(e),fetched_at:(new Date).toISOString()}}finally{this._containerLoading=!1}}_onSourceChange(t){const e=t.target.value;this._source=e,this._containerLog=null,e!==Ce&&this._loadContainer(e)}_refresh(){this._source===Ce?this._load():this._loadContainer(this._source)}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>ke(t.name)))).sort()}get _levels(){const t=new Set(this._entries.map(t=>t.level.toUpperCase()));return Se.filter(e=>t.has(e))}get _filtered(){const t=this._entries.filter(t=>(!this._domainFilter||ke(t.name)===this._domainFilter)&&(!this._levelFilter||t.level.toUpperCase()===this._levelFilter));return Dt(t,this._sort,xe.LOG_SORT)}_renderFaultLogCard(){const t=this._fault;return t?B`
+    `],t([ut()],xe.prototype,"_overview",void 0),t([ut()],xe.prototype,"_loading",void 0),t([ut()],xe.prototype,"_error",void 0),t([ut()],xe.prototype,"_aclSort",void 0),t([ut()],xe.prototype,"_firewallPolicySort",void 0),t([ut()],xe.prototype,"_portSort",void 0),t([ut()],xe.prototype,"_fwViewMode",void 0),t([ut()],xe.prototype,"_fwZonePairFilter",void 0),xe=t([dt("ha-soc-network-security-view")],xe);const Ce=["DEBUG","INFO","WARNING","ERROR","CRITICAL"];const Ae="system";let Pe=ke=class extends Ht{constructor(){super(...arguments),this._entries=[],this._fault=null,this._loading=!0,this._error=null,this._domainFilter="",this._levelFilter="",this._expanded=new Set,this._sort=null,this._targets=null,this._source=Ae,this._containerLog=null,this._containerLoading=!1}get viewId(){return"logs"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{const[e,s,i]=await Promise.all([(t=this.hass,yt(t,{type:"system_log/list"})),St(this.hass),Ct(this.hass).catch(()=>null)]);this._entries=e,this._fault=s,this._targets=i}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadContainer(t){this._containerLoading=!0;try{this._containerLog=await((t,e)=>yt(t,{type:"ha_soc/logs/container",target:e}))(this.hass,t)}catch(e){this._containerLog={available:!1,target:t,content:null,truncated:!1,error:String(e),fetched_at:(new Date).toISOString()}}finally{this._containerLoading=!1}}_onSourceChange(t){const e=t.target.value;this._source=e,this._containerLog=null,e!==Ae&&this._loadContainer(e)}_refresh(){this._source===Ae?this._load():this._loadContainer(this._source)}_toggleExpanded(t){const e=new Set(this._expanded);e.has(t)?e.delete(t):e.add(t),this._expanded=e}get _domains(){return Array.from(new Set(this._entries.map(t=>Se(t.name)))).sort()}get _levels(){const t=new Set(this._entries.map(t=>t.level.toUpperCase()));return Ce.filter(e=>t.has(e))}get _filtered(){const t=this._entries.filter(t=>(!this._domainFilter||Se(t.name)===this._domainFilter)&&(!this._levelFilter||t.level.toUpperCase()===this._levelFilter));return Vt(t,this._sort,ke.LOG_SORT)}_renderFaultLogCard(){const t=this._fault;return t?B`
       <div class="card fault-log">
         <h3>
           Home Assistant Crash Log
@@ -3185,7 +3281,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
       <pre class="rawlog">${t.content?.trim()?t.content:"(log is empty)"}</pre>
     `:B`<div class="empty">
         Couldn't load ${e} logs${t.error?B`<br /><span class="muted">${t.error}</span>`:W}
-      </div>`:B`<div class="empty">Select a source.</div>`}render(){const t=this._filtered,e=this._sort,s=t=>{this._sort=t,this._expanded=new Set},i=this._source===Ce,a=[{id:"fault_log",title:"Home Assistant Crash Log",render:()=>this._renderFaultLogCard()},{id:"logs",title:"Logs",hideable:!1,render:()=>B`
+      </div>`:B`<div class="empty">Select a source.</div>`}render(){const t=this._filtered,e=this._sort,s=t=>{this._sort=t,this._expanded=new Set},i=this._source===Ae,a=[{id:"fault_log",title:"Home Assistant Crash Log",render:()=>this._renderFaultLogCard()},{id:"logs",title:"Logs",hideable:!1,render:()=>B`
       <div class="card">
         <h3>Logs</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
@@ -3198,7 +3294,7 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
         <div class="toolbar">
           ${this._targets?.available?B`
                 <select @change=${this._onSourceChange} aria-label="Log source">
-                  <option value=${Ce} ?selected=${i}>
+                  <option value=${Ae} ?selected=${i}>
                     Integration logs (captured records)
                   </option>
                   ${this._targets.targets.map(t=>B`<option value=${t.id} ?selected=${t.id===this._source}>${t.name}</option>`)}
@@ -3234,11 +3330,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Time","time",e,s)}
-                    ${Ut("Level","level",e,s)}
-                    ${Ut("Integration","integration",e,s)}
-                    ${Ut("Message","message",e,s)}
-                    ${Ut("Count","count",e,s,{numeric:!0})}
+                    ${Bt("Time","time",e,s)}
+                    ${Bt("Level","level",e,s)}
+                    ${Bt("Integration","integration",e,s)}
+                    ${Bt("Message","message",e,s)}
+                    ${Bt("Count","count",e,s,{numeric:!0})}
                   </tr>
                 </thead>
                 <tbody>
@@ -3250,11 +3346,11 @@ const dt=t=>(e,s)=>{void 0!==s?s.addInitializer(()=>{customElements.define(t,e)}
                       >
                         <td>${new Date(1e3*t.first_occurred).toLocaleString()}</td>
                         <td>
-                          <span class="log-level ${function(t){const e=t.toUpperCase();return Se.includes(e)?e.toLowerCase():"info"}(t.level)}"
+                          <span class="log-level ${function(t){const e=t.toUpperCase();return Ce.includes(e)?e.toLowerCase():"info"}(t.level)}"
                             ><span class="dot"></span>${t.level}</span
                           >
                         </td>
-                        <td class="muted">${ke(t.name)}</td>
+                        <td class="muted">${Se(t.name)}</td>
                         <td>
                           ${t.message[t.message.length-1]}
                           ${t.source?B`<div class="muted" style="font-size:11px;">${t.source[0]}:${t.source[1]}</div>`:W}
@@ -3277,7 +3373,7 @@ ${t.exception}</pre
               </table>
             `:B`<div class="empty">No matching log entries.</div>`:this._renderContainerLog()}
       </div>
-        `}];return this._renderSections(a)}};var Pe;Ae.styles=[Ft,o`
+        `}];return this._renderSections(a)}};var ze;Pe.styles=[Ot,o`
       .log-level {
         display: inline-flex;
         align-items: center;
@@ -3347,7 +3443,7 @@ ${t.exception}</pre
         max-height: 600px;
         font-family: var(--code-font-family, monospace);
       }
-    `],Ae.LOG_SORT={time:t=>t.first_occurred,level:t=>{const e=Se.indexOf(t.level.toUpperCase());return-1===e?null:e},integration:t=>ke(t.name),message:t=>t.message[t.message.length-1],count:t=>t.count},t([ut()],Ae.prototype,"_entries",void 0),t([ut()],Ae.prototype,"_fault",void 0),t([ut()],Ae.prototype,"_loading",void 0),t([ut()],Ae.prototype,"_error",void 0),t([ut()],Ae.prototype,"_domainFilter",void 0),t([ut()],Ae.prototype,"_levelFilter",void 0),t([ut()],Ae.prototype,"_expanded",void 0),t([ut()],Ae.prototype,"_sort",void 0),t([ut()],Ae.prototype,"_targets",void 0),t([ut()],Ae.prototype,"_source",void 0),t([ut()],Ae.prototype,"_containerLog",void 0),t([ut()],Ae.prototype,"_containerLoading",void 0),Ae=xe=t([dt("ha-soc-logs-view")],Ae);let ze=Pe=class extends Ot{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyKey=null,this._showIgnored=!1,this._sort=null,this._ignoredSort=null}get viewId(){return"peripherals"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await zt(this.hass)}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>gt(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return B`<div class="empty">Loading peripherals…</div>`;if(this._error)return B`
+    `],Pe.LOG_SORT={time:t=>t.first_occurred,level:t=>{const e=Ce.indexOf(t.level.toUpperCase());return-1===e?null:e},integration:t=>Se(t.name),message:t=>t.message[t.message.length-1],count:t=>t.count},t([ut()],Pe.prototype,"_entries",void 0),t([ut()],Pe.prototype,"_fault",void 0),t([ut()],Pe.prototype,"_loading",void 0),t([ut()],Pe.prototype,"_error",void 0),t([ut()],Pe.prototype,"_domainFilter",void 0),t([ut()],Pe.prototype,"_levelFilter",void 0),t([ut()],Pe.prototype,"_expanded",void 0),t([ut()],Pe.prototype,"_sort",void 0),t([ut()],Pe.prototype,"_targets",void 0),t([ut()],Pe.prototype,"_source",void 0),t([ut()],Pe.prototype,"_containerLog",void 0),t([ut()],Pe.prototype,"_containerLoading",void 0),Pe=ke=t([dt("ha-soc-logs-view")],Pe);let Ee=ze=class extends Ht{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyKey=null,this._showIgnored=!1,this._sort=null,this._ignoredSort=null}get viewId(){return"peripherals"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await Ft(this.hass)}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}}async _onToggleIgnore(t,e,s){this._busyKey=t;try{await((t,e,s,i)=>yt(t,{type:"ha_soc/peripherals/set_ignored",key:e,ignored:s,raw_name:i}))(this.hass,t,e,s),await this._load()}finally{this._busyKey=null}}render(){if(this._loading)return B`<div class="empty">Loading peripherals…</div>`;if(this._error)return B`
         <div class="card" style="border:1px solid var(--error-color,#db4437);">
           <h3>Could not load Local Peripherals</h3>
           <p style="font-size:13px;">${this._error}</p>
@@ -3378,17 +3474,17 @@ ${t.exception}</pre
               <table>
                 <thead>
                   <tr>
-                    ${Ut("Raw Name","name",this._sort,t=>this._sort=t)}
-                    ${Ut("/dev/tty Path","tty",this._sort,t=>this._sort=t)}
-                    ${Ut("By-ID Path","by_id",this._sort,t=>this._sort=t)}
-                    ${Ut("VID:PID","vidpid",this._sort,t=>this._sort=t)}
-                    ${Ut("Serial","serial",this._sort,t=>this._sort=t)}
-                    ${Ut("Assigned Integration","integration",this._sort,t=>this._sort=t)}
+                    ${Bt("Raw Name","name",this._sort,t=>this._sort=t)}
+                    ${Bt("/dev/tty Path","tty",this._sort,t=>this._sort=t)}
+                    ${Bt("By-ID Path","by_id",this._sort,t=>this._sort=t)}
+                    ${Bt("VID:PID","vidpid",this._sort,t=>this._sort=t)}
+                    ${Bt("Serial","serial",this._sort,t=>this._sort=t)}
+                    ${Bt("Assigned Integration","integration",this._sort,t=>this._sort=t)}
                     <th></th>
                   </tr>
                 </thead>
                 <tbody>
-                  ${Dt(e,this._sort,Pe.DEVICE_SORT).map(t=>B`
+                  ${Vt(e,this._sort,ze.DEVICE_SORT).map(t=>B`
                       <tr>
                         <td>${t.raw_name}</td>
                         <td class="muted">${t.tty_path}</td>
@@ -3432,13 +3528,13 @@ ${t.exception}</pre
                     <table>
                       <thead>
                         <tr>
-                          ${Ut("Raw Name","name",this._ignoredSort,t=>this._ignoredSort=t)}
-                          ${Ut("/dev/tty Path","tty",this._ignoredSort,t=>this._ignoredSort=t)}
+                          ${Bt("Raw Name","name",this._ignoredSort,t=>this._ignoredSort=t)}
+                          ${Bt("/dev/tty Path","tty",this._ignoredSort,t=>this._ignoredSort=t)}
                           <th></th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${Dt(s,this._ignoredSort,Pe.DEVICE_SORT).map(t=>B`
+                        ${Vt(s,this._ignoredSort,ze.DEVICE_SORT).map(t=>B`
                             <tr class="row-disabled">
                               <td>${t.raw_name}</td>
                               <td class="muted">${t.tty_path}</td>
@@ -3457,10 +3553,10 @@ ${t.exception}</pre
                     </table>
                   `:W}
             </div>
-          `:W}];return this._renderSections(i)}};var Ee;ze.styles=Ft,ze.DEVICE_SORT={name:t=>t.raw_name,tty:t=>t.tty_path,by_id:t=>t.by_id_path,vidpid:t=>`${t.vid}:${t.pid}`,serial:t=>t.serial_number,integration:t=>t.assigned_integration?.title??null},t([ut()],ze.prototype,"_overview",void 0),t([ut()],ze.prototype,"_loading",void 0),t([ut()],ze.prototype,"_error",void 0),t([ut()],ze.prototype,"_busyKey",void 0),t([ut()],ze.prototype,"_showIgnored",void 0),t([ut()],ze.prototype,"_sort",void 0),t([ut()],ze.prototype,"_ignoredSort",void 0),ze=Pe=t([dt("ha-soc-peripherals-view")],ze);const Re={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let Ie=Ee=class extends Ot{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._backupAck=!1,this._applyError=null,this._broken=[],this._brokenLoading=!0,this._brokenError=null,this._brokenFilter=null,this._brokenSort=null,this._isOwner=!1,this._filterSameType=!0}get viewId(){return"entity_remap"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._brokenLoading=!0,this._brokenError=null;try{const[e,s,i]=await Promise.all([(t=this.hass,gt(t,{type:"config/entity_registry/list"})),Et(this.hass),Ct(this.hass).catch(()=>({is_owner:!1}))]);this._entities=e,this._broken=s,this._isOwner=!!i.is_owner}catch(t){this._brokenError=t?.message??String(t)}finally{this._brokenLoading=!1}var t}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null,this._applyError=null;try{this._report=await(t=this.hass,e=this._oldEntityId,gt(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._applyError=null,this._onFind()}_selectOld(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._applyError=null,this.updateComplete.then(()=>{this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({behavior:"smooth",block:"start"})})}_domainOf(t){return t.includes(".")?t.split(".",1)[0]:""}_newEntityOptions(){const t=this._domainOf(this._oldEntityId);return this._filterSameType&&t?this._entities.filter(e=>this._domainOf(e.entity_id)===t):this._entities}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0,this._applyError=null;try{const a=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,i=this._backupAck,gt(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s,backup_acknowledged:i}));this._backupAck=!1,await this._onFind(),this._broken=await Et(this.hass),this._applyResult=a}catch(t){this._applyError=t?.message??t?.code??"Applying the remap failed."}finally{this._applying=!1}var t,e,s,i}}_renderKind(t,e){return e.length?B`
+          `:W}];return this._renderSections(i)}};var Re;Ee.styles=Ot,Ee.DEVICE_SORT={name:t=>t.raw_name,tty:t=>t.tty_path,by_id:t=>t.by_id_path,vidpid:t=>`${t.vid}:${t.pid}`,serial:t=>t.serial_number,integration:t=>t.assigned_integration?.title??null},t([ut()],Ee.prototype,"_overview",void 0),t([ut()],Ee.prototype,"_loading",void 0),t([ut()],Ee.prototype,"_error",void 0),t([ut()],Ee.prototype,"_busyKey",void 0),t([ut()],Ee.prototype,"_showIgnored",void 0),t([ut()],Ee.prototype,"_sort",void 0),t([ut()],Ee.prototype,"_ignoredSort",void 0),Ee=ze=t([dt("ha-soc-peripherals-view")],Ee);const Ie={automation:"Automations",script:"Scripts",scene:"Scenes",dashboard:"Views (dashboards)",helper:"Helpers",other:"Other (review manually)"};let Fe=Re=class extends Ht{constructor(){super(...arguments),this._entities=[],this._oldEntityId="",this._newEntityId="",this._report=null,this._finding=!1,this._applying=!1,this._applyResult=null,this._backupAck=!1,this._applyError=null,this._broken=[],this._brokenLoading=!0,this._brokenError=null,this._brokenFilter=null,this._brokenSort=null,this._isOwner=!1,this._filterSameType=!0}get viewId(){return"entity_remap"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._brokenLoading=!0,this._brokenError=null;try{const[e,s,i]=await Promise.all([(t=this.hass,yt(t,{type:"config/entity_registry/list"})),Tt(this.hass),Et(this.hass).catch(()=>({is_owner:!1}))]);this._entities=e,this._broken=s,this._isOwner=!!i.is_owner}catch(t){this._brokenError=t?.message??String(t)}finally{this._brokenLoading=!1}var t}_labelFor(t){const e=this._entities.find(e=>e.entity_id===t),s=e?.name||e?.original_name;return s?`${s} (${t})`:t}async _onFind(){if(this._oldEntityId){this._finding=!0,this._applyResult=null,this._applyError=null;try{this._report=await(t=this.hass,e=this._oldEntityId,yt(t,{type:"ha_soc/entity_remap/find_references",entity_id:e})),this._brokenFilter=this._oldEntityId}finally{this._finding=!1}var t,e}}_onFixBroken(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._applyError=null,this._onFind()}_selectOld(t){this._oldEntityId=t,this._newEntityId="",this._report=null,this._applyResult=null,this._applyError=null,this.updateComplete.then(()=>{this.renderRoot?.querySelector("#remap-card")?.scrollIntoView({behavior:"smooth",block:"start"})})}_domainOf(t){return t.includes(".")?t.split(".",1)[0]:""}_newEntityOptions(){const t=this._domainOf(this._oldEntityId);return this._filterSameType&&t?this._entities.filter(e=>this._domainOf(e.entity_id)===t):this._entities}_onClearBrokenFilter(){this._brokenFilter=null}_filteredBroken(){return this._brokenFilter?this._broken.filter(t=>t.entity_id===this._brokenFilter):this._broken}async _onApply(){if(this._oldEntityId&&this._newEntityId){this._applying=!0,this._applyError=null;try{const a=await(t=this.hass,e=this._oldEntityId,s=this._newEntityId,i=this._backupAck,yt(t,{type:"ha_soc/entity_remap/apply",old_entity_id:e,new_entity_id:s,backup_acknowledged:i}));this._backupAck=!1,await this._onFind(),this._broken=await Tt(this.hass),this._applyResult=a}catch(t){this._applyError=t?.message??t?.code??"Applying the remap failed."}finally{this._applying=!1}var t,e,s,i}}_renderKind(t,e){return e.length?B`
       <div style="margin-bottom:12px;">
         <div style="font-size:12px;font-weight:600;color:var(--secondary-text-color);margin-bottom:4px;">
-          ${Re[t]??t} (${e.length})
+          ${Ie[t]??t} (${e.length})
         </div>
         <table>
           <tbody>
@@ -3611,7 +3707,7 @@ ${t.exception}</pre
 
         ${this._applyResult?B`
               <div class="card" style="margin-top:12px;background:rgba(67,160,71,0.08);">
-                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${Re[t]??t}`).join(", ")||"Nothing needed changing."}
+                <strong>Applied.</strong> ${Object.entries(this._applyResult.fixed).filter(([,t])=>t>0).map(([t,e])=>`${e} ${Ie[t]??t}`).join(", ")||"Nothing needed changing."}
                 ${this._applyResult.errors.length?B`<div style="color:var(--error-color);margin-top:6px;">
                       ${this._applyResult.errors.length} error(s): ${this._applyResult.errors.join("; ")}
                     </div>`:W}
@@ -3650,13 +3746,13 @@ ${t.exception}</pre
                 <table>
                   <thead>
                     <tr>
-                      ${Ut("Entity ID","entity_id",this._brokenSort,t=>this._brokenSort=t)}
-                      ${Ut("Referenced by","referenced_by",this._brokenSort,t=>this._brokenSort=t)}
+                      ${Bt("Entity ID","entity_id",this._brokenSort,t=>this._brokenSort=t)}
+                      ${Bt("Referenced by","referenced_by",this._brokenSort,t=>this._brokenSort=t)}
                       <th></th>
                     </tr>
                   </thead>
                   <tbody>
-                    ${Dt(this._filteredBroken(),this._brokenSort,Ee.BROKEN_SORT).map(t=>B`
+                    ${Vt(this._filteredBroken(),this._brokenSort,Re.BROKEN_SORT).map(t=>B`
                         <tr>
                           <td>
                             <code
@@ -3678,7 +3774,7 @@ ${t.exception}</pre
                 </table>
               `:B`<div class="empty">No broken reference matches <code>${this._brokenFilter}</code>.</div>`:B`<div class="empty">Nothing found — no dangling entity references detected.</div>`}
       </div>
-        `}];return this._renderSections(s)}};var Fe;Ie.styles=Ft,Ie.BROKEN_SORT={entity_id:t=>t.entity_id,referenced_by:t=>t.referenced_by[0]?.name??null},t([ut()],Ie.prototype,"_entities",void 0),t([ut()],Ie.prototype,"_oldEntityId",void 0),t([ut()],Ie.prototype,"_newEntityId",void 0),t([ut()],Ie.prototype,"_report",void 0),t([ut()],Ie.prototype,"_finding",void 0),t([ut()],Ie.prototype,"_applying",void 0),t([ut()],Ie.prototype,"_applyResult",void 0),t([ut()],Ie.prototype,"_backupAck",void 0),t([ut()],Ie.prototype,"_applyError",void 0),t([ut()],Ie.prototype,"_broken",void 0),t([ut()],Ie.prototype,"_brokenLoading",void 0),t([ut()],Ie.prototype,"_brokenError",void 0),t([ut()],Ie.prototype,"_brokenFilter",void 0),t([ut()],Ie.prototype,"_brokenSort",void 0),t([ut()],Ie.prototype,"_isOwner",void 0),t([ut()],Ie.prototype,"_filterSameType",void 0),Ie=Ee=t([dt("ha-soc-entity-remap-view")],Ie);const Te={core:"Core",hacs:"HACS",custom:"Custom"},Ne={core:"good",hacs:"medium",custom:"high"},Le={core:0,hacs:1,custom:2},Oe={custom_repo:"Custom repo",custom_source_list:"Custom source-list"};let De=Fe=class extends Ot{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._refreshing=!1,this._search="",this._tierFilter="all",this._limit=25,this._intSort=null,this._containerSort=null,this._containers=null,this._containersLoading=!0,this._watchdog=null,this._editSlug=null,this._wdError=null}get viewId(){return"integration_security"}connectedCallback(){super.connectedCallback(),this._load(),this._loadContainers(),this._loadWatchdog()}async _loadWatchdog(){try{this._watchdog=await(t=this.hass,gt(t,{type:"ha_soc/watchdog/status"}))}catch{this._watchdog=null}var t}async _setWatchdog(t){this._wdError=null;try{this._watchdog=await((t,e)=>gt(t,{type:"ha_soc/watchdog/set",...e}))(this.hass,t)}catch(t){this._wdError=t&&"object"==typeof t&&"code"in t&&"unauthorized"===t.code?"Watchdog and cap configuration are available to the account owner only.":`Could not save: ${t instanceof Error?t.message:JSON.stringify(t)}`}}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,gt(t,{type:"ha_soc/integration_security/list"}))}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadContainers(){this._containersLoading=!0;try{this._containers=await(t=this.hass,gt(t,{type:"ha_soc/containers/resources"}))}catch{this._containers=null}finally{this._containersLoading=!1}var t}async _onRefresh(){this._refreshing=!0;try{await(t=this.hass,gt(t,{type:"ha_soc/integration_security/refresh"})),await this._load()}finally{this._refreshing=!1}var t}_filtered(){const t=this._overview?.integrations??[],e=this._search.trim().toLowerCase(),s=t.filter(t=>"all"===this._tierFilter||t.tier===this._tierFilter).filter(t=>!e||t.name.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e));return this._intSort?Dt(s,this._intSort,Fe.INTEGRATION_SORT):s.sort((t,e)=>t.name.localeCompare(e.name))}render(){if(this._loading)return B`<div class="empty">Loading integrations…</div>`;if(this._error||!this._overview)return B`
+        `}];return this._renderSections(s)}};var Te;Fe.styles=Ot,Fe.BROKEN_SORT={entity_id:t=>t.entity_id,referenced_by:t=>t.referenced_by[0]?.name??null},t([ut()],Fe.prototype,"_entities",void 0),t([ut()],Fe.prototype,"_oldEntityId",void 0),t([ut()],Fe.prototype,"_newEntityId",void 0),t([ut()],Fe.prototype,"_report",void 0),t([ut()],Fe.prototype,"_finding",void 0),t([ut()],Fe.prototype,"_applying",void 0),t([ut()],Fe.prototype,"_applyResult",void 0),t([ut()],Fe.prototype,"_backupAck",void 0),t([ut()],Fe.prototype,"_applyError",void 0),t([ut()],Fe.prototype,"_broken",void 0),t([ut()],Fe.prototype,"_brokenLoading",void 0),t([ut()],Fe.prototype,"_brokenError",void 0),t([ut()],Fe.prototype,"_brokenFilter",void 0),t([ut()],Fe.prototype,"_brokenSort",void 0),t([ut()],Fe.prototype,"_isOwner",void 0),t([ut()],Fe.prototype,"_filterSameType",void 0),Fe=Re=t([dt("ha-soc-entity-remap-view")],Fe);const Ne={core:"Core",hacs:"HACS",custom:"Custom"},Le={core:"good",hacs:"medium",custom:"high"},Oe={core:0,hacs:1,custom:2},De={custom_repo:"Custom repo",custom_source_list:"Custom source-list"};let Me=Te=class extends Ht{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._refreshing=!1,this._search="",this._tierFilter="all",this._limit=25,this._intSort=null,this._containerSort=null,this._containers=null,this._containersLoading=!0,this._watchdog=null,this._editSlug=null,this._wdError=null}get viewId(){return"integration_security"}connectedCallback(){super.connectedCallback(),this._load(),this._loadContainers(),this._loadWatchdog()}async _loadWatchdog(){try{this._watchdog=await(t=this.hass,yt(t,{type:"ha_soc/watchdog/status"}))}catch{this._watchdog=null}var t}async _setWatchdog(t){this._wdError=null;try{this._watchdog=await((t,e)=>yt(t,{type:"ha_soc/watchdog/set",...e}))(this.hass,t)}catch(t){this._wdError=t&&"object"==typeof t&&"code"in t&&"unauthorized"===t.code?"Watchdog and cap configuration are available to the account owner only.":`Could not save: ${t instanceof Error?t.message:JSON.stringify(t)}`}}async _load(){this._loading=!0,this._error=null;try{this._overview=await(t=this.hass,yt(t,{type:"ha_soc/integration_security/list"}))}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _loadContainers(){this._containersLoading=!0;try{this._containers=await(t=this.hass,yt(t,{type:"ha_soc/containers/resources"}))}catch{this._containers=null}finally{this._containersLoading=!1}var t}async _onRefresh(){this._refreshing=!0;try{await(t=this.hass,yt(t,{type:"ha_soc/integration_security/refresh"})),await this._load()}finally{this._refreshing=!1}var t}_filtered(){const t=this._overview?.integrations??[],e=this._search.trim().toLowerCase(),s=t.filter(t=>"all"===this._tierFilter||t.tier===this._tierFilter).filter(t=>!e||t.name.toLowerCase().includes(e)||t.domain.toLowerCase().includes(e));return this._intSort?Vt(s,this._intSort,Te.INTEGRATION_SORT):s.sort((t,e)=>t.name.localeCompare(e.name))}render(){if(this._loading)return B`<div class="empty">Loading integrations…</div>`;if(this._error||!this._overview)return B`
         <div class="card" style="border:1px solid var(--error-color,#db4437);">
           <h3>Could not load Integration Security</h3>
           <p style="font-size:13px;">${this._error??"The server returned no data."}</p>
@@ -3752,15 +3848,15 @@ ${t.exception}</pre
                 <table>
                   <thead>
                     <tr>
-                      ${Ut("Integration","name",i,a)}
-                      ${Ut("Source","tier",i,a)}
-                      ${Ut("Quality","quality",i,a)}
-                      ${Ut("License","license",i,a)}
-                      ${Ut("Scanner","scanner",i,a)}
-                      ${Ut("Signed","signed",i,a)}
-                      ${Ut("Release","release",i,a)}
-                      ${Ut("Stars","stars",i,a)}
-                      ${Ut("Last push","pushed",i,a)}
+                      ${Bt("Integration","name",i,a)}
+                      ${Bt("Source","tier",i,a)}
+                      ${Bt("Quality","quality",i,a)}
+                      ${Bt("License","license",i,a)}
+                      ${Bt("Scanner","scanner",i,a)}
+                      ${Bt("Signed","signed",i,a)}
+                      ${Bt("Release","release",i,a)}
+                      ${Bt("Stars","stars",i,a)}
+                      ${Bt("Last push","pushed",i,a)}
                     </tr>
                   </thead>
                   <tbody>
@@ -3802,19 +3898,19 @@ ${t.exception}</pre
                     <table>
                       <thead>
                         <tr>
-                          ${Ut("Container","name",e,s)}
-                          ${Ut("State","state",e,s)}
-                          ${Ut("CPU","cpu",e,s,{numeric:!0})}
-                          ${Ut("Memory","memory",e,s,{numeric:!0})}
-                          ${Ut("Used / Limit","usage",e,s)}
-                          ${Ut("Net ↓/↑","net",e,s)}
-                          ${Ut("Disk R/W","disk",e,s)}
-                          ${Ut("Flags","flags",e,s)}
+                          ${Bt("Container","name",e,s)}
+                          ${Bt("State","state",e,s)}
+                          ${Bt("CPU","cpu",e,s,{numeric:!0})}
+                          ${Bt("Memory","memory",e,s,{numeric:!0})}
+                          ${Bt("Used / Limit","usage",e,s)}
+                          ${Bt("Net ↓/↑","net",e,s)}
+                          ${Bt("Disk R/W","disk",e,s)}
+                          ${Bt("Flags","flags",e,s)}
                           <th>Watchdog / Cap</th>
                         </tr>
                       </thead>
                       <tbody>
-                        ${Dt(t.containers,e,Fe.CONTAINER_SORT).map(t=>this._renderContainerRow(t))}
+                        ${Vt(t.containers,e,Te.CONTAINER_SORT).map(t=>this._renderContainerRow(t))}
                       </tbody>
                     </table>
                   </div>
@@ -4015,11 +4111,11 @@ ${t.exception}</pre
             ${t.domain}${t.version?B` · v${t.version}`:""}
           </div>
           ${t.flags.length?B`<div class="chips" style="margin-top:3px;">
-                ${t.flags.map(t=>B`<span class="pill high"><span class="dot"></span>${Oe[t]??t}</span>`)}
+                ${t.flags.map(t=>B`<span class="pill high"><span class="dot"></span>${De[t]??t}</span>`)}
               </div>`:W}
         </td>
         <td>
-          <span class="pill ${Ne[t.tier]}"><span class="dot"></span>${Te[t.tier]}</span>
+          <span class="pill ${Le[t.tier]}"><span class="dot"></span>${Ne[t.tier]}</span>
         </td>
         <td class="muted">${t.quality_scale??"—"}</td>
         <td>
@@ -4043,7 +4139,7 @@ ${t.exception}</pre
           ${e?e.pushed_at?new Date(e.pushed_at).toLocaleDateString():"—":this._notCollected()}
         </td>
       </tr>
-    `}};De.styles=Ft,De.INTEGRATION_SORT={name:t=>t.name,tier:t=>Le[t.tier],quality:t=>t.quality_scale,license:t=>t.license_present,scanner:t=>t.scanner_findings,signed:t=>t.github?.commit_verified??null,release:t=>{const e=t.github;return e?e.archived?2:null===e.has_release?null:e.has_release?0:1:null},stars:t=>t.github?.stars??null,pushed:t=>t.github?.pushed_at??null},De.CONTAINER_SORT={name:t=>t.name,state:t=>"started"===t.state||"addon"!==t.kind?"running":t.state??"stopped",cpu:t=>t.cpu_percent,memory:t=>t.memory_percent,usage:t=>t.memory_usage,net:t=>null==t.network_rx&&null==t.network_tx?null:(t.network_rx??0)+(t.network_tx??0),disk:t=>null==t.blk_read&&null==t.blk_write?null:(t.blk_read??0)+(t.blk_write??0),flags:t=>t.flags.length},t([ut()],De.prototype,"_overview",void 0),t([ut()],De.prototype,"_loading",void 0),t([ut()],De.prototype,"_error",void 0),t([ut()],De.prototype,"_refreshing",void 0),t([ut()],De.prototype,"_search",void 0),t([ut()],De.prototype,"_tierFilter",void 0),t([ut()],De.prototype,"_limit",void 0),t([ut()],De.prototype,"_intSort",void 0),t([ut()],De.prototype,"_containerSort",void 0),t([ut()],De.prototype,"_containers",void 0),t([ut()],De.prototype,"_containersLoading",void 0),t([ut()],De.prototype,"_watchdog",void 0),t([ut()],De.prototype,"_editSlug",void 0),t([ut()],De.prototype,"_wdError",void 0),De=Fe=t([dt("ha-soc-integration-security-view")],De);const Ue=1048576,Me=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],He=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}],Ve={brute_force_ip:"Brute force (per source IP)",success_after_failures:"Success after failed logins",new_ip_login:"Login from a new network",off_hours_anomaly:"Off-hours activity burst",dormant_revival:"Dormant account revival",mass_entity_burst:"Mass entity control burst",token_minting_anomaly:"Token minting anomaly",disabled_user_activity:"Disabled-user activity",privilege_escalation:"Privilege escalation"};let Be=class extends nt{constructor(){super(...arguments),this._settings=null,this._security=null,this._thresholds=null,this._loading=!0,this._error=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._settings=await(t=this.hass,gt(t,{type:"ha_soc/settings/get"}));try{this._security=await Rt(this.hass)}catch{this._security=null}try{this._thresholds=await bt(this.hass)}catch{this._thresholds=null}}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _updateThreshold(t,e,s){await It(this.hass,{detection_thresholds:{[t]:{[e]:s}}}),this._thresholds=await bt(this.hass)}async _resetThresholds(){var t;this._thresholds=await(t=this.hass,gt(t,{type:"ha_soc/detections/thresholds_reset"}).then(t=>t.rules))}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await It(this.hass,{[t]:e})}catch(t){throw this._settings=s,t}}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderSecretField(t,e,s){return B`
+    `}};Me.styles=Ot,Me.INTEGRATION_SORT={name:t=>t.name,tier:t=>Oe[t.tier],quality:t=>t.quality_scale,license:t=>t.license_present,scanner:t=>t.scanner_findings,signed:t=>t.github?.commit_verified??null,release:t=>{const e=t.github;return e?e.archived?2:null===e.has_release?null:e.has_release?0:1:null},stars:t=>t.github?.stars??null,pushed:t=>t.github?.pushed_at??null},Me.CONTAINER_SORT={name:t=>t.name,state:t=>"started"===t.state||"addon"!==t.kind?"running":t.state??"stopped",cpu:t=>t.cpu_percent,memory:t=>t.memory_percent,usage:t=>t.memory_usage,net:t=>null==t.network_rx&&null==t.network_tx?null:(t.network_rx??0)+(t.network_tx??0),disk:t=>null==t.blk_read&&null==t.blk_write?null:(t.blk_read??0)+(t.blk_write??0),flags:t=>t.flags.length},t([ut()],Me.prototype,"_overview",void 0),t([ut()],Me.prototype,"_loading",void 0),t([ut()],Me.prototype,"_error",void 0),t([ut()],Me.prototype,"_refreshing",void 0),t([ut()],Me.prototype,"_search",void 0),t([ut()],Me.prototype,"_tierFilter",void 0),t([ut()],Me.prototype,"_limit",void 0),t([ut()],Me.prototype,"_intSort",void 0),t([ut()],Me.prototype,"_containerSort",void 0),t([ut()],Me.prototype,"_containers",void 0),t([ut()],Me.prototype,"_containersLoading",void 0),t([ut()],Me.prototype,"_watchdog",void 0),t([ut()],Me.prototype,"_editSlug",void 0),t([ut()],Me.prototype,"_wdError",void 0),Me=Te=t([dt("ha-soc-integration-security-view")],Me);const Ue=1048576,He=[{domain:"lock",label:"Lock entities (any integration)"},{domain:"siren",label:"Siren entities (any integration)"},{domain:"valve",label:"Valve entities (any integration)"}],Ve=[{domain:"kidde_homesafe",label:"Kidde HomeSafe"},{domain:"elkm1",label:"Elk-M1 Security"},{domain:"unifiprotect",label:"UniFi Protect"},{domain:"keymaster",label:"Keymaster"},{domain:"emporia_vue",label:"Emporia Vue"}],Be={brute_force_ip:"Brute force (per source IP)",success_after_failures:"Success after failed logins",new_ip_login:"Login from a new network",off_hours_anomaly:"Off-hours activity burst",dormant_revival:"Dormant account revival",mass_entity_burst:"Mass entity control burst",token_minting_anomaly:"Token minting anomaly",disabled_user_activity:"Disabled-user activity",privilege_escalation:"Privilege escalation"};let je=class extends nt{constructor(){super(...arguments),this._settings=null,this._security=null,this._thresholds=null,this._loading=!0,this._error=null}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._settings=await(t=this.hass,yt(t,{type:"ha_soc/settings/get"}));try{this._security=await Nt(this.hass)}catch{this._security=null}try{this._thresholds=await xt(this.hass)}catch{this._thresholds=null}}catch(t){this._error=t?.message??String(t)}finally{this._loading=!1}var t}async _updateThreshold(t,e,s){await Lt(this.hass,{detection_thresholds:{[t]:{[e]:s}}}),this._thresholds=await xt(this.hass)}async _resetThresholds(){var t;this._thresholds=await(t=this.hass,yt(t,{type:"ha_soc/detections/thresholds_reset"}).then(t=>t.rules))}async _update(t,e){if(!this._settings)return;const s=this._settings;this._settings={...this._settings,[t]:e};try{this._settings=await Lt(this.hass,{[t]:e})}catch(t){throw this._settings=s,t}}_updateSecuritySource(t,e){this._settings&&this._update("security_sources_enabled",{...this._settings.security_sources_enabled,[t]:e})}_renderSecretField(t,e,s){return B`
       <label class="settings-row">
         <span>${t}</span>
         <input
@@ -4059,7 +4155,7 @@ ${t.exception}</pre
           class="muted ${a&&o?"clickable":""}"
           style="font-size:12px;${r?"color:var(--error-color,#db4437);":""}"
           title=${a&&o?"View in Home Assistant's Devices page":""}
-          @click=${()=>a&&o&&se(ie(o))}
+          @click=${()=>a&&o&&_t(mt(o))}
           >${n}</span
         >
         <input
@@ -4098,7 +4194,7 @@ ${t.exception}</pre
                 <h4
                   style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);"
                 >
-                  ${Ve[t]??t}
+                  ${Be[t]??t}
                 </h4>
                 ${Object.entries(e).map(([e,s])=>"bool"===s.type?B`
                         <label class="settings-row">
@@ -4527,7 +4623,7 @@ ${t.exception}</pre
           installed" rather than being hidden, and turning a toggle off here only affects
           this dashboard section, nothing else.
         </p>
-        ${Me.map(({domain:e,label:s})=>B`
+        ${He.map(({domain:e,label:s})=>B`
             <label class="settings-row">
               <span>${s}</span>
               <input
@@ -4540,7 +4636,7 @@ ${t.exception}</pre
         <h4 style="margin:16px 0 4px;font-size:12px;text-transform:uppercase;letter-spacing:0.03em;color:var(--secondary-text-color);">
           Integrations Loaded
         </h4>
-        ${He.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
+        ${Ve.map(({domain:t,label:e})=>this._renderIntegrationRow(t,e))}
       </div>
 
       <div class="card">
@@ -4553,7 +4649,7 @@ ${t.exception}</pre
           add-on Configuration tab.
         </p>
       </div>
-    `}};Be.styles=Ft,t([ht({attribute:!1})],Be.prototype,"hass",void 0),t([ut()],Be.prototype,"_settings",void 0),t([ut()],Be.prototype,"_security",void 0),t([ut()],Be.prototype,"_thresholds",void 0),t([ut()],Be.prototype,"_loading",void 0),t([ut()],Be.prototype,"_error",void 0),Be=t([dt("ha-soc-settings-view")],Be);const je=[{id:"dashboard",label:"Dashboard"},{id:"network",label:"Network"},{id:"network_security",label:"Network Security"},{id:"entity_remap",label:"Entity ReMap"},{id:"integration_security",label:"Integration Security"},{id:"users",label:"Users & Access"},{id:"permissions",label:"Permissions"},{id:"audit",label:"Audit Log"},{id:"peripherals",label:"Local Peripherals"},{id:"scanner",label:"Scanner"},{id:"logs",label:"Logs"},{id:"settings",label:"Settings",ownerOnly:!0}];let We=class extends nt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null,this._customizeMode=!1,this._pendingNetworkFilter=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await Ct(this.hass)}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}}async _loadFooterInfo(){try{this._version=(await(t=this.hass,gt(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await At(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return B``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return B`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){if(null===this._access)return B`<div class="header">🛡️ HA SOC</div>`;if(!this._access.allowed)return B`
+    `}};je.styles=Ot,t([ht({attribute:!1})],je.prototype,"hass",void 0),t([ut()],je.prototype,"_settings",void 0),t([ut()],je.prototype,"_security",void 0),t([ut()],je.prototype,"_thresholds",void 0),t([ut()],je.prototype,"_loading",void 0),t([ut()],je.prototype,"_error",void 0),je=t([dt("ha-soc-settings-view")],je);let We=class extends nt{constructor(){super(...arguments),this._tab="dashboard",this._access=null,this._version=null,this._probe=null,this._customizeMode=!1,this._pendingNetworkFilter=null}connectedCallback(){super.connectedCallback(),this._loadAccess(),this._loadFooterInfo()}async _loadAccess(){try{this._access=await Et(this.hass)}catch{this._access={is_owner:!1,access_level:"owner_only",allowed:!1}}}async _loadFooterInfo(){try{this._version=(await(t=this.hass,yt(t,{type:"ha_soc/version/get"}))).version}catch{this._version=null}var t;try{this._probe=await Rt(this.hass)}catch{this._probe=null}}_renderFooter(){if(!this._version)return B``;const t=this._probe?.installed&&this._probe.version?` · HA SOC Probe v${this._probe.version}`:"";return B`<div class="footer">HA SOC v${this._version}${t}</div>`}render(){if(null===this._access)return B`<div class="header">🛡️ HA SOC</div>`;if(!this._access.allowed)return B`
         <div class="denied">
           <div class="icon">🛡️🚫</div>
           <h2>Access restricted</h2>
@@ -4569,13 +4665,13 @@ ${t.exception}</pre
           </p>
         </div>
         ${this._renderFooter()}
-      `;const t=je.find(t=>t.id===this._tab)?.label??"Dashboard";return B`
+      `;const t=(e=this._tab,gt.find(t=>t.tabs.some(t=>t.id===e))??gt[0]);var e;const s=function(t){for(const e of gt){const s=e.tabs.find(e=>e.id===t);if(s)return s.label}return"Security Overview"}(this._tab);return B`
       <div class="header">
         <div class="brand">
           <span class="brand-mark">SOC</span>
           <span>
             <span class="brand-title">HA SOC</span>
-            <span class="brand-context">${t}</span>
+            <span class="brand-context">${s}</span>
           </span>
         </div>
         ${"settings"===this._tab?B``:B`
@@ -4588,22 +4684,36 @@ ${t.exception}</pre
               </button>
             `}
       </div>
-      <div class="tabs">
-        ${je.map(t=>!!t.ownerOnly&&!this._access?.is_owner?B`
+      <nav class="tabs" aria-label="HA SOC workspaces">
+        ${gt.map(e=>!!e.ownerOnly&&!this._access?.is_owner?B`
               <button type="button" class="tab disabled" title="Only available to the account owner" disabled>
-                ${t.label}<span class="lock">🔒</span>
+                ${e.label}<span class="lock">🔒</span>
               </button>
             `:B`
             <button
               type="button"
-              class="tab ${this._tab===t.id?"active":""}"
-              aria-pressed=${this._tab===t.id?"true":"false"}
-              @click=${()=>this._selectTab(t.id)}
+              class="tab ${t.id===e.id?"active":""}"
+              aria-current=${t.id===e.id?"page":"false"}
+              @click=${()=>this._selectTab(e.defaultTab)}
             >
-              ${t.label}
+              ${e.label}
             </button>
           `)}
-      </div>
+      </nav>
+      ${t.tabs.length>1?B`
+            <nav class="subtabs" aria-label="${t.label} views">
+              ${t.tabs.map(t=>B`
+                  <button
+                    type="button"
+                    class="subtab ${this._tab===t.id?"active":""}"
+                    aria-current=${this._tab===t.id?"page":"false"}
+                    @click=${()=>this._selectTab(t.id)}
+                  >
+                    ${t.label}
+                  </button>
+                `)}
+            </nav>
+          `:B``}
       <div @ha-soc-navigate=${this._onNavigate}>${this._renderTab()}</div>
       ${this._renderFooter()}
     `}_selectTab(t){this._tab=t,this._customizeMode=!1}_onNavigate(t){this._tab=t.detail.tab,this._customizeMode=!1,t.detail.clientFilter&&(this._pendingNetworkFilter=t.detail.clientFilter)}_renderTab(){const t=this._customizeMode;switch(this._tab){case"users":return B`<ha-soc-users-view .hass=${this.hass} .customizeMode=${t}></ha-soc-users-view>`;case"audit":return B`<ha-soc-audit-view .hass=${this.hass} .customizeMode=${t}></ha-soc-audit-view>`;case"permissions":return B`<ha-soc-permissions-view .hass=${this.hass} .customizeMode=${t}></ha-soc-permissions-view>`;case"scanner":return B`<ha-soc-scanner-view .hass=${this.hass} .customizeMode=${t}></ha-soc-scanner-view>`;case"logs":return B`<ha-soc-logs-view .hass=${this.hass} .customizeMode=${t}></ha-soc-logs-view>`;case"peripherals":return B`<ha-soc-peripherals-view .hass=${this.hass} .customizeMode=${t}></ha-soc-peripherals-view>`;case"network":return B`<ha-soc-network-view
@@ -4635,6 +4745,15 @@ ${t.exception}</pre
       position: sticky;
       top: 0;
       z-index: 5;
+      scrollbar-width: thin;
+    }
+    .subtabs {
+      display: flex;
+      gap: 4px;
+      padding: 7px max(16px, calc((100% - 1400px) / 2));
+      overflow-x: auto;
+      background: var(--primary-background-color);
+      border-bottom: 1px solid var(--divider-color);
       scrollbar-width: thin;
     }
     .tab {
@@ -4669,6 +4788,28 @@ ${t.exception}</pre
       font-size: 11px;
       margin-left: 4px;
       opacity: 0.8;
+    }
+    .subtab {
+      appearance: none;
+      border: 0;
+      border-radius: 7px;
+      padding: 7px 10px;
+      background: transparent;
+      color: var(--secondary-text-color);
+      cursor: pointer;
+      font: inherit;
+      font-size: 12.5px;
+      white-space: nowrap;
+    }
+    .subtab:hover,
+    .subtab:focus-visible {
+      color: var(--primary-text-color);
+      background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.045);
+    }
+    .subtab.active {
+      color: var(--primary-color);
+      background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.09);
+      font-weight: 600;
     }
     .header {
       display: flex;

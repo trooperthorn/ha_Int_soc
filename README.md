@@ -94,11 +94,15 @@ imply otherwise.
   posture sensor's attributes expose the grade only; the full breakdown
   stays behind the access-controlled API, since entity attributes are
   readable by every authenticated user.
-- **SOC Dashboard** — the NOC/SOC end state: posture score, open detections,
-  device status, issues-by-integration, risk/detection breakdowns, and a
-  live suspicious-activity feed — every tile and row links straight to the
-  relevant tab or, where Home Assistant's own frontend supports a real
-  preset filter, to its native Devices page.
+- **Protected Security Console** — six workspaces (Overview, Assets, Findings,
+  Identity, SIEM & Audit, and owner-only Settings) organize the existing
+  access-gated views without changing their server-side permissions or saved
+  per-user layouts. Overview presents posture, trend, open detections,
+  operational availability, vulnerability severity, and investigation queues;
+  every actionable tile links to the protected leaf view or, where Home
+  Assistant supports a real preset filter, its native Devices page. The visual
+  and data-boundary decisions are recorded in
+  [`docs/FRONTEND-VISUAL-ARCHITECTURE.md`](docs/FRONTEND-VISUAL-ARCHITECTURE.md).
 - **Settings** — every configurable behavior (access control, MFA policy,
   audit retention/size, scanner toggles, NVD API key, risk-scoring window)
   as one panel-native form, backed by the exact same store as the native
