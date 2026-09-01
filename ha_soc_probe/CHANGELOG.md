@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Release automation: protected `main` now publishes a deterministic HACS ZIP
+  with an SPDX SBOM, SHA-256 checksums, and signed build/SBOM attestations after
+  the full test gate passes. No human-created tag or GitHub Release is needed.
 - SIEM export: operators can retain the default RFC 5424 JSON wire format,
   select standards-based CEF 0 inside RFC 5424 for SolarWinds SEM and other
   CEF receivers, or select raw canonical JSON. UDP remains one event per

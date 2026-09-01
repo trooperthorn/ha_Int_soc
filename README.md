@@ -246,9 +246,10 @@ the bare number instead - `custom_components/ha_soc/manifest.json`
 `SCANNER_VERSION` - because Home Assistant, the Supervisor, and the
 release workflow compare those values with the prefix stripped. The
 mapping is enforced, not remembered: CI refuses a version mismatch, and the
-Release workflow refuses to cut a release unless the pushed tag (minus its
-`v`) equals the manifest, Probe, and scanner versions. `scripts/release.sh`
-bumps all three fields and cuts the `v`-prefixed tag in one step.
+Release workflow refuses to publish unless the manifest, Probe, and scanner
+versions agree. `scripts/release.sh` bumps all three fields and opens an
+auto-merge pull request. After its required checks pass, the merge to `main`
+creates the canonical `v`-prefixed tag and Release automatically.
 
 ### Cutting a release (and why HACS needs one)
 
@@ -259,7 +260,7 @@ manifest version, the add-on version, and the tags fall out of sync, and
 HACS then quotes a version that matches no release (surfacing as
 `custom_components/None/manifest.json`, an unresolved domain).
 
-One command keeps them in lockstep:
+One command starts the protected, automated release path:
 
 ```bash
 scripts/release.sh               # auto: today's date, next same-day revision
@@ -267,11 +268,22 @@ scripts/release.sh v2026.08.30.2 # or an explicit version (bare form accepted to
 ```
 
 It bumps the integration manifest, the add-on `config.yaml`, and the
-add-on's `SCANNER_VERSION` together, runs the test suite, commits, and
-pushes the tag **`v<version>`** (e.g. `v2026.08.30.2`). Pushing that tag runs
-[`.github/workflows/release.yml`](.github/workflows/release.yml), which
-creates the GitHub Release HACS installs from — after first asserting the
-tag equals all three component versions, so they can never disagree again.
+add-on's `SCANNER_VERSION` together, runs available local checks, and opens a
+pull request configured to merge only after GitHub's required checks pass.
+The resulting `main` push runs
+[`.github/workflows/release.yml`](.github/workflows/release.yml), which creates
+the tag, deterministic `ha_soc.zip`, SPDX SBOM, `SHA256SUMS`, signed build and
+SBOM attestations, and GitHub Release. HACS installs that exact ZIP; unversioned
+default-branch downloads are hidden.
+
+Published artifacts can be verified independently:
+
+```bash
+gh release download vVERSION -R trooperthorn/ha_Int_soc \
+  -p ha_soc.zip -p SHA256SUMS
+sha256sum --check SHA256SUMS --ignore-missing
+gh attestation verify ha_soc.zip -R trooperthorn/ha_Int_soc
+```
 [`.github/workflows/validate.yml`](.github/workflows/validate.yml) runs the
 HACS validator on every push, catching a manifest/`hacs.json` problem
 before it can ship.

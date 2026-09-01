@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# Cut a consistent HA SOC release.
+# Prepare and automatically merge a consistent HA SOC release pull request.
 #
 # The bug this exists to prevent: releasing by hand let the integration
 # manifest version, the add-on version, and the git tags drift apart — and
@@ -8,9 +8,10 @@
 # shows up as "wrong version" or the dreaded
 # "custom_components/None/manifest.json" (an unresolved domain).
 #
-# This script bumps EVERY version in lockstep, commits, tags, and pushes.
-# Pushing the tag triggers .github/workflows/release.yml, which creates
-# the GitHub Release HACS installs from.
+# This script bumps EVERY version in lockstep and opens an auto-merge pull
+# request. Once its required checks pass, merging to main triggers
+# .github/workflows/release.yml. That workflow creates the tag, deterministic
+# HACS ZIP, SPDX SBOM, checksums, attestations, and GitHub Release.
 #
 # Usage:
 #   scripts/release.sh                 # auto: today's date, next revision
@@ -28,6 +29,11 @@
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
+
+if [ -n "$(git status --porcelain)" ]; then
+    echo "The working tree must be clean before preparing a release." >&2
+    exit 2
+fi
 
 SKIP_TESTS=0
 VERSION=""
@@ -75,6 +81,12 @@ fi
 
 echo "Releasing version: v${VERSION}"
 
+branch="$(git rev-parse --abbrev-ref HEAD)"
+if [ "${branch}" = "main" ]; then
+    branch="release/v${VERSION}"
+    git switch -c "${branch}"
+fi
+
 # --- Bump every version in lockstep ------------------------------------------
 python3 - "$VERSION" <<'PY'
 import re, sys, pathlib
@@ -101,7 +113,7 @@ for path, pattern, repl in edits:
     print(f"  updated {path}")
 PY
 
-# --- Validate before tagging (a red release is worse than a slow one) --------
+# --- Validate before opening the release PR ---------------------------------
 if [ "${SKIP_TESTS}" -eq 0 ]; then
     if [ -x ".venv/bin/pytest" ]; then
         echo "Running backend tests…"
@@ -112,25 +124,29 @@ if [ "${SKIP_TESTS}" -eq 0 ]; then
 fi
 python3 -m py_compile custom_components/ha_soc/*.py
 
-# --- Commit, tag, push -------------------------------------------------------
-branch="$(git rev-parse --abbrev-ref HEAD)"
+# --- Commit, push, and enable merge-after-checks -----------------------------
 git add custom_components/ha_soc/manifest.json ha_soc_probe/config.yaml \
     ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
 git commit -m "Release ${VERSION}"
-# The v-prefixed tag is the canonical release identifier: HACS displays
-# and installs by the release tag name itself, so this exact string is
-# what users see. Never also push a bare tag for the same version - two
-# tags for one version means two Releases with HACS picking one at random.
-git tag -a "v${VERSION}" -m "HA SOC v${VERSION}"
+echo "Pushing release branch ${branch}…"
+git push --set-upstream origin "${branch}"
 
-echo "Pushing branch ${branch} and tag v${VERSION}…"
-git push origin "${branch}"
-git push origin "v${VERSION}"
+if ! command -v gh >/dev/null 2>&1 || ! gh auth status >/dev/null 2>&1; then
+    echo "gh is not authenticated; open a pull request for ${branch}." >&2
+    exit 1
+fi
+
+pr_url="$(gh pr create \
+    --base main \
+    --head "${branch}" \
+    --title "Release v${VERSION}" \
+    --body "Automated lockstep version update for v${VERSION}. Required checks must pass before merge and publication.")"
+gh pr merge "${pr_url}" --auto --squash --delete-branch
 
 cat <<EOF
 
-Done. Tag v${VERSION} pushed — the Release workflow will create the GitHub
-Release HACS installs from.
+Done. ${pr_url} will merge after required checks pass. The main-branch Release
+workflow then publishes v${VERSION}; no manual tag or Release creation is needed.
 
 FIRST TIME ONLY (clears the stale 'domain: None' HACS cache):
   In Home Assistant → HACS → HA SOC → three-dot menu → Remove, then
