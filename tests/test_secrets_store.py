@@ -15,6 +15,7 @@ What is pinned here, in plain terms:
   old store without them.
 """
 import json
+import logging
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -218,7 +219,7 @@ async def test_legacy_entry_options_scrubbed_once(hass: HomeAssistant) -> None:
 
 
 async def test_migration_moves_settings_secrets_out_of_old_store(
-    hass: HomeAssistant, hass_storage: dict
+    hass: HomeAssistant, hass_storage: dict, caplog: pytest.LogCaptureFixture
 ) -> None:
     """Legacy secret values in the settings blob move into the secret store
     and the old store is rewritten without them, exactly once."""
@@ -233,11 +234,17 @@ async def test_migration_moves_settings_secrets_out_of_old_store(
 
     secrets = HaSocSecretStore(hass)
     await secrets.async_load()
-    moved = await async_migrate_legacy_secrets(secrets, store)
+    with caplog.at_level(logging.INFO, logger="custom_components.ha_soc.secrets_store"):
+        moved = await async_migrate_legacy_secrets(secrets, store)
 
     assert sorted(moved) == ["github_token", "nvd_api_key"]
     assert await secrets.async_get("nvd_api_key") == "OLD-NVD"
     assert await secrets.async_get("github_token") == "OLD-GH"
+    assert "moved 2 secret value(s)" in caplog.text
+    assert "nvd_api_key" not in caplog.text
+    assert "github_token" not in caplog.text
+    assert "OLD-NVD" not in caplog.text
+    assert "OLD-GH" not in caplog.text
 
     # The old store was rewritten immediately, without the values.
     old_blob = json.dumps(hass_storage[STORAGE_KEY])
