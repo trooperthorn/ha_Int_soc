@@ -299,14 +299,19 @@ async def test_success_after_failures_reads_threshold(hass: HomeAssistant, store
 # -- 3.6: new_ip_login without amnesty -------------------------------------
 
 
-async def _seed_new_ip_baseline(engine, store, audit, users, home_ip="93.184.216.34"):
+async def _seed_new_ip_baseline(engine, store, audit, users, home_ip="93.184.216.34", base_now=None):
     """First (silent) pass: three distinct days of home-prefix logins.
 
     The seeding pass runs with a `now` one hour in the past so the events
     the individual tests add afterwards land AFTER the stored checkpoint
     and are actually evaluated by the next pass.
+
+    `base_now` lets a caller pin the reference instant instead of the real
+    wall clock — needed by any test whose assertions depend on which
+    calendar day a timestamp falls on, since the real wall clock can cross
+    a day boundary mid-test regardless of how far apart the timestamps are.
     """
-    now = dt_util.utcnow() - timedelta(hours=1)
+    now = (base_now or dt_util.utcnow()) - timedelta(hours=1)
     for days in (10, 9, 8):
         audit.add("login_ok", now - timedelta(days=days), user_id="u1", ip=home_ip)
     results = await engine._rule_new_ip_login(now, users, {"u1": users[0]})
@@ -321,12 +326,17 @@ async def test_new_ip_login_no_amnesty(hass: HomeAssistant, store: HaSocData) ->
     audit = FakeAudit()
     users = [_user("u1")]
     engine = _engine(hass, store, users, audit)
-    await _seed_new_ip_baseline(engine, store, audit, users)
+    # Pinned to a fixed, mid-day instant rather than the real wall clock:
+    # the assertion below depends on two timestamps 15 minutes apart
+    # falling on the same calendar day, which the real clock cannot
+    # guarantee near a UTC midnight boundary.
+    base_now = datetime(2024, 1, 15, 13, 0, tzinfo=dt_util.UTC)
+    checkpoint = await _seed_new_ip_baseline(engine, store, audit, users, base_now=base_now)
 
     # Two logins from a NEW prefix, then one from home: under the old
     # amnesty only the newest event was ever evaluated, so the earlier
     # attacker login was pardoned by the later home login.
-    now2 = dt_util.utcnow() + timedelta(seconds=1)
+    now2 = checkpoint + timedelta(hours=1, seconds=1)
     audit.add("login_ok", now2 - timedelta(minutes=30), user_id="u1", ip="8.8.8.7")
     audit.add("login_ok", now2 - timedelta(minutes=20), user_id="u1", ip="8.8.8.9")
     audit.add("login_ok", now2 - timedelta(minutes=10), user_id="u1", ip="93.184.216.35")
