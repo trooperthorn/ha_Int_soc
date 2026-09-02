@@ -19,10 +19,15 @@ FROM ${BUILD_FROM}
 # relied on by the existing port scanner to resolve a bind address to its
 # owning interface — pinning it explicitly rather than continuing to rely
 # on it merely happening to be present in the base image.
+# Upgrade packages inherited from the immutable base digest before adding the
+# Probe runtime. The base is intentionally reproducible, but Alpine security
+# fixes continue after that digest is published; without this step, rebuilding
+# can retain already-fixed vulnerable libraries from the older base layer.
 # Only the agent package is installed. Client utilities such as snmpset are
 # intentionally absent from the runtime image; validation is run from the
 # external monitoring host.
-RUN apk add --no-cache iptables iproute2 net-snmp
+RUN apk upgrade --no-cache \
+    && apk add --no-cache iptables iproute2 net-snmp
 
 # A daemon-specific account prevents the unprivileged port scanner (nobody)
 # from reading Net-SNMP's mode-0600 localized USM key database.
