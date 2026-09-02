@@ -74,7 +74,9 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
 
   # S6-Overlay tree, per the documented example ("generally don't remove
   # anything" from this block).
-  /init ix,
+  # /init is an s6-overlay shell script.  Its interpreter must be able to
+  # read it as well as execute it while inheriting this profile.
+  /init rix,
   /bin/** ix,
   /usr/bin/** ix,
   /run/{s6,s6-rc*,service}/** ix,

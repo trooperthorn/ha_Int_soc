@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed the AppArmor startup loop on the s6-overlay base image. `/init` is a
+  shell script, so its policy now grants read plus inherited execution (`rix`)
+  instead of inherited execution alone (`ix`). A regression test protects the
+  required access without weakening the rest of the profile.
 - Optional SNMP monitoring: the Probe can run Net-SNMP on one exact host IP
   with SNMPv3 USM AuthPriv only (SHA-256/AES-128), a restricted read-only
   standards-based MIB view, owner-only configuration, private passphrase
