@@ -517,7 +517,7 @@ Change, in order of value:
 
 1. Custom AppArmor profile (`apparmor.txt`, loaded by the Supervisor when present): allow the s6 tree, bashio, `curl` to `http://supervisor`, read of `/proc/net/*`, `/data` read-write, `iptables*` and `ip*` execution with `CAP_NET_ADMIN`, and the Docker socket; deny everything else, including writes outside `/data` and `/tmp`. Test on the real Supervisor (D-21) with `ha addons info` showing `apparmor: profile`.
 2. Run the port-scanner service as `nobody` (the `s6-setuidgid` re-exec already sketched in the scanner `run`), after confirming on the real install that `/run/s6/container_environment/*` and `/data/options.json` are readable by that uid; keep the firewall service as root with the capability.
-3. Pin the base image by digest in the `Dockerfile` (`ghcr.io/home-assistant/base:3.23@sha256:<digest>` from the published image), and record the digest and date in `DOCS.md`.
+3. Pin the base image by digest in the `Dockerfile` (`ghcr.io/home-assistant/base:3.24@sha256:<digest>` from the published image), and record the digest and date in `DOCS.md`.
 4. Local input validation in the add-on for everything Core sends (rule fields, slugs, `window_seconds` range) so a compromised Core cannot turn the add-on into an arbitrary iptables or Docker client.
 5. Confirm the add-on opens no listening socket (`ss -ltnp` in D-21) and state it in the ledger.
 6. Investigate image signing through the official add-on builder so `signed: true` appears in the store (UNVERIFIED which mechanism third-party add-ons can use today; record the answer either way).

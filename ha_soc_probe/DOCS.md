@@ -150,8 +150,13 @@ port-scanner service drops to the unprivileged `nobody` account; the
 pairing secret stays root-owned at 0600 and reaches the scanner through
 its environment, the same channel as the Supervisor token. The base
 image is pinned by digest (tag and digest move together; see the
-Dockerfile comment). Every rule field, window bound, and test id that
-Home Assistant sends is re-validated locally before any `iptables` call,
+Dockerfile comment). The 2026-09-02 security refresh moved the Probe to
+the supported Alpine 3.24 base index
+`sha256:93ef607824e3f27e868f11b10938283a98bf880ed57bcf8eaa81c6c2d521f6f5`,
+upgrades inherited packages during each build, and removes the unused TempIO
+helper. The CI image scan fails on every HIGH or CRITICAL result, including
+findings without a published fix. Every rule field, window bound, and test id
+that Home Assistant sends is re-validated locally before any `iptables` call,
 so a compromised Core cannot use this add-on as an arbitrary firewall or
 Docker client. Failure reasons now travel to Home Assistant in the
 report (bounded to 200 characters) instead of living only in this log,

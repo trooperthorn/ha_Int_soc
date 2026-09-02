@@ -87,8 +87,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Record the current supported base digest
-        run: docker buildx imagetools inspect ghcr.io/home-assistant/base:3.24
       - name: Build the actual Probe image
         run: docker build --tag local/ha-soc-probe:${{ github.sha }} ha_soc_probe
       - name: Verify the minimal SNMP runtime
