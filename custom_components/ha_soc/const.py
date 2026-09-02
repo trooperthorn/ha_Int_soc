@@ -99,6 +99,20 @@ CONF_SYSLOG_PORT = "syslog_port"
 CONF_SYSLOG_TLS_VERIFY = "syslog_tls_verify"
 CONF_SYSLOG_FACILITY = "syslog_facility"
 
+# -- Optional SNMPv3 telemetry (served by the HA SOC Probe) -------------
+# The integration is the owner-only control plane and secret holder; the
+# Probe is the data plane because it alone shares the HA host's network
+# namespace.  SNMP is disabled by default and there is deliberately no
+# v1/v2c compatibility mode.
+CONF_SNMP_ENABLED = "snmp_enabled"
+CONF_SNMP_LISTEN_ADDRESS = "snmp_listen_address"
+CONF_SNMP_PORT = "snmp_port"
+CONF_SNMP_USERNAME = "snmp_username"
+CONF_SNMP_AUTH_PASSPHRASE = "snmp_auth_passphrase"
+CONF_SNMP_PRIV_PASSPHRASE = "snmp_priv_passphrase"
+DEFAULT_SNMP_ENABLED = False
+DEFAULT_SNMP_PORT = 161
+
 # -- UniFi Network / Protect (local API keys, direct to the devices) ------
 # The user provides a local controller host and an API key (Local Site →
 # Settings → Integrations), and HA SOC calls the console
@@ -147,6 +161,8 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
         CONF_UNIFI_NETWORK_API_KEY,
         CONF_UNIFI_PROTECT_API_KEY,
         CONF_PIHOLE_API_KEY,
+        CONF_SNMP_AUTH_PASSPHRASE,
+        CONF_SNMP_PRIV_PASSPHRASE,
     }
 )
 REDACTED_PLACEHOLDER = "[redacted]"
@@ -261,6 +277,10 @@ HA_SOC_RULES_CHAIN = "HA_SOC_RULES"
 # project's own scanner.py already treats "a security tool with more open
 # listening sockets than it needs" as the wrong default).
 SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
+
+# A separate poll endpoint is intentional: SNMP configuration must never
+# be confused with the firewall state machine's current_test_id protocol.
+SERVICE_POLL_SNMP_CONFIG = "poll_snmp_config"
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny"]
 FIREWALL_RULE_PROTOS = ["tcp", "udp"]

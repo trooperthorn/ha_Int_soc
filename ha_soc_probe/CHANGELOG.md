@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Optional SNMP monitoring: the Probe can run Net-SNMP on one exact host IP
+  with SNMPv3 USM AuthPriv only (SHA-256/AES-128), a restricted read-only
+  standards-based MIB view, owner-only configuration, private passphrase
+  storage, configuration-generation rotation, and explicit runtime status.
+  SNMPv1/v2c, write access, wildcard listeners, and traps are not supported.
+- Security CI now builds the actual Probe image, verifies that the SNMP client
+  and SET utility are absent, and fails on HIGH/CRITICAL OS-package findings.
+
 - Release automation: protected `main` now publishes a deterministic HACS ZIP
   with an SPDX SBOM, SHA-256 checksums, and signed build/SBOM attestations after
   the full test gate passes. No human-created tag or GitHub Release is needed.
@@ -15,7 +23,7 @@
   datagram; TCP and TLS retain RFC 6587 octet counting, bounded queueing,
   retries, delivery status, and TLS verification.
 - Release integrity: the integration, Probe add-on, and Probe scanner are
-  synchronized at `2026.09.01.2`; a repository test and the tag-release gate
+  synchronized; a repository test and the tag-release gate
   now reject version drift across any of those identifiers. The synthetic
   hard-coded-credential regression fixture is assembled at runtime so GitHub
   secret scanning no longer mistakes test data for a live Google API key.

@@ -76,8 +76,8 @@ set -uo pipefail
 CHAIN="HA_SOC_RULES"
 STATE_DIR="/data"
 CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
-# Shared with the port-scanner service (both live in this same container, so
-# /data is shared). Whichever service starts first creates it; the other
+# Shared with the port-scanner and SNMP services (all live in this same container,
+# so /data is shared). Whichever service starts first creates it; the others
 # reads the same value. See ensure_probe_secret.
 SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
 POLL_URL="http://supervisor/core/api/services/ha_soc/poll_firewall_command?return_response"

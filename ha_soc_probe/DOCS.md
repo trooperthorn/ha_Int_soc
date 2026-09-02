@@ -1,7 +1,7 @@
 # HA SOC Probe
 
 An **optional** companion add-on for the [HA SOC](https://github.com/trooperthorn/ha_int_soc)
-integration. It exists to close exactly one gap: real, socket-level
+integration. It provides real, socket-level
 visibility into what's actually listening on the Home Assistant **host**,
 which a Python integration cannot see from inside its own container even
 on Home Assistant OS. Everything else HA SOC's design docs once considered
@@ -9,7 +9,8 @@ bundling into an add-on (SSH-add-on exposure, HA's own config-check
 status) turned out to be reachable from inside the integration itself —
 see that repo's README for the full reasoning. This add-on does the one
 thing that genuinely needs a separate, host-network-attached container,
-and nothing else.
+and, when explicitly enabled, a tightly scoped Net-SNMP data plane for an
+external monitoring system.
 
 ## What it does
 
@@ -27,6 +28,11 @@ it to a dedicated `HA_SOC_RULES` iptables chain (see "Firewall rules"
 below). This is the one thing this add-on ever writes rather than just
 reads — everything else it does is observation only.
 
+A third service polls owner-only SNMP configuration every 30 seconds. SNMP
+is off by default. When enabled it runs Net-SNMP with SNMPv3 AuthPriv only,
+SHA-256/AES-128, a read-only VACM view, and one exact host address. See
+[`docs/SNMPV3.md`](../docs/SNMPV3.md) for the exposed MIB subtrees and scope.
+
 If a report is rejected — most commonly a brief window of HTTP 400 right
 after Home Assistant Core itself restarts, while the HA SOC integration
 is still loading — this add-on does not wait out the full
@@ -42,7 +48,7 @@ visible even to someone who never opens the add-on's log at all.
 
 Every call this add-on makes into Home Assistant goes through the
 Supervisor's Core API proxy, which forwards with the Supervisor's own
-token. HA SOC accepts the two callback services only when a call carries
+token. HA SOC accepts the Probe callback services only when a call carries
 the Supervisor system user's context; any other caller is rejected
 before the payload is read, audit-logged, and raised as a HIGH
 detection. The per-install shared secret this add-on generates in its
@@ -84,10 +90,10 @@ Each row is checkable against the shipped scripts.
 
 | Grant | Needed by | What the add-on does with it | Without it | How its use is limited |
 | --- | --- | --- | --- | --- |
-| `host_network` | Port report | Shares the host's network namespace so `/proc/net/*` shows the host's real listeners and bind addresses | The report would show the container's own (empty) namespace | Read-only use of `/proc/net`; the add-on opens no listening socket of its own |
+| `host_network` | Port report and optional SNMP | Shares the host network namespace for real listeners and IF-MIB counters, and allows an explicit host-IP bind | Those data would be container-only | SNMP is disabled by default; enabled mode permits exactly one configured UDP address/port and rejects wildcard/unassigned addresses |
 | `privileged: [NET_ADMIN]` | Firewall read/test/confirm | Runs `iptables` against the host's real netfilter tables | The firewall card cannot read or write anything; the port report still works | Writes stay in the dedicated `HA_SOC_RULES` chain plus exactly one jump rule at the top of `INPUT` into that chain; full ruleset backup before every apply; local self-contained revert timer |
 | `docker_api` | Resource hard caps | Applies per-container `--cpus`/`--memory` limits through the Docker socket | Hard caps report `denied`/unavailable; the watchdog's Supervisor-API restart and stop actions still work | With Protection Mode on (the default) the Supervisor does not mount the socket at all; slugs are validated against the installed add-on list; only container update calls are issued |
-| `homeassistant_api` | Everything | Delivers port reports and firewall/cap poll results into Core through the Supervisor proxy | The add-on cannot report anything | Calls only the two `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
+| `homeassistant_api` | Everything | Delivers reports and polls firewall/SNMP configuration through the Supervisor proxy | The add-on cannot report anything | Calls only the three internal `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
 | Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
 
 **How the safety mechanism works.** Every rule this add-on ever applies
@@ -195,9 +201,10 @@ Supervisor's own add-on watchdog restarts it if enabled.
   the same data `netstat`/`ss` show — rather than connecting outward to
   probe ports, so it never generates outbound traffic or triggers an IDS
   on your own network.
-- **No UDP.** `/proc/net/udp[6]` has no meaningful "listening" state the
-  way TCP does (UDP sockets are connectionless), so this add-on doesn't
-  attempt to characterize UDP as open/closed the way it does for TCP.
+- **No UDP port-inventory claims.** `/proc/net/udp[6]` has no meaningful
+  "listening" state the way TCP does, so the inventory does not label UDP
+  sockets open/closed. The separately enabled SNMP agent does intentionally
+  open its one configured UDP listener.
 
 ## Configuration
 
@@ -273,10 +280,10 @@ The container-level facts were settled by a second run the same day
   boundary (only this add-on, the Supervisor, and host root reach it),
   but 0600 is the right mode and the next add-on release tightens it
   at creation and on startup.
-- The absence of listening sockets opened by this add-on itself is
-  established by review of its scripts only: with `host_network` the
-  container shares the host's namespace, so a socket listing inside it
-  shows the host's ports and cannot isolate this add-on's.
+- Before the SNMP feature, absence of add-on-owned listening sockets was
+  established by script review only. SNMP now intentionally changes that
+  invariant when enabled: live validation must confirm only the configured
+  address/port appears and that an SNMPv1/v2c request receives no response.
 
 ## A note on how this was built
 

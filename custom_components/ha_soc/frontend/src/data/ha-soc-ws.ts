@@ -366,6 +366,25 @@ export interface HaSocSettings {
   pihole_api_key_set?: boolean;
   pihole_verify_ssl: boolean;
   pihole_iot_cidr: string | null;
+  // Optional Probe-hosted SNMPv3 AuthPriv listener. Passphrases are masked
+  // exactly like the other credentials and are never returned to the UI.
+  snmp_enabled: boolean;
+  snmp_listen_address: string | null;
+  snmp_port: number;
+  snmp_username: string | null;
+  snmp_auth_passphrase?: string | null;
+  snmp_auth_passphrase_set?: boolean;
+  snmp_priv_passphrase?: string | null;
+  snmp_priv_passphrase_set?: boolean;
+  snmp_status?: {
+    enabled: boolean;
+    running: boolean;
+    generation?: string | null;
+    listen_address?: string | null;
+    port?: number | null;
+    error?: string | null;
+    reported_at?: string;
+  } | null;
 }
 
 // Mirrors integration_security.py's async_integration_security_overview().

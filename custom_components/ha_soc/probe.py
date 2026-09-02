@@ -26,8 +26,8 @@ found":
   - add-on installed -> real state (running/stopped, version, and the
     latest ingested scan result, if any).
 
-Authentication of the two inbound services (ingest_probe_result and
-poll_firewall_command): the add-on reaches Core only through the
+Authentication of the three inbound services (ingest_probe_result,
+poll_firewall_command, and poll_snmp_config): the add-on reaches Core only through the
 Supervisor's core-API proxy, which forwards every call under the
 Supervisor system user's own token and passes no add-on identity. Core
 therefore requires exactly that context: a call whose context user is
@@ -38,7 +38,7 @@ first Supervisor-context call and held in the private secret store, see
 firewall.py and secrets_store.py) stays as defense in depth behind that
 check, and a call presenting no secret is rejected too. On a
 Core or Container install (is_hassio false) there is no Supervisor proxy
-and so no legitimate caller; the two services are not registered at all
+and so no legitimate caller; the Probe services are not registered at all
 there rather than registered-and-always-rejecting.
 """
 from __future__ import annotations
@@ -60,6 +60,7 @@ from .const import (
     PROBE_ADDON_NAME,
     SERVICE_INGEST_PROBE_RESULT,
     SERVICE_POLL_FIREWALL_COMMAND,
+    SERVICE_POLL_SNMP_CONFIG,
 )
 from .firewall import (
     RULE_SCHEMA,
@@ -68,6 +69,7 @@ from .firewall import (
     async_verify_or_pin_secret,
 )
 from .secrets_store import HaSocSecretStore
+from .snmp import async_config_for_probe
 from .store import HaSocData
 
 if TYPE_CHECKING:
@@ -81,6 +83,7 @@ _LOGGER = logging.getLogger(__name__)
 # interval. The audit record is written for EVERY rejection; only the log
 # line is rate-limited, so a polling forger cannot flood the system log.
 _REJECT_WARN_INTERVAL_SECONDS = 600
+_SNMP_STATUS_ERROR_MAX = 200
 
 _PORT_SCHEMA = vol.Schema(
     {
@@ -138,6 +141,24 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         # {slug: {"status": applied|failed|denied, "detail": str|None}}.
         # Optional so a Probe build predating the feature reports normally.
         vol.Optional("resource_limit_state"): vol.Any(None, {str: dict}),
+        # Non-secret runtime state from the Probe's snmpd supervisor.
+        vol.Optional("snmp_status"): vol.Any(
+            None,
+            {
+                vol.Required("enabled"): bool,
+                vol.Required("running"): bool,
+                vol.Optional("generation"): vol.Any(
+                    None, vol.All(str, vol.Length(max=64))
+                ),
+                vol.Optional("listen_address"): vol.Any(
+                    None, vol.All(str, vol.Length(max=45))
+                ),
+                vol.Optional("port"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))),
+                vol.Optional("error"): vol.Any(
+                    None, vol.All(str, vol.Length(max=_SNMP_STATUS_ERROR_MAX))
+                ),
+            },
+        ),
         # Shared secret, defense in depth behind the Supervisor-context
         # check performed by the handler (see firewall.py). Optional in
         # the schema so its absence reaches the handler, which rejects and
@@ -149,6 +170,15 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
 POLL_FIREWALL_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("current_test_id"): vol.Any(None, str),
+        vol.Optional("probe_secret"): vol.Any(None, str),
+    }
+)
+
+POLL_SNMP_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("generation"): vol.Any(
+            None, vol.All(str, vol.Length(max=64))
+        ),
         vol.Optional("probe_secret"): vol.Any(None, str),
     }
 )
@@ -232,18 +262,19 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
 def async_register_probe_service(
     hass: HomeAssistant, store: HaSocData, audit: "AuditLog", secrets: HaSocSecretStore
 ) -> None:
-    """Register the add-on's two ways in: ha_soc.ingest_probe_result (its
-    existing periodic report, now also carrying firewall state) and
-    ha_soc.poll_firewall_command (a fast ~5s poll for pending firewall
-    work — the reverse direction, using return_response=True on an
-    ordinary service call rather than a new listening port on the add-on).
+    """Register the add-on's authenticated service endpoints.
+
+    ``ha_soc.ingest_probe_result`` carries periodic port, firewall, resource,
+    and SNMP status. ``ha_soc.poll_firewall_command`` is the fast firewall
+    command channel; ``ha_soc.poll_snmp_config`` is a separate, slower,
+    response-returning channel so the two state machines cannot interfere.
 
     Both are called via Supervisor's core-API proxy (SUPERVISOR_TOKEN +
     POST http://supervisor/core/api/services/ha_soc/<service>), the same
     mechanism any Supervisor add-on uses to call a Home Assistant service —
     no new communication channel on this side. Because that proxy forwards
     with the Supervisor's own token, every legitimate call arrives in the
-    Supervisor system user's context, and both handlers below require
+    Supervisor system user's context, and every handler below requires
     exactly that before touching the payload (see the module docstring).
 
     On a non-Supervisor install nothing can legitimately call these
@@ -347,6 +378,10 @@ def async_register_probe_service(
             from .resource_watchdog import async_store_limit_report
 
             async_store_limit_report(store, call.data["resource_limit_state"])
+        if call.data.get("snmp_status") is not None:
+            status = dict(call.data["snmp_status"])
+            status["reported_at"] = dt_util.utcnow().isoformat()
+            store.async_set_snmp_status(status)
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
         # Same gate as ingest: authenticate before anything else, and hand
@@ -367,6 +402,15 @@ def async_register_probe_service(
             command["resource_limits"] = limits
         return command
 
+    async def _handle_poll_snmp(call: ServiceCall) -> dict:
+        if await _async_call_rejected(call, SERVICE_POLL_SNMP_CONFIG) is not None:
+            return {"enabled": False}
+        config = await async_config_for_probe(store.settings, secrets)
+        if call.data.get("generation") == config["generation"]:
+            # Steady-state polling never retransmits passphrases.
+            return {"enabled": config["enabled"], "generation": config["generation"]}
+        return config
+
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_PROBE_RESULT, _handle_ingest, schema=INGEST_SERVICE_SCHEMA
     )
@@ -377,6 +421,13 @@ def async_register_probe_service(
         schema=POLL_FIREWALL_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_POLL_SNMP_CONFIG,
+        _handle_poll_snmp,
+        schema=POLL_SNMP_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 def async_unregister_probe_service(hass: HomeAssistant) -> None:
@@ -384,6 +435,10 @@ def async_unregister_probe_service(hass: HomeAssistant) -> None:
     # async_register_probe_service), so unregistration checks first; a bare
     # async_remove of an unknown service would log a spurious warning on
     # every unload of a Core or Container install.
-    for service in (SERVICE_INGEST_PROBE_RESULT, SERVICE_POLL_FIREWALL_COMMAND):
+    for service in (
+        SERVICE_INGEST_PROBE_RESULT,
+        SERVICE_POLL_FIREWALL_COMMAND,
+        SERVICE_POLL_SNMP_CONFIG,
+    ):
         if hass.services.has_service(DOMAIN, service):
             hass.services.async_remove(DOMAIN, service)

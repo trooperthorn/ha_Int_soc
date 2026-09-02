@@ -42,6 +42,8 @@ from .const import (
     DEFAULT_MFA_POLICY,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
+    DEFAULT_SNMP_ENABLED,
+    DEFAULT_SNMP_PORT,
     DEFAULT_PIHOLE_VERIFY_SSL,
     DEFAULT_SECURITY_SOURCES_ENABLED,
     DEFAULT_SYSLOG_FACILITY,
@@ -82,8 +84,8 @@ _EVIDENCE_FINDING_TABLES = ("vuln_findings", "misconfig_findings", "scanner_find
 
 class SettingsData(TypedDict):
     # Secret VALUES are deliberately absent from this shape. Every key in
-    # const.SECRET_SETTING_KEYS (the NVD API key, the GitHub token, the two
-    # UniFi API keys) lives in the dedicated private secret store instead
+    # const.SECRET_SETTING_KEYS (API credentials and SNMP passphrases)
+    # lives in the dedicated private secret store instead
     # (secrets_store.py, work item SEC-1); async_migrate_legacy_secrets
     # drains any value an older install still has in here on first load.
     # The frontend's "<key>_set" booleans are derived on the wire by
@@ -142,6 +144,12 @@ class SettingsData(TypedDict):
     pihole_host: str | None
     pihole_verify_ssl: bool
     pihole_iot_cidr: str | None
+    # Optional Net-SNMP agent in the Probe. Credentials are secret-store
+    # values and are therefore intentionally absent from this shape.
+    snmp_enabled: bool
+    snmp_listen_address: str | None
+    snmp_port: int
+    snmp_username: str | None
 
 
 class StoreData(TypedDict):
@@ -219,6 +227,9 @@ class StoreData(TypedDict):
     # view's own declared default order, nothing hidden" (see
     # HaSocData.get_user_panel_layout) rather than an error.
     panel_layout: dict[str, dict[str, dict[str, Any]]]
+    # Last bounded, non-secret runtime report from the Probe's snmpd
+    # supervisor. This is operational state, never configuration.
+    snmp_status: dict[str, Any] | None
 
 
 def default_store_data() -> StoreData:
@@ -249,6 +260,10 @@ def default_store_data() -> StoreData:
             pihole_host=None,
             pihole_verify_ssl=DEFAULT_PIHOLE_VERIFY_SSL,
             pihole_iot_cidr=None,
+            snmp_enabled=DEFAULT_SNMP_ENABLED,
+            snmp_listen_address=None,
+            snmp_port=DEFAULT_SNMP_PORT,
+            snmp_username=None,
         ),
         audit_head=None,
         permissions_matrix={},
@@ -297,6 +312,7 @@ def default_store_data() -> StoreData:
             "hard_limit_state": {},
         },
         panel_layout={},
+        snmp_status=None,
     )
 
 
@@ -645,6 +661,10 @@ class HaSocData:
     # -- Host probe (optional add-on) ----------------------------------------
     def async_set_host_probe_result(self, result: dict[str, Any]) -> None:
         self.data["host_probe"] = result
+        self.async_schedule_save()
+
+    def async_set_snmp_status(self, status: dict[str, Any]) -> None:
+        self.data["snmp_status"] = status
         self.async_schedule_save()
 
     # -- USB/serial peripherals ----------------------------------------------

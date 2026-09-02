@@ -19,7 +19,15 @@ FROM ${BUILD_FROM}
 # relied on by the existing port scanner to resolve a bind address to its
 # owning interface — pinning it explicitly rather than continuing to rely
 # on it merely happening to be present in the base image.
-RUN apk add --no-cache iptables iproute2
+# Only the agent package is installed. Client utilities such as snmpset are
+# intentionally absent from the runtime image; validation is run from the
+# external monitoring host.
+RUN apk add --no-cache iptables iproute2 net-snmp
+
+# A daemon-specific account prevents the unprivileged port scanner (nobody)
+# from reading Net-SNMP's mode-0600 localized USM key database.
+RUN addgroup -S ha_soc_snmp \
+    && adduser -S -D -H -s /sbin/nologin -G ha_soc_snmp ha_soc_snmp
 
 COPY rootfs /
 
@@ -27,7 +35,9 @@ RUN chmod a+x \
     /etc/services.d/ha_soc_probe/run \
     /etc/services.d/ha_soc_probe/finish \
     /etc/services.d/ha_soc_probe_firewall/run \
-    /etc/services.d/ha_soc_probe_firewall/finish
+    /etc/services.d/ha_soc_probe_firewall/finish \
+    /etc/services.d/ha_soc_probe_snmp/run \
+    /etc/services.d/ha_soc_probe_snmp/finish
 
 LABEL \
     org.opencontainers.image.title="HA SOC Probe" \

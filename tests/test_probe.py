@@ -1,5 +1,4 @@
-"""Tests for probe.py: Supervisor/add-on detection and the two callback
-services (ingest_probe_result / poll_firewall_command).
+"""Tests for probe.py: Supervisor/add-on detection and Probe callbacks.
 
 The test harness never runs under real Supervisor, so is_hassio(hass) is
 always False here unless patched, which is itself the first thing worth
@@ -410,6 +409,7 @@ async def test_probe_services_absent_on_core_install(
     all, and unloading tolerates their absence."""
     assert not hass.services.has_service(DOMAIN, "ingest_probe_result")
     assert not hass.services.has_service(DOMAIN, "poll_firewall_command")
+    assert not hass.services.has_service(DOMAIN, "poll_snmp_config")
 
     assert await hass.config_entries.async_unload(entry.entry_id)
     await hass.async_block_till_done()

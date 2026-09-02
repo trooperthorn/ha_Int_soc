@@ -1,11 +1,11 @@
 name: HA SOC Probe
-version: "2026.09.01.3"
+version: "2026.09.02.1"
 slug: ha_soc_probe
 description: >-
   Optional host-level companion for the HA SOC integration. Reports the
-  real listening TCP ports on the Home Assistant host, and — since this
-  release — can read and (opt-in, per proposed change) write the host's
-  firewall rules on HA SOC's behalf. Both are things a Python integration
+  real listening TCP ports, can expose opt-in SNMPv3 AuthPriv telemetry,
+  and can read and (opt-in, per proposed change) write the host's firewall
+  rules on HA SOC's behalf. These are things a Python integration
   structurally cannot do from inside its own container, even on Home
   Assistant OS.
 url: https://github.com/trooperthorn/ha_Int_soc

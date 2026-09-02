@@ -20,7 +20,7 @@
 # turns "this container can write anywhere a root process can" into an
 # enumerated surface. There is deliberately no bare `file,` rule (the
 # documented example's broadest grant), so AppArmor's default-deny applies
-# to everything not listed; in particular, every WRITE the two services
+# to everything not listed; in particular, every WRITE the Probe services
 # perform lands in /data or /tmp (state files, backups, response bodies),
 # plus the /run and s6 service-tree paths the documented s6 block
 # requires, and any other write is denied by omission. Reads and
@@ -37,13 +37,19 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   # Capabilities: NET_ADMIN and NET_RAW are the firewall feature
   # (iptables/ip6tables against the host's netfilter; the verified
   # container capability set is the Docker default plus these two).
-  # SETUID/SETGID are for s6-setuidgid dropping the port-scanner service
-  # to `nobody` (work item 2.5); nothing here needs to regain privilege
-  # afterwards.
+  # SETUID/SETGID are for s6-setuidgid dropping the port scanner to nobody
+  # and for snmpd dropping to its separate ha_soc_snmp account; neither
+  # regains privilege afterwards.
   capability net_admin,
   capability net_raw,
+  # snmpd opens the explicitly configured UDP/161 listener as root, then
+  # drops to nobody. A non-standard high port still follows the same path.
+  capability net_bind_service,
   capability setuid,
   capability setgid,
+  # The Net-SNMP persistent directory is handed to the unprivileged
+  # daemon account after its root-only initialization file is created.
+  capability chown,
 
   # s6 sends the services TERM on stop; the run scripts' timers signal
   # their own children. The receive rule carries no peer condition because
@@ -104,6 +110,21 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   # host's real table), and iptables reads its own bookkeeping there too.
   @{PROC}/net/ r,
   @{PROC}/net/** r,
+  # Standard MIB data sources used by Net-SNMP's CPU, memory, storage, and
+  # uptime modules. These remain read-only and do not grant host PID
+  # namespace visibility.
+  @{PROC}/stat r,
+  @{PROC}/meminfo r,
+  @{PROC}/uptime r,
+  @{PROC}/loadavg r,
+  @{PROC}/vmstat r,
+  @{PROC}/diskstats r,
+  @{PROC}/mounts r,
+  @{PROC}/filesystems r,
+  @{PROC}/sys/fs/file-nr r,
+  /sys/class/net/ r,
+  /sys/class/net/** r,
+  /sys/devices/** r,
   # Own-process lookups (busybox id/ps-style helpers and bashio read
   # /proc/self and per-pid entries of this container's own processes).
   @{PROC}/@{pid}/** r,

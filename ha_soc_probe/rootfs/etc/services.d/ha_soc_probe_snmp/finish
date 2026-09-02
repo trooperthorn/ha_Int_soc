@@ -1,0 +1,2 @@
+#!/usr/bin/with-contenv bashio
+bashio::log.info "HA SOC Probe SNMP supervisor stopped."

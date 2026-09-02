@@ -15,6 +15,7 @@ import {
 } from "../data/ha-soc-ws";
 
 const MB = 1024 * 1024;
+const formatTimestamp = (value: string) => new Date(value).toLocaleString();
 
 const ENTITY_DOMAIN_SOURCE_LABELS: { domain: string; label: string }[] = [
   { domain: "lock", label: "Lock entities (any integration)" },
@@ -146,7 +147,9 @@ export class HaSocSettingsView extends LitElement {
       | "github_token"
       | "unifi_network_api_key"
       | "unifi_protect_api_key"
-      | "pihole_api_key",
+      | "pihole_api_key"
+      | "snmp_auth_passphrase"
+      | "snmp_priv_passphrase",
     isSet: boolean
   ) {
     return html`
@@ -750,9 +753,97 @@ export class HaSocSettingsView extends LitElement {
           Real socket-level port visibility on the Home Assistant host needs the optional
           <strong>HA SOC Probe</strong> companion add-on — see the Scanner tab's Host
           Probe card for its current status, and the project README for install steps.
-          Nothing to configure here; the add-on's own scan interval is set from its own
-          add-on Configuration tab.
+          The add-on's own scan interval is set from its add-on Configuration tab.
         </p>
+      </div>
+
+      <div class="card">
+        <h3>SNMPv3 Telemetry</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Optional read-only Net-SNMP service in the HA SOC Probe for monitoring and
+          observability tools. Only SNMPv3 USM <strong>AuthPriv</strong> is supported,
+          using SHA-256 authentication and AES-128 privacy. SNMPv1/v2c, write access,
+          and wildcard listeners are not available.
+        </p>
+        <label class="settings-row">
+          <span>
+            Listener IP
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >An exact Home Assistant address, such as 192.168.30.3; never 0.0.0.0.</span
+            >
+          </span>
+          <input
+            type="text"
+            placeholder="e.g. 192.168.30.3"
+            .value=${s.snmp_listen_address ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("snmp_listen_address", v ? v : null);
+            }}
+          />
+        </label>
+        <label class="settings-row">
+          <span>Port</span>
+          <input
+            type="number"
+            min="1"
+            max="65535"
+            .value=${String(s.snmp_port)}
+            @change=${(e: Event) => this._update("snmp_port", Number((e.target as HTMLInputElement).value))}
+          />
+        </label>
+        <label class="settings-row">
+          <span>Security name</span>
+          <input
+            type="text"
+            placeholder="e.g. solarwinds_sem"
+            .value=${s.snmp_username ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("snmp_username", v ? v : null);
+            }}
+          />
+        </label>
+        ${this._renderSecretField(
+          "Authentication passphrase (20+ characters)",
+          "snmp_auth_passphrase",
+          !!s.snmp_auth_passphrase_set
+        )}
+        ${this._renderSecretField(
+          "Privacy passphrase (20+ characters, different)",
+          "snmp_priv_passphrase",
+          !!s.snmp_priv_passphrase_set
+        )}
+        <p class="muted" style="font-size:11.5px;">
+          Accepted credential characters: letters, numbers, and
+          <code>._~!@$%^&amp;*+=:,-</code>. Restrict UDP/161 to your management or
+          monitoring VLAN at the network firewall.
+        </p>
+        <label class="settings-row">
+          <span>
+            Enable SNMPv3
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >The Probe must be installed and running. Complete every field above first.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.snmp_enabled}
+            @change=${(e: Event) => this._update("snmp_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+        ${s.snmp_status
+          ? html`<p class="muted" style="font-size:12px;">
+              Probe status: ${s.snmp_status.error
+                ? `error — ${s.snmp_status.error}`
+                : s.snmp_status.running
+                  ? `running on ${s.snmp_status.listen_address}:${s.snmp_status.port}`
+                  : s.snmp_status.enabled
+                    ? "enabled, waiting for snmpd"
+                    : "disabled"}.
+              ${s.snmp_status.reported_at ? ` Last report ${formatTimestamp(s.snmp_status.reported_at)}.` : ""}
+            </p>`
+          : html`<p class="muted" style="font-size:12px;">No SNMP status has been reported by the Probe yet.</p>`}
       </div>
     `;
   }
