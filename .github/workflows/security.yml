@@ -105,4 +105,4 @@ jobs:
           severity-cutoff: high
           only-fixed: false
           output-format: table
-          grype-version: 0.110.0
+          grype-version: v0.110.0
