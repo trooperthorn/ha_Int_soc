@@ -135,7 +135,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         gap: 12px;
         margin-bottom: 16px;
       }
-      @media (max-width: 900px) {
+      @container (max-width: 900px) {
         .row3,
         .row2,
         .donuts-row {
@@ -158,6 +158,29 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         line-height: 1.45;
         margin: 0 0 14px;
       }
+      .overview-heading {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 16px;
+      }
+      .overview-heading .section-subtitle {
+        margin-bottom: 0;
+      }
+      .overview-heading h2.section-title {
+        margin-top: 0;
+      }
+      .overview-state {
+        flex: 0 0 auto;
+        padding: 6px 11px;
+        border: 1px solid var(--soc-border);
+        border-radius: 999px;
+        color: var(--soc-text-muted);
+        background: var(--soc-surface);
+        font-size: 11.5px;
+        white-space: nowrap;
+      }
       .overview-kpis {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -169,10 +192,10 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         min-width: 0;
         min-height: 126px;
         padding: 16px;
-        border: 1px solid var(--divider-color);
-        border-radius: var(--ha-card-border-radius, 12px);
-        background: var(--card-background-color, #fff);
-        color: var(--primary-text-color);
+        border: 1px solid var(--soc-border);
+        border-radius: var(--soc-card-radius);
+        background: var(--soc-surface);
+        color: var(--soc-text);
         font: inherit;
         text-align: left;
         display: flex;
@@ -206,6 +229,9 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         gap: 12px;
         margin-bottom: 16px;
       }
+      .overview-card {
+        margin-bottom: 12px;
+      }
       .posture-visual-card,
       .trend-card {
         margin: 0;
@@ -233,7 +259,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         position: absolute;
         inset: 13px;
         border-radius: 50%;
-        background: var(--card-background-color, #fff);
+        background: var(--soc-surface);
       }
       .posture-ring-value {
         position: relative;
@@ -367,6 +393,9 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         gap: 15px;
         align-items: center;
       }
+      .donut-layout .compact-legend {
+        grid-template-columns: 1fr;
+      }
       .severity-donut {
         width: 126px;
         aspect-ratio: 1;
@@ -380,7 +409,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         position: absolute;
         inset: 16px;
         border-radius: 50%;
-        background: var(--card-background-color, #fff);
+        background: var(--soc-surface);
       }
       .severity-donut strong {
         position: relative;
@@ -421,12 +450,12 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       .status-tile {
         border-radius: 10px;
         padding: 10px 6px;
-        text-align: center;
-        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.035);
-        border: 1px solid var(--divider-color);
+        text-align: left;
+        background: var(--soc-surface-subtle);
+        border: 1px solid transparent;
         display: flex;
         flex-direction: column;
-        align-items: center;
+        align-items: flex-start;
         justify-content: center;
         gap: 6px;
       }
@@ -447,6 +476,17 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       .status-tile.available {
         background: rgba(12, 163, 12, 0.11);
         color: var(--status-good);
+      }
+      .priority-table-wrap {
+        overflow-x: auto;
+      }
+      .priority-table-wrap table {
+        min-width: 680px;
+      }
+      .priority-actions {
+        display: flex;
+        gap: 6px;
+        white-space: nowrap;
       }
       .status-tile.partial {
         background: rgba(250, 178, 25, 0.15);
@@ -552,7 +592,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         color: var(--secondary-text-color);
         margin-top: 2px;
       }
-      @media (max-width: 1100px) {
+      @container (max-width: 1100px) {
         .overview-kpis {
           grid-template-columns: repeat(2, minmax(0, 1fr));
         }
@@ -560,13 +600,20 @@ export class HaSocDashboardView extends HaSocCustomizableView {
           grid-template-columns: 1fr;
         }
       }
-      @media (max-width: 900px) {
+      @container (max-width: 900px) {
         .summary-grid,
         .identity-grid {
           grid-template-columns: 1fr;
         }
       }
-      @media (max-width: 560px) {
+      @container (max-width: 560px) {
+        .overview-heading {
+          display: block;
+        }
+        .overview-state {
+          display: inline-flex;
+          margin-top: 10px;
+        }
         .overview-kpis {
           grid-template-columns: 1fr;
         }
@@ -603,7 +650,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
   @state() private _integrationSearch = "";
   @state() private _integrationSort: SortState | null = null;
   @state() private _integrationPageSize: number | "all" = 10;
-  @state() private _detectionSort: SortState | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -782,19 +828,54 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     };
   }
 
-  private _renderPostureCard() {
+  private _renderReferenceOverview() {
     const posture = this._summary?.posture;
     const summary = this._summary;
     const devices = this._deviceOverview;
     if (!posture || !summary || !devices) return nothing;
+
     const missing = (posture.missing_terms ?? []).map(
-      (t) => HaSocDashboardView.POSTURE_TERM_LABELS[t] ?? t
+      (term) => HaSocDashboardView.POSTURE_TERM_LABELS[term] ?? term
     );
-    const openDetections = this._detections.filter((det) => det.status === "open").length;
+    const openDetections = this._detections
+      .filter((detection) => detection.status === "open")
+      .sort((a, b) => new Date(b.last_seen).getTime() - new Date(a.last_seen).getTime());
+    const highPriorityDetections = openDetections.filter(
+      (detection) => detection.severity === "critical" || detection.severity === "high"
+    ).length;
     const criticalHighFindings = devices.devices.reduce(
       (total, device) => total + device.severity_counts.critical + device.severity_counts.high,
       0
     );
+    const severity = devices.devices.reduce(
+      (counts, device) => {
+        counts.critical += device.severity_counts.critical;
+        counts.high += device.severity_counts.high;
+        counts.medium += device.severity_counts.medium;
+        counts.low += device.severity_counts.low;
+        return counts;
+      },
+      { critical: 0, high: 0, medium: 0, low: 0 }
+    );
+    const findingTotal = severity.critical + severity.high + severity.medium + severity.low;
+    const findingSegments = [
+      { label: "Critical", color: "var(--status-critical)", value: severity.critical },
+      { label: "High", color: "var(--status-serious)", value: severity.high },
+      { label: "Medium", color: "var(--status-warning)", value: severity.medium },
+      { label: "Low", color: "var(--cat-1)", value: severity.low },
+    ];
+    let findingCursor = 0;
+    const findingStops = findingSegments.map((segment) => {
+      const start = findingCursor;
+      findingCursor += findingTotal ? (segment.value / findingTotal) * 100 : 0;
+      return `${segment.color} ${start}% ${findingCursor}%`;
+    });
+    const findingDonut = findingTotal
+      ? `conic-gradient(${findingStops.join(", ")})`
+      : "rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09)";
+    const sourceStates = Object.values(this._security?.sources_enabled ?? {});
+    const enabledSources = sourceStates.filter(Boolean).length;
+    const sourceTotal = sourceStates.length;
     const scoreClass = posture.score >= 85 ? "good" : posture.score >= 70 ? "warning" : "critical";
     const postureColor =
       scoreClass === "good"
@@ -804,73 +885,166 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         : "var(--status-critical)";
     const trend = this._postureTrendGeometry(summary.posture_history, posture.score);
     const trendDelta = `${trend.delta >= 0 ? "+" : ""}${trend.delta.toFixed(0)}`;
+
     return html`
-      <h2 class="section-title">Security overview</h2>
-      <p class="section-subtitle">What needs attention now, with operational availability kept separate from security severity.</p>
+      <div class="overview-heading">
+        <div>
+          <h2 class="section-title">Security overview</h2>
+          <p class="section-subtitle">What needs attention now, with operational health kept separate from risk.</p>
+        </div>
+        <span class="overview-state">${posture.provisional ? "Provisional posture" : "Live protected data"}</span>
+      </div>
+
       <div class="overview-kpis">
         <div class="overview-kpi">
           <span class="metric-label">Posture score</span>
           <span class="overview-kpi-value">${posture.score}</span>
-          <span class="overview-kpi-context">Grade ${posture.grade}${posture.provisional ? " · provisional" : " · fully calculated"}</span>
+          <span class="overview-kpi-context">Grade ${posture.grade}${posture.provisional ? " · provisional" : " · stable"}</span>
         </div>
         <button class="overview-kpi" type="button" @click=${() => this._goto("audit")}>
           <span class="metric-label">Open detections</span>
-          <span class="overview-kpi-value" style="color:${openDetections ? "var(--status-critical)" : "inherit"}">${openDetections}</span>
-          <span class="overview-kpi-context">Review active security signals</span>
+          <span class="overview-kpi-value" style="color:${openDetections.length ? "var(--status-critical)" : "inherit"}">${openDetections.length}</span>
+          <span class="overview-kpi-context">${highPriorityDetections} high priority</span>
         </button>
         <button class="overview-kpi" type="button" @click=${() => this._goto("scanner")}>
           <span class="metric-label">Critical / high findings</span>
           <span class="overview-kpi-value" style="color:${criticalHighFindings ? "var(--status-serious)" : "inherit"}">${criticalHighFindings.toLocaleString()}</span>
-          <span class="overview-kpi-context">Across inventoried assets</span>
+          <span class="overview-kpi-context">Across ${devices.devices.length.toLocaleString()} assets</span>
         </button>
-        <button class="overview-kpi" type="button" @click=${() => this._goto("network")}>
-          <span class="metric-label">Monitored assets</span>
-          <span class="overview-kpi-value">${devices.devices.length.toLocaleString()}</span>
-          <span class="overview-kpi-context">Open asset and network inventory</span>
-        </button>
+        <div class="overview-kpi">
+          <span class="metric-label">Telemetry sources</span>
+          <span class="overview-kpi-value">${enabledSources} / ${sourceTotal}</span>
+          <span class="overview-kpi-context">${sourceTotal ? "Configured source categories" : "No source categories configured"}</span>
+        </div>
       </div>
-      <div class="overview-visuals">
-        <div class="card posture-visual-card">
-          <div class="card-head">
-            <div><h3>Posture</h3><div class="metric-context">Current weighted security posture</div></div>
-          </div>
-          <div class="posture-ring-wrap">
-            <div
-              class="posture-ring"
-              role="img"
-              aria-label="Posture score ${posture.score} out of 100"
-              style="--posture-angle:${Math.max(0, Math.min(100, posture.score)) * 3.6}deg;--posture-color:${postureColor};"
-            >
-              <div class="posture-ring-value"><strong>${posture.score}</strong><span>of 100</span></div>
-            </div>
-            <div>
-              <div class="posture-grade-line">Grade ${posture.grade}</div>
-              ${posture.provisional
-                ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
-                : html`<span class="tag enforced">fully calculated</span>`}
-              <p class="posture-description">
-                ${trend.delta < 0
-                  ? "Posture declined over the displayed period. Review the priority queue below."
-                  : "No downward posture trend in the displayed period."}
-              </p>
-            </div>
+
+      <div class="card device-status-card overview-card">
+        <div class="card-head">
+          <div>
+            <h3>Asset availability</h3>
+            <div class="metric-context">Operational condition only—not vulnerability severity</div>
           </div>
         </div>
-        <div class="card trend-card">
-          <div class="card-head">
-            <div><h3>Posture trend</h3><div class="metric-context">${summary.posture_history.length ? "Thirty-day score history" : "History begins after the first completed posture calculation"}</div></div>
-            <span class="tag ${trend.delta >= 0 ? "enforced" : "cosmetic"}">${trendDelta}</span>
-          </div>
-          <svg class="posture-trend" viewBox="0 0 560 142" role="img" aria-label="Posture score trend, ${trendDelta} points">
-            <line class="grid-line" x1="12" y1="22" x2="548" y2="22"></line>
-            <line class="grid-line" x1="12" y1="70" x2="548" y2="70"></line>
-            <line class="grid-line" x1="12" y1="118" x2="548" y2="118"></line>
-            <polygon class="trend-area" points=${trend.area}></polygon>
-            <polyline class="trend-line" points=${trend.points}></polyline>
-            <text x="12" y="138">${trend.firstLabel}</text>
-            <text x="548" y="138" text-anchor="end">${trend.lastLabel}</text>
-          </svg>
+        <div class="status-tiles">
+          ${STATUS_TILES.map(
+            (tile) => html`
+              <div
+                class="status-tile clickable ${tile.key} ${this._deviceStatusFilter === tile.key ? "active" : ""}"
+                title="Filter the devices investigation queue"
+                @click=${() => this._onStatusTileClick(tile.key)}
+              >
+                <div class="label">${tile.label}</div>
+                <div class="value">${devices.status_counts[tile.key] ?? 0}</div>
+              </div>
+            `
+          )}
         </div>
+      </div>
+
+      <div class="card posture-visual-card overview-card">
+        <div class="card-head">
+          <div><h3>Posture</h3><div class="metric-context">Current weighted security posture</div></div>
+        </div>
+        <div class="posture-ring-wrap">
+          <div
+            class="posture-ring"
+            role="img"
+            aria-label="Posture score ${posture.score} out of 100"
+            style="--posture-angle:${Math.max(0, Math.min(100, posture.score)) * 3.6}deg;--posture-color:${postureColor};"
+          >
+            <div class="posture-ring-value"><strong>${posture.score}</strong><span>of 100</span></div>
+          </div>
+          <div>
+            <div class="posture-grade-line">Grade ${posture.grade}</div>
+            ${posture.provisional
+              ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
+              : html`<span class="tag enforced">Healthy</span>`}
+            <p class="posture-description">
+              ${trend.delta < 0
+                ? "Posture declined over the displayed period. Review the priority queue below."
+                : "No downward posture trend in the displayed period."}
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div class="card overview-card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
+        <div class="card-head">
+          <div><h3>Finding severity</h3><div class="metric-context">Current vulnerability findings by severity</div></div>
+        </div>
+        <div class="donut-layout">
+          <div
+            class="severity-donut"
+            role="img"
+            aria-label="${findingTotal.toLocaleString()} findings by severity"
+            style="background:${findingDonut}"
+          ><strong>${findingTotal.toLocaleString()}</strong></div>
+          <div class="compact-legend">
+            ${findingSegments.map(
+              (segment) => html`
+                <div class="item">
+                  <span class="swatch" style="background:${segment.color}"></span>${segment.label}
+                  <strong>${segment.value.toLocaleString()}</strong>
+                </div>
+              `
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div class="card trend-card overview-card">
+        <div class="card-head">
+          <div><h3>Posture trend</h3><div class="metric-context">${summary.posture_history.length ? "Thirty-day score history" : "History begins after the first completed posture calculation"}</div></div>
+          <span class="tag ${trend.delta >= 0 ? "enforced" : "cosmetic"}">${trendDelta}</span>
+        </div>
+        <svg class="posture-trend" viewBox="0 0 560 142" role="img" aria-label="Posture score trend, ${trendDelta} points">
+          <line class="grid-line" x1="12" y1="22" x2="548" y2="22"></line>
+          <line class="grid-line" x1="12" y1="70" x2="548" y2="70"></line>
+          <line class="grid-line" x1="12" y1="118" x2="548" y2="118"></line>
+          <polygon class="trend-area" points=${trend.area}></polygon>
+          <polyline class="trend-line" points=${trend.points}></polyline>
+          <text x="12" y="138">${trend.firstLabel}</text>
+          <text x="548" y="138" text-anchor="end">${trend.lastLabel}</text>
+        </svg>
+      </div>
+
+      <div class="card overview-card">
+        <div class="card-head">
+          <div>
+            <h3>Priority queue</h3>
+            <div class="metric-context">Protected details; acknowledgement and remediation stay in this console</div>
+          </div>
+        </div>
+        ${!openDetections.length
+          ? html`<div class="empty">No open detections. The priority queue is clear.</div>`
+          : html`
+              <div class="priority-table-wrap">
+                <table>
+                  <thead>
+                    <tr><th>Priority</th><th>Finding</th><th>User</th><th>Status</th><th>Last seen</th><th></th></tr>
+                  </thead>
+                  <tbody>
+                    ${openDetections.map(
+                      (detection) => html`
+                        <tr>
+                          <td><span class="pill ${detection.severity}"><span class="dot"></span>${detection.severity}</span></td>
+                          <td>${detection.title}</td>
+                          <td>${this._nameFor(detection.user_id)}</td>
+                          <td>Open</td>
+                          <td>${new Date(detection.last_seen).toLocaleString()}</td>
+                          <td>
+                            <span class="priority-actions">
+                              <button class="ha-btn" @click=${() => this._onAck(detection.id)}>Ack</button>
+                              <button class="ha-btn" @click=${() => this._onResolve(detection.id)}>Resolve</button>
+                            </span>
+                          </td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            `}
       </div>
     `;
   }
@@ -908,57 +1082,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     const s = this._summary;
     const d = this._deviceOverview;
     const integ = this._integrationOverview;
-    // Accessors live inline because the User column sorts by the resolved
-    // display name, which needs this._users, not by the raw user_id.
-    const openDetections = sortRows(
-      this._detections.filter((det) => det.status === "open"),
-      this._detectionSort,
-      {
-        time: (det) => det.last_seen,
-        rule: (det) => det.title,
-        // Ranked so ascending reads worst first. "info" is not in
-        // SEVERITY_ORDER, and indexOf's -1 would float it above
-        // "critical"; it must sink below "low" instead.
-        severity: (det) => {
-          const i = SEVERITY_ORDER.indexOf(det.severity as (typeof SEVERITY_ORDER)[number]);
-          return i === -1 ? SEVERITY_ORDER.length : i;
-        },
-        user: (det) => this._nameFor(det.user_id),
-      }
-    );
-    const onDetectionSort = (next: SortState) => {
-      this._detectionSort = next;
-    };
-
-    const vulnSeverityTotals = d.devices.reduce(
-      (acc, device) => {
-        acc.critical += device.severity_counts.critical;
-        acc.high += device.severity_counts.high;
-        acc.medium += device.severity_counts.medium;
-        acc.low += device.severity_counts.low;
-        return acc;
-      },
-      { critical: 0, high: 0, medium: 0, low: 0 }
-    );
-    const vulnTotal =
-      vulnSeverityTotals.critical + vulnSeverityTotals.high + vulnSeverityTotals.medium + vulnSeverityTotals.low;
-
-    const vulnSegments = [
-      { key: "critical", label: "Critical", color: "var(--status-critical)", value: vulnSeverityTotals.critical },
-      { key: "high", label: "High", color: "var(--status-serious)", value: vulnSeverityTotals.high },
-      { key: "medium", label: "Medium", color: "var(--status-warning)", value: vulnSeverityTotals.medium },
-      { key: "low", label: "Low", color: "var(--status-good)", value: vulnSeverityTotals.low },
-    ];
-    const vulnCriticalEnd = vulnTotal ? (vulnSeverityTotals.critical / vulnTotal) * 100 : 0;
-    const vulnHighEnd = vulnTotal
-      ? ((vulnSeverityTotals.critical + vulnSeverityTotals.high) / vulnTotal) * 100
-      : 0;
-    const vulnMediumEnd = vulnTotal
-      ? ((vulnSeverityTotals.critical + vulnSeverityTotals.high + vulnSeverityTotals.medium) / vulnTotal) * 100
-      : 0;
-    const vulnerabilityDonut = vulnTotal
-      ? `conic-gradient(var(--status-critical) 0 ${vulnCriticalEnd}%, var(--status-serious) ${vulnCriticalEnd}% ${vulnHighEnd}%, var(--status-warning) ${vulnHighEnd}% ${vulnMediumEnd}%, var(--status-good) ${vulnMediumEnd}% 100%)`
-      : "rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.09)";
+    const openDetections = this._detections.filter((det) => det.status === "open");
 
     const entityCounts = s.entity_state_counts ?? { unavailable: 0, unknown: 0, total: 0 };
     const failedUnknownTotal = entityCounts.unavailable + entityCounts.unknown;
@@ -994,65 +1118,15 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         id: "posture_security",
         title: "Posture & Security",
         hideable: false,
-        render: () => html`${this._renderPostureCard()} ${this._renderSecurityCard()}`,
+        render: () => this._renderReferenceOverview(),
       },
       {
         id: "device_vuln_overview",
         title: "Device & Vulnerability Overview",
         render: () => html`
-      <h2 class="section-title">Operational health and exposure</h2>
-      <p class="section-subtitle">Availability is an operational condition; vulnerability severity remains a separate security measure.</p>
-      <div class="summary-grid">
-        <div class="card device-status-card">
-          <div class="card-head">
-            <div>
-              <h3>Device availability</h3>
-              <div class="metric-context">${d.devices.length.toLocaleString()} inventoried devices</div>
-            </div>
-          </div>
-          <div class="status-tiles">
-            ${STATUS_TILES.map(
-              (t) => html`
-                <div
-                  class="status-tile clickable ${t.key} ${this._deviceStatusFilter === t.key ? "active" : ""}"
-                  title="Filter the devices table below"
-                  @click=${() => this._onStatusTileClick(t.key)}
-                >
-                  <div class="label">${t.label}</div>
-                  <div class="value">${d.status_counts[t.key] ?? 0}</div>
-                </div>
-              `
-            )}
-          </div>
-        </div>
-
-        <div class="card clickable" @click=${() => this._goto("scanner")} title="View vulnerability findings">
-          <div class="card-head">
-            <div>
-              <h3>Finding severity</h3>
-              <div class="metric-context">Weighted risk score ${d.combined_risk_score.toFixed(1)} / 10</div>
-            </div>
-          </div>
-          <div class="donut-layout">
-            <div
-              class="severity-donut"
-              role="img"
-              aria-label="${vulnTotal.toLocaleString()} vulnerability findings by severity"
-              style="background:${vulnerabilityDonut}"
-            ><strong>${vulnTotal.toLocaleString()}</strong></div>
-            <div class="compact-legend">
-              ${vulnSegments.map(
-                (seg) => html`
-                  <div class="item">
-                    <span class="swatch" style="background:${seg.color}"></span>${seg.label}
-                    <strong>${seg.value.toLocaleString()}</strong>
-                  </div>
-                `
-              )}
-            </div>
-          </div>
-        </div>
-
+      <h2 class="section-title">Operational detail</h2>
+      <p class="section-subtitle">Entity-state reliability and security-source health behind the overview.</p>
+      <div class="row2">
         <div class="card clickable" @click=${() => this._goto("entity_remap")} title="Fix broken entity references">
           <div class="card-head">
             <div>
@@ -1072,6 +1146,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
             </div>
           </div>
         </div>
+        ${this._renderSecurityCard()}
       </div>
         `,
       },
@@ -1145,45 +1220,6 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         </div>
       </div>
 
-      <div class="card">
-        <div class="card-head">
-          <div>
-            <h3>Active investigation queue</h3>
-            <div class="metric-context">Open detections, newest activity first</div>
-          </div>
-        </div>
-        ${!openDetections.length
-          ? html`<div class="empty">No open detections. The active queue is clear.</div>`
-          : html`
-              <table>
-                <thead>
-                  <tr>
-                    ${sortableTh("Time", "time", this._detectionSort, onDetectionSort)}
-                    ${sortableTh("Rule", "rule", this._detectionSort, onDetectionSort)}
-                    ${sortableTh("Severity", "severity", this._detectionSort, onDetectionSort)}
-                    ${sortableTh("User", "user", this._detectionSort, onDetectionSort)}
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${openDetections.map(
-                    (det) => html`
-                      <tr>
-                        <td>${new Date(det.last_seen).toLocaleString()}</td>
-                        <td>${det.title}</td>
-                        <td><span class="pill ${det.severity}"><span class="dot"></span>${det.severity}</span></td>
-                        <td>${this._nameFor(det.user_id)}</td>
-                        <td>
-                          <button class="ha-btn" @click=${() => this._onAck(det.id)}>Ack</button>
-                          <button class="ha-btn" @click=${() => this._onResolve(det.id)}>Resolve</button>
-                        </td>
-                      </tr>
-                    `
-                  )}
-                </tbody>
-              </table>
-            `}
-      </div>
         `,
       },
       {

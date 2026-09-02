@@ -12,6 +12,19 @@ export const sharedStyles = css`
     padding: 20px clamp(14px, 2vw, 24px) 28px;
     max-width: 1400px;
     margin: 0 auto;
+    container-type: inline-size;
+
+    /* HA SOC semantic surface tokens.  They inherit the active Home
+       Assistant theme, but give this panel one stable vocabulary for its
+       reference layout and visual-regression fixtures. */
+    --soc-page-bg: var(--primary-background-color);
+    --soc-surface: var(--card-background-color, #fff);
+    --soc-surface-subtle: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.035);
+    --soc-border: var(--divider-color);
+    --soc-text: var(--primary-text-color);
+    --soc-text-muted: var(--secondary-text-color);
+    --soc-accent: var(--primary-color);
+    --soc-card-radius: var(--ha-card-border-radius, 12px);
 
     /* Validated categorical palette (dataviz skill reference instance) —
        adjacent-pair CVD/contrast checked for chart use (bars, lines,
@@ -64,9 +77,9 @@ export const sharedStyles = css`
     border-bottom-color: var(--primary-color);
   }
   .card {
-    background: var(--card-background-color, #fff);
-    border-radius: var(--ha-card-border-radius, 12px);
-    border: 1px solid var(--divider-color);
+    background: var(--soc-surface);
+    border-radius: var(--soc-card-radius);
+    border: 1px solid var(--soc-border);
     box-shadow: none;
     padding: 16px;
     margin-bottom: 16px;
