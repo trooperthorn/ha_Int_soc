@@ -24,6 +24,7 @@ PANEL_NAME = "ha-soc-panel"
 PANEL_URL = f"/api/panel_custom/{DOMAIN}"
 PANEL_TITLE = "SOC"
 PANEL_ICON = "mdi:shield-search"
+_DATA_STATIC_PATH_REGISTERED = f"{DOMAIN}.panel_static_path_registered"
 
 
 def _bundle_path() -> str:
@@ -53,10 +54,36 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         return
 
     cache_bust = int(mtime)
-    await hass.http.async_register_static_paths(
-        [StaticPathConfig(PANEL_URL, bundle_path, cache_headers=False)]
-    )
+    # aiohttp routes live for the lifetime of the Home Assistant process;
+    # async_remove_panel() only removes the frontend/sidebar registration.
+    # Consequently an integration reload must not add this GET route again.
+    #
+    # The RuntimeError recovery also covers the upgrade path from an older HA
+    # SOC build: its route can already exist in the current process before this
+    # process-local marker is introduced.
+    if not hass.data.get(_DATA_STATIC_PATH_REGISTERED):
+        try:
+            await hass.http.async_register_static_paths(
+                [StaticPathConfig(PANEL_URL, bundle_path, cache_headers=False)]
+            )
+        except RuntimeError as err:
+            message = str(err)
+            if not (
+                "Added route will never be executed" in message
+                and "method GET is already registered" in message
+            ):
+                raise
+            _LOGGER.debug(
+                "HA SOC frontend route %s is already registered; reusing it",
+                PANEL_URL,
+            )
+        hass.data[_DATA_STATIC_PATH_REGISTERED] = True
 
+    # A failed setup can leave the frontend panel registered even though the
+    # config entry never reached its normal unload path. Replace our own panel
+    # registration deterministically before adding the current cache-busted
+    # module URL.
+    async_remove_panel(hass, DOMAIN, warn_if_unknown=False)
     await panel_custom.async_register_panel(
         hass,
         webcomponent_name=PANEL_NAME,
