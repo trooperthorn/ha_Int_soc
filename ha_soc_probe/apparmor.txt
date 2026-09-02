@@ -43,7 +43,7 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   capability net_admin,
   capability net_raw,
   # snmpd opens the explicitly configured UDP/161 listener as root, then
-  # drops to nobody. A non-standard high port still follows the same path.
+  # drops to ha_soc_snmp. A non-standard high port follows the same path.
   capability net_bind_service,
   capability setuid,
   capability setgid,
