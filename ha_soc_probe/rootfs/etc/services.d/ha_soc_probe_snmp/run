@@ -1,0 +1,243 @@
+#!/usr/bin/with-contenv bashio
+# Optional Net-SNMP supervisor. Configuration comes only from the owner-only
+# HA SOC settings service and can represent only SNMPv3 USM AuthPriv.
+set -uo pipefail
+
+STATE_DIR="/data/ha_soc_snmp"
+CONFIG_DIR="${STATE_DIR}/config"
+PERSIST_DIR="${STATE_DIR}/persistent"
+GENERATION_FILE="${STATE_DIR}/generation"
+PUBLIC_STATE_FILE="${STATE_DIR}/state.json"
+SECRET_FILE="/data/ha_soc_probe_secret"
+POLL_URL="http://supervisor/core/api/services/ha_soc/poll_snmp_config?return_response"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+POLL_INTERVAL_SECONDS=30
+SNMPD_PID=""
+PROBE_SECRET=""
+CURRENT_GENERATION=""
+CURRENT_ADDRESS=""
+CURRENT_PORT=""
+
+ensure_probe_secret() {
+    if [ ! -s "${SECRET_FILE}" ]; then
+        ( set -o noclobber
+          umask 077
+          head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
+        ) 2>/dev/null || true
+    fi
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
+    PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
+
+valid_generation() { printf '%s' "$1" | grep -Eq '^[0-9a-f]{64}$'; }
+valid_username() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]{1,32}$'; }
+valid_passphrase() { printf '%s' "$1" | grep -Eq '^[A-Za-z0-9._~!@$%^&*+=:,-]{20,128}$'; }
+valid_port() {
+    printf '%s' "$1" | grep -Eq '^[0-9]{1,5}$' || return 1
+    [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
+}
+valid_address() {
+    printf '%s' "$1" | grep -Eq '^[0-9A-Fa-f:.]{2,45}$' || return 1
+    [ "$1" != "0.0.0.0" ] && [ "$1" != "::" ] || return 1
+    # Binding must be to an address actually assigned in the shared host
+    # network namespace, not merely something that looks like an IP.
+    ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$1"
+}
+
+report_status() {
+    local enabled="$1" running="$2" error="${3:-}"
+    local payload
+    payload=$(jq -n \
+        --argjson enabled "${enabled}" \
+        --argjson running "${running}" \
+        --arg generation "${CURRENT_GENERATION}" \
+        --arg address "${CURRENT_ADDRESS}" \
+        --argjson port "${CURRENT_PORT:-null}" \
+        --arg error "${error}" \
+        --arg secret "${PROBE_SECRET}" \
+        '{snmp_status: {enabled: $enabled, running: $running,
+          generation: ($generation | if length > 0 then . else null end),
+          listen_address: ($address | if length > 0 then . else null end), port: $port,
+          error: ($error | if length > 0 then . else null end)}, probe_secret: $secret}')
+    curl -fsS -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" "${INGEST_URL}" >/dev/null 2>&1 || true
+}
+
+stop_agent() {
+    if [ -n "${SNMPD_PID}" ] && kill -0 "${SNMPD_PID}" 2>/dev/null; then
+        kill "${SNMPD_PID}" 2>/dev/null || true
+        wait "${SNMPD_PID}" 2>/dev/null || true
+    fi
+    SNMPD_PID=""
+}
+
+disable_agent() {
+    stop_agent
+    # Disabling is credential retirement, not merely a stopped process.
+    # Remove the runtime config and localized USM database.
+    find "${CONFIG_DIR}" "${PERSIST_DIR}" -type f -delete 2>/dev/null || true
+    rm -f "${PUBLIC_STATE_FILE}"
+    CURRENT_ADDRESS=""
+    CURRENT_PORT=""
+}
+
+write_config() {
+    local address="$1" port="$2" username="$3" auth_pass="$4" priv_pass="$5"
+    local endpoint
+    if printf '%s' "${address}" | grep -q ':'; then
+        endpoint="udp6:[${address}]:${port}"
+    else
+        endpoint="udp:${address}:${port}"
+    fi
+
+    umask 077
+    printf '%s\n' \
+        "persistentDir ${PERSIST_DIR}" \
+        > "${CONFIG_DIR}/snmp.conf"
+    printf '%s\n' \
+        "agentAddress ${endpoint}" \
+        "agentuser ha_soc_snmp" \
+        "agentgroup ha_soc_snmp" \
+        "sysLocation Home Assistant" \
+        "sysContact HA SOC" \
+        "sysServices 72" \
+        "view haSocReadOnly included .1.3.6.1.2.1.1" \
+        "view haSocReadOnly included .1.3.6.1.2.1.2" \
+        "view haSocReadOnly included .1.3.6.1.2.1.31.1.1" \
+        "view haSocReadOnly included .1.3.6.1.2.1.25.2" \
+        "view haSocReadOnly included .1.3.6.1.2.1.25.3.3" \
+        "view haSocReadOnly included .1.3.6.1.4.1.2021.4" \
+        "view haSocReadOnly included .1.3.6.1.4.1.2021.11" \
+        "rouser ${username} priv -V haSocReadOnly" \
+        "maxGetbulkRepeats 25" \
+        "maxGetbulkResponses 100" \
+        "dontLogTCPWrappersConnects yes" \
+        > "${CONFIG_DIR}/snmpd.conf"
+
+    # Net-SNMP consumes this createUser directive at startup and rewrites
+    # the file with engine-localized keys. Plaintext exists only in this
+    # mode-0600 file during that one initialization window.
+    printf 'createUser %s SHA-256 "%s" AES "%s"\n' \
+        "${username}" "${auth_pass}" "${priv_pass}" \
+        > "${PERSIST_DIR}/snmpd.conf"
+    chmod 600 "${CONFIG_DIR}/snmp.conf" "${CONFIG_DIR}/snmpd.conf" "${PERSIST_DIR}/snmpd.conf"
+    # snmpd drops to its dedicated account after opening the listener. Its
+    # persistent directory must remain writable by that account so engine
+    # boots/time and localized USM keys survive a clean shutdown.
+    chown ha_soc_snmp:ha_soc_snmp "${PERSIST_DIR}" "${PERSIST_DIR}/snmpd.conf"
+}
+
+start_agent() {
+    export SNMPCONFPATH="${CONFIG_DIR}"
+    snmpd -f -Lo &
+    SNMPD_PID=$!
+    sleep 1
+    if ! kill -0 "${SNMPD_PID}" 2>/dev/null; then
+        wait "${SNMPD_PID}" 2>/dev/null || true
+        SNMPD_PID=""
+        return 1
+    fi
+}
+
+apply_response() {
+    local response="$1"
+    local generation enabled address port username auth_pass priv_pass
+    generation=$(printf '%s' "${response}" | jq -r '.service_response.generation // ""')
+    enabled=$(printf '%s' "${response}" | jq -r '.service_response.enabled // false')
+    valid_generation "${generation}" || return 1
+
+    if [ "${enabled}" != "true" ]; then
+        disable_agent
+        CURRENT_GENERATION="${generation}"
+        printf '%s' "${CURRENT_GENERATION}" > "${GENERATION_FILE}"
+        report_status false false ""
+        return 0
+    fi
+
+    # An unchanged response intentionally contains no credentials.
+    if [ "${generation}" = "${CURRENT_GENERATION}" ]; then
+        if [ -n "${SNMPD_PID}" ] && kill -0 "${SNMPD_PID}" 2>/dev/null; then
+            return 0
+        fi
+        if [ -s "${CONFIG_DIR}/snmpd.conf" ] && [ -s "${PERSIST_DIR}/snmpd.conf" ]; then
+            if start_agent; then report_status true true ""; return 0; fi
+        fi
+        CURRENT_GENERATION=""
+        return 1
+    fi
+
+    address=$(printf '%s' "${response}" | jq -r '.service_response.listen_address // ""')
+    port=$(printf '%s' "${response}" | jq -r '.service_response.port // ""')
+    username=$(printf '%s' "${response}" | jq -r '.service_response.username // ""')
+    auth_pass=$(printf '%s' "${response}" | jq -r '.service_response.auth_passphrase // ""')
+    priv_pass=$(printf '%s' "${response}" | jq -r '.service_response.priv_passphrase // ""')
+    valid_address "${address}" && valid_port "${port}" && valid_username "${username}" \
+        && valid_passphrase "${auth_pass}" && valid_passphrase "${priv_pass}" \
+        && [ "${auth_pass}" != "${priv_pass}" ] || return 1
+
+    stop_agent
+    find "${CONFIG_DIR}" "${PERSIST_DIR}" -type f -delete 2>/dev/null || true
+    write_config "${address}" "${port}" "${username}" "${auth_pass}" "${priv_pass}"
+    CURRENT_GENERATION="${generation}"
+    CURRENT_ADDRESS="${address}"
+    CURRENT_PORT="${port}"
+    if start_agent; then
+        printf '%s' "${CURRENT_GENERATION}" > "${GENERATION_FILE}"
+        jq -n --arg address "${CURRENT_ADDRESS}" --argjson port "${CURRENT_PORT}" \
+            '{address: $address, port: $port}' > "${PUBLIC_STATE_FILE}"
+        chmod 600 "${PUBLIC_STATE_FILE}"
+        report_status true true ""
+        return 0
+    fi
+    report_status true false "snmpd failed to start"
+    CURRENT_GENERATION=""
+    rm -f "${GENERATION_FILE}"
+    return 1
+}
+
+shutdown() {
+    stop_agent
+    exit 0
+}
+trap shutdown TERM INT
+
+mkdir -p "${CONFIG_DIR}" "${PERSIST_DIR}"
+chmod 700 "${STATE_DIR}" "${CONFIG_DIR}" "${PERSIST_DIR}"
+ensure_probe_secret
+CURRENT_GENERATION="$(cat "${GENERATION_FILE}" 2>/dev/null || echo "")"
+CURRENT_ADDRESS="$(jq -r '.address // ""' "${PUBLIC_STATE_FILE}" 2>/dev/null || echo "")"
+CURRENT_PORT="$(jq -r '.port // ""' "${PUBLIC_STATE_FILE}" 2>/dev/null || echo "")"
+if ! valid_generation "${CURRENT_GENERATION}" \
+    || [ ! -s "${CONFIG_DIR}/snmpd.conf" ] \
+    || [ ! -s "${PERSIST_DIR}/snmpd.conf" ]; then
+    CURRENT_GENERATION=""
+fi
+
+bashio::log.info "HA SOC Probe SNMP supervisor starting; SNMP remains off until owner-enabled."
+while true; do
+    payload=$(jq -n --arg generation "${CURRENT_GENERATION}" --arg secret "${PROBE_SECRET}" \
+        '{generation: $generation, probe_secret: $secret}')
+    response=$(curl -fsS -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" "${POLL_URL}" 2>/dev/null || echo "")
+    if [ -n "${response}" ]; then
+        if ! apply_response "${response}"; then
+            bashio::log.warning "SNMP configuration was unavailable or rejected; retaining no unverified change."
+            if [ -n "${SNMPD_PID}" ] && kill -0 "${SNMPD_PID}" 2>/dev/null; then
+                report_status true true "configuration update rejected"
+            else
+                report_status false false "configuration rejected"
+            fi
+        fi
+    fi
+    if [ -n "${SNMPD_PID}" ] && ! kill -0 "${SNMPD_PID}" 2>/dev/null; then
+        wait "${SNMPD_PID}" 2>/dev/null || true
+        SNMPD_PID=""
+        report_status true false "snmpd exited unexpectedly"
+        CURRENT_GENERATION=""
+    fi
+    sleep "${POLL_INTERVAL_SECONDS}" & wait "$!"
+done

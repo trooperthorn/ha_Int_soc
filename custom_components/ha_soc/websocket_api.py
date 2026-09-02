@@ -64,6 +64,12 @@ from .const import (
     CONF_SCANNER_ENABLED,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
+    CONF_SNMP_AUTH_PASSPHRASE,
+    CONF_SNMP_ENABLED,
+    CONF_SNMP_LISTEN_ADDRESS,
+    CONF_SNMP_PORT,
+    CONF_SNMP_PRIV_PASSPHRASE,
+    CONF_SNMP_USERNAME,
     CONF_SYSLOG_FACILITY,
     CONF_SYSLOG_FORMAT,
     CONF_SYSLOG_HOST,
@@ -90,6 +96,12 @@ from .const import (
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
 from .resource_watchdog import ADDON_SLUG_PATTERN
+from .snmp import (
+    snmp_ip_address,
+    validate_enabled_config,
+    validate_snmp_passphrase,
+    validate_snmp_username,
+)
 
 _LOGGER = logging.getLogger(__name__)
 _SYSLOG_DNS_LABEL = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -1949,6 +1961,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     payload = await _masked_settings(runtime.store.settings, runtime.secrets)
     payload["syslog_status"] = runtime.syslog.status
+    payload["snmp_status"] = runtime.store.data.get("snmp_status")
     connection.send_result(msg["id"], payload)
 
 
@@ -2005,6 +2018,14 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_PIHOLE_API_KEY): str,
         vol.Optional(CONF_PIHOLE_VERIFY_SSL): bool,
         vol.Optional(CONF_PIHOLE_IOT_CIDR): vol.Any(str, None),
+        # Probe-hosted Net-SNMP. Only an explicit unicast listener and
+        # SNMPv3 AuthPriv credentials are representable.
+        vol.Optional(CONF_SNMP_ENABLED): bool,
+        vol.Optional(CONF_SNMP_LISTEN_ADDRESS): snmp_ip_address,
+        vol.Optional(CONF_SNMP_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+        vol.Optional(CONF_SNMP_USERNAME): vol.Any(None, validate_snmp_username),
+        vol.Optional(CONF_SNMP_AUTH_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
+        vol.Optional(CONF_SNMP_PRIV_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
     }
 )
 @websocket_api.async_response
@@ -2026,6 +2047,30 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     secret_changes = {
         key: changes.pop(key) for key in list(changes) if key in SECRET_SETTING_KEYS
     }
+
+    snmp_keys = {
+        CONF_SNMP_ENABLED,
+        CONF_SNMP_LISTEN_ADDRESS,
+        CONF_SNMP_PORT,
+        CONF_SNMP_USERNAME,
+        CONF_SNMP_AUTH_PASSPHRASE,
+        CONF_SNMP_PRIV_PASSPHRASE,
+    }
+    if snmp_keys.intersection(changes) or snmp_keys.intersection(secret_changes):
+        prospective_settings = dict(runtime.store.settings)
+        prospective_settings.update(changes)
+        prospective_secrets = {
+            key: (
+                secret_changes[key]
+                if key in secret_changes
+                else await runtime.secrets.async_get(key)
+            )
+            for key in (CONF_SNMP_AUTH_PASSPHRASE, CONF_SNMP_PRIV_PASSPHRASE)
+        }
+        # Validate the complete prospective configuration before writing
+        # either store, so a failed enable/rotation cannot partially apply.
+        validate_enabled_config(prospective_settings, prospective_secrets)
+
     for key, value in secret_changes.items():
         await runtime.secrets.async_set(key, value)
 
@@ -2090,6 +2135,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
         )
     payload = await _masked_settings(runtime.store.settings, runtime.secrets)
     payload["syslog_status"] = runtime.syslog.status
+    payload["snmp_status"] = runtime.store.data.get("snmp_status")
     connection.send_result(msg["id"], payload)
 
 

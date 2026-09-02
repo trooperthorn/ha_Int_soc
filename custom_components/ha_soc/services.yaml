@@ -1,4 +1,4 @@
-# Both services exist as the transport between the optional HA SOC Probe
+# These services exist as the transport between the optional HA SOC Probe
 # add-on and this integration, and they are registered only on Supervisor
 # installs (on Core/Container there is no legitimate caller, so they do
 # not exist at all). They are not intended to be called by hand: every
@@ -16,7 +16,7 @@ ingest_probe_result:
   description: >-
     Internal. Called by the HA SOC Probe add-on to report the host's
     listening TCP ports, the live firewall chain contents, firewall
-    test resolutions, and resource hard-cap application state. Calls
+    test resolutions, resource hard-cap state, and Net-SNMP runtime state. Calls
     outside the Supervisor user's context, or without the pinned probe
     secret, are rejected.
   fields:
@@ -58,6 +58,12 @@ ingest_probe_result:
       required: false
       selector:
         object:
+    snmp_status:
+      name: SNMP status
+      description: Non-secret state of the Probe-hosted Net-SNMP daemon.
+      required: false
+      selector:
+        object:
     probe_secret:
       name: Probe secret
       description: Shared secret pinned on the add-on's first authenticated call, defense in depth behind the Supervisor-context check.
@@ -83,6 +89,26 @@ poll_firewall_command:
     probe_secret:
       name: Probe secret
       description: Shared secret pinned on the add-on's first authenticated call, defense in depth behind the Supervisor-context check.
+      required: false
+      selector:
+        text:
+
+poll_snmp_config:
+  name: Poll SNMP configuration
+  description: >-
+    Internal. Polled by the HA SOC Probe for an owner-configured SNMPv3
+    AuthPriv listener. Unchanged polls return only a generation token;
+    credentials are retransmitted only when the configuration changes.
+  fields:
+    generation:
+      name: Configuration generation
+      description: Last configuration generation successfully applied by the Probe.
+      required: false
+      selector:
+        text:
+    probe_secret:
+      name: Probe secret
+      description: Shared secret pinned on the add-on's first authenticated call.
       required: false
       selector:
         text:

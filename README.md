@@ -426,8 +426,8 @@ misconfig checks (`ssh_addon_exposed`, `ssh_addon_inventory`,
 `addon_unprotected`, `ha_config_invalid`) — no add-on needed for those.
 
 **HA SOC Probe** (source at [`ha_soc_probe/`](ha_soc_probe/)) is the
-small, optional, Home-Assistant-OS/Supervised-only add-on for the one
-thing that does need a separate container: it runs with `host_network:
+small, optional, Home-Assistant-OS/Supervised-only add-on for host-scoped
+functions that need a separate container: it runs with `host_network:
 true`, reads the host's real `/proc/net/tcp[6]` connection table, and
 reports every listening TCP port back to the integration via a
 `ha_soc.ingest_probe_result` service call over Supervisor's Core API
@@ -436,13 +436,14 @@ Assistant, no new communication channel invented here. Deliberately
 port + protocol only, never a process name (that would need `host_pid:
 true`, a second elevated privilege this add-on doesn't ask for) and never
 active scanning (it only reads the kernel's own connection table, so it
-never generates outbound traffic).
+never generates outbound traffic). It can also host an optional,
+owner-configured Net-SNMP agent for standards-based monitoring export.
 
-**Who may call the two callback services.** The Supervisor's Core API
+**Who may call the Probe callback services.** The Supervisor's Core API
 proxy forwards every add-on call with the Supervisor's own token and no
 add-on identity, so Core sees each legitimate call as the Supervisor
 system user. HA SOC therefore accepts `ha_soc.ingest_probe_result` and
-`ha_soc.poll_firewall_command` only when the call carries that exact user
+`ha_soc.poll_firewall_command`, and `ha_soc.poll_snmp_config` only when the call carries that exact user
 context; anything else, including an automation with no user context, is
 rejected before the payload is read, audit-logged as
 `probe_auth_rejected`, and raised as a HIGH detection (at most one per
@@ -451,7 +452,7 @@ depth behind that check: a call with no secret is always rejected, the
 comparison is constant-time, and the secret can only ever be pinned by a
 call that already passed the Supervisor check. The owner-only pairing
 reset in Settings still exists for reinstalling the add-on. On Home
-Assistant Core and Container installs the two services are not
+Assistant Core and Container installs the services are not
 registered at all, since no Supervisor exists to legitimately call them.
 
 To install: Settings → Add-ons → Add-on Store → ⋮ → Repositories → add
@@ -588,11 +589,24 @@ same ledger lives in [`ha_soc_probe/DOCS.md`](ha_soc_probe/DOCS.md).
 
 | Grant | Needed by | What the add-on does with it | Without it | How its use is limited |
 | --- | --- | --- | --- | --- |
-| `host_network` | Port report | Shares the host's network namespace so `/proc/net/*` shows the host's real listeners and bind addresses | The report would show the container's own (empty) namespace | Read-only use of `/proc/net`; the add-on opens no listening socket of its own |
+| `host_network` | Port report and optional SNMP | Shares the host's network namespace so `/proc/net/*` and IF-MIB counters describe host interfaces; permits binding the configured host IP | Port data and interface counters would describe only the container | Read-only observation by default; when SNMP is enabled, one explicit-address UDP listener is opened—wildcard binds are rejected |
 | `privileged: [NET_ADMIN]` | Firewall read/test/confirm | Runs `iptables` against the host's real netfilter tables | The firewall card cannot read or write anything; the port report still works | Writes stay in the dedicated `HA_SOC_RULES` chain plus exactly one jump rule at the top of `INPUT` into that chain; full ruleset backup before every apply; local self-contained revert timer |
 | `docker_api` | Resource hard caps | Applies per-container `--cpus`/`--memory` limits through the Docker socket | Hard caps report `denied`/unavailable; the watchdog's Supervisor-API restart and stop actions still work | With Protection Mode on (the default) the Supervisor does not mount the socket at all; slugs are validated against the installed add-on list; only container update calls are issued |
-| `homeassistant_api` | Everything | Delivers port reports and firewall/cap poll results into Core through the Supervisor proxy | The add-on cannot report anything | Calls only the two `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
+| `homeassistant_api` | Everything | Delivers reports and polls firewall/SNMP configuration through the Supervisor proxy | The add-on cannot report anything | Calls only the three internal `ha_soc` services, carrying the pairing secret; Core additionally requires the call to arrive with the Supervisor's own user context |
 | Protection Mode off (your toggle) | Hard caps only | Grants the Docker socket mount | Everything except hard caps works with protection on | The panel states the root-equivalent consequence before any cap is applied, and every application is audited |
+
+### SNMPv3 monitoring export
+
+The Probe can expose host-network, CPU, memory, and container-visible storage
+telemetry to SolarWinds or another standards-compatible NMS. It is disabled by
+default and supports only SNMPv3 USM AuthPriv with SHA-256 authentication,
+AES-128 privacy, a read-only restricted VACM view, and an exact listener IP.
+There is no SNMPv1/v2c mode, community string, write access, wildcard bind, or
+trap sender. Configure it in the owner-only HA SOC Settings tab; credentials
+remain masked and are stored in HA SOC's private secret store.
+
+The exact OIDs, counter math, scope limitations, validation commands, and
+authoritative standards references are in [SNMPv3 monitoring export](docs/SNMPV3.md).
 
 The design exists to answer one question safely: change which ports are
 reachable from where without risking a lockout.

@@ -3,8 +3,8 @@
 This module exists so that every secret HA SOC holds lives in exactly one
 place: a private (0o600), atomically-written Store file of its own
 (".storage/ha_soc.secrets"), separate from the general settings/state store.
-It holds exactly the values behind const.SECRET_SETTING_KEYS (the NVD API
-key, the GitHub token, and the two UniFi API keys) plus the Probe add-on's
+It holds exactly the values behind const.SECRET_SETTING_KEYS (external API
+credentials, the GitHub token, and SNMP passphrases) plus the Probe add-on's
 pairing secret under PROBE_PAIRING_SECRET_KEY, and nothing else; an attempt
 to store any other key is a programming error and raises.
 
