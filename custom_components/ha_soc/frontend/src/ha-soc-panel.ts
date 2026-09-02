@@ -2,7 +2,6 @@ import { LitElement, html, css } from "lit";
 import { customElement, property, state } from "lit/decorators.js";
 import type { HomeAssistant, PanelInfo } from "./types";
 import {
-  labelForTab,
   SOC_WORKSPACES,
   workspaceForTab,
   type HaSocNavigateDetail,
@@ -32,6 +31,7 @@ export class HaSocPanel extends LitElement {
       display: block;
       background: var(--primary-background-color);
       min-height: 100vh;
+      container-type: inline-size;
     }
     .tabs {
       display: flex;
@@ -149,6 +149,22 @@ export class HaSocPanel extends LitElement {
       color: var(--secondary-text-color);
       font-size: 11.5px;
     }
+    .access-indicator {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--success-color, #0f9d58);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .access-indicator::before {
+      content: "";
+      width: 8px;
+      height: 10px;
+      border: 1.5px solid currentColor;
+      border-radius: 5px 5px 4px 4px;
+      clip-path: polygon(50% 0, 100% 18%, 90% 72%, 50% 100%, 10% 72%, 0 18%);
+    }
     .customize-btn {
       font-size: 13px;
       font-weight: 500;
@@ -189,12 +205,24 @@ export class HaSocPanel extends LitElement {
       color: var(--secondary-text-color);
       text-align: center;
     }
-    @media (max-width: 600px) {
+    :host([narrow]) .header {
+      padding-top: 12px;
+    }
+    :host([narrow]) .access-indicator {
+      display: none;
+    }
+    :host([narrow]) .brand-title {
+      font-size: 15px;
+    }
+    :host([narrow]) .brand-context {
+      font-size: 11px;
+    }
+    :host([narrow]) .customize-btn {
+      padding: 7px 10px;
+    }
+    @container (max-width: 420px) {
       .header {
         padding-top: 12px;
-      }
-      .brand-context {
-        display: none;
       }
       .customize-btn {
         padding: 7px 10px;
@@ -203,7 +231,7 @@ export class HaSocPanel extends LitElement {
   `;
 
   @property({ attribute: false }) hass!: HomeAssistant;
-  @property({ attribute: false }) narrow?: boolean;
+  @property({ type: Boolean, reflect: true }) narrow = false;
   @property({ attribute: false }) panel?: PanelInfo;
 
   @state() private _tab: TabId = "dashboard";
@@ -289,16 +317,16 @@ export class HaSocPanel extends LitElement {
       `;
     }
     const activeWorkspace = workspaceForTab(this._tab);
-    const activeTabLabel = labelForTab(this._tab);
     return html`
       <div class="header">
         <div class="brand">
           <span class="brand-mark">SOC</span>
           <span>
-            <span class="brand-title">HA SOC</span>
-            <span class="brand-context">${activeTabLabel}</span>
+            <span class="brand-title">HA SOC Security Console</span>
+            <span class="brand-context">Protected detail workspace</span>
           </span>
         </div>
+        <span class="access-indicator">${this._access.is_owner ? "Owner access" : "Administrator access"}</span>
         ${this._tab === "settings"
           ? html``
           : html`
