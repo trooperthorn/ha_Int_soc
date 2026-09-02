@@ -8,6 +8,7 @@ admin-only gating already applied to every ha_soc/* websocket command
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 
@@ -31,21 +32,26 @@ def _bundle_path() -> str:
     return os.path.join(os.path.dirname(__file__), "frontend", "dist", "ha-soc-panel.js")
 
 
-def _bundle_mtime_sync(bundle_path: str) -> float | None:
-    """The bundle's mtime, or None if it doesn't exist. Disk I/O — run in
-    the executor only (same event-loop rule as integration_security.py's
-    custom_components scan; stat-ing a file on the loop stalls everything
-    on a slow disk)."""
+def _bundle_cache_token_sync(bundle_path: str) -> str | None:
+    """Return a content-derived cache token, or None when the bundle is absent.
+
+    Release archives intentionally use a fixed timestamp for reproducibility,
+    so an mtime cannot identify the deployed JavaScript. File I/O runs in the
+    executor to avoid blocking Home Assistant's event loop.
+    """
     try:
-        return os.path.getmtime(bundle_path)
+        with open(bundle_path, "rb") as bundle:
+            return hashlib.file_digest(bundle, "sha256").hexdigest()[:16]
     except OSError:
         return None
 
 
 async def async_register_panel(hass: HomeAssistant) -> None:
     bundle_path = _bundle_path()
-    mtime = await hass.async_add_executor_job(_bundle_mtime_sync, bundle_path)
-    if mtime is None:
+    cache_token = await hass.async_add_executor_job(
+        _bundle_cache_token_sync, bundle_path
+    )
+    if cache_token is None:
         _LOGGER.warning(
             "HA SOC frontend bundle not found at %s — build frontend/ before "
             "using the panel (see frontend/README.md). Skipping panel registration.",
@@ -53,7 +59,6 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         )
         return
 
-    cache_bust = int(mtime)
     # aiohttp routes live for the lifetime of the Home Assistant process;
     # async_remove_panel() only removes the frontend/sidebar registration.
     # Consequently an integration reload must not add this GET route again.
@@ -88,7 +93,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         hass,
         webcomponent_name=PANEL_NAME,
         frontend_url_path=DOMAIN,
-        module_url=f"{PANEL_URL}?v={cache_bust}",
+        module_url=f"{PANEL_URL}?v={cache_token}",
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         require_admin=True,

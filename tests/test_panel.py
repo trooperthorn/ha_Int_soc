@@ -29,8 +29,23 @@ def panel_mocks(monkeypatch):
     remove_panel = Mock()
     monkeypatch.setattr(panel.panel_custom, "async_register_panel", register_panel)
     monkeypatch.setattr(panel, "async_remove_panel", remove_panel)
-    monkeypatch.setattr(panel, "_bundle_mtime_sync", lambda _path: 1_725_244_800.0)
+    monkeypatch.setattr(
+        panel, "_bundle_cache_token_sync", lambda _path: "0123456789abcdef"
+    )
     return register_panel, remove_panel
+
+
+def test_bundle_cache_token_tracks_content(tmp_path) -> None:
+    bundle = tmp_path / "ha-soc-panel.js"
+    bundle.write_bytes(b"old visual bundle")
+    old_token = panel._bundle_cache_token_sync(str(bundle))
+
+    bundle.write_bytes(b"new visual bundle")
+    new_token = panel._bundle_cache_token_sync(str(bundle))
+
+    assert old_token is not None
+    assert new_token is not None
+    assert old_token != new_token
 
 
 async def test_static_route_is_registered_once_across_reload(panel_mocks) -> None:
