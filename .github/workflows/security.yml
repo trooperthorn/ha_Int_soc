@@ -87,12 +87,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Record the current supported base digest
+        run: docker buildx imagetools inspect ghcr.io/home-assistant/base:3.24
       - name: Build the actual Probe image
         run: docker build --tag local/ha-soc-probe:${{ github.sha }} ha_soc_probe
       - name: Verify the minimal SNMP runtime
         run: |
           docker run --rm --entrypoint /bin/sh local/ha-soc-probe:${{ github.sha }} -c 'snmpd --version >/dev/null'
           docker run --rm --entrypoint /bin/sh local/ha-soc-probe:${{ github.sha }} -c '! command -v snmpset'
+          docker run --rm --entrypoint /bin/sh local/ha-soc-probe:${{ github.sha }} -c '! command -v tempio'
           docker run --rm --entrypoint /bin/sh local/ha-soc-probe:${{ github.sha }} -c 'id ha_soc_snmp >/dev/null'
       # Pinned to the immutable commit behind scan-action v7.4.0. The
       # scanner runs with this workflow's read-only token and a pinned

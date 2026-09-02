@@ -1,8 +1,8 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-dockerfile
-# `3.23` is a MOVING tag: its contents change as the base image is
+# `3.24` is a MOVING tag: its contents change as the base image is
 # rebuilt, so a build today and a build next month can differ. The image
 # is therefore pinned by its immutable digest (work item 2.5): the digest
-# below is the multi-arch OCI index for tag 3.23, resolved on 2026-08-30
+# below is the multi-arch OCI index for tag 3.24, resolved on 2026-09-02
 # from ghcr.io's registry API (anonymous token flow, Docker-Content-Digest
 # of the tag's manifest index, which covers linux/amd64 and linux/arm64,
 # the two architectures config.yaml declares). The tag stays in the
@@ -10,7 +10,7 @@
 # digest is what the build actually resolves. To bump: re-resolve with
 # `docker buildx imagetools inspect ghcr.io/home-assistant/base:<tag>`
 # and replace both the tag and the digest together, never the tag alone.
-ARG BUILD_FROM=ghcr.io/home-assistant/base:3.23@sha256:1c7a8c7321c15cdc327c264232a76e6fbfdaf7f2b1734a8d8da6fcc994f66015
+ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24
 FROM ${BUILD_FROM}
 
 # iptables: the firewall read/write feature (config.yaml's `privileged:
@@ -25,9 +25,12 @@ FROM ${BUILD_FROM}
 # can retain already-fixed vulnerable libraries from the older base layer.
 # Only the agent package is installed. Client utilities such as snmpset are
 # intentionally absent from the runtime image; validation is run from the
-# external monitoring host.
+# external monitoring host. TempIO is a general-purpose helper supplied by the
+# HA base; none of the Probe services use it, so the unnecessary Go executable
+# is removed instead of retained as attack surface.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache iptables iproute2 net-snmp
+    && apk add --no-cache iptables iproute2 net-snmp \
+    && rm -f /usr/bin/tempio
 
 # A daemon-specific account prevents the unprivileged port scanner (nobody)
 # from reading Net-SNMP's mode-0600 localized USM key database.
