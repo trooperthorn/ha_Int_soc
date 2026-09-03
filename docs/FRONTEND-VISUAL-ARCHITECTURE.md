@@ -86,14 +86,14 @@ records.
 
 ## Delivery phases
 
-### Phase 1 — console shell and Overview
+### Phase 1: console shell and Overview
 
 - Introduce the six-workspace navigation shell.
 - Preserve every existing leaf component and authorization check.
 - Restyle Overview KPIs, posture, trend, availability, and severity visuals.
 - Keep the existing Customize store and component unchanged.
 
-### Phase 2 — workspace composition
+### Phase 2: workspace composition
 
 - Align Assets, Findings, Identity, and SIEM views with the approved hierarchy.
 - Remove duplicated summary content only after its destination workspace has a
@@ -101,7 +101,7 @@ records.
 - Standardize table toolbars, empty states, severity labels, and drill-down
   behavior.
 
-### Phase 3 — optional Lovelace summary
+### Phase 3: optional Lovelace summary
 
 - Define and review an explicit low-sensitivity aggregate entity contract.
 - Make expanded summary entities opt-in.

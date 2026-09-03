@@ -6,7 +6,7 @@ visibility into what's actually listening on the Home Assistant **host**,
 which a Python integration cannot see from inside its own container even
 on Home Assistant OS. Everything else HA SOC's design docs once considered
 bundling into an add-on (SSH-add-on exposure, HA's own config-check
-status) turned out to be reachable from inside the integration itself —
+status) turned out to be reachable from inside the integration itself -
 see that repo's README for the full reasoning. This add-on does the one
 thing that genuinely needs a separate, host-network-attached container,
 and, when explicitly enabled, a tightly scoped Net-SNMP data plane for an
@@ -15,33 +15,33 @@ external monitoring system.
 ## What it does
 
 Every `scan_interval_hours` (default 6), this add-on reads the host's
-`/proc/net/tcp` and `/proc/net/tcp6` connection tables — visible here only
+`/proc/net/tcp` and `/proc/net/tcp6` connection tables, visible here only
 because `host_network: true` puts this container on the host's own
-network namespace — and reports every port in `LISTEN` state to the HA
+network namespace, and reports every port in `LISTEN` state to the HA
 SOC integration via its `ha_soc.ingest_probe_result` service, over
 Supervisor's Core API proxy (`SUPERVISOR_TOKEN` + `homeassistant_api`
-permission — no separate credentials or setup on your end).
+permission, no separate credentials or setup on your end).
 
 A second background service polls the HA SOC integration every ~5
 seconds for a proposed firewall change and, when one is pending, applies
 it to a dedicated `HA_SOC_RULES` iptables chain (see "Firewall rules"
 below). This is the one thing this add-on ever writes rather than just
-reads — everything else it does is observation only.
+reads, everything else it does is observation only.
 
 A third service polls owner-only SNMP configuration every 30 seconds. SNMP
 is off by default. When enabled it runs Net-SNMP with SNMPv3 AuthPriv only,
 SHA-256/AES-128, a read-only VACM view, and one exact host address. See
 [`docs/SNMPV3.md`](../docs/SNMPV3.md) for the exposed MIB subtrees and scope.
 
-If a report is rejected — most commonly a brief window of HTTP 400 right
+If a report is rejected, most commonly a brief window of HTTP 400 right
 after Home Assistant Core itself restarts, while the HA SOC integration
-is still loading — this add-on does not wait out the full
+is still loading, this add-on does not wait out the full
 `scan_interval_hours` before trying again. It holds in a short, capped
 retry loop (30s, backing off to a 5-minute cap) instead, logging a clear
-"Holding — ..." warning on every attempt, so a half-connected setup shows
+"Holding, ..." warning on every attempt, so a half-connected setup shows
 up in this add-on's own log rather than silently going quiet for hours.
 If it stays in that state for more than 30 minutes, the HA SOC
-integration itself also raises a Repairs issue (Settings > Repairs) —
+integration itself also raises a Repairs issue (Settings > Repairs) -
 visible even to someone who never opens the add-on's log at all.
 
 ## How Home Assistant authenticates this add-on's calls
@@ -68,7 +68,7 @@ taken first.
 
 **Why this needed a new privilege.** Running `iptables` against the
 host's real netfilter tables needs a real `CAP_NET_ADMIN`, which Docker
-strips from every container by default — `host_network: true` alone
+strips from every container by default, `host_network: true` alone
 isn't enough. This add-on's `config.yaml` declares
 `privileged: [NET_ADMIN]` for it.
 
@@ -120,14 +120,14 @@ A proposed ruleset is never permanent on arrival:
    complete.
 2. A confirmation window opens (roughly 30–60 seconds, set by HA SOC).
    The instant the rules are applied, this add-on arms a **local** revert
-   timer — a plain backgrounded `sleep` inside this same process, not a
+   timer, a plain backgrounded `sleep` inside this same process, not a
    scheduled callback from Home Assistant. This is deliberate: if the new
    rules break the very network path HA Core would need to tell this
    add-on to revert, the revert still has to happen without that path
    working. Nothing about the revert depends on anything outside this
    container.
 3. If you confirm within the window, the rules stay and the timer becomes
-   a no-op. If you don't — or you cancel immediately — the pre-change
+   a no-op. If you don't, or you cancel immediately, the pre-change
    backup is restored automatically.
 4. If this add-on itself crashes or restarts while a test is still
    unconfirmed (the local timer from step 2 dies with the old process),
@@ -172,7 +172,7 @@ hook is verified to exist, so an empty `HA_SOC_RULES` chain and its one
 ## Resource hard caps (optional, off by default)
 
 The HA SOC panel can configure real Docker limits (memory / CPUs) per
-add-on — the per-container cap Supervisor itself has no API for. This
+add-on, the per-container cap Supervisor itself has no API for. This
 add-on receives those caps on the same poll channel as firewall work and
 applies them against the Docker socket (`config.yaml`'s `docker_api`).
 
@@ -182,12 +182,12 @@ Two things to know before using it:
   protection on (the default), the Supervisor does not mount the Docker
   socket into this container at all, so every
   application honestly reports *denied* back to the panel. Disabling
-  Protection Mode is a root-equivalent grant to this add-on — the panel
+  Protection Mode is a root-equivalent grant to this add-on, the panel
   says so before anything is applied, and users who don't use hard caps
   lose nothing by leaving protection on.
 - **Caps are re-applied every ~60 s, by design.** Supervisor recreates
   add-on containers on update/restart, silently dropping any Docker-level
-  limit — idempotent re-application is the only way a cap actually
+  limit, idempotent re-application is the only way a cap actually
   persists across the platform's own lifecycle. Removing a cap in the
   panel resets that container to unlimited on the next pass.
 
@@ -202,8 +202,8 @@ Supervisor's own add-on watchdog restarts it if enabled.
   privilege on top of `host_network`. That's a real security cost for a
   nice-to-have, so this add-on doesn't ask for it. The HA SOC panel shows
   port + protocol only.
-- **No active scanning.** This reads the kernel's own connection table —
-  the same data `netstat`/`ss` show — rather than connecting outward to
+- **No active scanning.** This reads the kernel's own connection table -
+  the same data `netstat`/`ss` show, rather than connecting outward to
   probe ports, so it never generates outbound traffic or triggers an IDS
   on your own network.
 - **No UDP port-inventory claims.** `/proc/net/udp[6]` has no meaningful
@@ -222,7 +222,7 @@ scan_interval_hours: 6
 ## Requirements
 
 - Home Assistant OS or Supervised. This add-on cannot run on Core or
-  Container installs — host-level network visibility isn't something
+  Container installs, host-level network visibility isn't something
   Supervisor can grant outside of Home Assistant OS/Supervised.
 - The HA SOC integration installed and loaded, since this add-on's only
   job is calling into it.
