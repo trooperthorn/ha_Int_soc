@@ -84,7 +84,7 @@ async def test_device_overview_status_buckets_and_risk_score(hass: HomeAssistant
     assert by_id[available_device.id]["status"] == DEVICE_STATUS_AVAILABLE
     assert by_id[available_device.id]["risk_score"] == 0.0
 
-    # A critical CVE finding must NOT change the availability status — it's
+    # A critical CVE finding must NOT change the availability status, it's
     # a separate axis, only risk_score/severity_counts reflect it.
     assert by_id[unavailable_device.id]["status"] == DEVICE_STATUS_UNAVAILABLE
     assert by_id[unavailable_device.id]["risk_score"] == 9.1

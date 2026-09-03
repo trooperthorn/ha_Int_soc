@@ -1,34 +1,5 @@
-"""MFA non-compliance enforcement — the one place HA SOC acts on MFA state
-rather than just reporting it.
-
-Home Assistant core has no hook to *require* MFA for a user (see
-users.py's module docstring: there is no "reject login without a second
-factor" mechanism an integration can attach to). What core does expose is
-`async_deactivate_user` — a real, enforceable action. So the
-`auto_deactivate` policy doesn't pretend to force MFA; once an admin has
-stayed out of compliance past the configured grace period, it deactivates
-the account, the same real-world outcome a human admin would eventually
-reach by hand. The default policy, `audit_only`, never calls this — it
-leaves enforcement to the existing Repairs issue and risk-score factor
-(repairs.py, risk.py), matching what this module replaces if disabled.
-
-The account owner is never evaluated here, deliberately: HA's own auth
-store refuses to deactivate the owner (`async_deactivate_user` raises
-ValueError), and locking out the one account that manages the whole
-install would be a self-inflicted outage, not a security improvement.
-
-Scope of assessment (work item 3.11, decision D-18 option (a)): this
-policy assesses Home Assistant's OWN MFA modules only - it cannot see a
-second factor enforced upstream by an SSO/header-auth proxy, an identity
-provider, or anything else outside hass.auth. A user whose only
-credentials come from a non-`homeassistant` auth provider is therefore
-exempt from `auto_deactivate` and reported as "MFA not assessable"
-(users.py sets `mfa_assessable` on the user payload; the Users view
-renders the marker from that field): deactivating an externally-MFA'd
-admin for "missing" a factor HA cannot observe would punish a compliant
-account. An instance that authenticates entirely through such an external
-proxy should keep the default `audit_only` policy - auto_deactivate has
-nothing it can honestly judge there.
+"""MFA non-compliance enforcement: the one place HA SOC acts on MFA state
+rather than just reporting it. Policy rationale in docs/security.md.
 """
 from __future__ import annotations
 
@@ -46,11 +17,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 def _is_noncompliant(user: dict[str, Any]) -> bool:
-    # mfa_assessable defaults True for a record that predates the field:
-    # failing open here would mean "cannot assess, so exempt", quietly
-    # widening the exemption to every stale payload - the D-18 exemption
-    # applies only when users.py positively established that the user's
-    # credentials all come from a non-homeassistant provider.
+    # Defaults True: a record predating mfa_assessable must not be exempted.
     return bool(
         user.get("is_admin")
         and not user.get("is_owner")
@@ -68,14 +35,8 @@ async def async_enforce_mfa_policy(
 ) -> list[str]:
     """Track non-compliance duration and, under auto_deactivate, act on it.
 
-    Always runs the bookkeeping half (starting/clearing each noncompliant
-    admin's grace-period clock) regardless of policy, so switching from
-    audit_only to auto_deactivate doesn't instantly deactivate everyone who
-    has been sitting out of compliance for a while — they still get a full
-    grace period measured from when this actually started tracking them.
-
-    Returns the user_ids deactivated on this pass (always empty unless the
-    policy is auto_deactivate and at least one grace period has expired).
+    The grace-period bookkeeping runs under every policy. Returns the
+    user_ids deactivated on this pass.
     """
     settings = store.settings
     grace_started = store.data["mfa_grace_started"]

@@ -1,10 +1,6 @@
-"""Sidebar panel registration — the Alarmo/Browser Mod pattern.
+"""Sidebar panel registration, the Alarmo/Browser Mod pattern.
 
-Serves the committed frontend bundle (frontend/dist/ha-soc-panel.js) as a
-static path, then registers it as a custom panel. require_admin=True hides
-the panel from non-admin sidebars; it is not a substitute for the
-admin-only gating already applied to every ha_soc/* websocket command
-(panel visibility alone never protects data — see websocket_api.py).
+require_admin=True only hides the sidebar entry; the websocket commands carry the real gate.
 """
 from __future__ import annotations
 
@@ -35,9 +31,7 @@ def _bundle_path() -> str:
 def _bundle_cache_token_sync(bundle_path: str) -> str | None:
     """Return a content-derived cache token, or None when the bundle is absent.
 
-    Release archives intentionally use a fixed timestamp for reproducibility,
-    so an mtime cannot identify the deployed JavaScript. File I/O runs in the
-    executor to avoid blocking Home Assistant's event loop.
+    Blocking file I/O; call from the executor only.
     """
     try:
         with open(bundle_path, "rb") as bundle:
@@ -59,13 +53,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         )
         return
 
-    # aiohttp routes live for the lifetime of the Home Assistant process;
-    # async_remove_panel() only removes the frontend/sidebar registration.
-    # Consequently an integration reload must not add this GET route again.
-    #
-    # The RuntimeError recovery also covers the upgrade path from an older HA
-    # SOC build: its route can already exist in the current process before this
-    # process-local marker is introduced.
+    # aiohttp routes outlive async_remove_panel(); never re-add the GET route on reload.
     if not hass.data.get(_DATA_STATIC_PATH_REGISTERED):
         try:
             await hass.http.async_register_static_paths(
@@ -84,10 +72,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
             )
         hass.data[_DATA_STATIC_PATH_REGISTERED] = True
 
-    # A failed setup can leave the frontend panel registered even though the
-    # config entry never reached its normal unload path. Replace our own panel
-    # registration deterministically before adding the current cache-busted
-    # module URL.
+    # A failed setup can leave a stale panel registered; replace it deterministically.
     async_remove_panel(hass, DOMAIN, warn_if_unknown=False)
     await panel_custom.async_register_panel(
         hass,

@@ -65,9 +65,6 @@ def _factor(result: dict, name: str) -> dict | None:
     return next((f for f in result["factors"] if f["name"] == name), None)
 
 
-# -- 3.5: reachable never_logged_in ----------------------------------------
-
-
 async def test_never_logged_in_fires_for_credentialed_user(
     hass: HomeAssistant, store: HaSocData
 ) -> None:
@@ -121,9 +118,6 @@ async def test_never_logged_in_age_gate_applies_when_age_is_known(
     assert "30d-old" in factor["detail"]
 
 
-# -- 3.5: factor arithmetic ------------------------------------------------
-
-
 async def test_risk_factors_reconcile(hass: HomeAssistant, store: HaSocData) -> None:
     """applied_points sums exactly to the clamped score even when the raw
     factor total blows past 100."""
@@ -165,9 +159,6 @@ async def test_llat_bonus_applies_before_cap(hass: HomeAssistant, store: HaSocDa
     assert factor["points"] == 12
 
 
-# -- 3.2/3.0: tunable risk caps --------------------------------------------
-
-
 async def test_disabled_user_activity_capped(hass: HomeAssistant, store: HaSocData) -> None:
     """Six open disabled-user detections (120 raw points) cap at the
     secure default of 40; a non-default cap is read live."""
@@ -204,9 +195,6 @@ async def test_privilege_escalation_capped(hass: HomeAssistant, store: HaSocData
     )
     result = engine._compute_user_risk(user, detections, dt_util.utcnow())
     assert _factor(result, "privilege_escalation")["points"] == 8
-
-
-# -- 3.4: provisional posture ----------------------------------------------
 
 
 async def test_posture_provisional_until_complete(hass: HomeAssistant, store: HaSocData) -> None:

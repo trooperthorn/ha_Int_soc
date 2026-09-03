@@ -1,39 +1,15 @@
 # https://developers.home-assistant.io/docs/add-ons/configuration#add-on-dockerfile
-# `3.24` is a MOVING tag: its contents change as the base image is
-# rebuilt, so a build today and a build next month can differ. The image
-# is therefore pinned by its immutable digest (work item 2.5): the digest
-# below is the multi-arch OCI index for tag 3.24, resolved on 2026-09-02
-# from ghcr.io's registry API (anonymous token flow, Docker-Content-Digest
-# of the tag's manifest index, which covers linux/amd64 and linux/arm64,
-# the two architectures config.yaml declares). The tag stays in the
-# reference so a human can still see which release the digest froze; the
-# digest is what the build actually resolves. To bump: re-resolve with
-# `docker buildx imagetools inspect ghcr.io/home-assistant/base:<tag>`
-# and replace both the tag and the digest together, never the tag alone.
+# 3.24 is a moving tag, so the digest is what the build resolves; bump tag and digest together (docker buildx imagetools inspect).
 ARG BUILD_FROM=ghcr.io/home-assistant/base:3.24@sha256:93ef607824e3f27e868f11b10938283a98bf880ed57bcf8eaa81c6c2d521f6f5
 FROM ${BUILD_FROM}
 
-# iptables: the firewall read/write feature (config.yaml's `privileged:
-# [NET_ADMIN]`) needs the real iptables/iptables-save/iptables-restore
-# binaries, not busybox's stub. iproute2: `ip -4 -o addr show`, already
-# relied on by the existing port scanner to resolve a bind address to its
-# owning interface — pinning it explicitly rather than continuing to rely
-# on it merely happening to be present in the base image.
-# Upgrade packages inherited from the immutable base digest before adding the
-# Probe runtime. The base is intentionally reproducible, but Alpine security
-# fixes continue after that digest is published; without this step, rebuilding
-# can retain already-fixed vulnerable libraries from the older base layer.
-# Only the agent package is installed. Client utilities such as snmpset are
-# intentionally absent from the runtime image; validation is run from the
-# external monitoring host. TempIO is a general-purpose helper supplied by the
-# HA base; none of the Probe services use it, so the unnecessary Go executable
-# is removed instead of retained as attack surface.
+# apk upgrade pulls Alpine fixes published after the base digest.
+# Real iptables and iproute2 binaries, not busybox stubs; snmpset and tempio are deliberately absent.
 RUN apk upgrade --no-cache \
     && apk add --no-cache iptables iproute2 net-snmp \
     && rm -f /usr/bin/tempio
 
-# A daemon-specific account prevents the unprivileged port scanner (nobody)
-# from reading Net-SNMP's mode-0600 localized USM key database.
+# A dedicated account keeps the nobody scanner from reading Net-SNMP's mode-0600 USM key database.
 RUN addgroup -S ha_soc_snmp \
     && adduser -S -D -H -s /sbin/nologin -G ha_soc_snmp ha_soc_snmp
 

@@ -31,9 +31,7 @@ const NAMED_INTEGRATION_SOURCE_LABELS: { domain: string; label: string }[] = [
   { domain: "emporia_vue", label: "Emporia Vue" },
 ];
 
-// Display names for the detection rules whose thresholds render below.
-// Any rule id the backend adds later still renders, falling back to the
-// raw id, so this list can lag without hiding a control.
+// Display names for detection rules; an unknown id falls back to the raw id.
 const DETECTION_RULE_LABELS: Record<string, string> = {
   brute_force_ip: "Brute force (per source IP)",
   success_after_failures: "Success after failed logins",
@@ -56,11 +54,7 @@ export class HaSocSettingsView extends LitElement {
   @state() private _security: SecurityOverview | null = null;
   @state() private _thresholds: DetectionThresholdTable | null = null;
   @state() private _loading = true;
-  // Non-null when fetchSettings itself failed (the security/threshold
-  // sub-loads already degrade independently below). Without this, a
-  // failed load left the page reading "Loading settings..." forever,
-  // which looks like a stuck page rather than a failure (work plan item
-  // 4.12).
+  // Non-null when fetchSettings failed; the sub-loads degrade independently.
   @state() private _error: string | null = null;
 
   connectedCallback(): void {
@@ -73,28 +67,20 @@ export class HaSocSettingsView extends LitElement {
     this._error = null;
     try {
       this._settings = await fetchSettings(this.hass);
-      // Fetched separately: a failure here (e.g. the security_health
-      // websocket command erroring) must never block settings from
-      // loading — it only means the Integrations Loaded status/link
-      // below degrades to "not installed" until the next successful load,
-      // not that the whole page gets stuck on "Loading settings…".
+      // Fetched separately: a failure only degrades the Integrations Loaded status, never blocks settings.
       try {
         this._security = await fetchSecurityHealth(this.hass);
       } catch {
         this._security = null;
       }
-      // Same isolation for the threshold table: without it the card
-      // degrades to a short "could not load" line, not a stuck page.
+      // Same isolation: the threshold card degrades to a "could not load" line.
       try {
         this._thresholds = await fetchDetectionThresholds(this.hass);
       } catch {
         this._thresholds = null;
       }
     } catch (err: any) {
-      // Unlike the two isolated sub-loads above, fetchSettings itself
-      // failing must not be swallowed: the whole page has nothing to
-      // show without it, and "Loading settings..." forever looks like a
-      // stuck page rather than a failure.
+      // fetchSettings failing must not be swallowed; the page has nothing to show without it.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
@@ -102,8 +88,7 @@ export class HaSocSettingsView extends LitElement {
   }
 
   private async _updateThreshold(rule: string, param: string, value: number | boolean) {
-    // Sends only the touched field; the server merges per field and
-    // audits a per-field diff (work item 3.0).
+    // Sends only the touched field; the server merges and audits a per-field diff.
     await updateSettings(this.hass, {
       detection_thresholds: { [rule]: { [param]: value } },
     } as Partial<HaSocSettings>);
@@ -114,12 +99,7 @@ export class HaSocSettingsView extends LitElement {
     this._thresholds = await resetDetectionThresholds(this.hass);
   }
 
-  // Applies immediately, like every other tab's toggles (permissions-view's
-  // require_admin/show_in_sidebar, scanner-view's status selects) — no
-  // separate Save step to forget. A control that only stages a change
-  // locally can't survive a tab switch (each view remounts fresh from the
-  // backend), which read as "my selection didn't take" even though it
-  // technically just wasn't saved yet.
+  // Applies immediately like every other tab's toggles; a staged-only change would not survive a tab switch.
   private async _update<K extends keyof HaSocSettings>(key: K, value: HaSocSettings[K]) {
     if (!this._settings) return;
     const previous = this._settings;
@@ -137,9 +117,7 @@ export class HaSocSettingsView extends LitElement {
     this._update("security_sources_enabled", { ...this._settings.security_sources_enabled, [domain]: enabled });
   }
 
-  // Secret fields are never pre-filled with their value (the backend only
-  // ever sends a mask). An empty, untouched field never fires @change, so
-  // it can't accidentally clear a stored secret; typing a value sets it.
+  // Secrets are never pre-filled; an untouched empty field never fires @change, so it cannot clear a secret.
   private _renderSecretField(
     label: string,
     key:

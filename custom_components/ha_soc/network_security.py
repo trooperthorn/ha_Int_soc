@@ -1,49 +1,10 @@
-"""Network Security tab — advisory findings tying together UniFi ACL rules,
+"""Network Security tab: advisory findings tying together UniFi ACL rules,
 UniFi Firewall Policies, the HA server's own open ports, and Pi-hole's
 DNS-level IoT visibility.
 
-ACL Rules and Firewall Policies are two genuinely separate UniFi resources,
-not two names for the same thing — confirmed against a live controller
-whose ACL Rules endpoint returned zero rules while its real allow/deny
-configuration lived entirely under Firewall Policies, the zone-based
-mechanism current UniFi Network firmware shows by default (Settings ->
-Security -> Create Policy). Both are read here and analyzed with the same
-posture; see unifi.py's "Firewall Policies" section for the schema.
-
 This module never mutates anything and never talks to the network itself;
-``async_network_security_overview`` is a thin wrapper that fetches the two
-existing read-only snapshots (unifi.async_network_overview,
-pihole.async_pihole_overview) and hands them to ``build_findings``, a pure
-function with no I/O so it can be unit tested against fixed input the way
-config_hygiene.py's checks are.
-
-Every finding here is advisory only — a suggestion for the account owner to
-look at, never a verdict and never something this project enforces or
-auto-remediates. That matches the Scanner tab's own posture: this project
-observes and reports on network security controls it does not own; it does
-not edit UniFi ACL rules, does not toggle Pi-hole blocking, and does not
-reassign Pi-hole clients to groups. A finding fires only when the
-underlying data actually supports the specific claim being made — no
-finding here guesses at which UniFi network is "the IoT network" beyond
-what the owner has explicitly told Pi-hole (the ``pihole_iot_cidr``
-setting), because the Integration API's client/device rows in this build
-were not verified to expose a reliable per-network IP-subnet mapping HA SOC
-could use to infer that on its own (see unifi.py's
-correlate_server_ports_with_rules docstring for the same caveat applied to
-port coverage).
-
-Explicitly out of scope for this version, and why: a dismiss/resolve
-lifecycle like vulns.py's CVE findings or config_hygiene.py's registry
-checks. Those findings are about state that changes slowly and needs a
-persisted "an owner already looked at this and dismissed it" record across
-restarts. These findings are about live network/DNS configuration that can
-change from one refresh to the next (a rule edited in the UniFi app, Pi-hole
-blocking toggled from its own UI) — recomputing them fresh on every fetch,
-the same way the ACL report itself already works, is more honest than a
-persisted status that could silently go stale. If sustained false-positive
-noise from a real deployment argues for dismissal state later, add it then;
-building it now would be exactly the kind of premature persistence layer
-this project's own conventions warn against.
+``build_findings`` is a pure function over the UniFi and Pi-hole snapshots
+(design and scope decisions: docs/design.md, docs/decisions.md).
 """
 from __future__ import annotations
 
@@ -81,11 +42,8 @@ def _finding(
 
 
 def _acl_findings(acl: dict[str, Any]) -> list[dict[str, Any]]:
-    """ACL-Rules-specific findings. Whether ANY rules are configured at all
-    (across both ACL Rules and Firewall Policies) is handled separately by
-    _no_rules_finding, since an install using only Firewall Policies — the
-    UI UniFi shows by default — is not missing anything just because ACL
-    Rules specifically is empty."""
+    """ACL-Rules-specific findings; the "no rules at all" case is handled by
+    _no_rules_finding."""
     findings: list[dict[str, Any]] = []
     if not acl.get("available"):
         return findings  # unifi.py already surfaces the "why" via acl.error
@@ -121,11 +79,8 @@ def _acl_findings(acl: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _firewall_policy_findings(fw: dict[str, Any]) -> list[dict[str, Any]]:
-    """Firewall-Policy-specific findings, mirroring _acl_findings' broad-
-    allow check but adapted to the zone-based schema: every policy is
-    always scoped to a source/destination zone pair (zoneId is required),
-    so "broad" here means "no traffic filter narrowing beyond that zone
-    pair" rather than "no scoping at all"."""
+    """Firewall-Policy-specific findings; "broad" means no traffic filter
+    beyond the mandatory zone pair."""
     findings: list[dict[str, Any]] = []
     if not fw.get("available"):
         return findings  # unifi.py already surfaces the "why" via firewall_policies.error
@@ -160,12 +115,8 @@ def _firewall_policy_findings(fw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _no_rules_finding(acl: dict[str, Any], fw: dict[str, Any]) -> list[dict[str, Any]]:
-    """One combined informational finding for "neither rule mechanism has
-    anything configured" — fires only when BOTH ACL Rules and Firewall
-    Policies were successfully read AND both came back empty, never when
-    either side is merely unavailable (unreadable is not evidence of
-    empty) or when only one of the two is empty (the other one covering
-    your traffic is not a gap)."""
+    """One informational finding when both ACL Rules and Firewall Policies
+    were read successfully and both came back empty."""
     acl_confirmed_empty = bool(acl.get("available")) and not (acl.get("rules") or [])
     fw_confirmed_empty = bool(fw.get("available")) and not (fw.get("rules") or [])
     if not (acl_confirmed_empty and fw_confirmed_empty):
@@ -281,8 +232,7 @@ def build_findings(
     unifi_overview: dict[str, Any], pihole_overview: dict[str, Any]
 ) -> list[dict[str, Any]]:
     """Pure combination of the two snapshots into an advisory findings list,
-    highest severity first, then stable by id. No I/O, no persistence —
-    safe to call repeatedly with the same input and get the same output."""
+    highest severity first, then stable by id. No I/O, no persistence."""
     acl = unifi_overview.get("acl") or {}
     firewall_policies = unifi_overview.get("firewall_policies") or {}
     findings: list[dict[str, Any]] = []
@@ -298,13 +248,8 @@ def build_findings(
 
 
 def _client_summaries(clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """A lightweight projection of the Network tab's client rows — just
-    enough to match a rule/policy's source/destination IP/subnet/MAC
-    against a real device and show its name (see network-security-view.ts's
-    device tie-in). Deliberately drops bandwidth/uptime/integration-match/
-    every other field the Network tab's own table needs but a security-
-    rule audit doesn't, so this snapshot doesn't grow a second copy of the
-    full client detail payload."""
+    """A lightweight projection of the Network tab's client rows: just enough
+    to match a rule's source/destination against a real device."""
     out = []
     for c in clients:
         out.append(
@@ -322,13 +267,9 @@ def _client_summaries(clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
 async def async_network_security_overview(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
-    """Everything the Network Security tab renders in one snapshot: the ACL
-    rules report, Firewall Policies report, and server-port correlation
-    (all already computed inside the UniFi overview), a lightweight client
-    list for tying a rule's source/destination back to a real device on
-    the Network tab, the Pi-hole overview, and the findings derived from
-    all of it. Never raises — both underlying fetchers already degrade to
-    reachable=False with a human-readable error on failure."""
+    """Everything the Network Security tab renders in one snapshot. Never
+    raises: both underlying fetchers degrade to reachable=False with a
+    human-readable error."""
     from .unifi import async_network_overview
 
     unifi_overview = await async_network_overview(hass, store, secrets)

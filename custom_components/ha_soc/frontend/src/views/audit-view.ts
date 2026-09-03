@@ -14,8 +14,7 @@ import {
   verifyAuditChain,
 } from "../data/ha-soc-ws";
 
-// [category value, display label]. Must track every category audit.py can
-// write, or records become reachable only through "All categories".
+// [category value, display label]; must track every category audit.py can write.
 const CATEGORIES: [string, string][] = [
   ["", "All categories"],
   ["service_call", "Service call"],
@@ -51,9 +50,7 @@ export class HaSocAuditView extends HaSocCustomizableView {
   @state() private _events: AuditEvent[] = [];
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
-  // Non-null when the query failed: rendered as a distinct could-not-load
-  // state with the server's message, never an empty "no matching events".
-  // The two must never be visually the same thing (work plan item 4.12).
+  // Non-null when the query failed; rendered distinctly from "no matching events".
   @state() private _error: string | null = null;
   @state() private _category = "";
   @state() private _userId = "";
@@ -73,9 +70,7 @@ export class HaSocAuditView extends HaSocCustomizableView {
   }
 
   private async _loadUsers() {
-    // Independent of _load()'s filtered event query — this is just the
-    // lookup table for rendering names and populating the filter, loaded
-    // once rather than re-fetched on every filter change.
+    // Lookup table only, loaded once rather than on every filter change.
     this._users = await fetchUsers(this.hass);
   }
 
@@ -89,8 +84,6 @@ export class HaSocAuditView extends HaSocCustomizableView {
         limit: 200,
       });
     } catch (err: any) {
-      // "No matching events" and "the query itself failed" must never
-      // look the same; store the server's message and show it distinctly.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
@@ -107,8 +100,7 @@ export class HaSocAuditView extends HaSocCustomizableView {
   }
 
   private async _onCategoryStats() {
-    // On demand rather than on every load: the server scans the newest
-    // day's file(s) each call, which is cheap but not free.
+    // On demand: the server scans the newest day's files each call.
     this._stats = await fetchAuditCategoryStats(this.hass);
   }
 
@@ -123,10 +115,7 @@ export class HaSocAuditView extends HaSocCustomizableView {
   }
 
   render() {
-    // With no sort chosen the server's newest-first order is kept as-is
-    // (sortRows passes rows through on a null state). Time sorts by the
-    // parsed timestamp, not the locale string; User sorts by the resolved
-    // display name so it matches what is on screen.
+    // null keeps the server's newest-first order; Time sorts by parsed timestamp, User by display name.
     const s = this._sort;
     const on = (next: SortState) => {
       this._sort = next;

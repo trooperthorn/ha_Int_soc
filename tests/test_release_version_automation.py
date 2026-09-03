@@ -16,6 +16,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _version_fixture(tmp_path: Path, version: str = "2026.09.02.2") -> Path:
     repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".release.json").write_text(
+        (ROOT / ".release.json").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     manifest = repository / "custom_components/ha_soc/manifest.json"
     probe = repository / "ha_soc_probe/config.yaml"
     scanner = repository / "ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run"

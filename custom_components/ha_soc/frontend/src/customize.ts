@@ -2,40 +2,17 @@ import { LitElement, html, css, nothing } from "lit";
 import { customElement, property } from "lit/decorators.js";
 
 /**
- * Shared "Customize" layout — per-user card order/visibility for every
- * card-based view in the panel (Dashboard, Network, Network Security,
- * etc.). One component (<ha-soc-customize-list>) owns all the reorder/
- * show-hide mechanics so each view only needs to describe its own cards
- * as a plain array and wire up load/save; see network-security-view.ts
- * for the reference usage.
- *
- * Interaction model, deliberately: editMode shows a compact, reorderable
- * CHROME list (title + drag handle + Up/Down buttons + Show/Hide toggle)
- * rather than live-dragging each card's full rendered content. Cards in
- * this panel can be large tables; re-rendering/measuring them on every
- * dragover would be slow and janky for no real benefit — the title alone
- * is enough to recognize and reorder a section. Exiting edit mode renders
- * the actual cards in the arranged order, respecting hidden sections.
- *
- * Reordering has two equivalent paths so this is fully keyboard-usable,
- * not mouse/touch-only the way native HTML5 drag-and-drop alone would be:
- * Up/Down buttons (real <button>s, tab/Enter/Space all work for free) and
- * native drag via the handle as a progressive-enhancement shortcut. Both
- * converge on the same _move()/emitChange() path.
+ * Shared "Customize" layout: per-user card order/visibility for every
+ * card-based view in the panel. <ha-soc-customize-list> owns the reorder and
+ * show-hide mechanics; see network-security-view.ts for the reference usage.
  */
 
 export interface LayoutSection {
   id: string;
   title: string;
-  // `unknown`, not TemplateResult: a section's render method is usually
-  // one of a view's existing private _renderX() methods, several of which
-  // legitimately return lit's `nothing` sentinel (a unique symbol, not a
-  // TemplateResult) when there's nothing to show — the same value any
-  // ${...} expression inside an html`` template already accepts.
+  // `unknown`, not TemplateResult: section renderers may return lit's `nothing` sentinel, as any html`` expression accepts.
   render: () => unknown;
-  // false for a section central enough to the page that hiding it would
-  // leave the tab pointless (e.g. a single-card view's only card) — still
-  // freely reorderable, just never offered a Hide button.
+  // false for a section whose hiding would leave the tab pointless; still reorderable, never offered Hide.
   hideable?: boolean;
 }
 
@@ -47,14 +24,8 @@ export interface LayoutState {
 export const EMPTY_LAYOUT: LayoutState = { order: [], hidden: [] };
 
 /**
- * Every declared section, in the user's stored order where they've
- * customized it, falling back to each view's own declared array order —
- * and a section id in stored order that the view no longer declares (an
- * old id from a since-removed card) is silently dropped, never rendered
- * as a blank slot. A section the view added AFTER the user last
- * customized (an id absent from stored order) is appended at the end
- * rather than vanishing, so a future new card is never silently hidden
- * by a stale layout.
+ * Every declared section in the user's stored order, falling back to the
+ * view's declared order; stale stored ids are dropped, new ids are appended.
  */
 export function effectiveOrder(sections: LayoutSection[], layout: LayoutState): LayoutSection[] {
   const byId = new Map(sections.map((s) => [s.id, s]));

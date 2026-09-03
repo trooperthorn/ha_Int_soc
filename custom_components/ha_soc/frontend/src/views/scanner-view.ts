@@ -40,12 +40,7 @@ function severityRank(severity: string): number {
   return i === -1 ? SEVERITY_ORDER.length : i;
 }
 
-// Confidence values are ranked semantically, not alphabetically (the
-// alphabet would put the scanner's "advisory" ahead of "high"). Each table
-// has its own vocabulary: the integration scanner emits high/medium/advisory
-// (scanner.py), the vulnerability correlator emits exact_cpe/curated_map/
-// keyword/heuristic strongest-first (vulns.py). Unknown values return null
-// so sortRows sinks them like any other unknown.
+// Confidence ranks semantically per table vocabulary (scanner.py, vulns.py); unknown returns null and sinks.
 function confidenceRank(order: readonly string[], confidence: unknown): number | null {
   const i = order.indexOf(String(confidence));
   return i === -1 ? null : i;
@@ -54,26 +49,20 @@ function confidenceRank(order: readonly string[], confidence: unknown): number |
 const SCANNER_CONFIDENCE_ORDER = ["high", "medium", "advisory"] as const;
 const VULN_CONFIDENCE_ORDER = ["exact_cpe", "curated_map", "keyword", "heuristic"] as const;
 
-// Human labels for a rule's address family. Records persisted before the
-// dual-stack change carry no family; the server treats absence as "both",
-// so the display does the same.
+// Pre-dual-stack records carry no family; absent displays as "both", matching the server.
 function familyLabel(family?: FirewallRuleFamily): string {
   if (family === "4") return "IPv4";
   if (family === "6") return "IPv6";
   return "IPv4+IPv6";
 }
 
-// The family a source address pins a rule to, mirroring the server's own
-// derivation (an IPv6 address always contains a colon, an IPv4 address
-// never does). null means "no source, no pin" and the family stays the
-// operator's choice (default both).
+// Mirrors the server's derivation: a colon means IPv6, otherwise IPv4; null means no source, no pin.
 function familyForSource(source: string): FirewallRuleFamily | null {
   if (!source) return null;
   return source.includes(":") ? "6" : "4";
 }
 
-// True if an IPv4 dotted-quad is in an RFC 1918 private range
-// (10/8, 172.16/12, 192.168/16). Loopback/link-local are handled separately.
+// True for an RFC 1918 IPv4 address (10/8, 172.16/12, 192.168/16); loopback/link-local are handled separately.
 function isRfc1918(addr: string): boolean {
   const m = addr.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
   if (!m) return false;
@@ -84,11 +73,7 @@ function isRfc1918(addr: string): boolean {
   return false;
 }
 
-// Bind-address sort/grouping class for the Host Probe report. Lower priority
-// sorts first: 0.0.0.0 (every interface) → routable/public (NOT RFC1918) →
-// private (RFC1918) → loopback/link-local → unresolved (IPv6 not decoded).
-// A port bound to 0.0.0.0 or a public address is the security-notable case,
-// so those float to the top.
+// Bind-address sort class: 0.0.0.0, then public, private, loopback/link-local, unresolved (IPv6 not decoded).
 function bindClass(addr: string | null | undefined): {
   priority: number;
   label: string;
@@ -111,19 +96,13 @@ export class HaSocScannerView extends HaSocCustomizableView {
   static styles = sharedStyles;
 
   @state() private _scannerFindings: Finding[] = [];
-  // Per-domain coverage from listing_payload (work plan item 4.8): which
-  // domains a completed scan actually looked at. null means the payload
-  // carried no coverage map at all (an older backend); either way, a
-  // domain without a record renders as "not scanned", never as an
-  // implied-clean zero findings.
+  // Per-domain coverage; null means an older backend sent no map. A domain without a record renders "not scanned".
   @state() private _coverage: Record<string, ScannerDomainCoverage> | null = null;
   @state() private _vulnFindings: Finding[] = [];
   @state() private _misconfigFindings: Finding[] = [];
   @state() private _probe: ProbeOverview | null = null;
   @state() private _loading = true;
-  // Non-null when the load failed: rendered as a distinct could-not-load
-  // state with the server's message, never empty tables (work plan item
-  // 4.12).
+  // Non-null when the load failed; rendered as a could-not-load state, never empty tables.
   @state() private _error: string | null = null;
   @state() private _scanning = false;
   @state() private _scanError: string | null = null;
@@ -137,16 +116,10 @@ export class HaSocScannerView extends HaSocCustomizableView {
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
   private _fwPollHandle: number | null = null;
-  // The whole firewall feature is owner-only server-side (D-4), status
-  // command included, so the card renders for the owner alone and a
-  // non-owner admin sees the owner-only note instead. Defaults to false
-  // and stays false when the access lookup fails: fail closed, exactly
-  // like the WS gate underneath.
+  // The firewall feature is owner-only server-side; defaults false and stays false on a failed lookup (fail closed).
   @state() private _isOwner = false;
 
-  // Column sort state, one per table (see sortable.ts). null means "no
-  // user choice yet", in which case each table keeps its original default
-  // ordering (severity-descending for findings, port-ascending for ports).
+  // Column sort state per table; null keeps each table's default order.
   @state() private _misconfigSort: SortState | null = null;
   @state() private _scannerSort: SortState | null = null;
   @state() private _vulnSort: SortState | null = null;
@@ -156,15 +129,12 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private static readonly MISCONFIG_SORT: Record<string, (f: Finding) => unknown> = {
     check: (f) => f.check,
-    // Ascending reads worst first, matching the default order; the
-    // explicit column makes split-severity checks (notify_coverage_gaps
-    // emits one LOW and one MEDIUM finding) visibly distinct rows.
+    // Ascending reads worst first, matching the default; split-severity findings stay distinct rows.
     severity: (f) => severityRank(String(f.severity)),
     summary: (f) => f.summary,
   };
 
-  // Coverage-table sort accessors (work plan item 4.8). scanned_at is an
-  // ISO timestamp, which compares correctly as a string.
+  // Coverage sort accessors; scanned_at is ISO and compares as a string.
   private static readonly COVERAGE_SORT: Record<
     string,
     (r: { domain: string; cov: ScannerDomainCoverage }) => unknown
@@ -180,8 +150,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
   private static readonly SCANNER_SORT: Record<string, (f: Finding) => unknown> = {
     domain: (f) => f.domain,
     pattern: (f) => f.pattern,
-    // file plus line in one string; localeCompare's numeric option keeps
-    // line 9 before line 23 within the same file.
+    // file plus line in one string; numeric localeCompare keeps line 9 before line 23.
     location: (f) => `${f.file}:${f.line}`,
     confidence: (f) => confidenceRank(SCANNER_CONFIDENCE_ORDER, f.confidence),
     cwe: (f) => f.cwe,
@@ -207,11 +176,9 @@ export class HaSocScannerView extends HaSocCustomizableView {
     action: (r) => r.action,
     proto: (r) => r.proto,
     port: (r) => r.port,
-    // null source displays as "any"; sort it as that word rather than
-    // sinking it as unknown, since "any" is a definite value here.
+    // null source displays as "any" and sorts as that word, since "any" is a definite value.
     source: (r) => r.source ?? "any",
-    // Sorted by display label so IPv4 < IPv4+IPv6 < IPv6 groups cleanly;
-    // an absent family displays (and sorts) as the dual-stack default.
+    // Sorted by display label so IPv4 < IPv4+IPv6 < IPv6; an absent family sorts as dual-stack.
     family: (r) => familyLabel(r.family),
   };
 
@@ -237,8 +204,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
         fetchVulns(this.hass),
         fetchHealth(this.hass),
         fetchProbeStatus(this.hass),
-        // A failed access lookup reads as "not the owner" rather than
-        // failing the whole tab; the server gate is what actually enforces.
+        // A failed access lookup reads as "not the owner"; the server gate enforces.
         fetchAccessInfo(this.hass).catch(() => ({ is_owner: false })),
       ]);
       this._scannerFindings = scanner.findings;
@@ -247,27 +213,20 @@ export class HaSocScannerView extends HaSocCustomizableView {
       this._misconfigFindings = health.misconfig_findings;
       this._probe = probe;
       this._isOwner = !!access.is_owner;
-      // ha_soc/firewall/status is owner-only (D-4); asking as a non-owner
-      // would just bounce off the gate, so it is not asked at all.
+      // ha_soc/firewall/status is owner-only; not asked as a non-owner.
       this._firewall = this._isOwner
         ? await fetchFirewallStatus(this.hass).catch(() => null)
         : null;
       this._maybeManageFirewallPolling();
     } catch (err: any) {
-      // One rejected fetch fails the whole Promise.all; an empty findings
-      // table would read as a clean scan, so store the server's message
-      // and render the could-not-load state instead.
+      // One rejected fetch fails the whole load; an empty findings table would read as a clean scan.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
   }
 
-  // Polls ha_soc/firewall/status every 2s for as long as any test is
-  // in flight — from "queued" through the add-on actually resolving it —
-  // so the countdown and the eventual confirmed/reverted outcome show up
-  // without the user having to reload the page. Stops itself the instant
-  // there's nothing pending, rather than running unconditionally.
+  // Polls ha_soc/firewall/status every 2s while any test is in flight; stops itself when nothing is pending.
   private _maybeManageFirewallPolling() {
     const isLive = this._firewall?.pending != null;
     if (isLive && this._fwPollHandle === null) {
@@ -282,9 +241,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     this._applyFirewallStatus(await fetchFirewallStatus(this.hass));
   }
 
-  // A test that just resolved (pending -> null) means whatever the user
-  // acknowledged applied to THAT proposal — require a fresh acknowledgment
-  // for the next one rather than leaving the checkbox silently checked.
+  // A resolved test consumed its acknowledgment; require a fresh one for the next proposal.
   private _applyFirewallStatus(status: FirewallStatus) {
     const hadPending = this._firewall?.pending != null;
     this._firewall = status;
@@ -296,9 +253,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private _fwRuleValid(r: FirewallRule): boolean {
     const family = r.family ?? "both";
-    // A sourced rule's family must be the one its source pins; the
-    // builder derives and locks it, so this only catches a state bug,
-    // matching the server's own rejection.
+    // A sourced rule's family must match its source pin; this only catches a state bug, matching the server.
     const pinned = familyForSource(r.source ?? "");
     return (
       Number.isInteger(r.port) &&
@@ -335,9 +290,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
         proto: r.proto,
         port: r.port,
         source: r.source ? r.source : null,
-        // The server re-derives a sourced rule's family itself; sending
-        // the builder's value (already pinned to the same derivation)
-        // keeps the payload explicit without ever contradicting it.
+        // The server re-derives a sourced rule's family; sending the builder's value keeps the payload explicit.
         family: r.family ?? "both",
       }));
       await proposeFirewallTest(this.hass, rules, this._fwBackupAck);
@@ -377,10 +330,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     }
   }
 
-  // Owner-only escape hatch for an add-on gone silent mid-test: archives
-  // the pending record as discarded_unreported. Offered only once the
-  // countdown has lapsed (the server refuses it earlier), and it never
-  // unblocks anything automatically; this click is the deliberate act.
+  // Owner-only discard for an add-on gone silent; offered only once the countdown has lapsed.
   private async _onDiscardPending() {
     if (!this._firewall?.pending) return;
     const ok = confirm(
@@ -410,8 +360,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
       await scanIntegrationNow(this.hass);
       await this._load();
     } catch (err: any) {
-      // A rejected scan request must not end in a silently unchanged
-      // table; show the server's reason next to the button that failed.
+      // A rejected scan request shows the server's reason next to the button.
       this._scanError = `Integration scan failed: ${err?.message ?? err}`;
     } finally {
       this._scanning = false;
@@ -436,20 +385,13 @@ export class HaSocScannerView extends HaSocCustomizableView {
     try {
       await setVulnStatus(this.hass, id, status);
     } catch (err: any) {
-      // The select already shows the new value in the DOM; the reload
-      // below re-renders it from the stored state, so on a rejection the
-      // old status comes back and the reason is shown.
+      // The reload re-renders the select from stored state, so a rejection restores the old status.
       this._scanError = `Status change failed: ${err?.message ?? err}`;
     }
     await this._load();
   }
 
-  // The GHSA export is a copy-to-clipboard convenience, never a submission
-  // channel (the server only shapes text; nothing is sent anywhere). The
-  // confirmation names the stored snippet and the target integration
-  // because the copied text is the one thing in this view designed to
-  // leave the instance, and the operator should see exactly what code
-  // excerpt and whose name it carries before it lands on the clipboard.
+  // The GHSA export is copy-to-clipboard only; the confirmation names the snippet and integration. See docs/security.md.
   private async _onExportFinding(f: any) {
     const ok = confirm(
       `Copy a GHSA-shaped advisory draft to the clipboard?\n\n` +
@@ -494,16 +436,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     await this._load();
   }
 
-  // One header row per device instead of repeating the device name on
-  // every CVE row — devices ordered by their own worst finding first,
-  // findings within a device also worst-first, so both the grouping and
-  // the reading order lead with what needs attention most.
-  //
-  // Column sorting reorders rows WITHIN each device group only; the group
-  // header rows stay put. The one exception is the first (CVE) column:
-  // sorting it also reorders the groups themselves by device name, giving
-  // an alphabetical device listing in one click. Other columns keep the
-  // default worst-first group order.
+  // One header row per device, worst-first; sorting reorders within groups only, except CVE which also orders groups by name.
   private _groupedVulnFindings(): { device_name: string; findings: Finding[] }[] {
     const byDevice = new Map<string, Finding[]>();
     for (const f of this._vulnFindings) {
@@ -515,8 +448,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     const sort = this._vulnSort;
     const groups = Array.from(byDevice.entries()).map(([device_name, findings]) => ({
       device_name,
-      // Worst severity computed before any user sort reorders the rows,
-      // so the default group order stays stable whatever column is active.
+      // Worst severity computed before any user sort, so the group order stays stable.
       worst: Math.min(...findings.map((f) => severityRank(f.severity))),
       findings: sort
         ? sortRows(findings, sort, HaSocScannerView.VULN_SORT)
@@ -534,14 +466,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     return groups;
   }
 
-  // Work plan item 4.8: what the most recently completed pass actually
-  // looked at, per domain, so an absent record can never be misread as
-  // "scanned, nothing found". A domain that has findings but no coverage
-  // entry (this pass skipped it, or a rescan has not run since it was
-  // last flagged) is called out by name instead of silently vanishing
-  // from the coverage picture. Renders nothing at all against a backend
-  // that never sent a coverage map (the ScannerListing.coverage field is
-  // optional precisely so an older payload still parses).
+  // Coverage per domain from the last completed pass; renders nothing when the backend sent no map.
   private _renderScannerCoverage() {
     if (!this._coverage) return nothing;
     const coveredDomains = new Set(Object.keys(this._coverage));
@@ -628,8 +553,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // Severity-descending (worst first) is the default until the user picks
-  // a column; from then on the shared helper owns the order.
+  // Severity-descending is the default until the user picks a column.
   private _sortedMisconfigFindings(): Finding[] {
     if (this._misconfigSort) {
       return sortRows(this._misconfigFindings, this._misconfigSort, HaSocScannerView.MISCONFIG_SORT);
@@ -881,14 +805,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // The firewall rule (if any) covering one listening port, computed per
-  // address family (work item 2.4's port-scan correlation): a row with a
-  // decoded dotted-quad bind address came from /proc/net/tcp and is an
-  // IPv4 listener, while the add-on reports IPv6 bind addresses as null
-  // (deliberately not decoded, see the run script), so a null-address row
-  // is an IPv6-table listener that can only be correlated by port and
-  // protocol. A "both" (or pre-family) rule covers either family; a "4"
-  // or "6" rule covers only its own.
+  // Firewall coverage per address family; a null bind address is an IPv6 listener matched by port and protocol only.
   private _fwRuleCoveringPort(p: OpenPort): FirewallRule | null {
     const rules = this._firewall?.known_rules;
     if (!rules?.length) return null;
@@ -898,9 +815,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
       return r.port === p.port && r.proto === p.proto && (fam === "both" || fam === rowFamily);
     });
     if (!matches.length) return null;
-    // A deny is the security-notable coverage, so it wins over an allow;
-    // among equals an any-source rule wins over a source-scoped one, so
-    // the pill shows the broadest effect on this listener.
+    // Deny beats allow; among equals an any-source rule beats a source-scoped one.
     matches.sort((a, b) => {
       if (a.action !== b.action) return a.action === "deny" ? -1 : 1;
       return (a.source ? 1 : 0) - (b.source ? 1 : 0);
@@ -910,9 +825,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private _renderPortRuleCell(p: OpenPort) {
     const rule = this._fwRuleCoveringPort(p);
-    // Honesty about the correlation basis: an IPv6 listener's bind
-    // address is reported as null by the add-on, so its match (or
-    // non-match) rests on port and protocol alone.
+    // An IPv6 listener's bind address is null, so its match rests on port and protocol alone.
     const ipv6Caveat = !p.address
       ? " IPv6 bind addresses are not decoded by the add-on, so this correlation is by port and protocol only."
       : "";
@@ -933,14 +846,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // Group the host's listening ports by bind address. Group order is fixed
-  // by security notability: 0.0.0.0 first, then public/routable
-  // (non-RFC1918), then private (RFC1918), then loopback/link-local, then
-  // unresolved. Column sorting never reorders the groups themselves; it
-  // only reorders ports within each group (default: port ascending).
-  // When the owner's firewall status carries known rules, each row also
-  // gets a per-family "covered by rule" cell, so a dual-stack deny on a
-  // port visibly covers both its 0.0.0.0 and :: listeners.
+  // Ports grouped by bind address in fixed notability order; sorting reorders within groups only. See docs/design.md.
   private _renderPortsByBindAddress(ports: OpenPort[]) {
     const groups = new Map<string, OpenPort[]>();
     for (const p of ports) {
@@ -956,10 +862,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
       return a[0].localeCompare(b[0]);
     });
 
-    // The coverage column only renders when there are known rules to
-    // correlate against (owner-only status, add-on has reported): an
-    // always-empty column would read as "nothing is covered", which is
-    // not what "no data" means.
+    // Coverage column renders only when known rules exist; an empty column would read as "nothing covered".
     const showRuleCol = !!this._firewall?.known_rules?.length;
     const colCount = showRuleCol ? 4 : 3;
 
@@ -1013,9 +916,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // One family cell shared by the active-rules and proposed-rules tables:
-  // the family label, plus the honest partial marker the server sets on
-  // every "6"/"both" rule while the host reports no ip6tables support.
+  // Family cell shared by the active and proposed tables, with the server's partial marker.
   private _renderFamilyCell(r: FirewallRule) {
     return html`
       <td>
@@ -1032,12 +933,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // The most recent archived test's failure reason (carried protocol
-  // item): backup_failed and per-family apply failures used to live only
-  // in the add-on's log; now the add-on reports them and the card shows
-  // the latest one where the operator is already looking. Rendered only
-  // when the newest history entry actually carries a reason, so a normal
-  // confirm/revert leaves no residue here.
+  // Latest archived test's failure reason, rendered only when the newest history entry carries one.
   private _renderLastOutcomeReason(fw: FirewallStatus) {
     const latest = fw.history.length ? fw.history[fw.history.length - 1] : null;
     if (!latest?.reason) return nothing;
@@ -1051,14 +947,9 @@ export class HaSocScannerView extends HaSocCustomizableView {
   private _renderFirewallCard() {
     const probe = this._probe;
     const fw = this._firewall;
-    // Same prerequisite as Host Probe: without the add-on actually
-    // running, there is nothing that could apply these rules — the Host
-    // Probe card above already explains why in that case.
+    // Same prerequisite as Host Probe: the add-on must be running.
     if (!probe?.supervisor || !probe?.installed) return nothing;
-    // Owner-only in its entirety (D-4), the same one-line note treatment
-    // the Settings tab gets: the server refuses every firewall command,
-    // status included, for a non-owner admin, so rendering anything more
-    // here would only be a card full of dead controls.
+    // Owner-only in its entirety; the server refuses every firewall command for a non-owner admin.
     if (!this._isOwner) {
       return html`
         <div class="card">
@@ -1153,22 +1044,15 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private _renderFirewallPending(pending: FirewallPendingTest) {
     const remaining = Math.max(0, Math.round((new Date(pending.expires_at).getTime() - Date.now()) / 1000));
-    // The discard escape hatch appears only once the countdown has lapsed
-    // (which is also exactly when the server stops refusing it): before
-    // that, the add-on's report or its local timer may still resolve the
-    // test the honest way. expires_at is re-anchored to applied_at server-
-    // side, so "lapsed" here means the add-on's own timer has fired too,
-    // if the add-on is alive at all.
+    // Discard appears only once the countdown lapses, which is when the server stops refusing it.
     const countdownLapsed = Date.now() >= new Date(pending.expires_at).getTime();
     const statusLabel: Record<string, string> = {
       testing: pending.applied_at ? "Testing — live on the host" : "Queued — waiting for the add-on to apply",
       confirmed: "Confirmed — waiting for the add-on to acknowledge",
       reverted: "Reverting — waiting for the add-on to acknowledge",
-      // The window has closed but the add-on has not confirmed the revert
-      // yet; the record stays here (and blocks new proposals) until it does.
+      // Window closed, add-on has not confirmed the revert; the record blocks new proposals until it does.
       expired_unreported: "Window expired, the add-on has not confirmed the revert yet",
-      // Pre-rename spelling of the same state, possibly persisted by an
-      // older version of the integration.
+      // Pre-rename spelling of expired_unreported, possibly persisted by an older version.
       expired: "Window expired, the add-on has not confirmed the revert yet",
     };
 
@@ -1233,11 +1117,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
-  // blockedReason is non-null while a pending test still occupies the
-  // one-at-a-time slot server-side; the builder stays visible so a next
-  // ruleset can be drafted, but the Test button is disabled and says why,
-  // matching the server's test_pending_unreported refusal instead of
-  // letting the click bounce off it.
+  // blockedReason is non-null while a pending test holds the server's single slot; Test is disabled and says why.
   private _renderFirewallBuilder(blockedReason: string | null) {
     const canSubmit =
       blockedReason === null &&

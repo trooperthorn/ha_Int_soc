@@ -1,63 +1,8 @@
 """Per-integration health counters and misconfiguration checks.
 
 These are heuristic checks against a live install, not a penetration test.
-Every finding this module writes is meant to be reviewed by an admin — the
-confirm/dismiss lifecycle lives in store.py's generic finding-table helpers,
-not here. A severity is a starting judgment for triage, never a verdict.
-
-Two load-bearing approximations, called out where they matter below:
-
-- Entity "unavailable ratio" is a point-in-time sample taken every 5
-  minutes, not a true time-weighted duty cycle. Tracking exact
-  unavailable-seconds per entity would need a persistent per-entity
-  state-change listener; sampling is honest about being an approximation
-  and is good enough for a posture score. Because of this there is no
-  ``async_track_state_change_event`` subscription for ``async_stop`` to
-  reverse — the internal 5-minute timer is the only thing to cancel.
-- Root-logger attribution of a log record to a domain is best-effort: a
-  logger name that doesn't start with ``homeassistant.components.<domain>``
-  or ``custom_components.<domain>`` is checked against each integration's
-  manifest ``loggers`` list, but plenty of third-party libraries log under
-  names no manifest declares (e.g. a shared HTTP client). Those records are
-  dropped rather than guessed at. Likewise, when a domain has more than one
-  config entry, error counts are attributed per-domain and copied onto
-  every entry of that domain, since a log record carries no entry_id.
-
-A finding, once set to "dismissed" or "confirmed" by an analyst, is never
-flipped back by a later pass of these checks - only the resolve path
-(condition no longer present) touches status, and it explicitly skips
-dismissed AND confirmed findings (work plan item 4.1): a confirmed finding
-is an analyst's judgment that the condition is real, and a single pass
-where the check could not see it (a component that loaded late, a source
-that failed to read) must not silently override that judgment. A finding
-whose stored status is "dismissed" also has its Repairs issue deleted on
-the next sweep instead of being re-mirrored (work plan item 4.4).
-
-Timing (work plan item 4.1): the full misconfiguration sweep runs only
-after Home Assistant has finished starting plus STARTUP_GRACE. During
-startup, components register late and entities trickle in, so an early
-sweep would emit a burst of false "broken reference" findings and then
-resolve them minutes later; async_run_misconfig_checks therefore returns
-without evaluating anything until the grace period has passed. The
-config_hygiene.py helpers additionally report a tri-state per evaluation
-(evaluated / empty / could_not_evaluate), and a could_not_evaluate pass
-leaves existing findings exactly as they are.
-
-The merged YAML configuration is loaded at most once per sweep (work plan
-item 4.7): _async_sweep_yaml caches the tree for the three checks that
-need it (http hardening/proxy trust, alert references, customize blocks)
-and logs a failed load at WARNING once per sweep, after which those
-checks report could_not_evaluate instead of an empty pass.
-
-Boundary-widening checks (work item SEC-7, plus 1.7's ban-logger check):
-a group of checks watches for configuration that widens who can read
-HA SOC's own private files (the secret store, the audit chain) or blinds
-its own capture: on-disk modes of secrets.yaml and .storage, add-ons known
-to map the config directory, backup locations stored without protection,
-a Samba config share without authentication, and the http.ban logger
-being silenced. Every value those checks read is a file mode, a boolean,
-or an option KEY name, never a secret value, and each check's docstring
-names its obvious false positive and its could-not-evaluate behavior.
+A severity is a starting judgment for triage, never a verdict. Timing,
+approximations, and the finding lifecycle are in docs/design.md.
 """
 from __future__ import annotations
 
@@ -111,30 +56,16 @@ ERROR_BUCKET_SPAN_HOURS = 24
 RETRY_BUCKET_SPAN_HOURS = 24
 UNAVAILABLE_SAMPLE_WINDOW = timedelta(hours=24)
 
-# Generic Repairs translation key used when a check has no dedicated entry
-# under translations/en.json's "issues" block (that file is out of scope
-# for this module — see the check docstrings for which keys already exist).
 GENERIC_ISSUE_TRANSLATION_KEY = "misconfig_finding"
 
-# Item lists stored in a finding's detail are capped so one pathological
-# install (thousands of orphaned statistics, say) cannot bloat the store
-# and the WS payload; the true count always travels alongside as
-# total_count (work plan item 4.4).
+# Item lists in a finding detail are capped; total_count always carries the true count.
 DETAIL_ITEMS_CAP = 100
 
-# Any trusted_proxies network broader than these prefixes lets a spoofed
-# X-Forwarded-For be accepted from far more hosts than one reverse proxy,
-# which defeats IP banning and every IP-based detection downstream (work
-# plan item 4.2).
+# A broader trusted_proxies network than these prefixes lets a spoofed X-Forwarded-For defeat IP banning.
 MIN_TRUSTED_PROXY_V4_PREFIX = 24
 MIN_TRUSTED_PROXY_V6_PREFIX = 64
 
-# Per-integration issue categories for the "Issues by Integration" dashboard
-# widget. Each config entry gets AT MOST one category — priority order below
-# (credential first: a broken credential is usually the root cause behind
-# what would otherwise look like a communication or collection problem;
-# debug_logging/disabled last since neither is necessarily a problem, just
-# something worth a human's attention).
+# Each config entry gets at most one category; priority order is credential first, disabled last.
 ISSUE_CATEGORY_CREDENTIAL = "credential"
 ISSUE_CATEGORY_FAILING = "failing"
 ISSUE_CATEGORY_COMMUNICATION = "communication"
@@ -153,17 +84,8 @@ ISSUE_CATEGORIES = (
     ISSUE_CATEGORY_DISABLED,
 )
 
-# A loaded, non-retrying integration with more than this fraction of its
-# entities unavailable is flagged "collection" — it can talk to its
-# hub/cloud service (state != setup_retry) but specific devices aren't
-# reporting, which is a different problem than the integration itself
-# being down.
 COLLECTION_UNAVAILABLE_RATIO_THRESHOLD = 0.2
 
-# A loaded integration that isn't failing outright or losing devices
-# (collection, above) but is still logging more than this many
-# WARNING+ records in 24h — "errors" — has non-fatal issues fetching or
-# handling devices/entities worth a human's attention.
 ERROR_COUNT_ISSUE_THRESHOLD = 5
 
 _FAILING_STATES = (
@@ -172,19 +94,10 @@ _FAILING_STATES = (
     ConfigEntryState.FAILED_UNLOAD,
 )
 
-# The official Terminal & SSH add-on's slug — everything else SSH-shaped
-# is matched by a name/slug substring instead, since this project has no
-# way to enumerate every third-party SSH add-on's slug ahead of time.
+# Only the official add-on's slug is known; other SSH add-ons match by name/slug substring.
 _KNOWN_SSH_ADDON_SLUGS = {"core_ssh"}
 
-# Name/slug substrings for the add-ons known to map the Home Assistant
-# config directory (SSH, Samba, File editor, Studio Code Server, and their
-# common community forks). Matching is by name because the Supervisor
-# add-on info core caches (aiohasupervisor's InstalledAddonComplete,
-# checked against the installed core 2026.2.3 dependency) carries no
-# volume-map field at all, so "does this add-on map config" cannot be read
-# from the data - see _check_config_mapping_addons' docstring for the
-# honesty consequences.
+# Matched by name: the cached Supervisor add-on info carries no volume-map field.
 _CONFIG_MAPPING_ADDON_MARKERS = (
     "ssh",
     "samba",
@@ -194,12 +107,7 @@ _CONFIG_MAPPING_ADDON_MARKERS = (
     "vscode",
 )
 
-# How long the HA SOC Probe add-on can be installed and running without
-# ever successfully reporting before this is worth a Repairs issue rather
-# than just the add-on's own log. Generous on purpose: the add-on itself
-# (see ha_soc_probe's run script) retries every 30s-5min on a rejected
-# report, so a genuinely healthy pairing reconnects within that window,
-# not this one — this only fires for a setup that's actually stuck.
+# Generous: the add-on itself retries every 30s-5min, so this only fires for a stuck setup.
 PROBE_NOT_REPORTING_GRACE = timedelta(minutes=30)
 
 
@@ -220,26 +128,20 @@ def _new_finding(
         "detail": detail,
         "first_seen": now,
         "last_seen": now,
-        # Explicit lifecycle start (work plan item 4.4). The store's upsert
-        # preserves an analyst-set status across re-scans, so this only
-        # ever survives for a finding no analyst has touched.
+        # The store's upsert preserves an analyst-set status across re-scans.
         "status": "new",
     }
 
 
 def _capped_detail(key: str, items: list) -> dict:
-    """A finding detail carrying at most DETAIL_ITEMS_CAP items under
-    ``key`` plus the honest ``total_count`` (work plan item 4.4)."""
+    """A finding detail carrying at most DETAIL_ITEMS_CAP items under ``key`` plus the honest ``total_count``."""
     return {key: list(items[:DETAIL_ITEMS_CAP]), "total_count": len(items)}
 
 
 def _proxy_trust_problems(http_conf: dict) -> list[str]:
     """Why this http: block's proxy trust is too broad, empty when it is
-    narrow enough (work plan item 4.2). The values come from the merged
-    but not schema-validated YAML tree, so each entry is parsed here with
-    ipaddress; an entry that does not parse is reported as a problem
-    rather than skipped, because an unparseable trust list is not a
-    narrow one (core's own validation would reject it at startup anyway).
+    narrow enough. An entry that does not parse is reported as a problem,
+    not skipped.
     """
     proxies = http_conf.get("trusted_proxies")
     if not proxies:
@@ -281,10 +183,8 @@ def _prune_and_sum(buckets: dict[int, int], now_hour: int, span_hours: int) -> i
 class _HealthLogHandler(logging.Handler):
     """Root-logger handler that hands WARNING+ records off to the loop.
 
-    Mirrors the technique HA's own system_log component uses. emit() can run
-    on a non-loop thread (any logging call anywhere can), so it must do the
-    minimum possible work and hand off via call_soon_threadsafe rather than
-    touching hass or the store directly.
+    emit() can run on a non-loop thread, so it must hand off via
+    call_soon_threadsafe rather than touch hass or the store directly.
     """
 
     def __init__(self, health: "IntegrationHealth") -> None:
@@ -313,11 +213,7 @@ class IntegrationHealth:
         self._retry_buckets: dict[str, dict[int, int]] = {}
         self._unavail_samples: dict[str, list[tuple[float, float]]] = {}
         self._started_at: datetime | None = None
-        # In-memory only, like _started_at: when this run of the integration
-        # first observed the probe add-on installed+running with no report
-        # yet. Deliberately resets on every reload rather than persisting —
-        # a fresh grace window after a reload is the right call here, the
-        # same way _started_at's own startup grace works.
+        # In-memory only; resets on every reload for a fresh grace window, like _started_at.
         self._probe_unreported_since: datetime | None = None
 
         self._dispatcher_unsub: Callable[[], None] | None = None
@@ -325,14 +221,9 @@ class IntegrationHealth:
         self._started_unsub: Callable[[], None] | None = None
         self._log_handler: _HealthLogHandler | None = None
 
-        # One merged-YAML load per sweep (work plan item 4.7). "stale"
-        # means the next request loads; "loaded"/"failed" hold until the
-        # next sweep resets them, so the three YAML-backed checks share
-        # one load and one WARNING on failure.
+        # "stale" means the next request loads; "loaded"/"failed" hold until the next sweep resets them.
         self._sweep_yaml: dict[str, Any] | None = None
         self._sweep_yaml_state: str = "stale"
-
-    # -- Lifecycle ----------------------------------------------------------
 
     async def async_start(self) -> None:
         await self._async_refresh_attribution_maps()
@@ -351,8 +242,7 @@ class IntegrationHealth:
         logging.getLogger().addHandler(self._log_handler)
 
         if self.hass.is_running:
-            # We were (re)started after HA already finished starting (e.g. a
-            # config entry reload) — there's no startup flurry to wait out.
+            # (Re)started after HA already finished starting (e.g. a reload): no startup flurry to wait out.
             self._started_at = dt.utcnow() - STARTUP_GRACE
         else:
             self._started_unsub = self.hass.bus.async_listen_once(
@@ -385,8 +275,6 @@ class IntegrationHealth:
     @callback
     def _on_started(self, _event) -> None:
         self._started_at = dt.utcnow()
-
-    # -- Config-entry state tracking -----------------------------------------
 
     async def _on_entry_changed(
         self, change: ConfigEntryChange, entry: ConfigEntry
@@ -433,40 +321,9 @@ class IntegrationHealth:
     async def async_integration_overview(self) -> dict:
         """Per-integration issue categorization for the SOC Dashboard.
 
-        Computed fresh on every call rather than cached in the store: the
-        one signal that decides "credential" (a pending reauth flow) is
-        inherently transient config_entries.flow state, not something this
-        module tracks continuously.
-
-        Category is a priority-ordered classification, not a combination —
-        each entry gets at most one, in this order:
-          1. credential      - a reauth flow is currently pending for it.
-          2. failing         - state is setup_error/migration_error/
-                                failed_unload.
-          3. communication   - state is setup_retry (can't reach its
-                                hub/cloud service at all right now).
-          4. collection      - state is loaded, but more than
-                                COLLECTION_UNAVAILABLE_RATIO_THRESHOLD of its
-                                entities are unavailable/unknown (it's
-                                connected, but specific devices aren't
-                                reporting).
-          5. errors          - state is loaded and not already flagged
-                                collection, but it's logged more than
-                                ERROR_COUNT_ISSUE_THRESHOLD WARNING+ records
-                                in 24h — non-fatal trouble fetching/handling
-                                devices or entities.
-          6. debug_logging   - any of this domain's loggers (core, custom,
-                                or manifest-declared) is currently at DEBUG
-                                level or more verbose. Not necessarily a
-                                problem, but worth knowing about: verbose
-                                logs can carry sensitive data and cost
-                                performance, and are easy to forget enabled.
-          7. disabled        - the entry is registered but disabled_by is
-                                set. Also not necessarily a problem — just
-                                worth surfacing rather than looking like it
-                                silently vanished.
-        Anything else (loaded and healthy, or not yet tracked) has no
-        category and is excluded from the counts/records below.
+        Computed fresh on every call. Category is priority-ordered, at most one
+        per entry: credential, failing, communication, collection, errors,
+        debug_logging, disabled; see docs/design.md for the definitions.
         """
         reauth_entry_ids = {
             flow["context"]["entry_id"]
@@ -512,8 +369,6 @@ class IntegrationHealth:
             return ISSUE_CATEGORY_DISABLED
         return ISSUE_CATEGORY_NONE
 
-    # -- Log-volume attribution ----------------------------------------------
-
     async def _async_refresh_attribution_maps(self) -> None:
         domains = {e.domain for e in self.hass.config_entries.async_entries()}
 
@@ -528,8 +383,7 @@ class IntegrationHealth:
                 continue
             for logger_prefix in integration.manifest.get("loggers", []) or []:
                 prefixes.append((logger_prefix, domain))
-        # Longest prefix first so a specific manifest-declared logger name
-        # wins over an accidental broader match.
+        # Longest prefix first so a specific manifest-declared logger name wins.
         prefixes.sort(key=lambda item: len(item[0]), reverse=True)
         self._logger_prefixes = prefixes
 
@@ -558,9 +412,7 @@ class IntegrationHealth:
         bucket = self._error_buckets.setdefault(domain, {})
         bucket[hour] = bucket.get(hour, 0) + 1
 
-        # Simplest choice per spec: recompute error_count_24h for this
-        # domain's entries right here rather than deferring to the 5-minute
-        # ticker, so the count is live instead of up to 5 minutes stale.
+        # Recompute here so the count is live rather than up to 5 minutes stale.
         count = _prune_and_sum(bucket, hour, ERROR_BUCKET_SPAN_HOURS)
         touched = False
         for entry in self.hass.config_entries.async_entries(domain):
@@ -572,8 +424,6 @@ class IntegrationHealth:
             touched = True
         if touched:
             self._store.async_schedule_save()
-
-    # -- Unavailable-ratio sampling + bucket rollup (5-minute ticker) -------
 
     async def _async_tick(self, _now=None) -> None:
         try:
@@ -637,15 +487,10 @@ class IntegrationHealth:
             record["unavailable_ratio"] = self._mean_unavailable_ratio(entry.entry_id)
             record["updated_at"] = _iso_now()
 
-    # -- Misconfiguration checks ---------------------------------------------
-
     def _async_mirror_to_repairs(
         self, finding: dict, translation_key: str, placeholders: dict[str, str]
     ) -> None:
-        # Explicit mapping per severity string; anything unknown maps DOWN
-        # to WARNING (work plan item 4.4, D-11): a severity string this
-        # code does not recognize is bad data, and bad data must not page
-        # anyone as CRITICAL.
+        # An unknown severity string maps DOWN to WARNING; bad data must not page anyone as CRITICAL.
         severity = finding["severity"]
         if severity == SEVERITY_CRITICAL:
             issue_severity = ir.IssueSeverity.CRITICAL
@@ -668,11 +513,7 @@ class IntegrationHealth:
         for finding_id, finding in list(self._store.data["misconfig_findings"].items()):
             if finding.get("check") != check or finding_id in active_ids:
                 continue
-            # An analyst-set dismissed OR confirmed status survives a pass
-            # in which the condition was not seen (work plan item 4.1):
-            # confirmed means "a human verified this is real", and one
-            # empty pass, which can also mean a late-loading source, must
-            # not silently override that verdict.
+            # A dismissed or confirmed status survives a pass in which the condition was not seen.
             if finding.get("status") in (STATUS_DISMISSED, STATUS_CONFIRMED):
                 continue
             ir.async_delete_issue(self.hass, DOMAIN, finding_id)
@@ -692,19 +533,10 @@ class IntegrationHealth:
             findings.append(finding)
             stored = self._store.data["misconfig_findings"].get(finding["id"], finding)
             if stored.get("status") == STATUS_DISMISSED:
-                # A dismissed finding keeps its row in the table but loses
-                # its Repairs issue (work plan item 4.4): the analyst has
-                # already seen and waved it off, so re-mirroring it every
-                # sweep would undo the dismissal in the Repairs UI. The WS
-                # dismiss handler lives in websocket_api.py; until it also
-                # deletes the issue directly, this sweep-side delete is
-                # what clears it (at most one sweep interval later).
+                # A dismissed finding keeps its row in the table but loses its Repairs issue.
                 ir.async_delete_issue(self.hass, DOMAIN, finding["id"])
             elif finding["severity"] == SEVERITY_INFO or finding.get("acknowledged_by_design"):
-                # INFO findings and acknowledged-by-design rows (D-20) are
-                # visible in the table but never page through Repairs; the
-                # delete also clears a stale issue left over from before a
-                # finding was downgraded or acknowledged.
+                # INFO and acknowledged-by-design rows never page through Repairs; the delete also clears a stale issue.
                 ir.async_delete_issue(self.hass, DOMAIN, finding["id"])
             else:
                 self._async_mirror_to_repairs(finding, translation_key, placeholders)
@@ -712,12 +544,8 @@ class IntegrationHealth:
         return findings
 
     async def _async_sweep_yaml(self) -> dict[str, Any] | None:
-        """The merged YAML configuration, loaded at most once per sweep
-        (work plan item 4.7) and shared by every check that needs it.
-        Returns None after a failed load, which each consumer must treat
-        as could_not_evaluate, never as an empty configuration. The
-        import is local so tests patching homeassistant.config keep
-        working, matching the config_hygiene helpers."""
+        """The merged YAML configuration, loaded at most once per sweep. None after
+        a failed load, which each consumer must treat as could_not_evaluate."""
         if self._sweep_yaml_state == "stale":
             from homeassistant.config import async_hass_config_yaml
 
@@ -736,19 +564,14 @@ class IntegrationHealth:
         return self._sweep_yaml
 
     async def async_run_misconfig_checks(self) -> list[dict]:
-        # Startup grace (work plan item 4.1): before HA has finished
-        # starting plus STARTUP_GRACE, components register late and
-        # entities trickle in, so every reference check would produce a
-        # burst of false findings and then resolve them. Nothing is
-        # evaluated and no finding is touched until the grace has passed.
+        # Nothing is evaluated and no finding is touched until HA has finished starting plus STARTUP_GRACE.
         if self._started_at is None or dt.utcnow() - self._started_at < STARTUP_GRACE:
             _LOGGER.debug(
                 "HA SOC: skipping misconfiguration sweep, still inside the startup grace"
             )
             return []
 
-        # One YAML load per sweep (work plan item 4.7): mark the cache
-        # stale so the first check that needs it triggers exactly one load.
+        # Mark the cache stale so the first check that needs YAML triggers exactly one load.
         self._sweep_yaml = None
         self._sweep_yaml_state = "stale"
 
@@ -793,17 +616,10 @@ class IntegrationHealth:
         return results
 
     async def async_run_config_check(self) -> list[dict]:
-        """check="ha_config_invalid" — on its own slower interval.
+        """check="ha_config_invalid", on its own slower interval.
 
-        Unlike every other check in this module, core creates no persistent
-        Repairs issue when the YAML configuration is invalid —
-        homeassistant.config.async_check_ha_config_file() is purely
-        on-demand (it's exactly what the "Check Configuration" button
-        calls), so this project has to run it itself and hold the result.
-        Deliberately NOT part of async_run_misconfig_checks()'s 5-minute
-        sweep: a full YAML re-validation is real CPU/IO work, unlike this
-        module's other checks, which only read already-in-memory registries
-        and counters. See __init__.py's CONFIG_CHECK_INTERVAL.
+        Deliberately not part of the 5-minute sweep: a full YAML re-validation is
+        real CPU/IO work. See __init__.py's CONFIG_CHECK_INTERVAL.
         """
         from homeassistant.config import async_check_ha_config_file
 
@@ -833,17 +649,7 @@ class IntegrationHealth:
         return self._async_finalize_check("ha_config_invalid", items)
 
     async def _check_http_insecure(self) -> list[dict]:
-        """check="http_insecure" - matches translations/en.json's http_insecure key.
-
-        The no_ssl LOW finding is quieted to INFO, with a note, when the
-        http configuration shows a deliberately configured reverse proxy:
-        a truthy use_x_forwarded_for together with a narrow trusted_proxies
-        list is exactly the shape of TLS terminating at a proxy (work plan
-        item 4.2). Obvious false positive of the quieting: a proxy that is
-        itself reachable over plain HTTP still means cleartext on the last
-        hop, which this check cannot see. When the YAML cannot be loaded
-        the proxy state is unknown and the LOW finding stands as before.
-        """
+        """check="http_insecure" - matches translations/en.json's http_insecure key."""
         api = getattr(self.hass.config, "api", None)
         use_ssl = getattr(api, "use_ssl", False) if api is not None else False
         external_url = self.hass.config.external_url
@@ -900,13 +706,7 @@ class IntegrationHealth:
         return self._async_finalize_check("http_insecure", items)
 
     async def _check_http_hardening(self) -> list[dict]:
-        """check="http_hardening" - cors/ip_ban/login_attempts_threshold,
-        plus the proxy trust check (work plan item 4.2, HLTH-2).
-
-        Could-not-evaluate: a failed YAML load skips the whole pass and
-        leaves existing findings untouched (the shared sweep loader has
-        already logged the failure at WARNING once).
-        """
+        """check="http_hardening" - cors/ip_ban/login_attempts_threshold, plus the proxy trust check."""
         conf = await self._async_sweep_yaml()
         if conf is None:
             return []
@@ -916,12 +716,6 @@ class IntegrationHealth:
 
         proxy_problems = _proxy_trust_problems(http_conf)
         if bool(http_conf.get("use_x_forwarded_for")) and proxy_problems:
-            # With X-Forwarded-For trusted from too many hosts, any of
-            # them can spoof a client IP: bans, trusted_networks, and
-            # every IP-based detection then judge the wrong address.
-            # Obvious false positive: an isolated management network
-            # where every host on the broad range genuinely is the proxy
-            # tier; the finding makes that a recorded decision.
             finding = _new_finding(
                 "misconfig:http_hardening:proxy_trust", "http_hardening", SEVERITY_HIGH,
                 title="X-Forwarded-For is trusted from too broad a source",
@@ -990,18 +784,7 @@ class IntegrationHealth:
         return self._async_finalize_check("http_hardening", items)
 
     async def _check_trusted_networks(self) -> list[dict]:
-        """check="trusted_networks_permissive" - one finding per provider.
-
-        Also HIGH when trusted_users maps a network to an admin or the
-        owner (work plan item 4.2): passwordless, MFA-free login as a
-        privileged account for anyone on that network. Obvious false
-        positive: a genuinely isolated management VLAN mapped to the
-        owner on purpose; the finding makes that a recorded decision.
-        Could-not-evaluate: an auth_providers shape this code cannot read
-        skips the pass without touching existing findings, and a mapped
-        user id that no longer resolves is reported by id rather than
-        silently skipped.
-        """
+        """check="trusted_networks_permissive" - one finding per provider."""
         try:
             providers = [
                 provider
@@ -1073,10 +856,7 @@ class IntegrationHealth:
 
     async def _async_privileged_trusted_users(self, provider) -> list[str]:
         """Reasons for every trusted_users mapping that grants a network
-        passwordless login as an admin, the owner, or the admin group
-        (work plan item 4.2). The mapping shape was verified against the
-        installed core 2026.2.3 trusted_networks provider: network -> list
-        of user-id hex strings or {"group": group_id} dicts."""
+        passwordless login as an admin, the owner, or the admin group."""
         try:
             trusted_users = dict(getattr(provider, "trusted_users", None) or {})
         except Exception:  # noqa: BLE001 - a provider mock/shape without the property
@@ -1109,7 +889,7 @@ class IntegrationHealth:
         return reasons
 
     async def _check_device_cleartext_url(self) -> list[dict]:
-        """check="device_cleartext_url" — one aggregated finding."""
+        """check="device_cleartext_url" - one aggregated finding."""
         registry = dr.async_get(self.hass)
         devices = [
             {
@@ -1143,7 +923,7 @@ class IntegrationHealth:
         )
 
     async def _check_cloud_egress_inventory(self) -> list[dict]:
-        """check="cloud_egress_inventory" — informational, never mirrored."""
+        """check="cloud_egress_inventory" - informational, never mirrored."""
         domains = {e.domain for e in self.hass.config_entries.async_entries()}
         try:
             integrations = await async_get_integrations(self.hass, domains)
@@ -1174,11 +954,8 @@ class IntegrationHealth:
     def _supervisor_missing_key_item(
         self, check: str, slug: str, name: str, missing: list[str]
     ) -> tuple[dict, str, dict[str, str]]:
-        """The fail-closed outcome for cached add-on info lacking a key a
-        check's judgment depends on (work plan item 4.3): an INFO
-        could_not_evaluate finding naming the key(s), never silence.
-        INFO findings are not mirrored to Repairs, so this informs the
-        panel without paging anyone."""
+        """The fail-closed outcome for cached add-on info lacking a key a check's
+        judgment depends on: an INFO could_not_evaluate finding, never silence."""
         finding = _new_finding(
             f"misconfig:{check}:{slug}:could_not_evaluate", check, SEVERITY_INFO,
             title=f"{name}: {check} could not be evaluated",
@@ -1195,34 +972,7 @@ class IntegrationHealth:
         })
 
     async def _check_addon_protection_mode(self) -> list[dict]:
-        """check="addon_unprotected" — Supervisor-only; no-ops off Supervisor.
-
-        "Protected mode" is a real, generic Supervisor add-on setting (any
-        add-on can have it, not just SSH-related ones) — disabling it grants
-        that add-on's container elevated access to the Supervisor API and
-        other add-ons, a real, deliberate weakening of Docker-level
-        isolation a user has to consciously flip. Severity per D-11: HIGH,
-        raised to CRITICAL when the add-on also has host_network (its
-        elevated container is then directly on the host's network).
-        Obvious false positive: an add-on that manages other add-ons or
-        backups and legitimately needs Protection Mode off; confirm and
-        dismiss it once, the status survives re-scans.
-
-        Fail closed (work plan item 4.3): a cached info dict missing the
-        "protected" or "host_network" key yields an INFO
-        could_not_evaluate finding naming the key, never silence.
-
-        D-20 exception, deliberately narrow and visible: the HA SOC Probe
-        add-on itself (matched by PROBE_ADDON_NAME, the exact mechanism
-        _check_probe_addon_not_reporting uses) requires Protection Mode
-        off ONLY for the hard-cap feature, which needs the Docker socket.
-        When hard caps are actually configured, the Probe's finding is
-        stored and rendered with acknowledged_by_design=True (a field the
-        frontend can label; never silent suppression) and does not open a
-        Repairs issue. With no hard caps configured, Protection Mode off
-        on the Probe has no by-design reason and it gets the real finding
-        like every other add-on.
-        """
+        """check="addon_unprotected"; Supervisor-only, no-ops off Supervisor."""
         from homeassistant.helpers.hassio import is_hassio
 
         if not is_hassio(self.hass):
@@ -1238,9 +988,7 @@ class IntegrationHealth:
 
         for slug, info in addons.items():
             if not isinstance(info, dict):
-                # The Supervisor failed to serve this add-on's info this
-                # cycle; skipping it (no finding, no resolve) beats
-                # treating "unknown" as "clean".
+                # The Supervisor failed to serve this add-on's info; skip it rather than treat unknown as clean.
                 continue
             name = info.get("name") or slug
             if "protected" not in info:
@@ -1252,9 +1000,7 @@ class IntegrationHealth:
                 continue
             if info["protected"]:
                 continue
-            # host_network is only consulted once the finding is real (it
-            # decides HIGH versus CRITICAL), so its absence is only a
-            # could_not_evaluate once protection is actually off.
+            # host_network only decides HIGH versus CRITICAL, so its absence matters only once protection is off.
             if "host_network" not in info:
                 items.append(
                     self._supervisor_missing_key_item(
@@ -1310,13 +1056,7 @@ class IntegrationHealth:
         return self._async_finalize_check("addon_unprotected", items)
 
     async def _check_ssh_addon_inventory(self) -> list[dict]:
-        """check="ssh_addon_inventory" — informational, never mirrored.
-
-        Best-effort by nature: matched against the official Terminal & SSH
-        add-on's known slug plus a name/slug substring fallback for the
-        many community SSH add-ons this project can't enumerate ahead of
-        time — absence from this list is not proof no SSH access exists.
-        """
+        """check="ssh_addon_inventory"; informational, never mirrored, best-effort by nature."""
         from homeassistant.helpers.hassio import is_hassio
 
         if not is_hassio(self.hass):
@@ -1350,17 +1090,7 @@ class IntegrationHealth:
         return [finding]
 
     async def _check_ssh_addon_exposed(self) -> list[dict]:
-        """check="ssh_addon_exposed" — Supervisor-only; no-ops off Supervisor.
-
-        Unlike the inventory above, this one IS a real, mirrored finding:
-        the official Terminal & SSH add-on (core_ssh) ships with its port
-        *unbound* by default (ingress-only — reachable only through Home
-        Assistant's own authenticated web terminal, not a direct SSH
-        client). A host-bound port, or host_network enabled outright, means
-        someone deliberately opened direct SSH access that bypasses Home
-        Assistant's login entirely — worth a human reviewing it, not just
-        noting it exists.
-        """
+        """check="ssh_addon_exposed"; Supervisor-only, no-ops off Supervisor."""
         from homeassistant.helpers.hassio import is_hassio
 
         if not is_hassio(self.hass):
@@ -1383,9 +1113,7 @@ class IntegrationHealth:
             if not is_ssh:
                 continue
 
-            # Fail closed (work plan item 4.3): the exposure judgment
-            # needs both keys, and a missing one must not read as "not
-            # exposed".
+            # Fail closed: a missing key must not read as "not exposed".
             missing = [key for key in ("host_network", "network") if key not in info]
             if missing:
                 items.append(
@@ -1424,20 +1152,9 @@ class IntegrationHealth:
         return self._async_finalize_check("ssh_addon_exposed", items)
 
     async def _check_probe_addon_not_reporting(self) -> list[dict]:
-        """check="probe_addon_not_reporting" — Supervisor-only; no-ops off Supervisor.
+        """check="probe_addon_not_reporting"; Supervisor-only, no-ops off Supervisor.
 
-        Deliberately scoped to "installed, running, and has NEVER once
-        reported successfully" — a real, stuck "half setup" state with no
-        benign explanation. Deliberately NOT "used to report, now quiet":
-        judging that correctly would need this add-on's own configured
-        scan_interval_hours (1-24h, this integration doesn't read add-on
-        options) to know what "overdue" even means, and a healthy pairing
-        already recovers from a transient gap on its own — see the add-on's
-        run script, which retries every 30s-5min on a rejected report
-        rather than waiting out its full scan interval. A probe that
-        reported once and has since gone quiet is almost always just
-        between scans or riding out a Home Assistant Core restart, not
-        broken; nothing here should page anyone about that.
+        Scoped to installed, running, and never once reported successfully.
         """
         from homeassistant.helpers.hassio import is_hassio
 
@@ -1457,9 +1174,7 @@ class IntegrationHealth:
             None,
         )
         if probe is not None and "state" not in probe[1]:
-            # Fail closed (work plan item 4.3): whether the probe is
-            # running is the whole judgment here, so a missing state key
-            # is reported, never read as "not running".
+            # Fail closed: a missing state key is reported, never read as "not running".
             self._probe_unreported_since = None
             return self._async_finalize_check(
                 "probe_addon_not_reporting",
@@ -1501,22 +1216,8 @@ class IntegrationHealth:
             })],
         )
 
-    # -- Boundary-widening checks (work item SEC-7, plus 1.7's ban logger) --
-
     async def _check_audit_ban_logger(self) -> list[dict]:
-        """check="audit_ban_logger_silenced" - LOW (work item 1.7).
-
-        audit.py's login_fail capture is a logging.Handler attached to the
-        homeassistant.components.http.ban logger, and a handler only sees
-        records its logger actually emits: raising that logger's effective
-        level above WARNING (through the logger: integration, usually to
-        quiet a noisy scanner) silently blinds failed-login auditing while
-        every other part of the audit log keeps working. The value read is
-        a logging level integer, nothing else. Obvious false positive: an
-        operator who deliberately silenced the ban logger has accepted
-        exactly this blindness - the finding exists so that is a decision
-        on the record, not an accident nobody noticed.
-        """
+        """check="audit_ban_logger_silenced" - LOW. The value read is a logging level integer, nothing else."""
         level = logging.getLogger(BAN_LOGGER_NAME).getEffectiveLevel()
         items: list[tuple[dict, str, dict[str, str]]] = []
         if level > logging.WARNING:
@@ -1541,20 +1242,7 @@ class IntegrationHealth:
         return self._async_finalize_check("audit_ban_logger_silenced", items)
 
     async def _check_storage_file_modes(self) -> list[dict]:
-        """check="storage_file_modes" - LOW (work item SEC-7).
-
-        secrets.yaml readable beyond 0o600, or the .storage directory
-        beyond 0o700, widens who on the host can read every credential and
-        private store in them. Only file MODES are read (executor-side
-        stat, never on the event loop, never file contents), and the
-        summary carries the exact chmod that fixes it. Could-not-evaluate:
-        a stat that fails for any reason other than the path not existing
-        skips the whole check without touching existing findings, and an
-        absent secrets.yaml is simply nothing to check. Obvious false
-        positive: a config directory on a filesystem that cannot represent
-        POSIX permission bits (a network share, FAT) reports wide modes
-        that chmod cannot actually change.
-        """
+        """check="storage_file_modes" - LOW. Only file MODES are read, executor-side, never contents."""
         # ha-soc-allow: storage_file_access stats modes only, never reads content (SEC-7)
         secrets_path = self.hass.config.path("secrets.yaml")
         storage_path = self.hass.config.path(".storage")
@@ -1579,8 +1267,7 @@ class IntegrationHealth:
             return []
 
         items: list[tuple[dict, str, dict[str, str]]] = []
-        # Group or other bits set means another uid on the host can reach
-        # the file; 0o077 masks exactly those bits.
+        # 0o077 masks exactly the group/other bits that let another uid reach the file.
         secrets_mode = modes["secrets_yaml"]
         if secrets_mode is not None and secrets_mode & 0o077:
             finding = _new_finding(
@@ -1619,29 +1306,10 @@ class IntegrationHealth:
         return self._async_finalize_check("storage_file_modes", items)
 
     async def _check_config_mapping_addons(self) -> list[dict]:
-        """check="config_mapping_addon" - MEDIUM, HIGH when also exposed (SEC-7).
+        """check="config_mapping_addon" - MEDIUM, HIGH when also exposed.
 
-        An add-on that maps the config directory reads everything the
-        0o600/0o700 modes above protect (the secret store, the auth
-        store, the audit chain) from outside the Core process, which is
-        the direct answer to "who can read the secret store". Severity is
-        HIGH when the add-on also has host_network or published ports
-        (reachable without Home Assistant's login in front of it), else
-        MEDIUM. Values read: name, slug, state, host_network, and the
-        published-ports map, booleans and identifiers only.
-
-        Coverage limit, stated rather than papered over: the Supervisor
-        add-on info core caches (aiohasupervisor InstalledAddonComplete,
-        checked against the installed core 2026.2.3 dependency) exposes NO
-        volume-map field, so this check recognizes the well-known
-        config-mapping add-ons by name/slug substring and cannot see "any
-        other" add-on's actual map. Absence of a finding is not proof
-        nothing maps the config directory. Obvious false positive: an
-        add-on whose name merely contains a marker word (say, a dashboard
-        called "SSH Monitor") without mapping the config directory at all.
-        Could-not-evaluate: off Supervisor there is nothing to check, and
-        an unpopulated add-on cache skips the pass without touching
-        existing findings.
+        Recognizes well-known config-mapping add-ons by name/slug substring only;
+        absence of a finding is not proof nothing maps the config directory.
         """
         from homeassistant.helpers.hassio import is_hassio
 
@@ -1660,17 +1328,13 @@ class IntegrationHealth:
         items: list[tuple[dict, str, dict[str, str]]] = []
         for slug, info in addons.items():
             if not isinstance(info, dict):
-                # The Supervisor failed to serve this add-on's info this
-                # cycle; skipping it is the honest move (no finding, no
-                # resolve) rather than treating "unknown" as "clean".
+                # The Supervisor failed to serve this add-on's info; skip it rather than treat unknown as clean.
                 continue
             name = info.get("name") or slug
             haystack = f"{slug} {name}".lower()
             if not any(marker in haystack for marker in _CONFIG_MAPPING_ADDON_MARKERS):
                 continue
-            # Fail closed (work plan item 4.3): the MEDIUM/HIGH split
-            # depends on these keys, so a missing one is reported rather
-            # than silently read as unexposed.
+            # Fail closed: the MEDIUM/HIGH split depends on these keys, so a missing one is reported.
             missing = [key for key in ("host_network", "network") if key not in info]
             if missing:
                 items.append(
@@ -1716,23 +1380,8 @@ class IntegrationHealth:
         return self._async_finalize_check("config_mapping_addon", items)
 
     async def _check_backup_protection(self) -> list[dict]:
-        """check="backup_unprotected" - MEDIUM (work item SEC-7).
-
-        Backup protection (encryption) is the one control that still
-        covers .storage once a backup leaves the box. Read from
-        .storage/backup, executor-side: config.create_backup.password is
-        checked for null-ness ONLY (the value never leaves the closure)
-        and each config.agents[<id>].protected boolean is read as-is;
-        those are the exact fields core's backup component persists
-        (verified against the installed core 2026.2.3 source,
-        components/backup/config.py and store.py). Could-not-evaluate: an
-        absent file means backups were never configured, which resolves
-        any prior finding honestly; an unreadable or unparseable file
-        skips the pass without touching existing findings. Obvious false
-        positive: an operator who deliberately keeps unencrypted backups
-        on media they consider physically secure - the finding makes that
-        a recorded decision, not an oversight.
-        """
+        """check="backup_unprotected" - MEDIUM. Reads .storage/backup executor-side:
+        password null-ness only, and the per-agent protected booleans."""
         # ha-soc-allow: storage_file_access reads password null-ness and protected booleans only (SEC-7)
         path = self.hass.config.path(".storage", "backup")
 
@@ -1803,23 +1452,8 @@ class IntegrationHealth:
         )
 
     async def _check_samba_config_share(self) -> list[dict]:
-        """check="samba_unauthenticated" - HIGH (work item SEC-7).
-
-        A Samba add-on shares the config directory over the network; run
-        without a password or with guest access, that is .storage handed
-        to the LAN. Only option KEY presence and value truthiness are
-        evaluated, inside the closure; no option value is ever copied
-        into the finding, the log, or the summary. UNVERIFIED (plan
-        section 0, rule 5): the official Samba add-on's exact option key
-        names could not be verified against a live Supervisor from this
-        environment, so the check probes the common shapes, a key named
-        exactly "password" (case-insensitive) whose value is falsy, and
-        any boolean key containing "guest" that is true, and a Samba
-        add-on using different key names is skipped as could-not-evaluate
-        rather than guessed at. Obvious false positive: a Samba fork that
-        authenticates through something outside its options (for example
-        host users) looks passwordless here.
-        """
+        """check="samba_unauthenticated" - HIGH. Only option KEY presence and value
+        truthiness are evaluated inside the closure; no option value is copied out."""
         from homeassistant.helpers.hassio import is_hassio
 
         if not is_hassio(self.hass):
@@ -1843,11 +1477,7 @@ class IntegrationHealth:
                 continue
             options = info.get("options")
             if not isinstance(options, dict):
-                # Fail closed (work plan item 4.3): no readable options in
-                # the cached info means the key shapes below cannot be
-                # evaluated at all, which is reported as an INFO
-                # could_not_evaluate finding naming the key, never
-                # silence.
+                # Fail closed: no readable options means an INFO could_not_evaluate finding, never silence.
                 items.append(
                     self._supervisor_missing_key_item(
                         "samba_unauthenticated", slug, name, ["options"]
@@ -1902,16 +1532,9 @@ class IntegrationHealth:
     def _async_hygiene_finding(
         self, check: str, severity: str, title: str, summary: str, items: list[Any]
     ) -> list[dict]:
-        """Shared plumbing for every config_hygiene.py-backed check below:
-        one aggregated finding when items is non-empty, none when it's
-        empty (so a resolved condition clears via the normal
-        _async_resolve_missing path), and NOTHING touched when the helper
-        reported could_not_evaluate (work plan item 4.1) - a failed data
-        source is not evidence a broken reference got fixed. Repairs
-        mirroring is handled by _async_finalize_check itself, which
-        already skips it for SEVERITY_INFO - no special-casing needed
-        here for the purely informational/tidiness checks. Item lists in
-        detail are capped with an honest total_count (work plan item 4.4).
+        """Shared plumbing for every config_hygiene.py-backed check: one aggregated
+        finding when items is non-empty, none when empty, and NOTHING touched
+        when the helper reported could_not_evaluate.
         """
         if getattr(items, "status", None) == HYGIENE_COULD_NOT_EVALUATE:
             _LOGGER.debug(
@@ -1931,13 +1554,7 @@ class IntegrationHealth:
         )
 
     async def _check_unknown_service_references(self) -> list[dict]:
-        """check="unknown_service_references" — Spook-inspired.
-
-        An automation/script action calling a service that no longer
-        exists silently no-ops at runtime — for a security-relevant
-        automation (arm a lock, send a notification), that's a control
-        that looks configured but has quietly stopped doing anything.
-        """
+        """check="unknown_service_references"; Spook-inspired."""
         from .config_hygiene import async_unknown_service_references
 
         items = await async_unknown_service_references(self.hass)
@@ -1951,7 +1568,7 @@ class IntegrationHealth:
         )
 
     async def _check_unknown_device_references(self) -> list[dict]:
-        """check="unknown_device_references" — Spook-inspired."""
+        """check="unknown_device_references" - Spook-inspired."""
         from .config_hygiene import async_unknown_device_references
 
         items = await async_unknown_device_references(self.hass)
@@ -1964,13 +1581,7 @@ class IntegrationHealth:
         )
 
     async def _check_unknown_area_floor_label_references(self) -> list[dict]:
-        """check="unknown_area_floor_label_references" — Spook-inspired.
-
-        Weaker signal than a device/service/entity reference (targeting a
-        whole area/floor/label is less commonly the crux of a single
-        security automation), still collected for the same "insight into
-        what could affect a security automation" reason as the rest.
-        """
+        """check="unknown_area_floor_label_references"; Spook-inspired."""
         from .config_hygiene import async_unknown_area_floor_label_references
 
         items = await async_unknown_area_floor_label_references(self.hass)
@@ -1983,13 +1594,7 @@ class IntegrationHealth:
         )
 
     async def _check_alert_unknown_references(self) -> list[dict]:
-        """check="alert_unknown_references" — Spook-inspired, HIGH severity.
-
-        The alert: integration exists specifically to page someone about
-        a bad state (a leak, smoke, a door left open) — a broken watched
-        entity or notifier means it silently stops alerting at all, the
-        single most directly security-relevant item in this whole sweep.
-        """
+        """check="alert_unknown_references"; Spook-inspired, HIGH severity."""
         from .config_hygiene import async_alert_unknown_references
 
         items = await async_alert_unknown_references(
@@ -2004,12 +1609,7 @@ class IntegrationHealth:
         )
 
     async def _check_notify_group_unknown_members(self) -> list[dict]:
-        """check="notify_group_unknown_members" — Spook-inspired.
-
-        A notify group silently missing a member means whoever that
-        member represented stops receiving notifications with no error
-        anywhere — including, potentially, security alerts.
-        """
+        """check="notify_group_unknown_members"; Spook-inspired."""
         from .config_hygiene import async_notify_group_unknown_members
 
         items = await async_notify_group_unknown_members(self.hass)
@@ -2022,12 +1622,7 @@ class IntegrationHealth:
         )
 
     async def _check_person_unknown_trackers(self) -> list[dict]:
-        """check="person_unknown_trackers" — Spook-inspired.
-
-        Presence detection commonly drives auto-arm/disarm and geofenced
-        security automations — a person entity with a stale
-        device_tracker is working off incomplete presence data.
-        """
+        """check="person_unknown_trackers"; Spook-inspired."""
         from .config_hygiene import async_person_unknown_trackers
 
         items = await async_person_unknown_trackers(self.hass)
@@ -2040,7 +1635,7 @@ class IntegrationHealth:
         )
 
     async def _check_group_unknown_members(self) -> list[dict]:
-        """check="group_unknown_members" — Spook-inspired."""
+        """check="group_unknown_members" - Spook-inspired."""
         from .config_hygiene import async_group_unknown_members
 
         items = await async_group_unknown_members(self.hass)
@@ -2054,7 +1649,7 @@ class IntegrationHealth:
         )
 
     async def _check_proximity_unknown_references(self) -> list[dict]:
-        """check="proximity_unknown_references" — Spook-inspired."""
+        """check="proximity_unknown_references" - Spook-inspired."""
         from .config_hygiene import async_proximity_unknown_references
 
         items = await async_proximity_unknown_references(self.hass)
@@ -2067,14 +1662,7 @@ class IntegrationHealth:
         )
 
     async def _check_lovelace_missing_resources(self) -> list[dict]:
-        """check="lovelace_missing_resources" — informational.
-
-        Reliability, not security: a missing dashboard resource breaks a
-        card's rendering in the browser, nothing backend depends on it.
-        Only /local/ resource URLs are checkable at all — see
-        config_hygiene.py's docstring on why HACS-managed and other
-        externally-registered static paths aren't verifiable.
-        """
+        """check="lovelace_missing_resources"; informational. Only /local/ resource URLs are checkable."""
         from .config_hygiene import async_lovelace_missing_resources
 
         items = await async_lovelace_missing_resources(self.hass)
@@ -2087,7 +1675,7 @@ class IntegrationHealth:
         )
 
     async def _check_empty_areas_and_floors(self) -> list[dict]:
-        """check="empty_areas_and_floors" — informational, pure registry tidiness."""
+        """check="empty_areas_and_floors" - informational, pure registry tidiness."""
         from .config_hygiene import async_empty_areas_and_floors
 
         result = await async_empty_areas_and_floors(self.hass)
@@ -2103,7 +1691,7 @@ class IntegrationHealth:
         )
 
     async def _check_unused_labels_and_blueprints(self) -> list[dict]:
-        """check="unused_labels_and_blueprints" — informational, pure registry tidiness."""
+        """check="unused_labels_and_blueprints" - informational, pure registry tidiness."""
         from .config_hygiene import async_unused_labels_and_blueprints
 
         result = await async_unused_labels_and_blueprints(self.hass)
@@ -2119,12 +1707,7 @@ class IntegrationHealth:
         )
 
     async def _check_unknown_customize_entities(self) -> list[dict]:
-        """check="unknown_customize_entities" — informational.
-
-        A stale customize: block does nothing — it's a dead attribute
-        override for an entity that no longer exists, not a functional
-        problem, just clutter worth knowing about.
-        """
+        """check="unknown_customize_entities"; informational."""
         from .config_hygiene import async_unknown_customize_entities
 
         entity_ids = await async_unknown_customize_entities(
@@ -2142,7 +1725,7 @@ class IntegrationHealth:
         )
 
     async def _check_orphaned_statistics(self) -> list[dict]:
-        """check="orphaned_statistics" — informational, database bloat only."""
+        """check="orphaned_statistics" - informational, database bloat only."""
         from .config_hygiene import async_orphaned_statistics
 
         statistic_ids = await async_orphaned_statistics(self.hass)
@@ -2158,7 +1741,7 @@ class IntegrationHealth:
         )
 
     async def _check_energy_unknown_references(self) -> list[dict]:
-        """check="energy_unknown_references" — informational."""
+        """check="energy_unknown_references" - informational."""
         from .config_hygiene import async_energy_unknown_references
 
         items = await async_energy_unknown_references(self.hass)
@@ -2171,24 +1754,8 @@ class IntegrationHealth:
         )
 
     async def _check_notify_coverage_gaps(self) -> list[dict]:
-        """check="notify_coverage_gaps" - split severities per D-11 (work
-        plan item 4.4): LOW for an untracked source (near-universal on
-        real installs, since most notify triggers are not lock/siren/valve
-        entities) and MEDIUM for a source the operator deliberately
-        toggled off (a coverage hole someone created on purpose and may
-        have forgotten).
-
-        Not Spook-inspired: this is a coverage-gap check on HA SOC's own
-        Security Integrations Health feature, prompted by a very specific,
-        very real worry — "my phone tells me when the fire alarm goes off;
-        make sure I'd actually find out if that stopped working, instead
-        of discovering it hours later." An automation that calls notify.*
-        when triggered by a lock/siren/valve entity or one of the named
-        security integrations, where that source isn't tracked (or has
-        been turned off) on the Security Integrations Health dashboard
-        card, is exactly that blind spot: the integration/device can go
-        silently unavailable and nothing here will surface it.
-        """
+        """check="notify_coverage_gaps": LOW for an untracked source, MEDIUM for
+        one the operator deliberately toggled off."""
         from .config_hygiene import async_notify_coverage_gaps
 
         items = await async_notify_coverage_gaps(self.hass, self._store)
@@ -2236,21 +1803,7 @@ class IntegrationHealth:
         return self._async_finalize_check("notify_coverage_gaps", finalize_items)
 
     async def _check_broken_entity_references(self) -> list[dict]:
-        """check="broken_entity_references" — one aggregated finding.
-
-        Spook-inspired: the large majority (37 of 41) of Spook's automated
-        chores are variations on "does this automation/script/scene/
-        helper reference an entity that no longer exists" — see this
-        project's README for the fuller scoping rationale on why a
-        curated subset rather than Spook's full catalog. This is that
-        subset's proactive half: entity_remap.py's single-pass scan
-        across automations, scripts, scenes, and structured helper
-        fields (not Lovelace — see that module's docstring on why). Each
-        broken reference found is directly actionable from the new
-        Entity ReMap tab: pick the broken entity_id, pick its
-        replacement, and every editable reference gets corrected in
-        place.
-        """
+        """check="broken_entity_references"; one aggregated finding from entity_remap.py's single-pass scan."""
         from .entity_remap import async_scan_broken_references
 
         broken = await async_scan_broken_references(self.hass)

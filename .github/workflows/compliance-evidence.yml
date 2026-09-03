@@ -25,7 +25,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
-          python-version: "3.13"
+          python-version: "3.14"
 
       - name: Collect normalized GitHub observations
         env:
@@ -52,9 +52,7 @@ jobs:
               > build/evidence-input/repository.json
           fi
 
-          # The branch metadata endpoint is available to the workflow's
-          # read-only token and exposes whether protection applies, its status
-          # check contexts, and whether enforcement includes administrators.
+          # Readable with the workflow's read-only token.
           if ! gh api "/repos/$GITHUB_REPOSITORY/branches/main" --jq '{
               name,
               protected,
@@ -66,9 +64,7 @@ jobs:
               > build/evidence-input/branch.json
           fi
 
-          # GitHub requires Administration-read permission for this one
-          # settings endpoint. An optional fine-grained, read-only token makes
-          # it observable; without one the pack records the explicit boundary.
+          # Needs Administration-read; COMPLIANCE_ADMIN_TOKEN is optional and its absence is recorded as a boundary.
           IMMUTABLE_TOKEN="${COMPLIANCE_ADMIN_TOKEN:-$GH_TOKEN}"
           if ! GH_TOKEN="$IMMUTABLE_TOKEN" gh api -H "X-GitHub-Api-Version: 2026-03-10" \
             "/repos/$GITHUB_REPOSITORY/immutable-releases" \
@@ -111,9 +107,7 @@ jobs:
               > build/evidence-input/recent_workflow_runs.json
           fi
 
-          # Retain counts by severity, not alert paths, descriptions, or
-          # source excerpts. A permission failure is evidence of a collection
-          # gap and makes the final job fail after preserving the partial pack.
+          # Counts by severity only; a permission failure fails the final job after the partial pack is kept.
           if ! gh api "/repos/$GITHUB_REPOSITORY/code-scanning/alerts?state=open&per_page=100" \
             --jq '{
               open_total: length,
@@ -150,8 +144,7 @@ jobs:
         with:
           subject-path: build/ha-soc-compliance-evidence.tgz
 
-      # GitHub's transport retention is intentionally explicit. The pack's
-      # summary directs operators to the approved longer-lived evidence store.
+      # 90-day transport retention is deliberate; the pack summary names the longer-lived store.
       - name: Upload evidence pack
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

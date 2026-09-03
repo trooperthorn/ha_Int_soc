@@ -1,13 +1,6 @@
 """Repairs (issue registry) sync helpers not already owned by another module.
 
-`health.py` and `scanner.py` create their own Repairs issues inline (they
-have the domain-specific context to do it well). This module covers the
-cross-cutting issue types that don't belong to either: admins without MFA
-(a `users.py` + `risk.py` concern), confirmed high/critical device
-vulnerabilities (a `vulns.py` concern), stale long-lived access tokens
-(also a `users.py` concern), and a reset/wiped audit chain (an `audit.py`
-concern, work item 1.5). Kept separate so none of those modules needs to
-import `homeassistant.helpers.issue_registry` for a single call site.
+Covers the cross-cutting issue types no single module owns.
 """
 from __future__ import annotations
 
@@ -17,10 +10,7 @@ import homeassistant.helpers.issue_registry as ir
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
-# The same layered import users.py uses (work plan item 4.14): the
-# constant's home has differed across core layouts, and the literal
-# fallback keeps the comparison honest on any of them rather than
-# hardcoding the string inline at the comparison site.
+# The constant's home differs across core layouts; the literal fallback keeps the comparison honest.
 try:
     from homeassistant.auth.const import TOKEN_TYPE_LONG_LIVED_ACCESS_TOKEN
 except ImportError:  # pragma: no cover - older/newer core layout fallback
@@ -35,15 +25,10 @@ _ADMIN_MFA_PREFIX = "admin_without_mfa_"
 _VULN_PREFIX = "device_vulnerability_"
 _STALE_TOKEN_PREFIX = "stale_access_token_"
 
-# Matches Spook's own long-lived-access-token staleness threshold — a
-# reasonable, already-field-tested value for "probably forgotten", not
-# this project's own invention.
+# Matches Spook's long-lived-access-token staleness threshold.
 STALE_TOKEN_UNUSED_DAYS = 180
 
-# One fixed issue id, not a per-incident one: a second reset before the
-# operator dismissed the first just refreshes the same issue with the newer
-# numbers, and the full incident-by-incident history lives in the audit
-# chain itself (every reset writes an audit_chain_reset record).
+# One fixed issue id; a second reset refreshes it with the newer numbers.
 AUDIT_CHAIN_RESET_ISSUE_ID = "audit_chain_reset"
 
 
@@ -53,13 +38,7 @@ def async_create_audit_chain_reset_issue(
     """Raise the Repairs issue for a wiped/rolled-back audit chain.
 
     Called by audit.py when a startup finds the on-disk chain head absent
-    or behind the store's mirror of the last flushed head (work item 1.5).
-    Severity ERROR, not CRITICAL: the chain has already been continued
-    from the mirrored head and new records are being written, so this is
-    "evidence was destroyed and you must know", not "the control is down
-    right now". is_fixable=False because nothing here can restore deleted
-    records; the operator's action is to investigate who could reach
-    `.storage/` and then dismiss the issue.
+    or behind the store's mirror of the last flushed head.
     """
     ir.async_create_issue(
         hass,
@@ -70,8 +49,7 @@ def async_create_audit_chain_reset_issue(
         translation_key="audit_chain_reset",
         translation_placeholders={
             "store_seq": str(store_seq),
-            # "none" reads better than a bare 0 for "the head file was
-            # gone entirely" in the rendered issue text.
+            # "none" reads better than 0 for a missing head file.
             "disk_seq": str(disk_seq) if disk_seq is not None else "none",
         },
     )
@@ -106,18 +84,10 @@ async def async_sync_admin_mfa_issues(hass: HomeAssistant, users: list[dict]) ->
 
 
 async def async_sync_stale_token_issues(hass: HomeAssistant) -> None:
-    """Spook-inspired: a long-lived access token unused for 180+ days is
-    real attack surface someone likely forgot about — a leaked LLAT never
-    expires on its own. Not auto-revoked here (that's a real, standing
-    credential someone's script might still depend on); this only makes
-    it visible. Actual revocation is the Users & Access tab's existing
-    per-token Revoke action, already built — this issue just points at it.
+    """Raise a Repairs issue for each long-lived access token unused for
+    STALE_TOKEN_UNUSED_DAYS. Never auto-revokes.
 
-    Reads straight from hass.auth rather than through UsersManager's
-    async_list_users(): that method's record doesn't include
-    refresh_tokens at all (only async_get_user_detail does, one user at a
-    time) — this needs every user's tokens in one pass, and hass.auth
-    already holds them all in memory synchronously.
+    Reads hass.auth directly: async_list_users() omits refresh tokens.
     """
     registry = ir.async_get(hass)
     current_ids = {

@@ -1,0 +1,11 @@
+{
+  "tag_prefix": "v",
+  "timezone": "America/Chicago",
+  "archive": {"source": "custom_components/ha_soc", "name": "ha_soc.zip"},
+  "release_paths": ["custom_components/ha_soc", "ha_soc_probe"],
+  "version_fields": [
+    {"path": "custom_components/ha_soc/manifest.json", "kind": "json", "key": "version"},
+    {"path": "ha_soc_probe/config.yaml", "kind": "regex", "pattern": "^version:\\s*\"([^\"]+)\"", "template": "version: \"{version}\""},
+    {"path": "ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run", "kind": "regex", "pattern": "^SCANNER_VERSION=\"([^\"]+)\"", "template": "SCANNER_VERSION=\"{version}\""}
+  ]
+}

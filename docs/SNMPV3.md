@@ -120,3 +120,20 @@ Negative tests are required before treating deployment as complete:
 These are live-environment checks; CI can prove configuration generation,
 credential masking, script policy, and package/build behavior, but cannot prove
 your VLAN ACL or the deployed HAOS namespace view.
+
+## Agent and wire facts
+
+These facts were moved out of `snmp.py` and the Probe's SNMP service script; the security contract above remains the authority on what is allowed.
+
+| Fact | Verified |
+| --- | --- |
+| `SNMP_USERNAME_PATTERN` allows 1 to 32 characters from letters, digits, dot, dash, and underscore. `SNMP_PASSPHRASE_PATTERN` allows 20 to 128 characters from letters, digits, and `. _ ~ ! @ $ % ^ & * + = : , -`. The safe-token charset keeps values unambiguous in `snmpd.conf` and prevents shell or config-language injection at the Probe boundary. | Verified (code) |
+| Twenty characters exceeds Net-SNMP's eight-character protocol minimum. | Verified (Net-SNMP documentation) |
+| The authentication protocol is SHA-256 and the privacy protocol AES-128. | Verified (code) |
+| The Probe response carries a `generation` token, the sha256 of the canonical JSON of the material, so the Probe can detect configuration changes. An unchanged poll response (same `generation`) contains no credentials; a changed generation carries `listen_address`, `port`, `username`, `auth_passphrase`, and `priv_passphrase`, which must differ from each other and satisfy the shape checks in the script. Steady-state polling returns only `enabled` and `generation`. | Verified (code) |
+| Net-SNMP consumes the `createUser <user> SHA-256 "<auth>" AES "<priv>"` directive in `persistent/snmpd.conf` at startup and rewrites the file with engine-localized keys; plaintext passphrases exist only in that mode-0600 file during the one initialization window. | Verified (Net-SNMP documentation) |
+| snmpd drops to the `ha_soc_snmp` account after opening the listener (`agentuser` / `agentgroup`); its persistent directory must remain writable by that account so engine boots and time and localized USM keys survive a clean shutdown. | Verified (code and Net-SNMP documentation) |
+| The read-only view (`haSocReadOnly`) covers system (`.1.3.6.1.2.1.1`), interfaces (`.2.1.2` and ifXTable `.2.1.31.1.1`), host storage and processor load (`.2.1.25.2`, `.2.1.25.3.3`), and UCD memory and load (`.4.1.2021.4`, `.4.1.2021.11`); `rouser <name> priv` requires AuthPriv. | Verified (code) |
+| The listen address must be an address actually assigned in the shared host network namespace, never 0.0.0.0 or `::`; Core rejects hostnames, URLs, wildcard, and multicast addresses and the Probe revalidates. | Verified (code) |
+| The Probe's SNMP config poll period is 30 seconds. | Verified (code) |
+| Kernel CPU and memory sources are shared with the host on the deployed HAOS or Supervisor version. | Unverified (see Scope boundary) |

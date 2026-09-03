@@ -88,10 +88,7 @@ async def entry(hass: HomeAssistant, tmp_path) -> MockConfigEntry:
     config_entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(config_entry.entry_id)
     await hass.async_block_till_done()
-    # The harness's config dir is shared across tests, so the audit chain
-    # would otherwise accumulate records from every test in the session;
-    # point this entry's audit log at a per-test directory (same isolation
-    # trick test_audit.py uses).
+    # Per-test audit dir: the harness config dir is shared across tests.
     config_entry.runtime_data.audit._dir_path = str(tmp_path / "audit")
     return config_entry
 

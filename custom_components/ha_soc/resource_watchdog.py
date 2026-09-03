@@ -1,57 +1,7 @@
-"""Container Resource Watchdog — catch and contain a runaway container.
+"""Container Resource Watchdog: catch and contain a runaway container.
 
-The problem this solves: Supervisor exposes NO API to cap an add-on's CPU
-or memory (verified against aiohasupervisor's full AddonsClient surface —
-info/stats/options/security/start/stop/restart/rebuild/uninstall/stdin,
-nothing that sets limits), so by default any add-on can eat the host until
-the kernel OOM-kills something — often not the guilty container.
-
-Two layers, matching what the platform actually allows:
-
-1. **Watchdog (this module; fully supported APIs).** Samples per-container
-   stats on an interval (reusing containers.async_container_resources) and
-   tracks consecutive-breach counts per container against its threshold
-   (per-container override, else the global default). Only a SUSTAINED
-   breach — N consecutive samples — trips it, so a media scan spiking for
-   one sample doesn't restart anything. On a trip it always records a
-   detection + notification + audit entry, and then takes the container's
-   configured action: ``alert`` (nothing further), ``restart``, or ``stop``
-   via the real Supervisor API.
-
-   Guard rails, deliberately not configurable:
-   - Core and the Supervisor are NEVER auto-restarted/stopped — an
-     automated response killing the thing that hosts the automation is a
-     footgun; they are always alert-only regardless of configuration.
-   - After WATCHDOG_MAX_ACTIONS_PER_HOUR enforcement actions on one
-     container, that container is downgraded to alert-only for the rest of
-     the hour: an add-on that re-breaches right after every restart is a
-     restart LOOP, and looping it forever is worse than saying so.
-
-2. **Hard caps (delivered here, applied by the Probe add-on).** Owner-set
-   Docker limits (--memory / --cpus) per add-on, shipped to the Probe over
-   the existing firewall poll channel and applied against the Docker
-   socket. This is the explicit escape hatch the platform doesn't provide:
-   it requires the Probe's Protection Mode to be DISABLED (root-equivalent
-   access — the UI says so before anything is applied), and because
-   Supervisor recreates containers on update/restart, the Probe re-applies
-   the caps on a timer rather than assuming they stick. The Probe reports
-   applied/denied state back through the normal ingest path; this module
-   only stores intent and result, never touches Docker itself.
-
-Everything runtime (breach counters, usage history ring buffers, action
-timestamps) lives in memory only — it's diagnostic, and persisting a
-time series through the debounced Store on every sample would churn it
-for no configuration value.
-
-Slug validation (work item 2.2): every override and hard-cap slug is
-validated end to end. The WS schema restricts the slug to
-ADDON_SLUG_PATTERN below, and the handler additionally requires the slug
-to name an add-on the Supervisor itself reports as installed
-(async_installed_addon_slugs, reusing logs.py's cache-backed lookup),
-rejecting with not_supervisor on installs that have no Supervisor at all.
-The Probe applies the same regex again locally before building any Docker
-URL, so a compromised Core still cannot steer the add-on's Docker client
-at an arbitrary container name.
+Two layers: the watchdog here (supported Supervisor APIs) and owner-set
+Docker hard caps applied by the Probe add-on. See docs/RESOURCE-WATCHDOG.md.
 """
 from __future__ import annotations
 
@@ -82,25 +32,15 @@ from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
 
-# Ring-buffer depth per container: at the default 60s interval this is one
-# hour of samples — enough to show a leak's growth curve in the panel.
 _HISTORY_SAMPLES = 60
 
-# The shape of a Supervisor add-on slug (work item 2.2). Enforced on the
-# WS schema for override.slug and hard_limit.slug, and re-checked by the
-# Probe's run script before any Docker URL is built from a slug, so both
-# ends of the channel refuse a value that could smuggle path or query
-# syntax into "http://localhost/containers/addon_<slug>/update".
+# Enforced on the WS schema and re-checked by the Probe before any Docker URL is built.
 ADDON_SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
 
 
 def async_installed_addon_slugs(hass: HomeAssistant) -> set[str] | None:
-    """Slugs of the add-ons the Supervisor reports as installed, or None
-    on a non-Supervisor install (where the question has no answer at all,
-    as opposed to an empty set meaning "Supervisor, but nothing
-    installed"). Reuses logs.py's cache-backed lookup so a watchdog config
-    change costs no Supervisor round trip (work item 2.2).
-    """
+    """Slugs of the add-ons the Supervisor reports as installed, or None on a
+    non-Supervisor install (no answer, as opposed to an empty set)."""
     from homeassistant.helpers.hassio import is_hassio
 
     from .logs import _addons_by_slug
@@ -131,8 +71,6 @@ class ResourceWatchdog:
         # slug -> short human string describing the last watchdog outcome
         self._last_outcome: dict[str, str] = {}
 
-    # -- lifecycle ---------------------------------------------------------
-
     @property
     def config(self) -> dict[str, Any]:
         return self.store.data["resource_watchdog"]
@@ -156,13 +94,10 @@ class ResourceWatchdog:
             self._unsub()
             self._unsub = None
 
-    # -- configuration resolution -----------------------------------------
-
     def _limits_for(self, slug: str, kind: str) -> tuple[int | None, int | None, str]:
         """(cpu_threshold, memory_threshold, action) for one container.
 
-        Core/Supervisor are clamped to alert-only here — the one rule the
-        configuration cannot override (see module docstring).
+        Core/Supervisor are clamped to alert-only here; configuration cannot override it.
         """
         cfg = self.config
         override = (cfg.get("overrides") or {}).get(slug) or {}
@@ -186,8 +121,6 @@ class ResourceWatchdog:
         times = [t for t in self._action_times.get(slug, []) if now - t < 3600]
         self._action_times[slug] = times
         return len(times) < WATCHDOG_MAX_ACTIONS_PER_HOUR
-
-    # -- sampling ----------------------------------------------------------
 
     async def _async_sample(self, _now=None) -> None:
         try:
@@ -238,16 +171,13 @@ class ResourceWatchdog:
             if count < sustained:
                 continue
 
-            # Sustained breach — trip. Reset the counter so a persisting
-            # breach re-trips only after another full sustained window.
+            # Reset so a persisting breach re-trips only after another full sustained window.
             self._breach_counts[slug] = 0
             await self._async_trip(container, action, over_cpu, over_mem, cpu, mem)
             changed = True
 
         if changed:
             async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_dashboard")
-
-    # -- response ----------------------------------------------------------
 
     async def _async_trip(
         self,
@@ -269,8 +199,7 @@ class ResourceWatchdog:
             if hit
         )
 
-        # Enforcement budget: a container that keeps re-breaching right after
-        # each action is a loop — downgrade to alert and say so.
+        # Enforcement budget: re-breaching right after each action is a loop; downgrade to alert.
         looped = False
         if action != WATCHDOG_ACTION_ALERT and not self._action_budget_left(slug):
             action = WATCHDOG_ACTION_ALERT
@@ -354,8 +283,6 @@ class ResourceWatchdog:
             _LOGGER.warning("Watchdog could not %s add-on %s: %s", action, slug, err)
             return f"{action} FAILED: {err}"
 
-    # -- status for the panel ---------------------------------------------
-
     def status(self) -> dict[str, Any]:
         return {
             "config": {
@@ -375,11 +302,6 @@ class ResourceWatchdog:
                 for slug in set(self._history) | set(self._last_outcome)
             },
         }
-
-
-# ---------------------------------------------------------------------------
-# Hard-cap plumbing (Core side): intent to the Probe, state back from it.
-# ---------------------------------------------------------------------------
 
 
 def async_resource_limits_for_probe(store: HaSocData) -> dict[str, Any] | None:

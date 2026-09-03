@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Build the deterministic HACS release archive for HA SOC.
+"""Validate shipped versions and build the deterministic HACS release archive.
 
-The archive deliberately contains the contents of ``custom_components/ha_soc``
-at its root.  That is the layout HACS expects when ``zip_release`` is enabled.
-Stable ordering, timestamps, permissions, and compression make the same source
-tree produce the same SHA-256 digest on every runner.
+Reads ``.release.json`` through ``scripts.release_config``. ``validate_versions``
+is the independent reader the release gate relies on; the writer is
+``set_version.py``. Stable ordering, timestamps, permissions, and compression
+make the same source tree produce the same SHA-256 digest on every runner.
+
+Usage:
+    python -m scripts.build_release_artifacts --validate-only
+    python -m scripts.build_release_artifacts --output dist/ha_soc.zip
 """
 
 from __future__ import annotations
@@ -13,50 +17,27 @@ import argparse
 import hashlib
 import json
 from pathlib import Path
-import re
 import stat
+import sys
 import zipfile
 
-_VERSION_RE = re.compile(r"^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$")
+if __package__ in {None, ""}:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from scripts import release_config  # noqa: E402
+from scripts.release_config import ReleaseConfig, load  # noqa: E402
+
 _FIXED_ZIP_TIME = (1980, 1, 1, 0, 0, 0)
 _SKIP_PARTS = {"__pycache__", "node_modules"}
 
 
-def _read_versions(repository: Path) -> dict[str, str]:
-    manifest = json.loads(
-        (repository / "custom_components/ha_soc/manifest.json").read_text(
-            encoding="utf-8"
-        )
-    )["version"]
-    probe_text = (repository / "ha_soc_probe/config.yaml").read_text(
-        encoding="utf-8"
-    )
-    scanner_text = (
-        repository / "ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run"
-    ).read_text(encoding="utf-8")
-
-    probe_match = re.search(r'^version:\s*"([^"]+)"', probe_text, re.MULTILINE)
-    scanner_match = re.search(
-        r'^SCANNER_VERSION="([^"]+)"', scanner_text, re.MULTILINE
-    )
-    return {
-        "manifest": manifest,
-        "probe": probe_match.group(1) if probe_match else "<missing>",
-        "scanner": scanner_match.group(1) if scanner_match else "<missing>",
-    }
+def _config(target: Path | ReleaseConfig) -> ReleaseConfig:
+    return target if isinstance(target, ReleaseConfig) else load(Path(target))
 
 
-def validate_versions(repository: Path) -> str:
-    """Return the common component version or raise on drift."""
-    versions = _read_versions(repository)
-    distinct = set(versions.values())
-    if len(distinct) != 1:
-        rendered = ", ".join(f"{name}={value}" for name, value in versions.items())
-        raise ValueError(f"Component versions do not match: {rendered}")
-    version = versions["manifest"]
-    if not _VERSION_RE.fullmatch(version):
-        raise ValueError(f"Invalid release version: {version}")
-    return version
+def validate_versions(target: Path | ReleaseConfig) -> str:
+    """Return the single shipped version or raise on drift or bad format."""
+    return release_config.validate_versions(_config(target))
 
 
 def _release_files(source: Path) -> list[Path]:
@@ -72,15 +53,26 @@ def _release_files(source: Path) -> list[Path]:
     )
 
 
-def build_archive(repository: Path, output: Path) -> tuple[str, str]:
-    """Build ``output`` and return ``(version, sha256)``."""
-    repository = repository.resolve()
-    source = repository / "custom_components/ha_soc"
-    version = validate_versions(repository)
+def _archive_label(source: Path) -> str:
+    """Return the integration's display name, falling back to the directory."""
+    manifest = source / "manifest.json"
+    if manifest.exists():
+        name = json.loads(manifest.read_text(encoding="utf-8")).get("name")
+        if isinstance(name, str) and name.isascii():
+            return name
+    return source.name
+
+
+def build_archive(target: Path | ReleaseConfig, output: Path) -> tuple[str, str]:
+    """Write the archive and return ``(version, sha256)``."""
+    config = _config(target)
+    version = validate_versions(config)
+    if not config.archive_source:
+        raise ValueError(".release.json has no archive section")
+    source = config.repository / config.archive_source
     files = _release_files(source)
     if not files or source / "manifest.json" not in files:
-        raise ValueError("Integration release source is empty or missing manifest.json")
-
+        raise ValueError("Release source is empty or missing manifest.json")
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(
         output,
@@ -89,20 +81,17 @@ def build_archive(repository: Path, output: Path) -> tuple[str, str]:
         compresslevel=9,
         strict_timestamps=True,
     ) as archive:
-        archive.comment = f"HA SOC {version}".encode("ascii")
+        archive.comment = f"{_archive_label(source)} {version}".encode("ascii")
         for path in files:
             relative = path.relative_to(source).as_posix()
             info = zipfile.ZipInfo(relative, date_time=_FIXED_ZIP_TIME)
             info.create_system = 3
             executable = bool(path.stat().st_mode & stat.S_IXUSR)
-            mode = 0o100755 if executable else 0o100644
-            info.external_attr = mode << 16
+            info.external_attr = (0o100755 if executable else 0o100644) << 16
             info.compress_type = zipfile.ZIP_DEFLATED
             info.flag_bits |= 0x800  # UTF-8 file names
             archive.writestr(info, path.read_bytes(), compresslevel=9)
-
-    digest = hashlib.sha256(output.read_bytes()).hexdigest()
-    return version, digest
+    return version, hashlib.sha256(output.read_bytes()).hexdigest()
 
 
 def main() -> int:
@@ -116,15 +105,25 @@ def main() -> int:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("dist/ha_soc.zip"),
-        help="release archive path",
+        default=None,
+        help="archive path; defaults to dist/<archive name>",
+    )
+    parser.add_argument(
+        "--validate-only",
+        action="store_true",
+        help="print the shipped version and exit",
     )
     args = parser.parse_args()
-
-    output = args.output
+    config = load(args.repository)
+    if args.validate_only:
+        print(validate_versions(config))
+        return 0
+    output = args.output or (
+        config.repository / "dist" / (config.archive_name or "release.zip")
+    )
     if not output.is_absolute():
-        output = args.repository / output
-    version, digest = build_archive(args.repository, output)
+        output = config.repository / output
+    version, digest = build_archive(config, output)
     print(f"archive={output}")
     print(f"version={version}")
     print(f"sha256={digest}")

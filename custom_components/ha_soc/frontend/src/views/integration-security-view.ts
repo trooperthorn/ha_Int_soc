@@ -30,9 +30,7 @@ const TIER_TONE: Record<IntegrationTier, string> = {
   hacs: "medium",
   custom: "high",
 };
-// Sort rank for the Source column: ascending goes strongest-known to
-// weakest-known provenance (the same order as the tier pills up top), which
-// is more useful than the alphabetical core/custom/hacs.
+// Ascending goes strongest-known to weakest-known provenance, matching the tier pills.
 const TIER_RANK: Record<IntegrationTier, number> = {
   core: 0,
   hacs: 1,
@@ -56,10 +54,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
 
   @state() private _overview: IntegrationSecurityOverview | null = null;
   @state() private _loading = true;
-  // Non-null when the load itself failed: without this a failure left
-  // _overview null forever with _loading already cleared by the finally
-  // block, so the page silently stuck on "Loading integrations..." with
-  // no way to tell a failure from a slow load (work plan item 4.12).
+  // Non-null when the load failed; otherwise the page would stick on "Loading integrations...".
   @state() private _error: string | null = null;
   @state() private _refreshing = false;
   @state() private _search = "";
@@ -88,8 +83,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     }
   }
 
-  // Owner-gated server-side (require_owner) — a non-owner admin's change is
-  // rejected by the WS layer; surface that as a message instead of silence.
+  // Owner-gated server-side; surface the rejection as a message.
   private async _setWatchdog(changes: Parameters<typeof setWatchdog>[1]) {
     this._wdError = null;
     try {
@@ -135,9 +129,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     }
   }
 
-  // Accessors for sortRows on the Integration Security table. Nulls (no
-  // GitHub token, no repo discovered) always sink to the bottom, per the
-  // shared helper's contract: unknown is unknown, not smallest.
+  // Accessors for sortRows; nulls sink to the bottom per the shared helper.
   private static readonly INTEGRATION_SORT: Record<string, (r: IntegrationSecurityRow) => unknown> = {
     name: (r) => r.name,
     tier: (r) => TIER_RANK[r.tier],
@@ -145,9 +137,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     license: (r) => r.license_present,
     scanner: (r) => r.scanner_findings,
     signed: (r) => r.github?.commit_verified ?? null,
-    // Composite for the Release cell: ascending is tagged release (0), then
-    // branch-HEAD installs (1), then archived repos (2). Unknown release
-    // status sinks with the not-collected rows.
+    // Release composite: tagged release (0), branch-HEAD (1), archived (2); unknown sinks.
     release: (r) => {
       const g = r.github;
       if (!g) return null;
@@ -166,8 +156,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     const filtered = rows
       .filter((r) => this._tierFilter === "all" || r.tier === this._tierFilter)
       .filter((r) => !q || r.name.toLowerCase().includes(q) || r.domain.toLowerCase().includes(q));
-    // Name-ascending stays the default order until a header is clicked; from
-    // then on the shared sortable helper owns the order.
+    // Name-ascending is the default until a header is clicked.
     if (!this._intSort) return filtered.sort((a, b) => a.name.localeCompare(b.name));
     return sortRows(filtered, this._intSort, HaSocIntegrationSecurityView.INTEGRATION_SORT);
   }
@@ -187,8 +176,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     const filtered = this._filtered();
     const shown = filtered.slice(0, this._limit);
     const s = this._intSort;
-    // A new sort order re-ranks the whole filtered set, so "Show more"
-    // pagination collapses back to the first page.
+    // A new sort re-ranks the whole filtered set, so pagination resets to page one.
     const on = (next: SortState) => {
       this._intSort = next;
       this._limit = PAGE_SIZE;
@@ -343,19 +331,15 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     >`;
   }
 
-  // Accessors for sortRows on the Container Resource Usage table. The
-  // backend pre-sorts suspicious containers first; that order is kept as the
-  // default because sortRows passes rows through untouched with a null state.
+  // The backend pre-sorts suspicious containers first; a null sort state keeps that order.
   private static readonly CONTAINER_SORT: Record<string, (r: ContainerResource) => unknown> = {
     name: (r) => r.name,
-    // Mirrors the State cell: Core and the Supervisor always render as
-    // "running", a stopped add-on falls back to "stopped".
+    // Mirrors the State cell: Core and Supervisor read "running", a stopped add-on "stopped".
     state: (r) => (r.state === "started" || r.kind !== "addon" ? "running" : (r.state ?? "stopped")),
     cpu: (r) => r.cpu_percent,
     memory: (r) => r.memory_percent,
     usage: (r) => r.memory_usage,
-    // Net and Disk sort by combined throughput; a row where the Supervisor
-    // reports neither direction stays unknown and sinks.
+    // Net and Disk sort by combined throughput; neither direction reported sinks as unknown.
     net: (r) => (r.network_rx == null && r.network_tx == null ? null : (r.network_rx ?? 0) + (r.network_tx ?? 0)),
     disk: (r) => (r.blk_read == null && r.blk_write == null ? null : (r.blk_read ?? 0) + (r.blk_write ?? 0)),
     flags: (r) => r.flags.length,
@@ -426,7 +410,6 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- Watchdog global config bar -----------------------------------------
 
   private _renderWatchdogBar() {
     const w = this._watchdog;
@@ -494,7 +477,6 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- Per-container watchdog/cap cell + editor ---------------------------
 
   private _wdCell(r: ContainerResource) {
     const w = this._watchdog;

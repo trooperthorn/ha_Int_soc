@@ -1,6 +1,4 @@
-# Reconciles the version on main into a complete, verifiable GitHub Release.
-# A normal merge is the release trigger: maintainers never create or push tags
-# by hand. Reruns are safe; an already-published version is left immutable.
+# Reconciles the version on main into a verifiable GitHub Release; a normal merge is the trigger and reruns are safe.
 name: Release
 
 on:
@@ -17,8 +15,7 @@ permissions:
   contents: read
 
 jobs:
-  # Use the same authoritative suite that gates pull requests. The publishing
-  # job cannot begin until both pytest and the frontend drift check pass.
+  # The same suite that gates pull requests; publishing waits on it.
   tests:
     uses: ./.github/workflows/test.yml
     permissions:
@@ -81,7 +78,6 @@ jobs:
         if: steps.version.outputs.publish == 'true'
         run: python3 scripts/build_release_artifacts.py --output dist/ha_soc.zip
 
-      # Pinned to the immutable commit behind anchore/sbom-action v0.24.2.
       # GitHub's attestation guidance names this action as its SBOM generator.
       - name: Generate SPDX SBOM
         if: steps.version.outputs.publish == 'true'
@@ -99,7 +95,6 @@ jobs:
         working-directory: dist
         run: sha256sum ha_soc.zip ha_soc.spdx.json > SHA256SUMS
 
-      # Pinned to the immutable commit behind actions/attest v4.
       - name: Attest build provenance
         if: steps.version.outputs.publish == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -113,9 +108,7 @@ jobs:
           subject-path: dist/ha_soc.zip
           sbom-path: dist/ha_soc.spdx.json
 
-      # Immutable releases lock their tag and assets at publication. GitHub's
-      # recommended sequence is therefore: draft, attach everything, publish.
-      # A failed run can safely resume and replace assets while still a draft.
+      # Draft, attach, then publish: an immutable release locks its tag and assets at publication.
       - name: Stage immutable tag and draft release
         if: steps.version.outputs.publish == 'true'
         env:

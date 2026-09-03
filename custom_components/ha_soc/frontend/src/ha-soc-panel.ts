@@ -238,16 +238,9 @@ export class HaSocPanel extends LitElement {
   @state() private _access: AccessInfo | null = null;
   @state() private _version: string | null = null;
   @state() private _probe: ProbeOverview | null = null;
-  // "Customize" mode — reorder/show/hide the cards on the current view.
-  // Not persisted itself (it's a transient editing mode, not a layout
-  // choice); each view persists its own resulting order/hidden list via
-  // ha_soc/layout/*. Reset on tab change so leaving a tab always exits
-  // edit mode rather than carrying it somewhere it wasn't turned on.
+  // Transient "Customize" edit mode; not persisted, reset on tab change.
   @state() private _customizeMode = false;
-  // Set by a ha-soc-navigate event carrying clientFilter (see nav.ts);
-  // consumed once by the Network tab's Clients table search box, then
-  // cleared so navigating there again without a filter doesn't reapply
-  // a stale one.
+  // One-shot client filter from a ha-soc-navigate event (nav.ts); cleared once the Network tab consumes it.
   @state() private _pendingNetworkFilter: string | null = null;
 
   connectedCallback(): void {
@@ -260,20 +253,13 @@ export class HaSocPanel extends LitElement {
     try {
       this._access = await fetchAccessInfo(this.hass);
     } catch {
-      // A denied WS call (e.g. this admin is already locked out) surfaces
-      // as a rejected callWS, not a normal result — treat it the same as
-      // an explicit allowed:false rather than leaving the panel loading
-      // forever or, worse, rendering tabs that will just 401 underneath.
+      // A rejected callWS (e.g. this admin is already locked out) is treated as allowed:false.
       this._access = { is_owner: false, access_level: "owner_only", allowed: false };
     }
   }
 
   private async _loadFooterInfo() {
-    // Both plain @websocket_api.require_admin (see websocket_api.py) —
-    // reachable even when access_level has this admin locked out of
-    // every other ha_soc/* command, so the footer still renders on the
-    // "Access restricted" screen too. Best-effort: a failure here just
-    // means the footer stays blank, never blocks the rest of the panel.
+    // Plain require_admin commands, reachable even when access_level locks this admin out; best-effort.
     try {
       this._version = (await fetchVersion(this.hass)).version;
     } catch {
@@ -438,8 +424,7 @@ export class HaSocPanel extends LitElement {
           .customizeMode=${cm}
         ></ha-soc-integration-security-view>`;
       case "settings":
-        // Defense in depth: even if a non-owner reached this tab, the
-        // owner-only WS commands would reject them — so never render it.
+        // Defense in depth: the owner-only WS commands would reject a non-owner anyway.
         if (!this._access?.is_owner) {
           return html`<div class="denied"><div class="icon">🔒</div><h2>Owner only</h2>
             <p>The Settings tab is available to the account owner only.</p></div>`;

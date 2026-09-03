@@ -276,8 +276,7 @@ async def test_report_from_addon_history_entry_is_independent_copy(
     )
 
     archived = store.data["firewall"]["history"][0]
-    # Mutate the object that used to be fw["pending"] — if history stored
-    # the same reference instead of a copy, this would corrupt it.
+    # Mutate the former fw["pending"] object; a stored reference instead of a copy would corrupt history.
     live_pending_ref["status"] = "corrupted-by-test"
     assert archived["status"] == FIREWALL_TEST_CONFIRMED
 

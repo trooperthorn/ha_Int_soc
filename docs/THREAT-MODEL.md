@@ -45,6 +45,10 @@ code must pass all four rules with zero open findings (SEC-4/SEC-5), and
 nothing in the rules special-cases the `ha_soc` domain string: the rules'
 precise definitions are what its legitimate reads pass through.
 
+### Where the rest of the mechanism reasoning lives
+
+The full reasoning behind every row of the threat table (gating tiers, secret handling, redaction rules, audit chain integrity, the add-on's treatment of Core as hostile, scanner rule evasion notes) is in `security.md`; the two notes here are kept because other documents cite them by this location.
+
 ### Firewall control access gating (decision D-4)
 
 `websocket_api.py`'s firewall command handlers read AND write host

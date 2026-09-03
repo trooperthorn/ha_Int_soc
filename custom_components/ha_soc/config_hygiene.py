@@ -1,41 +1,8 @@
-"""Config hygiene — the Spook-inspired proactive sweep beyond entity_id
-references (see entity_remap.py's async_scan_broken_references for that
-half). Every function here answers one question: "does this piece of
-configuration point at something that no longer exists?" for a reference
-kind other than a plain entity_id.
+"""Config hygiene: the Spook-inspired proactive sweep beyond entity_id references.
 
-Severity is assigned per check in health.py based on how directly the
-broken reference can defeat a security-relevant control (see this
-project's README for the full reasoning): alert/notify/person/device/
-service references get real severity and a Repairs mirror; area/floor/
-label/group/proximity references get a lower severity; pure registry
-tidiness (empty areas, unused labels/blueprints, orphaned statistics,
-unknown customize: blocks, energy dashboard references) is collected as
-informational-only, matching this project's existing pattern for
-inventory-style findings (cloud_egress_inventory, ssh_addon_inventory) —
-never mirrored to Repairs, just visible in the Scanner tab for anyone who
-wants the full picture.
-
-Explicitly out of scope, and why: a proactive sweep for "template string
-mentions an entity/service that doesn't exist" is NOT built here. Doing
-it accurately needs either a live Jinja render per template (real,
-verified as possible via Template.async_render_to_info(), but CPU-bound
-on the event loop and unreliable whenever a template depends on
-trigger/this context this sweep can't supply — an early Jinja failure
-under-reports references) or a text/regex scan (prone to false positives
-on similarly-named entities). Entity ReMap's per-entity interactive
-search already flags "mentioned in a template" on a single, targeted
-entity_id — good enough for the one-at-a-time case this project actually
-needs; a blind proactive sweep of every template in the install isn't.
-
-Tri-state outcomes (work plan item 4.1): every list-returning helper here
-returns a HygieneResult, a plain list of found items that also carries a
-``status`` of ``evaluated`` (ran, found something), ``empty`` (ran, found
-nothing, so a prior finding may honestly resolve), or
-``could_not_evaluate`` (the data source failed, so the caller must leave
-existing findings exactly as they are - an unreadable YAML tree is not
-evidence that a broken alert got fixed). health.py branches on that
-status; callers that only iterate the items keep working unchanged.
+Every function answers one question: does this piece of configuration point
+at something that no longer exists? Each returns a HygieneResult carrying a
+tri-state status; see docs/design.md.
 """
 from __future__ import annotations
 
@@ -48,25 +15,19 @@ from .const import SECURITY_ENTITY_DOMAINS, SECURITY_INTEGRATION_DOMAINS
 
 _SERVICE_CALL_RE = re.compile(r"^[a-z0-9_]+\.[a-z0-9_]+$")
 
-# Tri-state evaluation outcomes (work plan item 4.1).
 HYGIENE_EVALUATED = "evaluated"
 HYGIENE_EMPTY = "empty"
 HYGIENE_COULD_NOT_EVALUATE = "could_not_evaluate"
 
-# Sentinel distinguishing "the caller passed no config, load it here" from
-# "the caller tried to load the config for this sweep and the load failed"
-# (which must become could_not_evaluate, never an empty pass).
+# Sentinel: "no config passed, load here" versus "the sweep's own load failed" (could_not_evaluate).
 _UNSET: Any = object()
 
 
 class HygieneResult(list):
     """Found items plus the tri-state outcome of one hygiene evaluation.
 
-    Subclasses list so every existing caller that only iterates or
-    len()s the items keeps working; ``status`` is the extra channel
-    health.py reads to decide whether an empty result is allowed to
-    resolve prior findings (``empty``) or must leave them untouched
-    (``could_not_evaluate``).
+    ``status`` is what health.py reads to decide whether an empty result may
+    resolve prior findings.
     """
 
     def __init__(self, items: Any = (), status: str | None = None) -> None:
@@ -80,19 +41,9 @@ def _could_not_evaluate() -> HygieneResult:
     return HygieneResult(status=HYGIENE_COULD_NOT_EVALUATE)
 
 
-# -- Shared helpers -----------------------------------------------------------
-
-
 async def _merged_yaml_config(hass: HomeAssistant) -> dict[str, Any] | None:
-    """The one thing alert:/legacy notify groups/customize: all need: the
-    merged (but not domain-schema-validated) configuration.yaml tree,
-    !include/packages/secrets already resolved. Safe to await from the
-    event loop - it offloads file I/O internally. Returns None when the
-    load fails, so the caller reports could_not_evaluate instead of
-    mistaking a broken config for an empty one (work plan item 4.1).
-    During a health.py sweep this is not called at all - the sweep loads
-    the YAML once and passes it into every check that needs it (work plan
-    item 4.7); the load here only serves direct/standalone callers."""
+    """The merged (not schema-validated) configuration.yaml tree, or None when
+    the load fails, which callers must report as could_not_evaluate."""
     from homeassistant.config import async_hass_config_yaml
 
     try:
@@ -101,26 +52,14 @@ async def _merged_yaml_config(hass: HomeAssistant) -> dict[str, Any] | None:
         return None
 
 
-# Subtrees whose keys are service-call PAYLOAD, not service-call targets: an
-# ``action:`` key inside a notify payload (mobile_app actionable
-# notifications) or a ``variables:`` value is data, and treating it as a
-# service reference produced false "unknown service" findings (work plan
-# item 4.6).
+# Keys under these are service-call payload, not targets; never treated as service references.
 _SERVICE_REF_OPAQUE_KEYS = frozenset({"data", "data_template", "variables"})
 
 
 def _walk_service_refs(node: Any):
     """Recursively find every {"service": "domain.x"} / {"action": "domain.x"}
-    field anywhere in a raw automation/script config tree — naturally
-    covers nested choose/if/parallel/repeat blocks since those are just
-    more dicts/lists in the same tree, no per-shape dispatch needed. Skips
-    templated targets (dynamic_template) since those aren't strings
-    matching "domain.service" and can't be resolved statically, and never
-    descends into ``data``/``data_template``/``variables`` subtrees, whose
-    contents are payload rather than actions (work plan item 4.6). Obvious
-    false negative accepted with that skip: a service name stored in a
-    variable and called via a template is invisible here anyway.
-    """
+    field in a raw automation/script config tree; templated targets and
+    payload subtrees are skipped."""
     if isinstance(node, dict):
         for key in ("service", "action"):
             value = node.get(key)
@@ -148,17 +87,7 @@ def _iter_automation_and_script_entities(hass: HomeAssistant):
 
 
 def _trigger_entity_ids(raw_config: dict[str, Any]) -> set[str]:
-    """entity_id(s) named directly on a trigger — state/numeric_state/etc.
-    Only automations have triggers of their own (a script has no trigger:
-    block; it only runs when called), so this is automation-only in
-    practice. A device trigger's entity_id is exposed by HA as `entity_id`
-    too in newer versions but not reliably across the versions this
-    project targets, so device-only triggers are out of scope here —
-    narrower than "every entity anywhere in the automation" on purpose:
-    that would also catch conditions and notify targets themselves,
-    drowning the one thing this check cares about (what set the
-    automation off) in noise.
-    """
+    """entity_id(s) named directly on a trigger (automation-only in practice)."""
     triggers = raw_config.get("triggers") or raw_config.get("trigger") or []
     if isinstance(triggers, dict):
         triggers = [triggers]
@@ -174,32 +103,9 @@ def _trigger_entity_ids(raw_config: dict[str, Any]) -> set[str]:
     return found
 
 
-# -- notify automations depending on an untracked/disabled security source --
-
-
 async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> HygieneResult:
     """Automations that call notify.* when triggered by an entity Security
-    Integrations Health doesn't currently watch — the "my phone tells me
-    when the fire alarm goes off, make sure I'd actually notice if that
-    stopped working" check.
-
-    Two distinct gaps, reported separately because the fix differs:
-      - gap="untracked": the trigger entity's own domain isn't one of
-        SECURITY_ENTITY_DOMAINS and its owning integration isn't one of
-        SECURITY_INTEGRATION_DOMAINS either — Security Health has no way
-        to watch this at all today, tracked or not.
-      - gap="disabled": the domain/integration IS one this project knows
-        how to track, but the instance owner turned its Security Health
-        toggle off in Settings, so a real outage there won't surface on
-        the dashboard.
-
-    Scripts are excluded: a script has no trigger of its own (see
-    _trigger_entity_ids), so if automation A triggers off an untracked
-    entity and calls script S which is what actually calls notify.*, A is
-    what gets flagged here, not S — the trigger entity_id only exists on
-    A's config. A script called directly by notify-unrelated means never
-    has a "triggering entity" to evaluate in the first place.
-    """
+    Integrations Health does not currently watch; gap is "untracked" or "disabled"."""
     from homeassistant.helpers import entity_registry as er
 
     registry = er.async_get(hass)
@@ -252,9 +158,6 @@ async def async_notify_coverage_gaps(hass: HomeAssistant, store: Any) -> Hygiene
     return HygieneResult(found)
 
 
-# -- Unknown service / device / area / floor / label references -------------
-
-
 async def async_unknown_service_references(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for kind, entity in _iter_automation_and_script_entities(hass):
@@ -274,16 +177,8 @@ async def async_unknown_service_references(hass: HomeAssistant) -> HygieneResult
 
 
 async def async_unknown_device_references(hass: HomeAssistant) -> HygieneResult:
-    """Narrower in practice than it sounds, confirmed via a real dynamic
-    test: Home Assistant already validates every device trigger/condition/
-    action against the device registry at automation/script SETUP time —
-    an automation authored against a device_id that never existed fails to
-    load at all and gets disabled, with HA's own clear error log. This
-    only catches the gap HA doesn't cover: a device that existed when the
-    automation/script last loaded (so it's running fine) and was later
-    removed from the registry, leaving a now-dangling device_id with no
-    warning anywhere until this check runs.
-    """
+    """Dangling device_ids in automations/scripts that loaded fine and lost
+    the device afterwards; HA itself rejects never-existed ids at setup."""
     from homeassistant.components.automation import devices_in_automation
     from homeassistant.components.script import devices_in_script
     from homeassistant.helpers import device_registry as dr
@@ -326,16 +221,10 @@ async def async_unknown_area_floor_label_references(hass: HomeAssistant) -> Hygi
     return HygieneResult(found)
 
 
-# -- alert: unknown entity/notifier references -------------------------------
-
-
 async def async_alert_unknown_references(
     hass: HomeAssistant, config: dict[str, Any] | None = _UNSET
 ) -> HygieneResult:
-    """``config`` is the sweep-shared merged YAML tree (work plan item 4.7):
-    health.py loads it once per sweep and passes it in; a standalone call
-    loads it here. A failed load (None) is could_not_evaluate, never an
-    empty pass."""
+    """``config`` is the sweep-shared merged YAML tree; None is could_not_evaluate, never an empty pass."""
     if config is _UNSET:
         config = await _merged_yaml_config(hass)
     if config is None:
@@ -353,21 +242,12 @@ async def async_alert_unknown_references(
     return HygieneResult(found)
 
 
-# -- notify groups: unknown member -------------------------------------------
-
-
 async def async_notify_group_unknown_members(hass: HomeAssistant) -> HygieneResult:
-    """Best-effort by declared label: the legacy-YAML half degrades to
-    nothing when the internal notify API moves (see below), while the
-    config-entry half always evaluates, so the result stays ``evaluated``
-    rather than could_not_evaluate. The accepted false negative is a
-    broken LEGACY group going unreported on a core version where that
-    internal moved."""
+    """Best-effort: the legacy-YAML half degrades to nothing when the internal
+    notify API moves; the config-entry half always evaluates."""
     found: list[dict[str, Any]] = []
 
-    # (a) Legacy YAML `notify: - platform: group` — internal module, real
-    # and working today, but not a documented-stable contract; degrade
-    # to empty rather than raise if it moves in a future HA version.
+    # (a) Legacy YAML notify groups: internal module, degrade to empty if it moves.
     try:
         from homeassistant.components.group.notify import GroupNotifyPlatform
         from homeassistant.components.notify.legacy import NOTIFY_SERVICES
@@ -403,9 +283,6 @@ async def async_notify_group_unknown_members(hass: HomeAssistant) -> HygieneResu
     return HygieneResult(found)
 
 
-# -- person: unknown device_tracker ------------------------------------------
-
-
 async def async_person_unknown_trackers(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for state in hass.states.async_all("person"):
@@ -415,9 +292,6 @@ async def async_person_unknown_trackers(hass: HomeAssistant) -> HygieneResult:
     return HygieneResult(found)
 
 
-# -- group: unknown member ----------------------------------------------------
-
-
 async def async_group_unknown_members(hass: HomeAssistant) -> HygieneResult:
     found: list[dict[str, Any]] = []
     for state in hass.states.async_all("group"):
@@ -425,9 +299,6 @@ async def async_group_unknown_members(hass: HomeAssistant) -> HygieneResult:
             if hass.states.get(member) is None:
                 found.append({"group": state.entity_id, "ref": member})
     return HygieneResult(found)
-
-
-# -- proximity: unknown zone/tracked entity/ignored zone ---------------------
 
 
 async def async_proximity_unknown_references(hass: HomeAssistant) -> HygieneResult:
@@ -448,30 +319,16 @@ async def async_proximity_unknown_references(hass: HomeAssistant) -> HygieneResu
     return HygieneResult(found)
 
 
-# -- Lovelace: missing resources ---------------------------------------------
-
-
 async def async_lovelace_missing_resources(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.lovelace.const import LOVELACE_DATA
 
     ll_data = hass.data.get(LOVELACE_DATA)
     if ll_data is None:
-        # Lovelace not loaded at all: nothing can be evaluated, and prior
-        # findings must not be resolved on that basis.
         return _could_not_evaluate()
 
     resources = ll_data.resources
     if hasattr(resources, "loaded") and not resources.loaded:
-        # The read-only sweep must not flip core's own bookkeeping flag
-        # (work plan item 4.7). Verified against the installed core
-        # 2026.2.3 (components/lovelace/resources.py): async_load() never
-        # sets ``loaded`` itself; each of core's own call sites
-        # (async_get_info, _update_data, the resources WS command) calls
-        # async_load() and then sets the flag. So the sweep goes through
-        # async_get_info(), core's public read path, which performs the
-        # load-once-and-mark entirely inside core's code - the flag stays
-        # core's, and repeated sweeps never re-load or re-fire the
-        # collection's change notifications.
+        # Read through async_get_info() so core's own loaded flag stays core's; see docs/decisions.md.
         try:
             await resources.async_get_info()
         except Exception:  # noqa: BLE001
@@ -481,10 +338,7 @@ async def async_lovelace_missing_resources(hass: HomeAssistant) -> HygieneResult
     for item in resources.async_items():
         url = item.get("url", "")
         if not url.startswith("/local/"):
-            # Only /local/ is verifiable — anything else (HACS-managed,
-            # https://, other custom-integration static routes) is
-            # configured but not resolvable through any core API. Not
-            # flagged: absence of proof isn't proof of absence here.
+            # Only /local/ is verifiable; other resource URLs are never flagged.
             continue
         base = hass.config.path("www")
         path = hass.config.path("www", url.removeprefix("/local/"))
@@ -495,13 +349,8 @@ async def async_lovelace_missing_resources(hass: HomeAssistant) -> HygieneResult
 
 
 def _path_exists(path: str, base: str) -> bool:
-    """isfile(), but only inside the www base directory. A resource URL is
-    attacker-influenceable configuration: `/local/../../secrets.yaml` would
-    otherwise join to a real path *outside* www and get stat'd there. Both
-    sides are realpath'd first so `..` segments and any symlink inside www
-    pointing back out are resolved before the containment check; anything
-    that escapes the base is treated as "not found" (returns False), never
-    stat'd outside the intended directory."""
+    """isfile(), but only inside the www base directory: both sides are
+    realpath'd so a resource URL can never escape www."""
     import os
 
     real_base = os.path.realpath(base)
@@ -509,9 +358,6 @@ def _path_exists(path: str, base: str) -> bool:
     if real_path != real_base and not real_path.startswith(real_base + os.sep):
         return False
     return os.path.isfile(real_path)
-
-
-# -- Registry tidiness: empty areas/floors, unused labels/blueprints --------
 
 
 async def async_empty_areas_and_floors(hass: HomeAssistant) -> dict[str, list[str]]:
@@ -577,14 +423,10 @@ async def async_unused_labels_and_blueprints(hass: HomeAssistant) -> dict[str, l
     return {"labels": unused_labels, "blueprints": unused_blueprints}
 
 
-# -- customize: blocks for entities that no longer exist ---------------------
-
-
 async def async_unknown_customize_entities(
     hass: HomeAssistant, config: dict[str, Any] | None = _UNSET
 ) -> HygieneResult:
-    """``config`` is the sweep-shared merged YAML tree (work plan item 4.7),
-    same contract as async_alert_unknown_references."""
+    """``config`` is the sweep-shared merged YAML tree, same contract as async_alert_unknown_references."""
     if config is _UNSET:
         config = await _merged_yaml_config(hass)
     if config is None:
@@ -595,17 +437,13 @@ async def async_unknown_customize_entities(
     )
 
 
-# -- recorder: orphaned statistics -------------------------------------------
-
-
 async def async_orphaned_statistics(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.recorder.statistics import async_list_statistic_ids
 
     try:
         rows = await async_list_statistic_ids(hass)
     except Exception:  # noqa: BLE001 - recorder not loaded/configured
-        # No recorder means no statistics data to judge; leave any prior
-        # findings alone rather than resolving them on missing data.
+        # No recorder means nothing to judge; leave prior findings alone.
         return _could_not_evaluate()
 
     orphaned = []
@@ -616,17 +454,13 @@ async def async_orphaned_statistics(hass: HomeAssistant) -> HygieneResult:
     return HygieneResult(orphaned)
 
 
-# -- energy dashboard: unknown references ------------------------------------
-
-
 async def async_energy_unknown_references(hass: HomeAssistant) -> HygieneResult:
     from homeassistant.components.energy.data import async_get_manager
 
     try:
         manager = await async_get_manager(hass)
     except Exception:  # noqa: BLE001
-        # The energy component is absent or failed to serve its manager:
-        # nothing can be evaluated this pass.
+        # Energy manager unavailable; nothing can be evaluated this pass.
         return _could_not_evaluate()
     prefs = manager.data
     if prefs is None:

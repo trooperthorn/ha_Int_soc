@@ -22,9 +22,7 @@ from .const import (
     CONF_SNMP_USERNAME,
 )
 
-# The safe-token constraint makes the values unambiguous in snmpd.conf and
-# prevents shell/config-language injection at the Probe boundary.  Twenty
-# characters exceeds Net-SNMP's eight-character protocol minimum.
+# Safe-token charset keeps snmpd.conf values unambiguous; 20 chars exceeds Net-SNMP's 8-char minimum.
 SNMP_USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9_.-]{1,32}$")
 SNMP_PASSPHRASE_PATTERN = re.compile(
     r"^[A-Za-z0-9._~!@$%^&*+=:,-]{20,128}$"
@@ -101,8 +99,7 @@ async def async_config_for_probe(settings: dict[str, Any], secret_store) -> dict
         "listen_address": settings.get(CONF_SNMP_LISTEN_ADDRESS),
         "port": settings.get(CONF_SNMP_PORT, 161),
         "username": settings.get(CONF_SNMP_USERNAME),
-        # Never transmit dormant credentials merely because the Probe is
-        # polling. They are delivered only as part of an enabled config.
+        # Dormant credentials are never transmitted; delivered only with an enabled config.
         "auth_passphrase": secrets[CONF_SNMP_AUTH_PASSPHRASE] if enabled else None,
         "priv_passphrase": secrets[CONF_SNMP_PRIV_PASSPHRASE] if enabled else None,
         "auth_protocol": "SHA-256",

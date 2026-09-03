@@ -15,10 +15,7 @@ import {
   fetchSystemLog,
 } from "../data/ha-soc-ws";
 
-// Same core/custom logger-name convention health.py uses for its own
-// per-domain error attribution — anything that doesn't match either
-// prefix falls back to its own top-level module name (e.g. "aiohttp"),
-// which is still a useful, real bucket to filter noisy libraries by.
+// Same core/custom logger-name convention as health.py; anything else buckets by top-level module name.
 function domainFor(loggerName: string): string {
   const core = loggerName.match(/^homeassistant\.components\.([^.]+)/);
   if (core) return core[1];
@@ -27,13 +24,7 @@ function domainFor(loggerName: string): string {
   return loggerName.split(".")[0];
 }
 
-// Dedicated log-level palette — deliberately NOT the same `.pill.critical/
-// high/medium/low` classes finding severity uses elsewhere in this panel.
-// A log LEVEL and a finding SEVERITY are different axes that happen to
-// share adjectives; conflating them made ERROR and CRITICAL render
-// identically (both mapped to the same red) with no way to tell them
-// apart at a glance, which is exactly the problem this fixes. Five tiers,
-// Debug through Critical, each visually distinct.
+// Dedicated log-level palette, deliberately not the finding-severity `.pill.critical/high/medium/low` classes.
 const LOG_LEVEL_ORDER = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"];
 
 function logLevelClass(level: string): string {
@@ -41,8 +32,7 @@ function logLevelClass(level: string): string {
   return LOG_LEVEL_ORDER.includes(normalized) ? normalized.toLowerCase() : "info";
 }
 
-// The captured-records table, the view's default source. Container targets
-// (Supervisor journald streams) are raw text and render in a <pre> instead.
+// Captured-records table, the default source; container targets are raw text in a <pre>.
 const SOURCE_SYSTEM = "system";
 
 @customElement("ha-soc-logs-view")
@@ -129,11 +119,7 @@ export class HaSocLogsView extends HaSocCustomizableView {
   @state() private _entries: HaLogEntry[] = [];
   @state() private _fault: FaultLogOverview | null = null;
   @state() private _loading = true;
-  // Non-null when the captured-records load failed: rendered as a
-  // distinct could-not-load state, never an empty "no matching log
-  // entries" (work plan item 4.12). The container-log path already
-  // reports its own failures inline (async_fetch_container_log never
-  // raises), so this covers only the system-log source.
+  // Non-null when the captured-records load failed; the container-log path reports its own failures inline.
   @state() private _error: string | null = null;
   @state() private _domainFilter = "";
   @state() private _levelFilter = "";
@@ -144,9 +130,7 @@ export class HaSocLogsView extends HaSocCustomizableView {
   @state() private _containerLog: ContainerLog | null = null;
   @state() private _containerLoading = false;
 
-  // Sort accessors for the captured-records table. Time and count are the
-  // underlying numbers, never the locale strings; level sorts by severity
-  // rank (Debug lowest) with unknown levels sinking as null.
+  // Time and count sort as numbers; level sorts by severity rank with unknown levels sinking.
   private static readonly LOG_SORT: Record<string, (e: HaLogEntry) => unknown> = {
     time: (e) => e.first_occurred,
     level: (e) => {
@@ -170,17 +154,14 @@ export class HaSocLogsView extends HaSocCustomizableView {
       const [entries, fault, targets] = await Promise.all([
         fetchSystemLog(this.hass),
         fetchFaultLog(this.hass),
-        // Selector population is best-effort: a failure (e.g. command missing
-        // during a live upgrade) must not take down the whole Logs tab.
+        // Best-effort: a selector failure must not take down the Logs tab.
         fetchLogTargets(this.hass).catch(() => null),
       ]);
       this._entries = entries;
       this._fault = fault;
       this._targets = targets;
     } catch (err: any) {
-      // system_log/list or the fault-log fetch itself failing must not
-      // read as "no log entries"; the fault card and table both stay
-      // hidden until the next successful load.
+      // A failed fetch must not read as "no log entries"; fault card and table stay hidden.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
@@ -306,8 +287,7 @@ export class HaSocLogsView extends HaSocCustomizableView {
     const s = this._sort;
     const on = (next: SortState) => {
       this._sort = next;
-      // Expanded tracebacks are keyed by row position; a re-sort reorders
-      // rows, so collapse them rather than attach to the wrong entries.
+      // Expanded tracebacks are keyed by row position; collapse them on re-sort.
       this._expanded = new Set();
     };
     const showingSystem = this._source === SOURCE_SYSTEM;

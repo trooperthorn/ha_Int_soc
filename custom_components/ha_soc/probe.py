@@ -1,45 +1,8 @@
-"""Optional HA SOC Probe add-on integration — Supervisor-only host visibility.
+"""Optional HA SOC Probe add-on integration, Supervisor-only host visibility.
 
-This module is the honest boundary between what this integration can see
-on its own and what needs the companion add-on. From inside Home
-Assistant's own Python process, a socket/port enumeration only sees the
-container HA itself runs in — never the actual host's listening ports,
-even on Home Assistant OS. Real port-scanning needs a process running
-with host-level network access, which is what the optional `ha_soc_probe`
-add-on provides (see README's "Optional HA SOC Probe add-on" section for
-the full design rationale and what it deliberately does *not* cover).
-
-Detecting the add-on is read-only and uses only public, documented hassio
-helpers — no Supervisor websocket proxy calls, no assumptions about the
-add-on's installed slug (Supervisor derives that from whatever repository
-URL the user added, which this project doesn't control). Matching is done
-on the add-on's `name:` field instead, a literal string this project's own
-config.yaml owns and sets once.
-
-Every caller of async_probe_overview() gets an honest, three-way answer,
-never silently-empty data that could be misread as "scanned, nothing
-found":
-  - not running under Supervisor at all (Core/Container install) -> the
-    feature is structurally unavailable here, full stop.
-  - under Supervisor, add-on not installed -> available in principle, not
-    set up yet.
-  - add-on installed -> real state (running/stopped, version, and the
-    latest ingested scan result, if any).
-
-Authentication of the three inbound services (ingest_probe_result,
-poll_firewall_command, and poll_snmp_config): the add-on reaches Core only through the
-Supervisor's core-API proxy, which forwards every call under the
-Supervisor system user's own token and passes no add-on identity. Core
-therefore requires exactly that context: a call whose context user is
-missing or is any account other than the Supervisor system user is
-rejected before its payload is looked at, audited as probe_auth_rejected,
-and surfaced as a HIGH detection. The shared probe secret (pinned on the
-first Supervisor-context call and held in the private secret store, see
-firewall.py and secrets_store.py) stays as defense in depth behind that
-check, and a call presenting no secret is rejected too. On a
-Core or Container install (is_hassio false) there is no Supervisor proxy
-and so no legitimate caller; the Probe services are not registered at all
-there rather than registered-and-always-rejecting.
+The boundary between what this integration can see on its own and what
+needs the companion add-on. Protocol and authentication rules are in
+docs/protocol.md and docs/security.md.
 """
 from __future__ import annotations
 
@@ -73,15 +36,12 @@ from .snmp import async_config_for_probe
 from .store import HaSocData
 
 if TYPE_CHECKING:
-    # Type-only import, mirroring detections.py's convention: this module
-    # must stay importable without dragging in audit.py at runtime.
+    # Type-only import: this module must stay importable without audit.py at runtime.
     from .audit import AuditLog
 
 _LOGGER = logging.getLogger(__name__)
 
-# A rejected caller is logged at WARNING at most once per caller per this
-# interval. The audit record is written for EVERY rejection; only the log
-# line is rate-limited, so a polling forger cannot flood the system log.
+# The audit record is written for every rejection; only the WARNING log line is rate-limited.
 _REJECT_WARN_INTERVAL_SECONDS = 600
 _SNMP_STATUS_ERROR_MAX = 200
 
@@ -90,15 +50,6 @@ _PORT_SCHEMA = vol.Schema(
         vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         vol.Required("proto"): vol.In(["tcp", "udp"]),
         vol.Optional("process"): vol.Any(None, str),
-        # Bind address decoded from /proc/net/tcp[6] (e.g. "192.168.10.5",
-        # or "0.0.0.0" meaning every interface) and, for an IPv4 address
-        # that isn't 0.0.0.0, a best-effort match against the host's own
-        # `ip addr` output — real, since this add-on shares the host's
-        # network namespace (host_network: true), not a guess. Both are
-        # optional: an older add-on version predates these fields, and
-        # IPv6 addresses are reported without interface resolution (see
-        # run.sh — decoding IPv6's byte layout correctly wasn't worth the
-        # risk of silently showing a wrong address).
         vol.Optional("address"): vol.Any(None, str),
         vol.Optional("interface"): vol.Any(None, str),
     }
@@ -106,42 +57,18 @@ _PORT_SCHEMA = vol.Schema(
 
 INGEST_SERVICE_SCHEMA = vol.Schema(
     {
-        # Optional, not required: the firewall poller (a separate,
-        # ~5s-cadence s6 service from the port scanner) also calls this
-        # service, purely to report firewall state, and must never be
-        # forced to send a port list just to satisfy the schema — the
-        # handler below only touches store.data["host_probe"] when
-        # open_ports is actually present, so a firewall-only report can
-        # never stomp the port scanner's own, much slower-cadence data.
+        # Optional: the firewall poller calls this service too and never sends a port list.
         vol.Optional("open_ports"): [_PORT_SCHEMA],
         vol.Optional("scanner_version"): vol.Any(None, str),
-        # Firewall report fields — all optional so an add-on build that
-        # predates the firewall feature (or one where NET_ADMIN wasn't
-        # granted) keeps reporting ports normally. The add-on includes
-        # firewall_known_rules on its regular cycle, and calls this service
-        # out-of-cycle immediately after a test is confirmed or reverted so
-        # the two report fields below reach Core promptly rather than
-        # waiting for the next slow poll.
         vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
         vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
         vol.Optional("firewall_resolved_status"): vol.Any(None, str),
-        # Bounded free-text reason for the resolution (carried protocol
-        # item): backup_failed, or the failing rule and family when an
-        # apply failed in either table. Length-bounded because it is
-        # add-on-supplied text that gets stored and rendered; the add-on
-        # truncates to the same bound before sending.
+        # Add-on-supplied text that is stored and rendered, so length-bounded.
         vol.Optional("firewall_resolved_reason"): vol.Any(
             None, vol.All(str, vol.Length(max=FIREWALL_REPORT_REASON_MAX))
         ),
-        # Whether ip6tables works on the host, reported once per cycle
-        # from `ip6tables -S` succeeding (work item 2.4). Optional so an
-        # add-on build predating the dual-stack feature keeps reporting.
         vol.Optional("firewall_ipv6_supported"): vol.Any(None, bool),
-        # Hard-cap application state from the resource-limit applier:
-        # {slug: {"status": applied|failed|denied, "detail": str|None}}.
-        # Optional so a Probe build predating the feature reports normally.
         vol.Optional("resource_limit_state"): vol.Any(None, {str: dict}),
-        # Non-secret runtime state from the Probe's snmpd supervisor.
         vol.Optional("snmp_status"): vol.Any(
             None,
             {
@@ -159,10 +86,7 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
                 ),
             },
         ),
-        # Shared secret, defense in depth behind the Supervisor-context
-        # check performed by the handler (see firewall.py). Optional in
-        # the schema so its absence reaches the handler, which rejects and
-        # audits it as no_secret instead of failing schema validation.
+        # Optional in the schema so a missing secret reaches the handler and is audited as no_secret.
         vol.Optional("probe_secret"): vol.Any(None, str),
     }
 )
@@ -185,29 +109,14 @@ POLL_SNMP_SERVICE_SCHEMA = vol.Schema(
 
 
 async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
-    """Resolve the Supervisor system user's id, or None when there is none.
-
-    Preferred source: the hassio component's own config store, which is
-    where core records the id when it creates the user
-    (hass.data[DATA_CONFIG_STORE].data.hassio_user, verified against core
-    2026.2.3, components/hassio/__init__.py:341-361). DATA_CONFIG_STORE is
-    internal to the hassio component, so the import is guarded and the
-    public auth registry serves as the fallback: the Supervisor user is
-    the system-generated user named HASSIO_USER_NAME ("Supervisor",
-    homeassistant/const.py), created via async_create_system_user in that
-    same code path.
-    """
+    """Resolve the Supervisor system user's id, or None when there is none."""
     try:
-        from homeassistant.components.hassio.const import DATA_CONFIG_STORE
+        from homeassistant.components.hassio.const import DATA_HASSIO_SUPERVISOR_USER
 
-        config_store = hass.data.get(DATA_CONFIG_STORE)
-        if config_store is not None:
-            user_id = config_store.data.hassio_user
-            if user_id:
-                return user_id
+        supervisor_user = hass.data.get(DATA_HASSIO_SUPERVISOR_USER)
+        if supervisor_user is not None and supervisor_user.id:
+            return supervisor_user.id
     except ImportError:
-        # An internal symbol moved between core versions; fall through to
-        # the public auth registry rather than failing the lookup.
         pass
 
     for user in await hass.auth.async_get_users():
@@ -217,14 +126,7 @@ async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
 
 
 def _addon_info(hass: HomeAssistant) -> dict[str, Any] | None:
-    """This project's own add-on's cached info dict, or None if absent.
-
-    Local import: `homeassistant.components.hassio` is only meaningfully
-    populated when the `hassio` component is actually loaded (Supervisor
-    installs), but the module itself is always importable on any install
-    type — this never raises on Core/Container, get_addons_info() just
-    returns None there.
-    """
+    """This project's own add-on's cached info dict, or None if absent."""
     from homeassistant.components.hassio import get_addons_info
 
     addons = get_addons_info(hass)
@@ -264,22 +166,7 @@ def async_register_probe_service(
 ) -> None:
     """Register the add-on's authenticated service endpoints.
 
-    ``ha_soc.ingest_probe_result`` carries periodic port, firewall, resource,
-    and SNMP status. ``ha_soc.poll_firewall_command`` is the fast firewall
-    command channel; ``ha_soc.poll_snmp_config`` is a separate, slower,
-    response-returning channel so the two state machines cannot interfere.
-
-    Both are called via Supervisor's core-API proxy (SUPERVISOR_TOKEN +
-    POST http://supervisor/core/api/services/ha_soc/<service>), the same
-    mechanism any Supervisor add-on uses to call a Home Assistant service —
-    no new communication channel on this side. Because that proxy forwards
-    with the Supervisor's own token, every legitimate call arrives in the
-    Supervisor system user's context, and every handler below requires
-    exactly that before touching the payload (see the module docstring).
-
-    On a non-Supervisor install nothing can legitimately call these
-    services, so they are not registered at all; the panel already
-    explains why the Host Probe feature is structurally unavailable there.
+    Not registered at all on a non-Supervisor install; see docs/protocol.md.
     """
     if not is_hassio(hass):
         _LOGGER.debug(
@@ -288,18 +175,12 @@ def async_register_probe_service(
         )
         return
 
-    # Log-rate-limit bookkeeping per caller, and the resolved Supervisor
-    # user id. The id is cached on the store's runtime attribute after the
-    # first successful resolution so steady-state polls (one every ~5s)
-    # never re-enumerate the auth registry.
+    # The Supervisor user id is cached on the store runtime attribute after the first resolution.
     last_warned_at: dict[str | None, float] = {}
 
     async def _async_call_rejected(call: ServiceCall, service: str) -> str | None:
-        """Authenticate one inbound call. Returns None when the call is
-        trusted, else the rejection reason after recording the rejection
-        (audit record always, WARNING log at most once per caller per 10
-        minutes).
-        """
+        """Authenticate one inbound call: None when trusted, else the rejection
+        reason after recording the rejection."""
         caller_user_id = call.context.user_id
         reason: str | None = None
 
@@ -309,18 +190,13 @@ def async_register_probe_service(
             store.supervisor_user_id = supervisor_id
 
         if caller_user_id is None or caller_user_id != supervisor_id:
-            # Covers both a forged call from another user's session and a
-            # context-less call (an automation); is_hassio was already
-            # true at registration, so a None supervisor_id here means the
-            # Supervisor user genuinely does not exist and nothing may pass.
+            # A None supervisor_id here means the Supervisor user does not exist; nothing may pass.
             reason = "not_supervisor"
         else:
             presented = call.data.get("probe_secret") or None
             if presented is None:
                 reason = "no_secret"
             elif not await async_verify_or_pin_secret(secrets, presented):
-                # The pinned value lives in the private secret store
-                # (SEC-1) and is fetched at use time; see firewall.py.
                 reason = "bad_secret"
 
         if reason is None:
@@ -351,10 +227,7 @@ def async_register_probe_service(
         return reason
 
     async def _handle_ingest(call: ServiceCall) -> None:
-        # Authenticate before anything else. On failure, process NOTHING
-        # (not even open_ports): an unauthenticated caller is untrusted,
-        # full stop, and in particular must never be the one that pins the
-        # probe secret.
+        # Authenticate first; a rejected caller must never be the one that pins the probe secret.
         if await _async_call_rejected(call, SERVICE_INGEST_PROBE_RESULT) is not None:
             return
         if call.data.get("open_ports") is not None:
@@ -384,17 +257,13 @@ def async_register_probe_service(
             store.async_set_snmp_status(status)
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
-        # Same gate as ingest: authenticate before anything else, and hand
-        # a rejected caller an empty answer rather than an error so a
-        # forger learns nothing about pending firewall work.
+        # A rejected caller gets an empty answer, not an error.
         if await _async_call_rejected(call, SERVICE_POLL_FIREWALL_COMMAND) is not None:
             return {"action": "none"}
         command = await async_next_addon_command(
             hass, store, current_test_id=call.data.get("current_test_id")
         )
-        # Piggyback the owner-configured Docker hard caps on the same poll
-        # channel (see resource_watchdog.py) — an older Probe build just
-        # ignores the extra key. Only attached when caps are configured.
+        # Only attached when caps are configured; an older Probe build ignores the extra key.
         from .resource_watchdog import async_resource_limits_for_probe
 
         limits = async_resource_limits_for_probe(store)
@@ -431,10 +300,7 @@ def async_register_probe_service(
 
 
 def async_unregister_probe_service(hass: HomeAssistant) -> None:
-    # On a non-Supervisor install the services were never registered (see
-    # async_register_probe_service), so unregistration checks first; a bare
-    # async_remove of an unknown service would log a spurious warning on
-    # every unload of a Core or Container install.
+    # Services are not registered off Supervisor; a bare async_remove would warn on every unload.
     for service in (
         SERVICE_INGEST_PROBE_RESULT,
         SERVICE_POLL_FIREWALL_COMMAND,

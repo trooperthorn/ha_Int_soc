@@ -44,11 +44,6 @@ async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
-
-
 def test_normalize_group() -> None:
     row = _normalize_group({"id": 1, "name": "IoT", "enabled": True, "comment": "iot devices"})
     assert row == {"id": 1, "name": "IoT", "enabled": True, "comment": "iot devices"}
@@ -70,11 +65,6 @@ def test_client_matches_cidr() -> None:
     # A MAC/hostname/interface client id never matches an IP-shaped CIDR.
     assert _client_matches_cidr("aa:bb:cc:dd:ee:ff", "192.168.50.0/24") is False
     assert _client_matches_cidr(":eth0", "192.168.50.0/24") is False
-
-
-# ---------------------------------------------------------------------------
-# async_pihole_overview
-# ---------------------------------------------------------------------------
 
 
 async def test_overview_unconfigured(hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore) -> None:

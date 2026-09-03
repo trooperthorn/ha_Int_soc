@@ -15,11 +15,7 @@ import {
   setPassword,
 } from "../data/ha-soc-ws";
 
-// Core's admin group id (homeassistant.auth.const.GROUP_ID_ADMIN). The
-// server's D-23 gate keys on admin-GROUP membership, not the is_admin
-// flag, because is_admin reads false for a deactivated admin; matching
-// that here keeps the disabled buttons aligned with what the server will
-// actually refuse.
+// Core's admin group id; the server gate keys on admin-group membership, not is_admin (false for a deactivated admin).
 const ADMIN_GROUP_ID = "system-admin";
 
 @customElement("ha-soc-users-view")
@@ -33,24 +29,17 @@ export class HaSocUsersView extends HaSocCustomizableView {
   @state() private _users: HaSocUser[] = [];
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _loading = true;
-  // Non-null when the load itself failed: rendered as a distinct
-  // could-not-load state with the server's message, never an empty table
-  // (work plan item 4.12).
+  // Non-null when the load failed; rendered distinctly, never an empty table.
   @state() private _error: string | null = null;
   @state() private _busyUserId: string | null = null;
   @state() private _sort: SortState | null = null;
-  // In-panel password reset state (work plan item 4.12): the user id
-  // whose reset panel is open, the masked field's value, whether the
-  // owner opted OUT of the default session revocation, and the server's
-  // rejection message when the write bounced.
+  // In-panel password reset state: open user id, masked value, revoke opt-out, server rejection message.
   @state() private _pwUserId: string | null = null;
   @state() private _pwValue = "";
   @state() private _pwKeepSessions = false;
   @state() private _pwError: string | null = null;
   @state() private _pwNotice: string | null = null;
-  // Whether the viewer is the account owner (from ha_soc/access/info).
-  // Defaults to false and stays false when the lookup fails, so the
-  // admin-target buttons below fail closed like the server gate they mirror.
+  // Owner flag from ha_soc/access/info; false by default and on failure so the buttons fail closed.
   @state() private _isOwner = false;
 
   connectedCallback(): void {
@@ -71,17 +60,13 @@ export class HaSocUsersView extends HaSocCustomizableView {
       this._risk = risk;
       this._isOwner = !!access.is_owner;
     } catch (err: any) {
-      // A failed load must never render as an empty user list; store the
-      // server's message and show the could-not-load state instead.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
     }
   }
 
-  // D-23: acting on an admin-group user (deactivate, revoke sessions) is
-  // owner-only server-side. The server resolves the target from hass.auth
-  // and enforces regardless; disabling here only stops dead clicks.
+  // Acting on an admin-group user is owner-only server-side; disabling here only stops dead clicks.
   private _adminTargetLocked(u: HaSocUser): boolean {
     return !this._isOwner && (u.is_owner || u.groups.includes(ADMIN_GROUP_ID));
   }
@@ -114,10 +99,7 @@ export class HaSocUsersView extends HaSocCustomizableView {
     }
   }
 
-  // Opens (or closes) the in-panel reset row for one user. A masked
-  // in-panel field replaces the old prompt() so the password is typed
-  // into a real password input, never a plain-text browser dialog
-  // (work plan item 4.12).
+  // Opens or closes the in-panel reset row: a masked field, never a plain-text prompt.
   private _onToggleResetPanel(userId: string) {
     this._pwUserId = this._pwUserId === userId ? null : userId;
     this._pwValue = "";
@@ -145,18 +127,14 @@ export class HaSocUsersView extends HaSocCustomizableView {
       this._pwValue = "";
       this._pwKeepSessions = false;
     } catch (err: any) {
-      // The server rejects with its own reason (owner_required and
-      // friends); render that message in the panel instead of a silent
-      // failure or a browser alert.
+      // Render the server's rejection reason in the panel.
       this._pwError = err?.message ?? "Could not set the password.";
     } finally {
       this._busyUserId = null;
     }
   }
 
-  // The expanded reset row for one user: a masked in-panel field, the
-  // honest statement of the default session revocation, and an explicit
-  // unchecked-by-default opt-out wired to revoke_sessions: false.
+  // Reset row: masked field, statement of the default session revocation, explicit opt-out for revoke_sessions: false.
   private _renderPasswordPanel(u: HaSocUser) {
     return html`
       <tr>
@@ -224,9 +202,7 @@ export class HaSocUsersView extends HaSocCustomizableView {
       `;
     if (!this._users.length) return html`<div class="empty">No users found.</div>`;
 
-    // Accessors live here (not in a static map) because Risk needs this._risk.
-    // Last login sorts by the parsed timestamp, never the locale string;
-    // Risk sorts by the numeric score; MFA/Role sort so like values group.
+    // Accessors live here because Risk needs this._risk; Last login sorts by parsed timestamp, Risk by score.
     const s = this._sort;
     const on = (next: SortState) => {
       this._sort = next;

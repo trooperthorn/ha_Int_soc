@@ -1,36 +1,5 @@
 #!/usr/bin/with-contenv bashio
-# ==============================================================================
-# HA SOC Probe firewall poller stop/crash recovery (work item 2.6).
-#
-# s6 runs this after the run script's process dies, for BOTH a crash and a
-# deliberate stop of the add-on. The run script's backgrounded revert
-# timer dies with that process, so an unresolved test would otherwise stay
-# live until the next start's recovery block runs, and for a deliberate
-# stop that next start never comes. This script therefore performs the same
-# recovery the run script performs at startup: if a test is still armed
-# and unresolved, revert it NOW, so stopping the add-on mid-test restores
-# the pre-test chains immediately instead of leaving unconfirmed rules
-# live on a host with no watchdog for them. The run script's TERM trap
-# (carried item: graceful stop) deliberately leaves this recovery to this
-# script; the per-test resolved marker keeps the revert exactly-once no
-# matter which recovery path runs first.
-#
-# The recovery block below mirrors the run script's revert machinery
-# (chain backup paths / resolved_marker_for / replay_chain_backup /
-# revert_test / report_resolution, both address families) and MUST change
-# in lockstep with it; the two scripts stay self-contained because s6
-# executes each on its own. The revert is chain-scoped exactly like the
-# run script's (work items 2.3 and 2.4): flush HA_SOC_RULES and replay the
-# pre-test chain snapshot, per family, never iptables-restore or
-# ip6tables-restore over a whole table. Reporting the revert to Core is
-# best-effort here: on a deliberate add-on stop the Supervisor proxy may
-# already be tearing this container down, and Core's own expired-
-# unreported archival handles a report that never arrives.
-#
-# The exit-code line at the bottom distinguishes a clean stop (the run
-# script's TERM trap exiting 0) from a crash, so a routine add-on stop or
-# update no longer reads as a crash loop in the add-on log.
-# ==============================================================================
+# Stop/crash recovery: reverts a still-armed test now. Mirrors the run script's revert machinery and must change in lockstep with it.
 set -uo pipefail
 
 CHAIN="HA_SOC_RULES"
@@ -61,10 +30,7 @@ ipv6_supported_json() {
     if [ "${IPV6_SUPPORTED}" -eq 1 ]; then echo "true"; else echo "false"; fi
 }
 
-# Same shape as the run script's known_rules_json: the chains' real
-# contents across both families, so the resolution report also refreshes
-# Core's known_rules with each entry carrying the family of the chain it
-# was read from.
+# Same shape as the run script's known_rules_json.
 chain_rules_lines() {
     local family="$1" bin
     bin=$(ipt_bin_for "${family}")
@@ -101,9 +67,7 @@ known_rules_json() {
 report_resolution() {
     local test_id="$1" status="$2" reason="${3:-}" payload
     probe_ipv6_supported
-    # Same bound as the run script and the integration's schema
-    # (FIREWALL_REPORT_REASON_MAX): truncate rather than have Core reject
-    # the whole report over an overlong reason.
+    # Bound matches FIREWALL_REPORT_REASON_MAX; truncate rather than have Core reject the report.
     reason="$(printf '%s' "${reason}" | head -c 200)"
     payload=$(jq -n \
         --argjson known_rules "$(known_rules_json)" \
@@ -128,10 +92,7 @@ replay_chain_backup() {
     while IFS= read -r line; do
         case "${line}" in
             "-A ${CHAIN} "*)
-                # Unquoted expansion is deliberate, for the run script's
-                # reason: the line is the binary's own -S output for a
-                # rule this add-on wrote, and none of its arguments can
-                # contain whitespace.
+                # Unquoted on purpose: the line is iptables' own -S output for a rule this add-on wrote; no argument contains whitespace.
                 # shellcheck disable=SC2086
                 if ! "${bin}" ${line}; then
                     bashio::log.error "Firewall (finish): could not replay snapshot line '${line}' via ${bin}."
@@ -187,12 +148,7 @@ if [ -s "${CURRENT_TEST_FILE}" ]; then
     fi
 fi
 
-# The run script's TERM/INT trap exits 0 on a deliberate stop (carried
-# item), so a zero here is the routine stop it looks like and is logged as
-# such. A non-zero code is a genuine crash; s6 restarts the service after
-# this script returns, and the next run's own startup check is a second,
-# redundant net behind the recovery above (the resolved marker makes both
-# idempotent).
+# Exit 0 is the run script's trap on a deliberate stop; anything else is a crash that s6 restarts.
 if [ "${EXIT_CODE}" -eq 0 ] 2>/dev/null; then
     bashio::log.info "HA SOC Probe firewall poller stopped cleanly."
 else

@@ -1,10 +1,6 @@
-"""HA SOC — centralized user security & NOC/SOC visibility for Home Assistant.
+"""HA SOC: centralized user security and NOC/SOC visibility for Home Assistant.
 
-Wiring only: this module composes the feature managers defined in the other
-files and owns the periodic analysis loop. Each manager is independently
-testable and knows nothing about the others except through the plain data
-it reads from HaSocData (see store.py) — see each module's docstring for
-its own contract.
+Wiring only: composes the feature managers and owns the periodic analysis loop.
 """
 from __future__ import annotations
 
@@ -53,9 +49,7 @@ CONFIG_CHECK_INTERVAL = timedelta(hours=6)
 class HaSocRuntimeData:
     """Everything a WebSocket command or entity platform needs to reach.
 
-    ``secrets`` is the ONLY home of the secret store object: it is never
-    placed in hass.data under its own key, and its repr prints key names
-    only, so this dataclass stays safe to repr in a debugger or log line.
+    ``secrets`` lives here only; it is never placed in hass.data.
     """
 
     store: HaSocData
@@ -73,13 +67,12 @@ class HaSocRuntimeData:
     syslog: SyslogExporter
 
 
-# Plain generic alias rather than a PEP 695 `type` statement — keeps this
-# module importable on Python 3.11, not just 3.12+.
+# Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
 HaSocConfigEntry = ConfigEntry[HaSocRuntimeData]
 
 
 def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
-    """HA SOC is single-instance — fetch the one loaded entry's runtime data."""
+    """HA SOC is single-instance; fetch the one loaded entry's runtime data."""
     entries = hass.config_entries.async_entries(DOMAIN)
     if not entries or entries[0].runtime_data is None:
         raise RuntimeError("HA SOC is not set up")
@@ -87,16 +80,7 @@ def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
 
 
 def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
-    """Empty a legacy entry.options mirror, once (work item SEC-2).
-
-    Older builds mirrored every settings save (secret values included) into
-    entry.options, which lands in .storage/core.config_entries, a file core
-    writes world-readable. Nothing reads that mirror anymore: the seed path
-    was removed together with the mirror itself, and the options flow is
-    informational only (config_flow.py). An install upgrading from a
-    mirroring build still carries the old copy, so it is rewritten to {}
-    here. Key names only are logged, never values.
-    """
+    """Empty a legacy entry.options mirror, once. Key names only are logged."""
     if not entry.options:
         return
     _LOGGER.info(
@@ -112,9 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     store = HaSocData(hass)
     await store.async_load()
 
-    # The dedicated private secret store (SEC-1). Loaded before anything
-    # else can want a credential, and legacy plaintext copies in the
-    # general store are drained into it exactly once.
+    # Loaded before anything else can want a credential.
     secrets = HaSocSecretStore(hass)
     await secrets.async_load()
     await async_migrate_legacy_secrets(secrets, store)
@@ -162,10 +144,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
 
     async_register_websocket_api(hass)
-    # The audit log is handed over so a rejected Probe callback can be
-    # recorded as probe_auth_rejected, and the secret store because the
-    # pairing secret is pinned and verified there; on non-Supervisor
-    # installs the call registers nothing (see probe.py).
     async_register_probe_service(hass, store, audit, secrets)
     await async_register_panel(hass)
 
@@ -190,8 +168,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     async def _async_vuln_scan(_now=None) -> None:
         try:
-            # The tracker fetches the NVD API key from the secret store
-            # right before each request (SEC-3); nothing is passed here.
             findings = await vulns.async_run_scan()
             await async_sync_vuln_issues(hass, findings)
         except Exception:  # noqa: BLE001
@@ -230,8 +206,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         async_track_time_interval(hass, _async_config_check, CONFIG_CHECK_INTERVAL)
     )
 
-    # Kick off a first pass shortly after startup rather than waiting a full
-    # interval, so the dashboard isn't empty on a fresh install.
+    # First pass right after startup so a fresh install's dashboard is not empty.
     entry.async_create_task(
         hass, _async_periodic_analysis(), "HA SOC initial analysis"
     )

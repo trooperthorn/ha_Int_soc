@@ -1,45 +1,10 @@
-"""UniFi Network / Protect — direct-to-console read-only client.
+"""UniFi Network / Protect direct-to-console read-only client.
 
-The user supplies a local controller host and a local API key (UniFi OS →
-Settings → Control Plane → Integrations → API Key), and HA SOC talks to the
-console directly over the LAN with an ``X-API-KEY`` header — no cloud, no
-extra add-on, no second integration in the middle. This backs the panel's
-Network tab.
-
-Everything here is READ-ONLY: it lists clients, network devices, and derives
-a WAN/internet status. It never mutates controller state.
-
-The two API keys live in the private secret store (secrets_store.py) and
-are fetched at use time only: each overview/status call builds a
-short-lived ``_Conn`` whose repr masks the key, uses it for that one
-snapshot, and drops it (work item SEC-3). Nothing at module level or on
-a long-lived object ever holds a key between snapshots.
-
-Client hardening (work plan item 4.11): redirects are never followed (a
-3xx is reported as an error, so the X-API-KEY header can never be carried
-to a redirect target), response bodies are capped at 8 MB by both the
-declared Content-Length and the actual read, the whole Network overview
-runs under one 60-second wall-clock budget, and the configured host must
-be a plain http/https address with no userinfo part.
-
-## Why the field mapping is defensive
-
-Ubiquiti ships two overlapping local surfaces and their field names differ:
-
-  * the official **Integration API** under ``/proxy/network/integration/v1``
-    (camelCase: ``ipAddress``, ``macAddress``, ``connectedAt`` …), and
-  * the older private **controller API** under ``/proxy/network/api/s/{site}``
-    (snake_case: ``ip``, ``mac``, ``last_seen``, ``essid``, ``vlan`` …).
-
-This build targets the Integration API (the supported one), but the exact
-per-field shape of that API's client/device objects could not be verified
-against a live controller from this environment. So every normalized field
-is resolved from a *list* of candidate keys spanning both surfaces via
-:func:`_first`, and anything genuinely absent degrades to ``None`` (rendered
-"—" in the UI) rather than being guessed. Keys marked ``# VERIFY`` below are
-the ones most likely to need confirmation against a real console — search
-this file for that marker. A security tool that shows an honest "—" beats
-one that shows a confidently wrong VLAN or IP.
+Talks to the console over the LAN with an ``X-API-KEY`` header and backs
+the panel's Network tab. Every normalized field is resolved from a list of
+candidate keys via :func:`_first`, because the Integration API and the
+legacy controller API name fields differently; anything absent degrades to
+``None`` rather than a guess. See docs/UNIFI-LOCAL-API-CONTRACT.md.
 """
 from __future__ import annotations
 
@@ -76,31 +41,18 @@ from .store import HaSocData
 _LOGGER = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
-# One wall-clock budget for the whole Network overview snapshot (work plan
-# item 4.11): the per-request timeout bounds each call, but a controller
-# that answers slowly across dozens of paginated/detail calls could still
-# hold the snapshot open for minutes without this outer ceiling.
+# Outer ceiling for the whole overview; per-request timeouts alone cannot bound the fan-out.
 _OVERVIEW_TIMEOUT_SECONDS = 60
-# Safety bounds on pagination so a hostile or huge controller can't make one
-# refresh loop forever or return an unbounded payload to the panel.
+# Pagination bounds so a hostile or huge controller cannot loop a refresh forever.
 _PAGE_LIMIT = 200
 _MAX_PAGES = 15
-# Largest response body ever read from a console (work plan item 4.11).
-# The declared Content-Length is checked first, and the actual read is
-# capped regardless, so a lying header cannot buffer more than this.
+# The declared Content-Length is checked first and the actual read is capped regardless.
 _MAX_BODY_BYTES = 8 * 1024 * 1024
-# Network Devices are enriched from the per-device detail endpoint
-# (/devices/{id}) for bandwidth / last-seen / firmware-updatable, which the
-# list endpoint doesn't carry. Cap the N+1 fan-out for a huge install.
+# Caps the per-device detail fan-out for a huge install.
 _MAX_DEVICE_DETAILS = 50
-# UniFi Network 10.4.57 Local API contract.  Do not add private-controller
-# fallback paths here: the user explicitly selected the supported Local
-# Integration API, whose OpenAPI contract exposes ACLs at this one route.
+# Local Integration API contract only; do not add private-controller fallback paths.
 _ACL_ENDPOINT_SUFFIXES = ("acl-rules",)
 
-# Config-entry keys that commonly hold a device host or IP. Matched against
-# UniFi client/device IPs so a failing integration whose endpoint shows up on
-# the network can be flagged (see _integration_endpoints).
 _HOST_KEYS = (
     "host",
     "hostname",
@@ -114,9 +66,6 @@ _HOST_KEYS = (
     "api_url",
 )
 
-# ConfigEntryState values that mean the integration is currently NOT working.
-# A UniFi client whose IP matches one of these is the "an integration IP is
-# failing" signal the Network tab exists to surface.
 _FAILING_STATES = frozenset(
     {
         ConfigEntryState.SETUP_ERROR,
@@ -128,15 +77,12 @@ _FAILING_STATES = frozenset(
 
 
 class UniFiError(Exception):
-    """Any failure talking to a UniFi console — surfaced to the UI as a
+    """Any failure talking to a UniFi console - surfaced to the UI as a
     reachable=False overview with a human-readable reason, never a raw stack."""
 
 
 def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
-    """First present, non-empty value among candidate keys. This is the whole
-    reason the module tolerates the Integration-API-vs-legacy field drift:
-    each normalized field lists every name it's known by across both surfaces
-    and takes whichever the controller actually returned."""
+    """First present, non-empty value among candidate keys."""
     for key in keys:
         if key in obj and obj[key] not in (None, ""):
             return obj[key]
@@ -147,12 +93,8 @@ def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
 class _Conn:
     """A resolved connection to one UniFi app (Network or Protect).
 
-    Short-lived by design (work item SEC-3): built inside
-    async_network_overview / async_protect_status from the secret store's
-    value at that moment, used for that one snapshot, and dropped, so no
-    module-level or long-lived attribute ever holds the API key. The
-    dataclass repr is disabled and replaced below because the generated one
-    would print api_key verbatim into any log or debugger line.
+    Short-lived by design: built per snapshot and dropped. The generated
+    dataclass repr would print api_key verbatim, hence the replacement below.
     """
 
     host: str
@@ -161,8 +103,6 @@ class _Conn:
     base_path: str
 
     def __repr__(self) -> str:
-        # Mask the key, keep the rest: host and path are what debugging a
-        # connection problem actually needs.
         return (
             f"_Conn(host={self.host!r}, api_key='[redacted]', "
             f"verify_ssl={self.verify_ssl!r}, base_path={self.base_path!r})"
@@ -170,9 +110,7 @@ class _Conn:
 
     @property
     def origin(self) -> str:
-        # Scheme+authority only (no path) — the base for a browser-facing
-        # console URL like https://192.168.30.2/protect/dashboard/... . host
-        # may be "10.0.0.1", "10.0.0.1:443", or "https://10.0.0.1".
+        # Scheme+authority only; host may be "10.0.0.1", "10.0.0.1:443", or "https://10.0.0.1".
         host = self.host.strip().rstrip("/")
         if "://" not in host:
             host = f"https://{host}"
@@ -181,19 +119,14 @@ class _Conn:
 
     @property
     def base_url(self) -> str:
-        # The API base: origin + the app's hardcoded integration path. The
-        # path is a constant appended here, never taken from user input.
+        # The path is a constant appended here, never taken from user input.
         return f"{self.origin}{self.base_path}"
 
 
 def _validate_host(host: str) -> None:
-    """Reject a configured host whose URL form smuggles anything beyond a
-    scheme, address, and port (work plan item 4.11): only http/https are
-    ever spoken to a console, and userinfo in the authority
-    (``user:pass@host``) is a classic way to disguise the real target
-    while the API key rides along. Raises UniFiError so the panel shows a
-    human-readable configuration error instead of quietly connecting
-    somewhere unexpected. A bare host or host:port passes untouched."""
+    """Reject a configured host whose URL form carries anything beyond a
+    scheme, address, and port. Raises UniFiError; a bare host or host:port
+    passes untouched."""
     if "://" not in host:
         candidate = f"https://{host}"
     else:
@@ -218,8 +151,8 @@ def _validate_host(host: str) -> None:
 
 async def _network_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
     """Build a short-lived Network connection, fetching the API key from the
-    private secret store at use time (SEC-3). None when unconfigured;
-    raises UniFiError for a configured but invalid host."""
+    private secret store at use time. None when unconfigured; raises
+    UniFiError for a configured but invalid host."""
     s = store.settings
     host = (s.get(CONF_UNIFI_NETWORK_HOST) or "").strip()
     key = (await secrets.async_get(CONF_UNIFI_NETWORK_API_KEY) or "").strip()
@@ -236,8 +169,8 @@ async def _network_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | 
 
 async def _protect_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
     """Build a short-lived Protect connection, fetching the API key from the
-    private secret store at use time (SEC-3). None when unconfigured;
-    raises UniFiError for a configured but invalid host."""
+    private secret store at use time. None when unconfigured; raises
+    UniFiError for a configured but invalid host."""
     s = store.settings
     host = (s.get(CONF_UNIFI_PROTECT_HOST) or "").strip()
     key = (await secrets.async_get(CONF_UNIFI_PROTECT_API_KEY) or "").strip()
@@ -256,12 +189,7 @@ async def _get(hass: HomeAssistant, conn: _Conn, path: str) -> Any:
     """One authenticated GET. Raises UniFiError with a friendly reason on any
     transport/HTTP/decode failure - the caller turns that into reachable=False.
 
-    Hardened per work plan item 4.11: redirects are never followed (a
-    redirecting console would otherwise carry the X-API-KEY header to
-    wherever it points, and aiohttp only strips Authorization-family
-    headers on cross-origin redirects, not custom ones), and the body is
-    bounded to _MAX_BODY_BYTES by both the declared Content-Length and
-    the actual read."""
+    Redirects are never followed and the body is bounded to _MAX_BODY_BYTES."""
     session = async_get_clientsession(hass, verify_ssl=conn.verify_ssl)
     url = f"{conn.base_url}{path}"
     headers = {"X-API-KEY": conn.api_key, "Accept": "application/json"}
@@ -333,27 +261,17 @@ async def _resolve_site_id(hass: HomeAssistant, conn: _Conn) -> str:
     if not sites:
         raise UniFiError("The console reported no sites for this API key.")
     site = sites[0]
-    # VERIFY: site identifier key. Integration API uses "id"; legacy uses
-    # "name"/"_id". _first tolerates all three.
+    # Integration API uses "id"; legacy uses "name"/"_id".
     site_id = _first(site, "id", "_id", "siteId", "name")
     if not site_id:
         raise UniFiError("Could not determine the UniFi site id.")
     return str(site_id)
 
 
-# ---------------------------------------------------------------------------
-# HA integration endpoint correlation
-# ---------------------------------------------------------------------------
-
-
 def _hosts_from_value(value: Any) -> list[str]:
-    """Bare host/IP strings out of one config-entry value (a plain host, a
-    host:port, or a full URL). Never raises: the values come from OTHER
-    integrations' config entries, and urlparse/hostname raise ValueError
-    on malformed authorities (an unclosed IPv6 bracket, a junk port), so
-    one integration's garbage host field must degrade to "no hosts" for
-    that value rather than take the whole endpoint index down (work plan
-    item 4.11)."""
+    """Bare host/IP strings out of one config-entry value. Never raises:
+    urlparse raises ValueError on malformed authorities, and another
+    integration's garbage host field must degrade to "no hosts"."""
     if not isinstance(value, str) or not value.strip():
         return []
     v = value.strip()
@@ -362,8 +280,7 @@ def _hosts_from_value(value: Any) -> list[str]:
             parsed = urlparse(v)
             hostname = parsed.hostname
             return [hostname.lower()] if hostname else []
-        # Strip a trailing :port if present (but keep bare IPv6 out of scope -
-        # matched separately below on the client's own ipv6 field).
+        # Strip a trailing :port; bare IPv6 is matched separately on the client's own ipv6 field.
         host = v.split("/", 1)[0]
         if host.count(":") == 1:  # host:port, not IPv6
             host = host.split(":", 1)[0]
@@ -376,10 +293,6 @@ def _integration_endpoints(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
     """Index of ``host-string -> integration descriptor`` across every config
     entry, so a UniFi client/device whose IP matches can be annotated with
     that integration's live health.
-
-    This is the "I want to know when an integration IP fails" feature: an
-    entry in a non-loaded state whose IP is an active client on the network
-    is exactly the correlation an operator can't easily make by eye.
     """
     index: dict[str, dict[str, Any]] = {}
     for entry in hass.config_entries.async_entries():
@@ -398,8 +311,7 @@ def _integration_endpoints(hass: HomeAssistant) -> dict[str, dict[str, Any]]:
                 hosts.update(_hosts_from_value(entry.data[key]))
         for host in hosts:
             existing = index.get(host)
-            # Prefer surfacing a failing integration over a healthy one when
-            # two entries share a host (rare, but a failure must win).
+            # A failing integration wins over a healthy one when two entries share a host.
             if existing is None or (descriptor["failing"] and not existing["failing"]):
                 index[host] = descriptor
     return index
@@ -425,14 +337,9 @@ def _match_endpoint(
     return hits[0]
 
 
-# ---------------------------------------------------------------------------
-# Normalization
-# ---------------------------------------------------------------------------
-
-
 def _as_epoch(value: Any) -> int | None:
     """Best-effort epoch-seconds from a numeric epoch (s or ms) or an ISO
-    string. Returns None when it can't be parsed — the UI shows "—"."""
+    string. Returns None when it can't be parsed (the UI shows a dash)."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -452,9 +359,7 @@ def _as_epoch(value: Any) -> int | None:
 
 
 def _ipv6_of(raw: dict[str, Any]) -> str | None:
-    # The Integration client object exposes IPv6 as a list (ipv6Addresses);
-    # older/other shapes use a single string. Prefer a real v6-looking value.
-    # VERIFY: IPv6 field name/shape.
+    # ipv6Addresses is a list on the Integration client object; other shapes use a single string.
     value = _first(
         raw, "ipv6", "ipv6Address", "ipAddressV6", "ipv6_address", "ipv6Addresses"
     )
@@ -467,10 +372,8 @@ def _ipv6_of(raw: dict[str, Any]) -> str | None:
 
 
 def _bandwidth_of(raw: dict[str, Any]) -> dict[str, int] | None:
-    """Cumulative rx/tx bytes for a client/device. The Integration API nests
-    counters under ``statistics`` (and a device's under statistics.uplink),
-    so we search the top level and those containers. VERIFY: byte-counter
-    field names differ across surfaces."""
+    """Cumulative rx/tx bytes for a client/device, searched at the top level
+    and under the ``statistics`` containers."""
     containers: list[dict[str, Any]] = [raw]
     for key in ("statistics", "stats", "uplink"):
         node = raw.get(key)
@@ -495,10 +398,8 @@ def _bandwidth_of(raw: dict[str, Any]) -> dict[str, int] | None:
 
 
 def _client_ssid(raw: dict[str, Any], broadcast_map: dict[str, str]) -> str | None:
-    """Resolve a client's SSID. A wireless client carries either the SSID name
-    directly, or a reference to a WiFi broadcast whose name lives in the
-    /wifi/broadcasts collection — join through broadcast_map for the latter.
-    VERIFY: the client->broadcast reference key."""
+    """Resolve a client's SSID: carried directly, or joined through
+    broadcast_map from the /wifi/broadcasts collection."""
     direct = _first(raw, "ssid", "essid", "wifiNetworkName", "networkName", "network_name")
     if direct:
         return str(direct)
@@ -530,8 +431,7 @@ def _normalize_client(
     ipv4 = _first(raw, "ipAddress", "ip", "ipv4", "lastIp", "last_ip", "fixed_ip")
     ipv6 = _ipv6_of(raw)
     mac = _first(raw, "macAddress", "mac")
-    # VERIFY: VLAN — a first-class field on some firmwares, nested under
-    # `access` on others; may otherwise only be derivable from the network.
+    # VLAN is top-level on some firmwares and nested under `access` on others.
     vlan = _first(raw, "vlan", "vlanId", "networkVlanId", "vlan_id")
     if vlan is None:
         access = raw.get("access")
@@ -544,9 +444,7 @@ def _normalize_client(
         and not ssid
         and bool(_first(raw, "wired", "isWired", default=False))
     )
-    # Uptime: an explicit seconds field if present, otherwise derived from the
-    # association timestamp (connectedAt), which is what the Integration API
-    # actually returns for a client.
+    # Fall back to connectedAt, which is what the Integration API actually returns for a client.
     uptime = _first(raw, "uptime", "uptimeSeconds", "uptime_seconds")
     try:
         uptime = int(uptime) if uptime is not None else None
@@ -593,8 +491,6 @@ def _normalize_device(
     model = _first(raw, "model", "modelName", "shortname")
     state = str(_first(raw, "state", "status", default="")).upper() or None
 
-    # Firmware-updatable — a real boolean the device (detail) object carries.
-    # VERIFY: firmwareUpdatable field name / nesting.
     fw_updatable = _first(raw, "firmwareUpdatable", "updateAvailable", "update_available")
     if fw_updatable is None:
         fw = raw.get("firmware")
@@ -602,8 +498,6 @@ def _normalize_device(
             fw_updatable = _first(fw, "updatable", "updateAvailable")
     firmware_updatable = bool(fw_updatable) if fw_updatable is not None else None
 
-    # last-seen / heartbeat comes from the per-device detail endpoint; look in
-    # the common top-level names and under statistics.
     last_seen = _as_epoch(
         _first(raw, "lastSeen", "last_seen", "lastHeartbeatAt", "startupTimestamp")
     )
@@ -613,11 +507,9 @@ def _normalize_device(
             last_seen = _as_epoch(_first(stats, "lastHeartbeatAt", "lastSeen"))
 
     return {
-        # IPv6 intentionally dropped from the devices table (not in the API);
-        # Uptime replaced by firmware_updatable per the feature request.
         "name": str(name) if name else (str(mac) if mac else "unknown"),
         "ipv4": str(ipv4) if ipv4 else None,
-        "ipv6": ipv6,  # retained in payload; the table no longer renders it
+        "ipv6": ipv6,
         "mac": str(mac).lower() if mac else None,
         "vlan": _first(raw, "vlan", "vlanId"),
         "ssid": None,
@@ -654,11 +546,8 @@ def _gateway_by_role(raw: dict[str, Any]) -> bool:
 
 
 def _gateway_by_name_tokens(raw: dict[str, Any]) -> bool:
-    """The weak fallback: a known gateway marker in the model/name blob.
-    Kept broad because the model line-up changes often (UDM/UXG/UCG/
-    UDR/…). Obvious false positive: a user-renamed switch called
-    "gateway closet" matches, which is why this only ever runs when no
-    device declared the role (work plan item 4.11)."""
+    """The weak fallback: a known gateway marker in the model/name blob. Runs
+    only when no device declared the role."""
     blob = " ".join(
         str(_first(raw, k, default="")).lower()
         for k in ("type", "model", "shortname", "name", "deviceType", "role")
@@ -671,9 +560,7 @@ def _is_gateway(raw: dict[str, Any]) -> bool:
 
 
 def _select_gateway(devices_raw: list[dict[str, Any]]) -> dict[str, Any] | None:
-    """Choose THE gateway: a device whose role field declares it wins over
-    any number of name-token lookalikes; name tokens are consulted only
-    when no device declares the role (work plan item 4.11)."""
+    """Choose THE gateway: a declared role wins; name tokens are consulted only when no device declares one."""
     for raw in devices_raw:
         if _gateway_by_role(raw):
             return raw
@@ -730,12 +617,7 @@ def _wan_ports(arr: list[Any]) -> list[dict[str, Any]]:
 
 def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
     """WAN status + throughput from the gateway device, best-effort. Every
-    field degrades to None (UI: "—") when the console doesn't expose it.
-
-    VERIFY: the exact WAN-port/uplink shape on the Integration API device
-    object is the single most uncertain mapping in this file. This walks every
-    plausible nesting (uplink/wan objects, statistics, interfaces dict/list,
-    port arrays) and takes the first that yields rate/state/ip values.
+    field degrades to None when the console doesn't expose it.
     """
     wan: dict[str, Any] = {
         "port": None,
@@ -774,21 +656,12 @@ def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
     return wan
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
 async def _fetch_broadcast_map(
     hass: HomeAssistant, conn: _Conn, site_id: str
 ) -> dict[str, str]:
-    """{broadcast_id: ssid_name} from /wifi/broadcasts, for the client SSID
-    join and the 'Clients per SSID' card. Best-effort - {} when the
-    console cannot serve it. Only UniFiError is swallowed (work plan item
-    4.11): _get wraps every transport/HTTP/decode failure in it, so
-    anything else escaping here is a programming error that the overview's
-    outer handler should log loudly rather than have masked as a missing
-    SSID map."""
+    """{broadcast_id: ssid_name} from /wifi/broadcasts. Best-effort - {} when
+    the console cannot serve it. Only UniFiError is swallowed; anything else
+    is a programming error that must surface."""
     try:
         rows = await _get_paginated(hass, conn, f"/sites/{site_id}/wifi/broadcasts")
     except UniFiError:
@@ -805,13 +678,8 @@ async def _fetch_broadcast_map(
 async def _fetch_device_details(
     hass: HomeAssistant, conn: _Conn, site_id: str, devices: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Enrich devices using the two documented Network 10.4.57 routes.
-
-    ``/devices/{id}`` supplies configuration/detail fields and
-    ``/devices/{id}/statistics/latest`` supplies heartbeat, utilization,
-    uptime, and uplink rates.  Each request is independent and non-fatal; a
-    partial failure keeps every field obtained from the list or other route.
-    """
+    """Enrich devices from the two documented per-device routes; each request
+    is independent and non-fatal."""
 
     async def _one(dev: dict[str, Any]) -> dict[str, Any]:
         did = _first(dev, "id", "_id", "deviceId")
@@ -854,14 +722,12 @@ async def _fetch_network_map(
     hass: HomeAssistant, conn: _Conn, site_id: str
 ) -> dict[str, str]:
     """{network_id: display_name} so an ACL rule that references networks by
-    id can be shown by name. Best-effort — {} if the endpoint is absent."""
+    id can be shown by name. Best-effort - {} if the endpoint is absent."""
     for suffix in ("networks",):
         try:
             rows = await _get_paginated(hass, conn, f"/sites/{site_id}/{suffix}")
         except UniFiError:
-            # Narrow on purpose (work plan item 4.11): an absent endpoint
-            # is expected across controller versions, but anything beyond
-            # a UniFiError is a bug that must surface upstream.
+            # Only UniFiError is expected (absent endpoint); anything else is a bug that must surface upstream.
             continue
         out: dict[str, str] = {}
         for n in rows:
@@ -891,14 +757,9 @@ def _resolve_network_refs(refs: list[Any], network_map: dict[str, str]) -> list[
 
 
 def _port_list(value: Any) -> list[int]:
-    """A filter's port entries as a sorted list of ints. Confirmed against
-    a real controller's own OpenAPI spec (network_v10.4.57): every ACL
-    rule ``portFilter`` — on IP_ADDRESSES_OR_SUBNETS, NETWORKS, and PORTS
-    endpoint filters alike — is a plain array of ints (1-65535), never a
-    range or a string. This still tolerates a string port ("443") or a
-    "start-end" range defensively, in case an older/newer controller
-    version reports one, but neither is the documented shape on the
-    version this was verified against."""
+    """A filter's port entries as a sorted list of ints. The verified spec
+    sends plain ints; a string port or "start-end" range is tolerated
+    defensively."""
     if not isinstance(value, list):
         return []
     out: set[int] = set()
@@ -910,7 +771,7 @@ def _port_list(value: Any) -> list[int]:
         elif isinstance(item, str) and item.strip().isdigit():
             out.add(int(item))
         elif isinstance(item, str) and "-" in item:
-            # Defensive only — the verified schema never sends this shape.
+            # Defensive only; the verified schema never sends this shape.
             lo, _, hi = item.partition("-")
             if lo.strip().isdigit() and hi.strip().isdigit():
                 out.update(range(int(lo), int(hi) + 1))
@@ -920,23 +781,9 @@ def _port_list(value: Any) -> list[int]:
 def _normalize_acl_filter(raw: Any, network_map: dict[str, str]) -> dict[str, Any]:
     """One side (source or destination) of an ACL rule.
 
-    Confirmed against a real controller's own OpenAPI spec (the user
-    uploaded network_v10.4.57's spec directly): ``sourceFilter`` /
-    ``destinationFilter`` is a discriminated union keyed on ``type``.
-    IPV4-type rules use "IP ACL rule endpoint": IP_ADDRESSES_OR_SUBNETS
-    (``ipAddressesOrSubnets`` + ``portFilter``), NETWORKS (``networkIds`` +
-    ``portFilter``), or PORTS (``portFilter`` only). MAC-type rules use
-    "MAC ACL rule endpoint": MAC_ADDRESSES (``macAddresses`` +
-    ``prefixLength``) — a MAC-type rule carries no network of its own here
-    at all; its scope comes from the rule-level ``networkIdFilter`` instead
-    (see _normalize_acl_rule). Reading all four possible fields
-    unconditionally (rather than switching on ``type`` first) is
-    deliberate and still correct: each leaf variant only ever populates
-    its own fields, so an absent field degrades to empty exactly as it
-    would with an explicit per-type dispatch, with less code. Never
-    raises: a filter that isn't a dict (absent, or a legacy flat string on
-    an older private-API endpoint) normalizes to an empty-but-shaped
-    record rather than being guessed at."""
+    Reading all four possible fields unconditionally is correct: each type
+    variant only ever populates its own. Never raises; a non-dict filter
+    normalizes to an empty-but-shaped record."""
     if not isinstance(raw, dict):
         return {
             "match_type": None,
@@ -961,38 +808,8 @@ def _normalize_acl_filter(raw: Any, network_map: dict[str, str]) -> dict[str, An
 def _normalize_acl_rule(
     raw: dict[str, Any], index: int, network_map: dict[str, str]
 ) -> dict[str, Any]:
-    """One ACL rule, order-preserving, matching the real schema confirmed
-    against a live controller's own OpenAPI spec (the user uploaded
-    network_v10.4.57's spec directly, superseding the earlier third-party
-    extraction this module was first built against): ``type`` (IPV4 | MAC,
-    discriminating which endpoint shape sourceFilter/destinationFilter
-    use — see _normalize_acl_filter), ``action`` (ALLOW/BLOCK), ``index``,
-    ``metadata.origin`` (USER_DEFINED for a rule the account owner created
-    themselves, SYSTEM_DEFINED for one UniFi ships by default, DERIVED for
-    one the controller generated from other configuration — surfaced as
-    ``custom`` so the panel can visibly distinguish an owner's own rules
-    from UniFi's built-ins), and — IPV4 rules only — a top-level
-    ``protocolFilter`` restricted to TCP/UDP.
-
-    A MAC-type rule carries no network in its sourceFilter/destinationFilter
-    at all (MAC ACL rule endpoint only ever has macAddresses+prefixLength);
-    its scope is the rule-level ``networkIdFilter`` (singular — one network
-    per MAC rule) instead, resolved into the same ``networks`` list an
-    IPV4 rule's filters would populate, so the table's Networks column is
-    honest for either rule type without the caller needing to branch on it.
-
-    ``ports`` at the top level is a dedup/sort over both filters' ports for
-    a compact combined column; source/destination stay available
-    underneath for anyone who needs the distinction (a rule restricting
-    who may call OUT on port 22 reads very differently from one
-    restricting who may reach IN on port 22).
-
-    Endpoints other than "acl-rules" in _ACL_ENDPOINT_SUFFIXES are older,
-    private-API fallbacks this schema was never designed for; a raw row
-    lacking sourceFilter/destinationFilter degrades to empty filter sides
-    rather than a fabricated guess, and the legacy flat-field candidates
-    below (source/destination as bare strings) keep some detail visible on
-    a controller that still speaks that surface.
+    """One ACL rule, order-preserving, matching the network_v10.4.57 OpenAPI
+    spec; see docs/UNIFI-LOCAL-API-CONTRACT.md for the field semantics.
     """
     order = _first(raw, "index", "ruleIndex", "order", "ruleOrder", "sequence")
     try:
@@ -1005,9 +822,7 @@ def _normalize_acl_rule(
     source = _normalize_acl_filter(raw.get("sourceFilter"), network_map)
     destination = _normalize_acl_filter(raw.get("destinationFilter"), network_map)
 
-    # Legacy fallback: an older private-API rule with flat source/destination
-    # strings instead of filter objects carries no port/network detail, but
-    # is still worth showing rather than a blank row.
+    # Legacy flat source/destination strings carry no port/network detail but still earn a row.
     if raw.get("sourceFilter") is None:
         legacy_src = _first(raw, "source", "src", "sourceZone")
         if legacy_src:
@@ -1024,8 +839,7 @@ def _normalize_acl_rule(
         legacy_proto = _first(raw, "protocol", "protocolMatch")
         protocols = [str(legacy_proto).upper()] if legacy_proto else []
 
-    # MAC-type rules scope their network via the rule-level networkIdFilter
-    # (a single uuid), not via either filter side — see the docstring above.
+    # MAC-type rules scope their network via the rule-level networkIdFilter, not a filter side.
     rule_network_refs: list[Any] = []
     v = raw.get("networkIdFilter")
     if v not in (None, ""):
@@ -1062,10 +876,9 @@ def _normalize_acl_rule(
 async def _fetch_acl_rules(
     hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
 ) -> dict[str, Any]:
-    """Probe the candidate ACL/firewall endpoints and return the first that
-    responds, order-preserved. If none respond, `available` is False with the
-    list of endpoints tried — an honest 'this controller's API doesn't expose
-    it' for the security audit, never a fabricated ruleset."""
+    """Probe the candidate ACL endpoints and return the first that responds;
+    `available` False with the endpoints tried when none do, never a
+    fabricated ruleset."""
     result: dict[str, Any] = {
         "available": False,
         "error": None,
@@ -1093,14 +906,6 @@ async def _fetch_acl_rules(
     return result
 
 
-# ---------------------------------------------------------------------------
-# Firewall Policies — a genuinely separate resource from ACL Rules above,
-# not another name for the same thing; both are read since either can hold
-# the controller's actual rules. Endpoint confirmation and sourcing are in
-# docs/UNIFI-LOCAL-API-CONTRACT.md ("Firewall Policies vs. ACL Rules").
-# ---------------------------------------------------------------------------
-
-
 def _normalize_ip_matching(item: dict[str, Any]) -> str | None:
     """One 'IP matching' entry (IP_ADDRESS / SUBNET / IP_ADDRESS_RANGE)."""
     t = item.get("type")
@@ -1115,9 +920,7 @@ def _normalize_ip_matching(item: dict[str, Any]) -> str | None:
 
 
 def _normalize_port_matching(item: dict[str, Any]) -> str | None:
-    """One 'Port matching' entry (PORT_NUMBER / PORT_NUMBER_RANGE). Kept as
-    a string (not coerced to int like ACL's flat portFilter) because a
-    Firewall Policy port entry can genuinely be a range."""
+    """One 'Port matching' entry, kept as a string because it can be a range."""
     t = item.get("type")
     if t == "PORT_NUMBER":
         v = item.get("value")
@@ -1130,13 +933,8 @@ def _normalize_port_matching(item: dict[str, Any]) -> str | None:
 
 
 def _normalize_firewall_port_filter(pf: Any) -> dict[str, Any]:
-    """A Firewall Policy 'port filter' — the same shape whether it's a
-    standalone PORT traffic filter or an extra port constraint nested
-    inside a NETWORK/IP_ADDRESS/etc. filter. type PORTS carries explicit
-    port/range items; type TRAFFIC_MATCHING_LIST references a saved list
-    this project doesn't resolve by name — surfaced as ``from_list`` so the
-    UI can say "scoped by a Traffic Matching List" instead of fabricating
-    port numbers that were never in the payload."""
+    """A Firewall Policy 'port filter', standalone or nested inside another
+    filter. A TRAFFIC_MATCHING_LIST reference is surfaced as ``from_list``."""
     if not isinstance(pf, dict):
         return {"ports": [], "from_list": False}
     if pf.get("type") == "TRAFFIC_MATCHING_LIST":
@@ -1157,9 +955,7 @@ def _normalize_firewall_protocol(scope: Any) -> dict[str, Any]:
         return {"ip_version": ip_version, "protocol": None}
     ptype = pf.get("type")
     if ptype in ("NAMED_PROTOCOL", "PRESET"):
-        # Both discriminate a second time on their own "name" (AH/DCCP/TCP/
-        # UDP/ICMP/... for NAMED_PROTOCOL, TCP_UDP for PRESET); "name" IS
-        # the readable protocol string in either case.
+        # "name" is the readable protocol string for both NAMED_PROTOCOL and PRESET.
         name = pf.get("name")
         return {"ip_version": ip_version, "protocol": str(name) if name else None}
     if ptype == "PROTOCOL_NUMBER":
@@ -1169,15 +965,9 @@ def _normalize_firewall_protocol(scope: Any) -> dict[str, Any]:
 
 
 def _normalize_firewall_traffic_filter(raw: Any, network_map: dict[str, str]) -> dict[str, Any]:
-    """One side (source or destination) of a Firewall Policy's traffic
-    filter. Fully modeled for the filter types this project has verified
-    field-for-field (NETWORK, IP_ADDRESS, MAC_ADDRESS, PORT, plus the
-    destination-only DOMAIN/APPLICATION/APPLICATION_CATEGORY filters);
-    REGION, VPN_SERVER, SITE_TO_SITE_VPN_TUNNEL, and IPV6_IID are surfaced
-    by ``filter_type`` alone rather than guessed at, since this project
-    hasn't verified their own nested field names. ``zone`` is filled in by
-    the caller from the enclosing source/destination object's zoneId,
-    which is separate from (and always present alongside) this filter."""
+    """One side (source or destination) of a Firewall Policy's traffic filter.
+    Unverified filter types are surfaced by ``filter_type`` alone. ``zone``
+    is filled in by the caller from the enclosing object's zoneId."""
     filter_type = raw.get("type") if isinstance(raw, dict) else None
     networks: list[str] = []
     ip_or_subnets: list[str] = []
@@ -1208,8 +998,7 @@ def _normalize_firewall_traffic_filter(raw: Any, network_map: dict[str, str]) ->
             addrs = mac_filter.get("macAddresses")
             macs = [str(m) for m in addrs] if isinstance(addrs, list) else []
         elif isinstance(mac_filter, str):
-            # An EXTRA single-MAC constraint on a NETWORK/IP_ADDRESS/IPV6_IID
-            # source filter, not the primary MAC_ADDRESS filter object.
+            # An extra single-MAC constraint on a NETWORK/IP_ADDRESS/IPV6_IID filter, not the primary MAC filter.
             macs = [mac_filter]
 
         dom_filter = raw.get("domainFilter")
@@ -1244,14 +1033,7 @@ def _normalize_firewall_traffic_filter(raw: Any, network_map: dict[str, str]) ->
 def _normalize_firewall_policy(
     raw: dict[str, Any], index: int, network_map: dict[str, str], zone_name_map: dict[str, str]
 ) -> dict[str, Any]:
-    """One Firewall Policy, order-preserving, matching the verified schema:
-    ``action`` (a typed ALLOW/BLOCK/REJECT object), ``index``,
-    ``ipProtocolScope`` (ipVersion + protocolFilter), ``connectionStateFilter``,
-    ``loggingEnabled``, ``schedule`` (None = always active), ``metadata.origin``
-    (USER_DEFINED for a policy the account owner created, surfaced as
-    ``custom`` the same way _normalize_acl_rule does), and
-    ``source``/``destination`` objects each carrying a required ``zoneId``
-    plus an optional ``trafficFilter`` narrowing it further."""
+    """One Firewall Policy, order-preserving, matching the verified schema."""
     order = raw.get("index")
     try:
         order = int(order) if order is not None else index
@@ -1260,12 +1042,7 @@ def _normalize_firewall_policy(
 
     action_obj = raw.get("action")
     action = action_obj.get("type") if isinstance(action_obj, dict) else None
-    # ALLOW-only, and required whenever action IS "ALLOW" (confirmed via a
-    # live controller's own response, not just its spec): whether UniFi
-    # auto-creates a derived policy on the mirrored zone pair to allow the
-    # matching return traffic — the reason a policy list often shows paired
-    # "X" / "X (Return)" entries. None for BLOCK/REJECT, where the field
-    # doesn't apply at all.
+    # ALLOW-only and required there; None for BLOCK/REJECT where the field does not apply.
     allow_return_traffic = (
         action_obj.get("allowReturnTraffic") if isinstance(action_obj, dict) and action == "ALLOW" else None
     )
@@ -1314,9 +1091,7 @@ def _normalize_firewall_policy(
 async def _fetch_firewall_zones(
     hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
 ) -> list[dict[str, Any]]:
-    """[{id, name, networks}] — best-effort; [] if the endpoint is absent so
-    a controller version without zones degrades to "policies show no zone
-    name" rather than taking the whole tab down."""
+    """[{id, name, networks}], best-effort; [] if the endpoint is absent."""
     try:
         rows = await _get_paginated(hass, conn, f"/sites/{site_id}/firewall/zones")
     except UniFiError:
@@ -1342,11 +1117,8 @@ async def _fetch_firewall_zones(
 async def _fetch_firewall_policies(
     hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
 ) -> dict[str, Any]:
-    """Firewall Policies — UniFi's zone-based default allow/deny audit,
-    genuinely separate from ACL Rules (see this section's module comment).
-    Unlike _fetch_acl_rules this never probes candidate paths: the endpoint
-    is confirmed real, so a failure here is a real connectivity/permission
-    problem worth surfacing as such rather than "not supported"."""
+    """Firewall Policies, a resource separate from ACL Rules. Never probes
+    candidate paths: the endpoint is confirmed, so a failure here is real."""
     result: dict[str, Any] = {"available": False, "error": None, "rules": [], "zones": []}
     zones = await _fetch_firewall_zones(hass, conn, site_id, network_map)
     result["zones"] = zones
@@ -1367,10 +1139,8 @@ async def _fetch_firewall_policies(
 
 
 def _ip_in_any(ip_str: str, candidates: list[str]) -> bool:
-    """Whether ip_str matches any candidate exactly, or falls inside a
-    candidate that parses as a CIDR network. Never raises: an unparseable
-    candidate (a hostname, a zone name like "Internal") is simply not a
-    match rather than a crash — ACL filters can carry non-IP values."""
+    """Whether ip_str matches any candidate exactly or falls inside a CIDR
+    candidate. Never raises: a non-IP candidate is simply not a match."""
     try:
         ip = ipaddress.ip_address(ip_str)
     except ValueError:
@@ -1387,11 +1157,8 @@ def _ip_in_any(ip_str: str, candidates: list[str]) -> bool:
 
 
 def _server_ip_addresses(open_ports: list[dict[str, Any]]) -> list[str]:
-    """The HA server's own real LAN IP(s), as reported by the Probe add-on's
-    bind-address decoding of /proc/net/tcp[6] (see probe.py's _PORT_SCHEMA
-    docstring) — never a guess, and never 0.0.0.0/loopback, which say
-    "every interface"/"this host only" rather than naming an address other
-    devices on the LAN actually see."""
+    """The HA server's own real LAN IP(s) as reported by the Probe add-on;
+    never 0.0.0.0 or loopback."""
     out: set[str] = set()
     for p in open_ports:
         addr = p.get("address")
@@ -1402,10 +1169,8 @@ def _server_ip_addresses(open_ports: list[dict[str, Any]]) -> list[str]:
 
 
 def _port_in_dest_list(port: Any, dest_ports: list[Any]) -> bool:
-    """Whether ``port`` (an int) is matched by a destination's port list —
-    ACL rules carry plain ints, Firewall Policy rules carry strings that
-    can be a single number ("443") or a range ("8000-9000"). Handles both
-    representations rather than assuming either shape."""
+    """Whether ``port`` is matched by a destination's port list, which holds
+    ints (ACL) or strings that may be a range (Firewall Policy)."""
     for entry in dest_ports:
         if isinstance(entry, bool):
             continue
@@ -1426,33 +1191,13 @@ def correlate_server_ports_with_rules(
     acl_rules: list[dict[str, Any]],
     firewall_policies: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Cross-reference the HA server's own real listening ports (from the
-    Probe add-on, already used to drive the host-firewall rule builder in
-    firewall.py) against BOTH UniFi rule sets — ACL Rules and Firewall
-    Policies (see the "Firewall Policies" section above for why they're
-    two genuinely separate resources, not the same thing under different
-    names) — whose destination actually names this server, so the Network
-    Security tab can show, for each port HA itself has open, whether any
-    rule of either kind explicitly scopes who may reach it. A rule's
-    label is prefixed ``ACL:`` or ``Policy:`` in the output so the operator
-    knows which UI to go edit.
+    """Cross-reference the HA server's own listening ports (from the Probe
+    add-on) against both UniFi rule sets, ACL Rules and Firewall Policies.
 
-    This is deliberately conservative about what it claims. A rule only
-    counts as covering a port when its destination names an IP or CIDR
-    that contains one of the server's reported addresses AND (its port
-    list is empty, meaning "all ports", or includes this port — see
-    _port_in_dest_list for the two port-list shapes tolerated). A rule
-    whose destination is scoped to a NETWORK/zone rather than a specific
-    IP is reported separately as "network_scoped" rather than folded into
-    "covered" or "uncovered": this function has no verified way to know
-    which UniFi network the server's own IP belongs to (the Integration
-    API's network list was not confirmed to expose per-network IP
-    subnets), so claiming a network-scoped rule does or doesn't cover the
-    server would be a guess this project's honesty rule forbids.
-    "uncovered" means no rule of either kind was found naming the server
-    by IP/CIDR at all — it does NOT mean the port is reachable from
-    everywhere; UniFi's own default zone-based policy (not enumerated
-    here) still applies.
+    Conservative: a rule covers a port only when its destination names the
+    server by IP/CIDR and its port list is empty or includes the port;
+    network-scoped rules are reported separately as "network_scoped", and
+    "uncovered" never means reachable from everywhere.
     """
     server_ips = _server_ip_addresses(open_ports or [])
     if not server_ips:
@@ -1500,17 +1245,9 @@ async def async_network_overview(
     plus a compact Protect status. Never raises: a connection problem comes
     back as reachable=False with a human-readable ``error``.
 
-    Two data sources feed the snapshot. The direct X-API-KEY Integration API
-    is fetched first and always wins where it produced a value; afterwards
-    the core ``unifi`` integration's in-memory state (when the user runs it)
-    fills whatever the API left blank, and stands in entirely when the API is
-    unconfigured or down.
-
-    The whole snapshot runs under one wall-clock budget
-    (_OVERVIEW_TIMEOUT_SECONDS, work plan item 4.11): the per-request
-    timeout bounds each call, but the snapshot fans out across many calls
-    and must not hold the panel open indefinitely against a slow console.
-    Hitting the budget reports an error on the payload, never raises.
+    The direct API is fetched first and wins; the core ``unifi`` integration's
+    in-memory state fills the blanks. The whole snapshot runs under
+    _OVERVIEW_TIMEOUT_SECONDS and reports an error rather than raising.
     """
     result: dict[str, Any] = {
         "configured": False,
@@ -1541,16 +1278,10 @@ async def async_network_overview(
             endpoints = _integration_endpoints(hass)
             now_ts = int(dt_util.utcnow().timestamp())
 
-            # The core snapshot is taken up front so the API path can
-            # borrow its WLAN and network name maps as endpoint fallbacks,
-            # and the rows it produced can be enriched afterwards.
+            # Core snapshot first so the API path can borrow its WLAN and network maps as fallbacks.
             core_snap = _core_network_snapshot(hass)
 
-            # The connection object (and with it the API key) lives only
-            # for this snapshot; it goes out of scope when this function
-            # returns (SEC-3). A configured-but-invalid host raises
-            # UniFiError, shown as a configuration error rather than
-            # rendering the tab "not configured".
+            # The connection (and API key) lives only for this snapshot; an invalid host raises UniFiError.
             try:
                 conn = await _network_conn(store, secrets)
             except UniFiError as err:
@@ -1601,10 +1332,7 @@ async def _fill_network_from_api(
         result["error"] = f"Unexpected error: {err}"
         return
 
-    # SSID names live in /wifi/broadcasts; enrich devices from their detail
-    # endpoint; resolve network names for the ACL report. All best-effort,
-    # and when a console endpoint returns nothing the same map is built from
-    # the core unifi integration's in-memory WLAN / VLAN inventory instead.
+    # All best-effort; when a console endpoint returns nothing the core unifi inventory fills the map.
     broadcast_map = await _fetch_broadcast_map(hass, conn, site_id)
     if not broadcast_map and core_snap is not None:
         broadcast_map = unifi_core.wlan_ssid_map(core_snap)
@@ -1627,10 +1355,7 @@ async def _fill_network_from_api(
         if gstate in ("OFFLINE", "DISCONNECTED", "0", "PENDING_ADOPTION"):
             gateway_online = False
         else:
-            # A gateway that's present in the devices list and not explicitly
-            # offline is treated as online, so "Internet" resolves to
-            # Connected (best-effort) instead of Unknown when the console
-            # doesn't expose an explicit WAN up/down flag.
+            # A listed gateway not explicitly offline counts as online when no WAN up/down flag is exposed.
             gateway_online = True
 
     result.update(
@@ -1676,10 +1401,6 @@ def _recompute_client_stats(result: dict[str, Any]) -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Enrichment from the core `unifi` integration's in-memory state
-# ---------------------------------------------------------------------------
-
 
 def _core_network_snapshot(hass: HomeAssistant) -> dict[str, Any] | None:
     """The core unifi in-memory snapshot, or None when the core integration
@@ -1710,10 +1431,7 @@ def _apply_core_network_data(
         _enrich_devices_from_core(result, snap, endpoints)
         _enrich_wan_from_core(result, snap)
         _recompute_client_stats(result)
-        # Rows built or completed from core memory are real data even when
-        # the direct API is unconfigured or unreachable, so the panel is told
-        # it has something to render. Any API error string stays in the
-        # payload for honesty.
+        # Core-memory rows are real data even when the direct API is down; any API error string stays.
         if result["clients"] or result["devices"]:
             result["configured"] = True
             result["reachable"] = True
@@ -1862,9 +1580,7 @@ def _enrich_wan_from_core(result: dict[str, Any], snap: dict[str, Any]) -> None:
     for key in ("port", "up", "rx_rate_bps", "tx_rate_bps", "ip"):
         if wan.get(key) is None and core_wan.get(key) is not None:
             wan[key] = core_wan[key]
-    # availability is additive: the direct API has no equivalent reading and
-    # the frontend ignores payload keys it does not render, so surfacing the
-    # controller's own WAN-probe percentage costs nothing.
+    # availability is additive: the direct API has no equivalent reading.
     if wan.get("availability") is None and core_wan.get("availability") is not None:
         wan["availability"] = core_wan["availability"]
     if result.get("internet_connected") is None:
@@ -1889,8 +1605,7 @@ def _normalize_camera(raw: dict[str, Any], origin: str) -> dict[str, Any]:
     ip = _first(raw, "host", "ip", "ipAddress", "lastSeenIp", "address")
     mac = _first(raw, "mac", "macAddress")
 
-    # VERIFY: isRecording. Protect exposes a boolean on some firmwares and a
-    # recordingSettings.mode ("always"/"detections"/"never") on others.
+    # A boolean on some Protect firmwares, recordingSettings.mode on others.
     is_recording: bool | None = None
     rec = _first(raw, "isRecording", "recording")
     if rec is not None:
@@ -1905,8 +1620,6 @@ def _normalize_camera(raw: dict[str, Any], origin: str) -> dict[str, Any]:
 
     last_ring = _as_epoch(_first(raw, "lastRing", "last_ring"))
 
-    # VERIFY: channels shape. Each channel typically carries a name and/or a
-    # width/height; we surface short labels + a count for the table cell.
     channels: list[str] = []
     channels_raw = raw.get("channels")
     if isinstance(channels_raw, list):
@@ -1934,7 +1647,6 @@ def _normalize_camera(raw: dict[str, Any], origin: str) -> dict[str, Any]:
         "channel_count": len(channels),
         "state": state,
         "online": online,
-        # Browser-facing deep link into the Protect console for this device.
         "link": f"{origin}/protect/dashboard/devices/{cam_id}" if cam_id else None,
     }
 
@@ -1965,10 +1677,7 @@ def _normalize_event(raw: dict[str, Any], origin: str) -> dict[str, Any]:
 
     camera_id = _first(raw, "camera", "cameraId", "device", "deviceId")
 
-    # thumbnail may be a full URL, or an id/token that needs an authenticated
-    # fetch (so it can't be embedded cross-origin). When it's just a token we
-    # link to the event's camera page on the console instead of showing a
-    # broken <img>.
+    # A bare thumbnail token needs an authenticated fetch, so link to the camera page instead.
     thumbnail = _first(raw, "thumbnail", "thumbnailId", "heatmap")
     thumb_link = None
     if thumbnail:
@@ -2009,14 +1718,9 @@ async def async_protect_status(
 ) -> dict[str, Any]:
     """UniFi Protect status for the Network tab: reachable + camera counts,
     the full devices table (with console deep-links), and recent events / AI
-    smart detections. Best-effort, never raises; a failure comes back as
-    reachable=False with a reason, and the events call failing on its own
-    still returns the cameras.
-
-    Like the Network overview, the direct X-API-KEY readings win, and the
-    core ``unifiprotect`` integration's in-memory bootstrap fills whatever
-    they left blank, most importantly the recent events that many Protect
-    firmwares refuse to serve over REST."""
+    smart detections. Best-effort, never raises; the events call failing on
+    its own still returns the cameras. Direct readings win and the core
+    ``unifiprotect`` bootstrap fills the blanks."""
     out: dict[str, Any] = {
         "configured": False,
         "reachable": False,
@@ -2028,9 +1732,7 @@ async def async_protect_status(
         "events": [],
         "events_error": None,
     }
-    # Short-lived connection, same as the Network path (SEC-3). A
-    # configured-but-invalid host is a configuration error on the
-    # payload, not an unconfigured tab (work plan item 4.11).
+    # Short-lived connection; an invalid host is a configuration error on the payload.
     try:
         conn = await _protect_conn(store, secrets)
     except UniFiError as err:
@@ -2052,8 +1754,7 @@ async def _fill_protect_from_api(
     Kept separate so the core in-memory enrichment can run whether or not
     this path succeeded."""
     try:
-        # Protect 7.2.105 defines this as an unpaginated JSON array. Do not
-        # append Network-style offset/limit parameters to the Protect route.
+        # Protect 7.2.105 /cameras is an unpaginated array; never add offset/limit here.
         payload = _rows(await _get(hass, conn, "/cameras"))
     except UniFiError as err:
         out["error"] = str(err)
@@ -2073,21 +1774,12 @@ async def _fill_protect_from_api(
         }
     )
 
-    # Protect 7.2.105 exposes events only as the persistent WebSocket
-    # subscription GET /subscribe/events; it defines no historical REST
-    # /events, /detections, or /alarms collection.  This snapshot therefore
-    # makes no undocumented calls.  The loaded core unifiprotect integration
-    # can still provide its recent in-memory event buffer below.
+    # Protect 7.2.105 has no historical REST events endpoint, only the WebSocket subscription.
     out["events_error"] = (
         "Protect 7.2.105 provides events through the /subscribe/events "
         "WebSocket, not a historical REST endpoint. Load Home Assistant's "
         "UniFi Protect integration to populate recent event history."
     )
-
-
-# ---------------------------------------------------------------------------
-# Enrichment from the core `unifiprotect` integration's in-memory bootstrap
-# ---------------------------------------------------------------------------
 
 
 def _apply_core_protect_data(hass: HomeAssistant, out: dict[str, Any]) -> None:
@@ -2124,8 +1816,7 @@ def _apply_core_protect_data(hass: HomeAssistant, out: dict[str, Any]) -> None:
         if not out["events"]:
             now_ts = int(dt_util.utcnow().timestamp())
             cutoff = now_ts - 24 * 3600
-            # The panel's events card is captioned "last 24h", so the
-            # bootstrap's recent-events buffer is filtered to that window.
+            # The panel's events card is captioned "last 24h".
             events = [
                 _event_row_from_core(e, origin)
                 for e in snap["events"]
@@ -2133,12 +1824,10 @@ def _apply_core_protect_data(hass: HomeAssistant, out: dict[str, Any]) -> None:
             ]
             events.sort(key=lambda e: e["start"] or 0, reverse=True)
             out["events"] = events
-            # The core bootstrap is now the events source, so a message about
-            # the REST probe failing would be stale and misleading.
+            # The core bootstrap is now the events source; the REST message would be stale.
             out["events_error"] = None
 
-        # Data straight out of core memory is real even when the direct API
-        # is unconfigured or down, so the panel is told it can render it.
+        # Core-memory data is real even when the direct API is unconfigured or down.
         if out["cameras"] or out["events"]:
             out["configured"] = True
             out["reachable"] = True
@@ -2153,8 +1842,7 @@ def _camera_row_from_core(cam: dict[str, Any], origin: str) -> dict[str, Any]:
     for shape parity with the API path."""
     row = _normalize_camera(cam, origin)
     if not origin:
-        # Without a known console origin the deep link would be relative and
-        # point at the Home Assistant host instead of the Protect console.
+        # Without a console origin the deep link would point at the Home Assistant host.
         row["link"] = None
     row["origin"] = unifi_core.PROTECT_ORIGIN
     return row

@@ -94,9 +94,9 @@ async def test_sustained_breach_required_before_action(
         ),
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
     ):
-        await wd.async_run_once()  # breach sample 1 of 2 — no action yet
+        await wd.async_run_once()  # breach sample 1 of 2, no action yet
         client.addons.restart_addon.assert_not_called()
-        await wd.async_run_once()  # sustained — acts
+        await wd.async_run_once()  # sustained, acts
         client.addons.restart_addon.assert_awaited_once_with("music_assistant")
 
     detection = entry.runtime_data.store.data["detections"]["watchdog_music_assistant"]
@@ -209,9 +209,6 @@ async def test_per_container_override_and_disable(
     assert "watchdog_strict" in entry.runtime_data.store.data["detections"]  # alerted
 
 
-# -- Hard-cap plumbing --------------------------------------------------------
-
-
 async def test_limits_for_probe_and_report_roundtrip(hass: HomeAssistant) -> None:
     store = HaSocData(hass)
     await store.async_load()
@@ -275,9 +272,6 @@ async def test_ingest_stores_limit_report(
     assert state["detail"] == "protection on"
 
 
-# -- WS layer -----------------------------------------------------------------
-
-
 def _connection(*, owner: bool) -> MagicMock:
     connection = MagicMock()
     connection.user = MagicMock(is_admin=True, is_owner=owner, id="u1")
@@ -323,10 +317,7 @@ async def test_ws_set_owner_only(hass: HomeAssistant, entry: MockConfigEntry) ->
 
 
 async def test_ws_clear_hard_limit(hass: HomeAssistant, entry: MockConfigEntry) -> None:
-    # Deliberately NO installed-add-on stub and no Supervisor here: a clear
-    # is exempt from the work-item-2.2 installed check, precisely so a cap
-    # left behind by a since-uninstalled add-on (or set before a move off
-    # Supervisor) stays removable.
+    # Deliberately no installed-add-on stub and no Supervisor: a clear is exempt from the installed check.
     from custom_components.ha_soc.websocket_api import ws_watchdog_set
 
     cfg = entry.runtime_data.store.data["resource_watchdog"]

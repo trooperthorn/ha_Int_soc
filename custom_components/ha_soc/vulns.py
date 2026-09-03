@@ -1,41 +1,8 @@
 """Device vulnerability tracking: CVE correlation and firmware currency.
 
-This module never verifies a vulnerability. CVE correlation matches on
-(often noisy) device manufacturer/model strings pulled from the device
-registry — not on verified serial numbers, hardware revisions, or firmware
-hashes. Every match produced here is a candidate for a human to confirm or
-dismiss, never an automatic verdict. The inverse is just as important:
-absence of a CVE match is NOT evidence a device is secure — NVD's coverage
-of consumer/prosumer IoT firmware is inherently incomplete, and a device
-with no findings may simply never have had a CVE filed against it, or may
-not yet have been correlated by the (deliberately conservative) curated
-table or the noisier keyword fallback below.
-
-Two independent checks feed the same "vuln_findings" table:
-
-- Firmware currency (Part 2): reads `update` entities with
-  device_class == "firmware" — no network involved, always runs.
-- CVE correlation (Part 3): queries the NVD API 2.0 per device, gated by
-  a curated manufacturer->CPE table first and a noisier keyword search as
-  fallback — network, best-effort, independently fails per device.
-
-Data disclosure (decision D-12, work plan item 4.9): the CVE correlation
-pass sends device manufacturer and model strings from the device registry
-to NIST's National Vulnerability Database (services.nvd.nist.gov) over
-HTTPS, together with the optional NVD API key when one is configured.
-Nothing else about the install leaves the instance. The pass is on by
-default, disclosed here and in the Settings tab, and controlled by the
-``nvd_lookups_enabled`` setting: when the owner turns it off, no request
-is made to NVD at all and only the network-free firmware-currency check
-runs. Severity honesty: a match produced through a vendor-only curated
-CPE wildcard says nothing about the specific model, so those findings are
-reported as INFO regardless of the CVE's CVSS (the score itself is still
-recorded on the finding for the analyst).
-
-The optional NVD API key lives in the private secret store
-(secrets_store.py) and is fetched immediately before each HTTP request,
-then dropped when the request completes (work item SEC-3): no parameter,
-attribute, or module global carries the key between requests.
+Every CVE match is a candidate for a human to confirm or dismiss, never a
+verdict, and the absence of a match is not evidence a device is secure
+(data disclosure and design: docs/security.md, docs/design.md).
 """
 from __future__ import annotations
 
@@ -81,54 +48,25 @@ CONFIDENCE_HEURISTIC = "heuristic"
 
 NVD_API_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 NVD_RESULTS_PER_PAGE = 20
-# Page through NVD's offset pagination before ranking (work plan item
-# 4.9), bounded so a whole-vendor wildcard with thousands of CVEs cannot
-# make one device's lookup run for minutes under the no-key rate delay.
-# The bound is honest, not exhaustive: at most NVD_MAX_PAGES pages are
-# ranked, and a vendor with more CVEs than that has its oldest tail
-# unexamined this pass.
+# Bounded paging: a vendor with more CVEs than this covers has its oldest tail unexamined.
 NVD_MAX_PAGES = 5
 NVD_TIMEOUT_SECONDS = 15
-# Without a key NVD allows ~5 req/30s; with a key, ~50/30s. These sleeps are
-# applied after every real HTTP call (not on cache hits) and are chosen with
-# headroom rather than cutting it exactly to the published limit.
+# NVD allows ~5 req/30s without a key and ~50/30s with one; sleeps apply after real HTTP calls only.
 NVD_DELAY_NO_KEY = 6
 NVD_DELAY_WITH_KEY = 0.7
-# A 429 means NVD is actively telling us to slow down, which is different
-# from a generic transient failure: one bounded retry (honoring its
-# Retry-After header when present) recovers the common case of a scan
-# racing another consumer of the same key/IP, without turning a single
-# rate-limited page into an unbounded stall.
+# One bounded retry on 429, honoring Retry-After when present.
 NVD_MAX_RATE_LIMIT_RETRIES = 1
 NVD_RATE_LIMIT_FALLBACK_DELAY = NVD_DELAY_NO_KEY * 2
 
-# Re-fetch the same match_string at most once per this window. Backed by an
-# in-memory dict on the tracker instance rather than anything persisted: a
-# HA restart just costs one extra full re-fetch on the next scan, which is
-# an acceptable trade for not having to reconcile a second cache format
-# against the finding store.
+# Per-match_string refetch window; in-memory only, so a restart just costs one re-fetch.
 MATCH_STRING_CACHE_TTL = timedelta(days=7)
 
-# Findings persisted per device per scan, taking the highest CVSS scores
-# first, so one device with a very active CPE entry can't flood the store.
+# Highest CVSS first, so one very active CPE entry cannot flood the store.
 MAX_FINDINGS_PER_DEVICE = 10
 
 MAX_SUMMARY_CHARS = 500
 
-# Device-overview status buckets for the SOC Dashboard's "All Devices" table
-# and status tiles. Distinct from the finding-lifecycle STATUS_* vocabulary
-# in const.py — these describe a device's actual HA availability, not a
-# finding's lifecycle. Deliberately NOT derived from vulnerability severity
-# (that's a separate axis, shown in its own donut/gauge) — this is purely
-# "is Home Assistant actually hearing from this device right now", straight
-# off the device/entity registries and live entity states:
-#   disabled     - device.disabled_by is set (by a user, its integration, or
-#                   its config entry) — intentionally turned off, not a fault.
-#   no_entities  - no (enabled) entities registered for this device at all,
-#                   so there is nothing to report a live state from.
-#   unavailable  - every one of its entities is currently unavailable/unknown.
-#   partial      - some but not all of its entities are unavailable/unknown.
-#   available    - none of its entities are unavailable/unknown.
+# Device availability buckets, a separate axis from vulnerability severity and finding status.
 DEVICE_STATUS_AVAILABLE = "available"
 DEVICE_STATUS_PARTIAL = "partial"
 DEVICE_STATUS_UNAVAILABLE = "unavailable"
@@ -143,15 +81,10 @@ DEVICE_STATUSES = (
 )
 _UNAVAILABLE_STATES = ("unavailable", "unknown")
 
-# Proxy risk score (0-10, the same scale as CVSS) for a device whose only
-# open finding is the network-free firmware-currency heuristic, which has
-# no CVSS of its own to report.
+# CVSS-scale proxy score for a device whose only open finding is the firmware heuristic.
 FIRMWARE_ONLY_RISK_SCORE = 5.0
 
-# Starter manufacturer -> NVD virtualMatchString table. Deliberately small
-# and manufacturer-only (model substrings are left blank below); this is
-# meant to be extended over time with more vendors and, eventually,
-# model-specific CPEs rather than whole-vendor wildcards.
+# Manufacturer-only wildcards; an empty model substring means vendor-wide.
 CURATED_CPE_MAP: dict[tuple[str, str], str] = {
     ("shelly", ""): "cpe:2.3:o:shelly:*",
     ("tp-link", ""): "cpe:2.3:o:tp-link:*",
@@ -182,11 +115,8 @@ def _device_name(device: dr.DeviceEntry) -> str:
 
 
 def _match_curated_cpe(manufacturer: str, model: str) -> tuple[str, bool] | None:
-    """The curated CPE match plus whether it was VENDOR-ONLY (an empty
-    model substring in the table, so the wildcard covers the vendor's
-    whole product line). A vendor-only match says nothing about the
-    specific device model, and its findings are therefore reported as
-    INFO (work plan item 4.9)."""
+    """The curated CPE match plus whether it was vendor-only (an empty model
+    substring in the table)."""
     manufacturer_lower = manufacturer.lower()
     model_lower = model.lower()
     for (mfr_substr, model_substr), cpe_prefix in CURATED_CPE_MAP.items():
@@ -200,9 +130,7 @@ def _match_curated_cpe(manufacturer: str, model: str) -> tuple[str, bool] | None
 
 def _extract_cvss(cve: dict[str, Any]) -> float | None:
     metrics = cve.get("metrics", {})
-    # Prefer the newest CVSS version present; fall back progressively rather
-    # than averaging or picking the highest, so the score reflects a single
-    # coherent scoring methodology.
+    # Newest CVSS version present wins; never averaged or maxed across versions.
     for key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
         for entry in metrics.get(key) or []:
             score = entry.get("cvssData", {}).get("baseScore")
@@ -213,9 +141,7 @@ def _extract_cvss(cve: dict[str, Any]) -> float | None:
 
 def _severity_for_score(score: float | None) -> str:
     if score is None:
-        # Absent != low: an unscored CVE is not a confirmed-low-severity
-        # claim, so it gets its own bucket rather than being folded into
-        # "low".
+        # Unscored is not low; it gets its own bucket.
         return SEVERITY_INFO
     if score >= 9.0:
         return SEVERITY_CRITICAL
@@ -227,8 +153,7 @@ def _severity_for_score(score: float | None) -> str:
 
 
 def _parse_retry_after(value: str | None, default: float) -> float:
-    """Parse an HTTP Retry-After header's seconds form (NVD sends seconds,
-    not the HTTP-date form, so that's the only form handled here)."""
+    """Parse an HTTP Retry-After header in seconds form, the only form NVD sends."""
     if value is None:
         return default
     try:
@@ -259,11 +184,7 @@ def _cve_summary(cve: dict[str, Any], cvss: float | None) -> str:
 class DeviceVulnerabilityTracker:
     """Correlates HA's device registry against known firmware issues.
 
-    Combines a network-free firmware-currency check (Part 2) with a
-    best-effort NVD CVE correlation (Part 3). A scan never raises out of
-    `async_run_scan`: firmware-currency findings are saved even if CVE
-    correlation fails entirely, and a single device's NVD failure never
-    aborts the rest of the scan.
+    A scan never raises out of `async_run_scan`.
     """
 
     def __init__(
@@ -271,15 +192,11 @@ class DeviceVulnerabilityTracker:
     ) -> None:
         self.hass = hass
         self.store = store
-        # The secret store reference, not the key: the key itself is asked
-        # for one request at a time inside _async_query_nvd (SEC-3).
+        # Store reference only; the key is fetched per request inside _async_query_nvd.
         self._secrets = secrets
-        # match_string -> last time it was actually sent to NVD (see
-        # MATCH_STRING_CACHE_TTL). In-memory only; see module docstring.
+        # match_string -> last real NVD fetch; in-memory only.
         self._last_fetched: dict[str, datetime] = {}
-        # Serializes async_run_scan (work plan item 4.9): the periodic
-        # loop and a panel "scan now" overlapping would double NVD
-        # traffic and interleave finding upserts for no benefit.
+        # Serializes scans so the periodic loop and a manual scan never overlap.
         self._scan_lock = asyncio.Lock()
 
     async def async_run_scan(self) -> list[dict]:
@@ -298,10 +215,7 @@ class DeviceVulnerabilityTracker:
         findings: list[dict] = []
         findings.extend(self._check_firmware_currency(devices_by_id))
 
-        # D-12 (work plan item 4.9): the owner's toggle governs the whole
-        # outbound pass. Read at scan time through settings.get with the
-        # on-by-default fallback, so this works whether or not the
-        # Settings side has persisted the key yet.
+        # The owner's toggle governs the whole outbound pass; a missing key means on.
         if not self.store.settings.get("nvd_lookups_enabled", True):
             _LOGGER.debug(
                 "HA SOC: NVD lookups are disabled; only the network-free "
@@ -322,21 +236,8 @@ class DeviceVulnerabilityTracker:
     async def async_device_overview(self) -> dict[str, Any]:
         """Per-device rows for the SOC Dashboard's device-centric widgets.
 
-        Pure read/aggregate over device_registry + the existing
-        vuln_findings table — never triggers a scan itself (call
-        `async_run_scan` separately for that, e.g. from the periodic loop
-        or a "scan now" action).
-
-        Risk score is deliberately kept on the same 0-10 scale as CVSS
-        itself: the highest CVSS among that device's open (non-dismissed)
-        findings. A device whose only open finding is the firmware-currency
-        heuristic (which carries no CVSS) gets a fixed proxy score instead
-        of being scored as risk-free — see FIRMWARE_ONLY_RISK_SCORE.
-
-        `status` is intentionally a SEPARATE axis from risk score/severity —
-        see the DEVICE_STATUS_* constants above. It reflects only whether
-        Home Assistant is actually hearing from the device right now, not
-        whether it has a known vulnerability.
+        Pure read over the registries and stored findings; never triggers
+        a scan.
         """
         registry = dr.async_get(self.hass)
         entity_registry = er.async_get(self.hass)
@@ -368,9 +269,7 @@ class DeviceVulnerabilityTracker:
             for finding in device_findings:
                 band = finding.get("severity")
                 if band == SEVERITY_INFO:
-                    # Folded into "low" for this 4-column view — an
-                    # unscored CVE still belongs somewhere on the table,
-                    # and a 5th column for a rare case isn't worth it here.
+                    # INFO folds into low for this 4-column view.
                     band = SEVERITY_LOW
                 if band in severity_counts:
                     severity_counts[band] += 1
@@ -416,8 +315,7 @@ class DeviceVulnerabilityTracker:
         entity_registry: er.EntityRegistry,
     ) -> str:
         if device.disabled_by is not None:
-            # Intentionally turned off (by a user, its integration, or its
-            # config entry) — not a fault, so it must never look like one.
+            # Intentionally turned off, not a fault.
             return DEVICE_STATUS_DISABLED
 
         entities = er.async_entries_for_device(
@@ -486,15 +384,10 @@ class DeviceVulnerabilityTracker:
     async def _async_correlate_cves(self, devices: list[dr.DeviceEntry]) -> list[dict]:
         now = dt_util.utcnow()
         now_iso = now.isoformat()
-        # Presence only, never the value: the pacing between NVD calls
-        # depends on whether a key exists (50 req/30s with one, ~5 without),
-        # and a boolean is all that decision needs. The value itself is
-        # fetched per request inside _async_query_nvd.
+        # Presence only; the value is fetched per request inside _async_query_nvd.
         has_api_key = bool(await self._secrets.async_get(CONF_NVD_API_KEY))
         findings: list[dict] = []
-        # Reused across devices that share a match_string within this one
-        # scan (e.g. every Shelly device hits the same curated wildcard),
-        # independent of the multi-day MATCH_STRING_CACHE_TTL gate below.
+        # Shared within one run, independent of the MATCH_STRING_CACHE_TTL gate.
         run_cache: dict[str, list[dict[str, Any]] | None] = {}
 
         for device in devices:
@@ -511,10 +404,7 @@ class DeviceVulnerabilityTracker:
                 query_param = "virtualMatchString"
                 match_string = cpe_prefix
             elif model:
-                # keywordSearch matches free-text description fields, not
-                # confirmed affected-product (CPE) entries, so it is much
-                # noisier than the curated table above — hence the lower
-                # confidence tier.
+                # keywordSearch matches free-text descriptions, hence the lower confidence tier.
                 confidence = CONFIDENCE_KEYWORD
                 query_param = "keywordSearch"
                 match_string = f"{manufacturer} {model}"
@@ -532,11 +422,7 @@ class DeviceVulnerabilityTracker:
                 continue
             else:
                 vulnerabilities = await self._async_query_nvd(query_param, match_string)
-                # Only a successful fetch earns the multi-day cache entry —
-                # a transient failure should be retried on the next scan
-                # (hours away), not blocked for a full week. Still recorded
-                # in run_cache either way so a second device sharing this
-                # match_string within the *same* run doesn't re-hit NVD.
+                # Only a successful fetch earns the multi-day cache entry; run_cache records either way.
                 if vulnerabilities is not None:
                     self._last_fetched[match_string] = now
                 run_cache[match_string] = vulnerabilities
@@ -565,15 +451,10 @@ class DeviceVulnerabilityTracker:
     async def _async_query_nvd(
         self, query_param: str, match_string: str
     ) -> list[dict[str, Any]] | None:
-        """All pages (bounded by NVD_MAX_PAGES) for one match string, so
-        ranking sees more than the first page's arbitrary slice (work
-        plan item 4.9). A failure on a later page returns the pages
-        already fetched rather than discarding them: partial data ranked
-        honestly beats none."""
+        """All pages (bounded by NVD_MAX_PAGES) for one match string; a
+        failure on a later page returns the pages already fetched."""
         session = async_get_clientsession(self.hass)
-        # Fetched immediately before the request and dropped with this
-        # frame when it returns (SEC-3); no attribute holds it between
-        # requests.
+        # Fetched immediately before the request and dropped with this frame.
         api_key = await self._secrets.async_get(CONF_NVD_API_KEY)
         headers = {"apiKey": api_key} if api_key else None
         page_delay = NVD_DELAY_WITH_KEY if api_key else NVD_DELAY_NO_KEY
@@ -604,11 +485,7 @@ class DeviceVulnerabilityTracker:
                                     )
                                     await asyncio.sleep(wait)
                                     continue
-                                # Retries exhausted while NVD kept returning
-                                # 429: stop honestly with whatever pages were
-                                # already collected rather than looping
-                                # indefinitely against a live limiter, and
-                                # never attempt to parse a 429's body.
+                                # Retries exhausted: return what was collected; never parse a 429 body.
                                 _LOGGER.warning(
                                     "NVD rate limit persisted for %s=%s after retrying",
                                     query_param, match_string,
@@ -630,8 +507,7 @@ class DeviceVulnerabilityTracker:
             if not batch or total is None or start_index >= int(total):
                 break
             if page < NVD_MAX_PAGES - 1:
-                # Every page is a real HTTP call, so the same rate-limit
-                # pacing applies between pages as between devices.
+                # Same rate-limit pacing between pages as between devices.
                 await asyncio.sleep(page_delay)
 
         return collected
@@ -655,10 +531,7 @@ class DeviceVulnerabilityTracker:
             if not cve_id:
                 continue
             cvss = _extract_cvss(cve)
-            # A vendor-only wildcard match carries no model information,
-            # so whatever the CVE scores, the FINDING is informational
-            # (work plan item 4.9); the CVSS still rides along for the
-            # analyst.
+            # A vendor-only wildcard says nothing about the model, so the finding is INFO.
             severity = SEVERITY_INFO if vendor_only else _severity_for_score(cvss)
             summary = _cve_summary(cve, cvss)
             if vendor_only:
@@ -666,8 +539,7 @@ class DeviceVulnerabilityTracker:
                     "Vendor-wide match only (no model-specific CPE): "
                     "confirm the model is affected before acting. " + summary
                 )
-            # Sort key only: unscored CVEs sort after every scored one
-            # rather than being dropped, since they're still real findings.
+            # Unscored CVEs sort last rather than being dropped.
             sort_key = cvss if cvss is not None else -1.0
             candidates.append((sort_key, cve_id, cvss, severity, summary))
 

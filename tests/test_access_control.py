@@ -126,7 +126,7 @@ async def test_version_get_reads_manifest_version(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     # Single source of truth: manifest.json, the same file HA itself
-    # already reads for update-checking — not a second hardcoded string
+    # already reads for update-checking, not a second hardcoded string
     # in websocket_api.py that could drift from it on the next release.
     import json
     import os
@@ -144,13 +144,6 @@ async def test_version_get_reads_manifest_version(
     assert result == {"version": expected_version}
     # And it follows the YYYY.MM.DD.V shape, not the old pre-1.0 semver.
     assert len(expected_version.split(".")) == 4
-
-
-# ---------------------------------------------------------------------------
-# D-23 option (a): owner-only whenever the TARGET is an admin-group user
-# (update, deactivate, delete, revoke_token, revoke_all_sessions), and owner-only
-# outright for entity_remap/apply and permissions/sidebar/push.
-# ---------------------------------------------------------------------------
 
 
 def _ws_connection(*, is_owner: bool) -> MagicMock:

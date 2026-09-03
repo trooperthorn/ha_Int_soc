@@ -1,8 +1,4 @@
-"""binary_sensor.ha_soc_suspicious_activity — on while any open detection is
-high/critical severity. Meant to be the one entity most users automate on
-("notify me the instant this trips") without needing to understand the
-whole detection catalog.
-"""
+"""On while any open detection is high or critical severity; the one entity most users automate on."""
 from __future__ import annotations
 
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass, BinarySensorEntity

@@ -113,7 +113,7 @@ async def test_confirm_and_cancel_round_trip(hass: HomeAssistant, entry: MockCon
     runtime = entry.runtime_data
     assert runtime.store.data["firewall"]["pending"]["status"] == "confirmed"
 
-    # Already confirmed — cancel should now be rejected, not silently accepted.
+    # Already confirmed, cancel should now be rejected, not silently accepted.
     connection3 = _connection()
     ws_firewall_cancel(hass, connection3, {"id": 3, "test_id": test_id})
     await hass.async_block_till_done()

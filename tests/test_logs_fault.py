@@ -10,10 +10,7 @@ from custom_components.ha_soc.logs import async_fault_log_overview
 
 @pytest.fixture(autouse=True)
 def _no_fault_log_leaks_between_tests(hass: HomeAssistant):
-    # This test harness's config dir isn't guaranteed to be a fresh path
-    # per test, so a file a test writes here can otherwise leak into
-    # whichever test runs next (including ones in other files) — clean up
-    # unconditionally, before and after, rather than relying on ordering.
+    # The harness config dir is not fresh per test; clean up before and after so the fault file never leaks.
     path = hass.config.path("home-assistant.log.fault")
     if os.path.exists(path):
         os.remove(path)

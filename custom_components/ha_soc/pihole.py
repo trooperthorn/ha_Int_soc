@@ -1,51 +1,8 @@
-"""Pi-hole v6 — direct-to-instance read-only client (DNS security visibility).
+"""Pi-hole v6 direct-to-instance read-only client (DNS security visibility).
 
-The user runs UniFi's own DNS such that only the IoT network's clients have
-their DNS forwarded to Pi-hole (every other network resolves elsewhere), so
-Pi-hole's own view of "who queried what" is effectively the IoT network's
-view. HA SOC talks to Pi-hole directly over the LAN with its own local
-credential — no cloud, no core Home Assistant Pi-hole integration required
-(core's ``pi_hole`` only exposes an on/off switch and a handful of coarse
-sensors; it has no query log, group, or client-scoping surface at all, so
-this module is a real API client rather than an enrichment layer the way
-unifi_core.py rides on core's own state).
-
-Everything here is READ-ONLY except the auth session itself: it logs in,
-reads state, and logs the session back out. It never toggles blocking,
-edits a group, or reassigns a client.
-
-## Why the field/path mapping is defensive
-
-The API path prefixes, auth flow, and field names below were verified
-against pi-hole/FTL's own published OpenAPI spec (the same one the local
-``http://pi.hole/api/docs`` the user pointed at serves, generated from that
-project's source — ``src/api/docs/content/specs/*.yaml`` on GitHub), not
-guessed. That environment could not reach ``http://pi.hole`` itself (it is
-only resolvable on the user's own LAN), so every shape below should still
-be treated as the best available evidence, not a live-verified fact — the
-same posture unifi.py takes toward the UniFi Integration API. Keys marked
-``# VERIFY`` are the ones most likely to drift across a Pi-hole version;
-an unrecognized shape degrades to ``None`` (rendered "—") rather than a
-guess, exactly like unifi.py's own field resolution.
-
-## Auth flow
-
-  POST {base_url}/auth  {"password": <app password>}  ->
-    {"session": {"valid": bool, "sid": str|None, "csrf": str|None,
-                 "validity": int, "message": str, "totp": bool}}
-
-The returned ``sid`` rides on the ``X-FTL-SID`` header on every subsequent
-call (FTL's documented ``x_header_sid`` security scheme — sid can also
-travel as a query param, a cookie, or a plain ``sid`` header, but the
-custom header is the one that can never leak into a proxy access log the
-way a query param would). A session is created fresh for each overview
-snapshot and explicitly logged out (``DELETE {base_url}/auth``) before this
-module returns, mirroring unifi.py's SEC-3 posture of never holding a live
-credential in memory between panel refreshes — a Pi-hole session is cheap
-to create, so there is no reason to keep one alive longer than one fetch.
-If Pi-hole has no password configured (an open local API), it is not
-supported here: the app password is a hard requirement, matching how the
-Network tab treats an unconfigured UniFi API key.
+Read-only except the auth session itself: it logs in, reads state, and logs
+out; it never toggles blocking, edits a group, or reassigns a client (API
+shapes and auth flow: docs/protocol.md).
 """
 from __future__ import annotations
 
@@ -79,17 +36,14 @@ _LOGGER = logging.getLogger(__name__)
 _TIMEOUT_SECONDS = 15
 _OVERVIEW_TIMEOUT_SECONDS = 30
 _MAX_BODY_BYTES = 4 * 1024 * 1024
-# How many rows to ask for from top_domains / recent_blocked — a home Pi-hole
-# instance's own UI defaults are in this range; this is a display limit, not
-# a security bound.
+# Display limits, not security bounds.
 _TOP_DOMAINS_COUNT = 15
 _RECENT_BLOCKED_COUNT = 15
 
 
 class PiHoleError(Exception):
-    """Any failure talking to Pi-hole — surfaced to the UI as a
-    reachable=False overview with a human-readable reason, never a raw
-    stack."""
+    """Any failure talking to Pi-hole, surfaced as a reachable=False overview
+    with a human-readable reason."""
 
 
 def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -101,12 +55,8 @@ def _first(obj: dict[str, Any], *keys: str, default: Any = None) -> Any:
 
 @dataclass(frozen=True, repr=False)
 class _Conn:
-    """A resolved connection to one Pi-hole instance, plus the session id
-    obtained for this one snapshot. Short-lived by design (mirrors
-    unifi._Conn / work item SEC-3): built fresh inside
-    async_pihole_overview from the secret store's value at that moment,
-    logged in, used, logged out, and dropped — never held between panel
-    refreshes."""
+    """A resolved connection to one Pi-hole instance plus the session id for
+    this one snapshot; short-lived, never held between panel refreshes."""
 
     host: str
     verify_ssl: bool
@@ -215,8 +165,7 @@ async def _authenticate(
 
 
 async def _logout(hass: HomeAssistant, conn: _Conn) -> None:
-    """Best-effort session teardown. Never raises: a failed logout just
-    means the session expires on Pi-hole's own timer instead."""
+    """Best-effort session teardown; never raises."""
     try:
         session = async_get_clientsession(hass, verify_ssl=conn.verify_ssl)
         async with asyncio.timeout(_TIMEOUT_SECONDS):
@@ -281,9 +230,7 @@ def _normalize_client(raw: dict[str, Any], group_names: dict[Any, str]) -> dict[
         "name": raw.get("name"),
         "comment": raw.get("comment"),
         "group_ids": group_ids,
-        # "Default" (group 0) is Pi-hole's own always-present group; a
-        # client carrying ONLY [0] has no dedicated group of its own, which
-        # is exactly the "not scoped" signal network_security.py looks for.
+        # A client carrying only group 0 (Pi-hole's Default) has no dedicated group.
         "group_names": [group_names.get(gid, str(gid)) for gid in group_ids],
         "default_group_only": group_ids == [0],
     }
@@ -291,9 +238,8 @@ def _normalize_client(raw: dict[str, Any], group_names: dict[Any, str]) -> dict[
 
 def _client_matches_cidr(client_id: str, cidr: str) -> bool:
     """Whether a Pi-hole client identifier (an IP, or a CIDR of its own)
-    falls inside the configured IoT subnet. A client identified by MAC,
-    hostname, or interface (":eth0") never matches an IP-shaped CIDR check
-    and is simply excluded rather than guessed at."""
+    falls inside the configured IoT subnet; MAC, hostname, and interface
+    identifiers never match."""
     try:
         network = ipaddress.ip_network(cidr, strict=False)
     except ValueError:
@@ -310,12 +256,9 @@ def _client_matches_cidr(client_id: str, cidr: str) -> bool:
 async def async_pihole_overview(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
-    """Everything the Network Security tab's Pi-hole section renders: DNS
-    blocking on/off, the query summary, group/client inventory (to check
-    whether the IoT subnet has a dedicated scoped group rather than sharing
-    Pi-hole's global Default group), and a short sample of recently blocked
-    and top domains. Never raises: a connection problem comes back as
-    reachable=False with a human-readable ``error``.
+    """Everything the Network Security tab's Pi-hole section renders. Never
+    raises: a connection problem comes back as reachable=False with a
+    human-readable ``error``.
     """
     result: dict[str, Any] = {
         "configured": False,
@@ -356,9 +299,7 @@ async def async_pihole_overview(
             if isinstance(blocking_field, str):
                 result["blocking_enabled"] = blocking_field == "enabled"
             elif isinstance(blocking_field, bool):
-                # VERIFY: some builds report a plain boolean "blocking" field
-                # instead of the documented enabled/disabled string; tolerate
-                # both rather than guessing which one a given build sends.
+                # VERIFY: some builds may send a boolean instead of the documented string.
                 result["blocking_enabled"] = blocking_field
             else:
                 result["blocking_enabled"] = None
@@ -399,11 +340,7 @@ async def async_pihole_overview(
                 iot_clients = [
                     c for c in clients if c["client"] and _client_matches_cidr(c["client"], iot_cidr)
                 ]
-                # No matching client entry at all means Pi-hole has never
-                # been told about this subnet specifically — every device on
-                # it is falling through to the global Default group, which
-                # is the "not scoped" case regardless of whether any single
-                # entry says so explicitly.
+                # No matching client entry means the subnet falls through to Default: not scoped.
                 result["iot_clients_scoped"] = bool(iot_clients) and all(
                     not c["default_group_only"] for c in iot_clients
                 )

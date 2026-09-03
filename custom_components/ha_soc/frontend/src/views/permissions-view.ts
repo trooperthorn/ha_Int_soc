@@ -33,15 +33,11 @@ export class HaSocPermissionsView extends HaSocCustomizableView {
   @state() private _selected: string | null | undefined = undefined;
   @state() private _views: ViewRow[] = [];
   @state() private _loading = true;
-  // Non-null when the users/dashboards load itself failed: rendered as a
-  // distinct could-not-load state with the server's message, never an
-  // empty matrix (work plan item 4.12).
+  // Non-null when the users/dashboards load failed; rendered distinctly, never an empty matrix.
   @state() private _error: string | null = null;
   @state() private _drift: Record<string, unknown>[] = [];
   @state() private _viewsError: string | null = null;
-  // The server's reason for the most recently rejected action (a
-  // visibility/flag write, whose checkbox is rolled back in place, or a
-  // failed drift check); rendered inline above the matrix.
+  // The server's reason for the most recent rejected action; rendered inline above the matrix.
   @state() private _writeError: string | null = null;
   @state() private _sort: SortState | null = null;
 
@@ -65,9 +61,6 @@ export class HaSocPermissionsView extends HaSocCustomizableView {
       }
       if (this._selected !== undefined) await this._loadViews();
     } catch (e: any) {
-      // A failed users/dashboards load used to fall through to the "no
-      // views" empty state, which reads as a working page with nothing
-      // to manage; store the server's message and say what failed.
       this._error = e?.message ?? String(e);
     } finally {
       this._loading = false;
@@ -75,15 +68,7 @@ export class HaSocPermissionsView extends HaSocCustomizableView {
   }
 
   private async _loadViews() {
-    // fetchDashboardConfig rejects (ha_soc/permissions/dashboard_config sends
-    // a `not_found` error, not an empty result) whenever the dashboard has no
-    // saved config yet — most commonly the default dashboard when nobody has
-    // ever opened its editor, so Home Assistant is showing an auto-generated
-    // layout instead. Left uncaught, that rejection used to bubble out of
-    // _load() as an unhandled promise rejection: _views silently stayed
-    // empty with no indication why, which read as "the page is broken until
-    // you reselect the dashboard" even though reselecting the same
-    // unconfigured dashboard can't actually fix anything.
+    // fetchDashboardConfig rejects with `not_found` for a dashboard with no saved config (e.g. the auto-generated default).
     this._viewsError = null;
     try {
       const config = await fetchDashboardConfig(this.hass, this._selected ?? null);
@@ -120,10 +105,7 @@ export class HaSocPermissionsView extends HaSocCustomizableView {
       await setViewVisibility(this.hass, this._selected ?? null, view.path, userIds);
       await this._loadViews();
     } catch (err: any) {
-      // Roll the checkbox back to the state the server still holds. The
-      // DOM element must be reset directly: the bound value never
-      // changed, so a plain re-render would leave the browser's own
-      // toggle standing and the box would lie about what was saved.
+      // Reset the DOM checkbox directly: the bound value never changed, so a re-render would leave the toggle standing.
       box.checked = wasVisible;
       this._writeError = `The visibility change for "${view.title}" was rejected: ${
         err?.message ?? err?.code ?? "unknown error"
@@ -143,8 +125,7 @@ export class HaSocPermissionsView extends HaSocCustomizableView {
       await setDashboardFlags(this.hass, dashboardId, { [flag]: value });
       await this._load();
     } catch (err: any) {
-      // Same rollback rationale as _onToggleUser: reset the DOM checkbox
-      // itself, because the bound value did not change.
+      // Same rollback as _onToggleUser: reset the DOM checkbox itself.
       box.checked = !value;
       this._writeError = `The ${flag} change was rejected: ${
         err?.message ?? err?.code ?? "unknown error"

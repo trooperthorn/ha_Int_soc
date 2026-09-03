@@ -300,7 +300,8 @@ needs HACS authenticated with a GitHub account that can read it.
 
 ```bash
 python3 -m venv .venv && source .venv/bin/activate
-pip install homeassistant pytest-homeassistant-custom-component
+pip install -r requirements-test.txt
+pip install -r requirements-core.txt
 pytest tests/
 
 cd custom_components/ha_soc/frontend
@@ -308,6 +309,10 @@ npm install && npm run build
 ```
 
 See `custom_components/ha_soc/frontend/README.md` for frontend details.
+
+Design rationale, protocol facts, operational knobs, and dated decisions live
+under `docs/`; start at [`docs/README.md`](docs/README.md), which says which
+document owns which topic.
 
 ## Architecture
 

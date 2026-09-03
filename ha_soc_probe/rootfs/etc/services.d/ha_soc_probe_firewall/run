@@ -1,136 +1,43 @@
 #!/usr/bin/with-contenv bashio
-# ==============================================================================
-# HA SOC Probe — firewall command poller.
-#
-# This is the ONLY thing in this add-on that ever mutates host state — see
-# the HA SOC integration's firewall.py module docstring for the full
-# read/write design. This script's job is narrow and specific:
-#
-#   1. Poll ha_soc.poll_firewall_command every POLL_INTERVAL_SECONDS for a
-#      pending apply/confirm/revert instruction.
-#   2. On "apply": validate every delivered field locally first (work item
-#      2.5: action, proto, port, source shape, family, window bounds, rule
-#      count), because this add-on must never be usable as an arbitrary
-#      iptables client even by a compromised Core. Then take backups for BOTH
-#      address families and check every one succeeded (work items 2.3 and
-#      2.4): a full filter-table dump per family (iptables-save /
-#      ip6tables-save, kept for manual recovery only) and a chain-only
-#      snapshot per family (iptables -S / ip6tables -S on HA_SOC_RULES,
-#      the ones a revert actually replays). If any backup fails, the test
-#      is refused outright: nothing is applied and the test is reported
-#      back as reverted with reason "backup_failed". Otherwise replace the
-#      contents of the dedicated HA_SOC_RULES chain in each table with the
-#      proposed rules (family 4 via iptables, 6 via ip6tables, both via
-#      both) and arm a LOCAL, self-contained revert timer, a plain
-#      `sleep N` backgrounded from this same process, not a cron job or a
-#      call back out to Home Assistant. This is the one property that
-#      actually matters: if the new rules break the very network path this
-#      add-on (or Home Assistant Core) needs to reach anything else, the
-#      revert still has to happen, and nothing here depends on that broken
-#      path working again to make it happen. The apply is atomic across
-#      families: if any rule fails in either table, BOTH tables are
-#      restored from their chain snapshots and the test reports reverted
-#      with the failing rule and family in the reason.
-#   3. On "confirm"/"revert": mark the test resolved (making the armed
-#      timer from step 2 a no-op when it wakes) and report back
-#      immediately via ha_soc.ingest_probe_result, rather than waiting for
-#      the next slow port-scan cycle to say so. Every resolution report
-#      also carries firewall_ipv6_supported (whether `ip6tables -S` works
-#      right now) so Core can render partial IPv6 state honestly, and an
-#      optional bounded reason explaining a failure.
-#   4. On startup: if a previous run left an unresolved test behind (this
-#      process crashed or the add-on was restarted mid-window — the local
-#      timer from step 2 dies with the process that armed it), restore its
-#      backups immediately. An unresolved test found at startup is treated
-#      as failed, not as "still in progress" — there is no way to know how
-#      long its window has already been open, so the only safe assumption
-#      is the same one this whole feature exists to make automatic: when
-#      in doubt, go back to the last known-good state.
-#   5. On SIGTERM/SIGINT (a deliberate add-on stop or update): exit 0
-#      cleanly instead of dying mid-loop, so the finish script's log line
-#      reads as the routine stop it is, not a crash. The finish script,
-#      not this trap, performs the stop-time revert of an armed test; the
-#      per-test resolved marker keeps that revert exactly-once however
-#      many of the recovery paths run.
-#
-# Every rule this ever applies lives in one chain this project owns
-# outright (HA_SOC_RULES, one instance per address family's table) — never
-# the raw INPUT chain, never anything Docker itself manages. A revert is
-# chain-scoped for the same reason (work item 2.3): it flushes HA_SOC_RULES
-# and replays the chain snapshot into it, per family, and never runs
-# `iptables-restore`/`ip6tables-restore` over a whole table, because a
-# whole-table restore would also roll back every rule Docker or the host
-# changed since the snapshot was taken. The full per-family table dumps
-# that are still written before every apply exist purely so a human has
-# something to recover from by hand if everything else fails.
-#
-# IPv6 support is probed per cycle with `ip6tables -S` (work item 2.4,
-# recorded D-21 facts: the verified host runs the nf_tables backend for
-# both families and ip6tables works). On a host where it does not, the
-# IPv6 half of the work is skipped and every report says so via
-# firewall_ipv6_supported=false; Core then shows the affected rules as
-# partially applied instead of pretending an IPv4-only apply covered both.
-# ==============================================================================
+# Firewall command poller: the only part of this add-on that mutates host state. Design in docs/security.md and firewall.py.
 set -uo pipefail
 
 CHAIN="HA_SOC_RULES"
 STATE_DIR="/data"
 CURRENT_TEST_FILE="${STATE_DIR}/ha_soc_fw_current_test_id"
-# Shared with the port-scanner and SNMP services (all live in this same container,
-# so /data is shared). Whichever service starts first creates it; the others
-# reads the same value. See ensure_probe_secret.
+# Shared with the scanner and SNMP services via /data; see ensure_probe_secret.
 SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
 POLL_URL="http://supervisor/core/api/services/ha_soc/poll_firewall_command?return_response"
 INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
 POLL_INTERVAL_SECONDS=5
 PROBE_SECRET=""
 
-# Bounds this end enforces on what Core delivers (work item 2.5). The
-# reason length must match the integration's FIREWALL_REPORT_REASON_MAX
-# (const.py) or the whole report would bounce off Core's schema; the
-# window bounds exist so a compromised Core cannot park unconfirmed rules
-# on the host for a day by inflating the auto-revert window (Core's own
-# default is 45 seconds); the rule-count cap mirrors Core's RULES_SCHEMA.
+# REASON_MAX_CHARS must match the integration's FIREWALL_REPORT_REASON_MAX; window and rule-count bounds mirror Core's schema.
 REASON_MAX_CHARS=200
 WINDOW_MIN_SECONDS=5
 WINDOW_MAX_SECONDS=3600
 MAX_RULES=200
 
-# Recomputed by probe_ipv6_supported before every apply and every report,
-# so what gets reported is the truth of that moment, never a cached guess.
+# Recomputed before every apply and report, never cached.
 IPV6_SUPPORTED=0
 
-# Set by the TERM/INT trap; checked at the top of the poll loop and after
-# every interruptible sleep so a stop lands within a poll step.
+# Set by the TERM/INT trap; checked at every poll step.
 STOP_REQUESTED=0
 
-# Full per-family filter-table dumps, kept for MANUAL recovery only; no
-# code path ever feeds them back to iptables-restore (see the header and
-# work item 2.3).
+# Full-table dumps are for manual recovery only; never fed to iptables-restore.
 backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup_${1}.rules"; }
 backup6_path_for() { echo "${STATE_DIR}/ha_soc_fw_backup6_${1}.rules"; }
-# Chain-only snapshots (iptables -S / ip6tables -S on HA_SOC_RULES), the
-# things a revert replays, one per family.
+# Chain-only snapshots, the ones a revert replays.
 chain_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain_${1}.rules"; }
 chain6_backup_path_for() { echo "${STATE_DIR}/ha_soc_fw_chain6_${1}.rules"; }
 resolved_marker_for() { echo "${STATE_DIR}/ha_soc_fw_resolved_${1}"; }
 
-# The add-on's local copy of the integration's add-on slug schema (work
-# item 2.2, resource_watchdog.ADDON_SLUG_PATTERN). Core validates slugs at
-# its WS layer too, but this end revalidates before building any Docker
-# URL from one, so a compromised or buggy Core still cannot smuggle path
-# or query syntax into "http://localhost/containers/addon_<slug>/update".
+# Same regex as resource_watchdog.ADDON_SLUG_PATTERN; revalidated before any Docker URL is built.
 valid_slug() {
     printf '%s' "$1" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,63}$'
 }
 
-# --- Local validation of Core-delivered rule fields (work item 2.5) -----------
-# The integration validates all of this at its WS layer already, but this
-# end revalidates every field before any iptables argument is built from
-# it, because the threat model for a NET_ADMIN process includes the case
-# where Core itself is the compromised party. Each check is a strict
-# allowlist; anything that fails refuses the whole test before the chain
-# is touched.
+# Every delivered field is revalidated here because a compromised Core is inside the threat model.
 
 valid_action() { [ "$1" = "allow" ] || [ "$1" = "deny" ]; }
 valid_proto() { [ "$1" = "tcp" ] || [ "$1" = "udp" ]; }
@@ -146,14 +53,7 @@ valid_window() {
     [ "$1" -ge "${WINDOW_MIN_SECONDS}" ] && [ "$1" -le "${WINDOW_MAX_SECONDS}" ]
 }
 
-# Shape check for a source address/CIDR: only the characters an IPv4 or
-# IPv6 address plus prefix length can contain, bounded in length, with the
-# family consistency Core's schema also derives (an IPv4 source never
-# contains a colon, an IPv6 source always does, and a sourced rule is
-# never family "both" because a source pins the family). This is a shape
-# allowlist that keeps shell/iptables metacharacters out, not a full
-# parser; iptables itself is the final judge of the address, and a rule it
-# rejects fails the apply loudly rather than passing silently.
+# Shape allowlist only (keeps metacharacters out); iptables is the final judge of the address.
 valid_source_for_family() {
     local source="$1" family="$2"
     printf '%s' "${source}" | grep -Eq '^[0-9A-Fa-f:.]{1,49}(/[0-9]{1,3})?$' || return 1
@@ -165,33 +65,15 @@ valid_source_for_family() {
     return 0
 }
 
-# --- Resource hard caps (Docker) ----------------------------------------------
-# Owner-configured per-add-on Docker limits (--memory / --cpus equivalents),
-# delivered on the same poll channel as firewall work and applied against the
-# Docker socket. Requires config.yaml's `docker_api: true` AND this add-on's
-# Protection Mode DISABLED: with protection on, the socket is not mounted at
-# all and every apply reports "denied" (surfaced verbatim in the HA SOC
-# panel) rather than pretending. Because Supervisor recreates containers on
-# add-on update/restart (silently dropping any limit), the current caps are
-# re-applied every LIMIT_APPLY_EVERY poll cycles (~60s) — idempotent, cheap,
-# and the only way caps survive the platform's own lifecycle.
+# Docker hard caps need docker_api plus Protection Mode off; re-applied every LIMIT_APPLY_EVERY cycles because Supervisor recreates containers.
 DOCKER_SOCK="/var/run/docker.sock"
 LIMITS_FILE="${STATE_DIR}/ha_soc_resource_limits.json"
 LIMIT_APPLY_EVERY=12  # x POLL_INTERVAL_SECONDS = ~60s
-# The Core service is authenticated but is still treated as a hostile input
-# boundary because this process holds the Docker socket.  These pure helpers
-# validate the complete delivered and persisted documents before any Docker
-# URL or update body is constructed.
+# Core is treated as hostile input here because this process holds the Docker socket.
 # shellcheck source=/usr/lib/ha_soc/resource_limits.sh
 source /usr/lib/ha_soc/resource_limits.sh
 
-# Create the per-install probe secret once (atomically, so the two services
-# racing to create it can't end up with two different values; noclobber
-# makes the redirect fail for the loser, who then reads the winner's file),
-# then load it. Core requires the Supervisor proxy's own user context AND
-# this secret on every inbound call: it pins the first secret presented on
-# an authenticated call and rejects any later call that can't present a
-# match, so a forged local service call can't spoof a firewall report.
+# noclobber makes the creation race safe; Core pins the first secret presented and rejects mismatches.
 ensure_probe_secret() {
     if [ ! -s "${SECRET_FILE}" ]; then
         ( set -o noclobber
@@ -205,17 +87,12 @@ ensure_probe_secret() {
     PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
 }
 
-# --- Family plumbing ----------------------------------------------------------
-
-# The iptables binary for one family. Family "both" never reaches this:
-# callers expand "both" into one call per concrete family.
+# Family "both" never reaches this; callers expand it into one call per family.
 ipt_bin_for() {
     if [ "$1" = "6" ]; then echo "ip6tables"; else echo "iptables"; fi
 }
 
-# Truth of this moment, not a cached startup answer: a kernel module can
-# appear or a backend can break between cycles, and the report must say
-# what held when the work was done.
+# Truth of this moment, not a cached startup answer.
 probe_ipv6_supported() {
     if ip6tables -S >/dev/null 2>&1; then
         IPV6_SUPPORTED=1
@@ -228,23 +105,7 @@ ipv6_supported_json() {
     if [ "${IPV6_SUPPORTED}" -eq 1 ]; then echo "true"; else echo "false"; fi
 }
 
-# --- Chain management --------------------------------------------------------
-
-# Creates the dedicated chain if needed and jumps INPUT into it, in the
-# IPv4 table always and in the IPv6 table when the kernel supports it
-# (work item 2.4). The jump is inserted at POSITION 1 of INPUT
-# (`iptables -I` with no index inserts at the top), ahead of Docker's
-# rules and anything the host already had, and that position is the point:
-# a deny that sits below an accept is not a deny, because iptables stops
-# at the first matching rule. If the jump sat after a broad accept, every
-# deny this feature applies would be cosmetic while the panel claimed it
-# was enforced. The same reasoning holds verbatim for ip6tables.
-#
-# Uninstall: the Supervisor offers no verified hook that runs on add-on
-# uninstall (work plan section 6.2, UNVERIFIED), so removal of the chains
-# and these jumps is best-effort only. A clean uninstall leaves an empty
-# HA_SOC_RULES chain and one INPUT jump behind per family, which is inert;
-# the add-on documentation describes the manual cleanup commands.
+# The INPUT jump must sit at position 1: a deny below a broad accept is cosmetic. Uninstall cleanup is best-effort; see docs/operations.md.
 ensure_chain() {
     iptables -N "${CHAIN}" 2>/dev/null || true
     if ! iptables -C INPUT -j "${CHAIN}" 2>/dev/null; then
@@ -265,10 +126,7 @@ flush_chain() {
     fi
 }
 
-# One proposed rule -> one append onto the dedicated chain of ONE family's
-# table. "source" absent/null means "any source". Returns the iptables
-# binary's own exit status so the caller can tell a rule silently failed
-# to apply rather than assuming success.
+# Returns the iptables binary's exit status so a silently failed rule is detectable.
 apply_rule() {
     local family="$1" action="$2" proto="$3" port="$4" source="$5" target="ACCEPT" bin
     bin=$(ipt_bin_for "${family}")
@@ -280,10 +138,7 @@ apply_rule() {
     fi
 }
 
-# Pre-apply validation pass over the whole delivered ruleset (work item
-# 2.5). Runs BEFORE anything touches either chain, so an invalid ruleset
-# refuses cleanly with the pre-test state untouched. Sets RULES_REJECT_REASON
-# for the resolution report on failure.
+# Runs before anything touches either chain; sets RULES_REJECT_REASON on failure.
 RULES_REJECT_REASON=""
 validate_ruleset() {
     local rules_json="$1" count i rule action proto port source family
@@ -313,17 +168,7 @@ validate_ruleset() {
     return 0
 }
 
-# Replaces both chains' contents with the proposed ruleset (a JSON array,
-# already validated by validate_ruleset). Flush-then-apply, never
-# incremental — a proposed ruleset is always the FULL desired state, not a
-# diff. Family routing per work item 2.4: "4" via iptables, "6" via
-# ip6tables, "both" via both. A "6" or "both" rule on a host without
-# ip6tables support skips its IPv6 half rather than failing: the skip is
-# not silent, because every report carries firewall_ipv6_supported=false
-# and Core renders those rules as partially applied. Returns non-zero (and
-# sets APPLY_FAIL_REASON) if ANY rule failed to apply in EITHER table, so
-# a partially-applied ruleset is treated as a failure and rolled back
-# across both families by the caller, never left half-live.
+# Flush-then-apply of the FULL desired state; any failure in either table returns non-zero so the caller rolls back both.
 APPLY_FAIL_REASON=""
 apply_ruleset() {
     local rules_json="$1" count i rule action proto port source family fam
@@ -356,13 +201,7 @@ apply_ruleset() {
     return 0
 }
 
-# The chains' current, real contents across BOTH families, translated back
-# into the same {action, proto, port, source, family} shape the
-# integration proposes rules in — what Core displays as "known_rules" is
-# always this union, never Core's own optimistic memory of what it last
-# proposed. A dual-stack rule appears once per table, each entry carrying
-# the family of the chain it was actually read from, because two rules in
-# two tables is what is genuinely live on the host.
+# known_rules is the real union of both chains, one entry per table a rule is live in.
 chain_rules_lines() {
     local family="$1" bin
     bin=$(ipt_bin_for "${family}")
@@ -396,9 +235,7 @@ known_rules_json() {
     fi
 }
 
-# One docker-socket update for one container. Args: container name, then the
-# JSON body. Prints the HTTP status code ("000" when the socket itself is
-# unreachable — no docker_api grant, or Protection Mode still enabled).
+# Prints the HTTP code; "000" means the socket is unreachable (no docker_api, or Protection Mode on).
 docker_update() {
     local container="$1" body="$2"
     curl -sS -o /tmp/ha_soc_docker_resp -w '%{http_code}' \
@@ -409,10 +246,7 @@ docker_update() {
         "http://localhost/containers/${container}/update" 2>/dev/null || echo "000"
 }
 
-# Applies the current caps (LIMITS_FILE: {slug: {memory_mb, cpus}}) to every
-# targeted container, resets containers whose cap was removed since the last
-# pass, and reports per-slug state back to Core via ingest_probe_result.
-# Never exits non-zero — a cap that can't be applied is REPORTED, not fatal.
+# Applies LIMITS_FILE caps and reports per-slug state; never exits non-zero, a failed cap is reported.
 apply_resource_limits() {
     local limits prev_slugs slug entry body code status detail state_entries raw_limits raw_prev
     raw_limits=$(cat "${LIMITS_FILE}" 2>/dev/null || echo "{}")
@@ -427,13 +261,9 @@ apply_resource_limits() {
     fi
     state_entries="{}"
 
-    # Every slug loop below is a quoted `while IFS= read -r` over jq output
-    # (work item 2.2), never an unquoted `for $(...)`: an unquoted loop
-    # word-splits and glob-expands whatever a compromised Core put in the
-    # delivered JSON, and each slug is additionally revalidated against the
-    # shared slug regex before any Docker URL is built from it.
+    # Quoted read loops only; an unquoted for over jq output would word-split a hostile slug.
     if [ ! -S "${DOCKER_SOCK}" ]; then
-        # Socket not mapped at all — docker_api not granted (or old config).
+        # Socket not mapped at all: docker_api not granted (or old config).
         while IFS= read -r slug; do
             if ! valid_slug "${slug}"; then
                 bashio::log.error "Resource caps: ignoring invalid add-on slug in delivered limits."
@@ -443,8 +273,7 @@ apply_resource_limits() {
                 '. + {($s): {status: "denied", detail: "Docker socket not available — enable docker_api and disable Protection Mode on the HA SOC Probe add-on."}}')
         done < <(echo "${limits}" | jq -r 'keys[]')
     else
-        # Reset any container whose cap was removed since the last pass —
-        # 0 for Memory/MemorySwap/NanoCpus means "unlimited" to Docker.
+        # 0 for Memory/MemorySwap/NanoCpus means unlimited to Docker.
         while IFS= read -r slug; do
             if ! valid_slug "${slug}"; then
                 bashio::log.error "Resource caps: ignoring invalid add-on slug in the previously-applied list."
@@ -462,9 +291,7 @@ apply_resource_limits() {
                 continue
             fi
             entry=$(echo "${limits}" | jq -c --arg s "${slug}" '.[$s]')
-            # Memory cap implies the swap cap too (MemorySwap = Memory):
-            # without it Docker rejects the update, and a cap that the
-            # container can dodge by swapping isn't a cap.
+            # MemorySwap must equal Memory or Docker rejects the update.
             body=$(printf '%s' "${entry}" | docker_body_for_resource_limit)
             code=$(docker_update "addon_${slug}" "${body}")
             case "${code}" in
@@ -494,14 +321,7 @@ apply_resource_limits() {
     fi
 }
 
-# --- Reporting back to Core ---------------------------------------------------
-
-# Args: test_id, status, and an optional reason. The reason travels as the
-# ingest protocol's bounded firewall_resolved_reason field (carried
-# protocol item): truncated here to REASON_MAX_CHARS so an honest long
-# message is cut short rather than making Core's schema reject the whole
-# report. Every report also carries the union known_rules of both chains
-# and firewall_ipv6_supported for this moment.
+# Reason is truncated to REASON_MAX_CHARS so Core's schema does not reject the report.
 report_resolution() {
     local test_id="$1" status="$2" reason="${3:-}" payload
     probe_ipv6_supported
@@ -523,12 +343,7 @@ report_resolution() {
     bashio::log.info "Reported firewall test ${test_id} as ${status} to HA SOC (HTTP $(cat /tmp/ha_soc_fw_report_code 2>/dev/null || echo '?'))."
 }
 
-# Chain-scoped revert (work item 2.3): flush the family's HA_SOC_RULES
-# chain, then replay the pre-test chain snapshot into it, one
-# `-A HA_SOC_RULES ...` line at a time; the snapshot's `-N` line is
-# skipped because the chain already exists. Never `iptables-restore` or
-# `ip6tables-restore` here: a whole-table restore would also roll back
-# every rule Docker or the host changed since the snapshot.
+# Chain-scoped: flush and replay the snapshot; never iptables-restore over a whole table.
 replay_chain_backup() {
     local family="$1" chain_backup_path="$2" line bin
     bin=$(ipt_bin_for "${family}")
@@ -536,12 +351,7 @@ replay_chain_backup() {
     while IFS= read -r line; do
         case "${line}" in
             "-A ${CHAIN} "*)
-                # Unquoted expansion is deliberate: the line is the
-                # binary's own -S output for a rule this script itself
-                # wrote (action/proto/port/source only), so splitting it
-                # on whitespace reconstructs exactly the arguments to
-                # append, and none of those arguments can contain
-                # whitespace.
+                # Unquoted on purpose: the line is iptables' own -S output for a rule this script wrote; no argument contains whitespace.
                 # shellcheck disable=SC2086
                 if ! "${bin}" ${line}; then
                     bashio::log.error "Firewall: could not replay snapshot line '${line}' via ${bin}."
@@ -554,14 +364,7 @@ replay_chain_backup() {
     done < "${chain_backup_path}"
 }
 
-# Reverts BOTH chains to their pre-test snapshots for a test_id and marks
-# it resolved, unless something else (a "confirm", or an earlier revert)
-# already resolved it, checked right before restoring, since this is
-# called from the armed local timer, from the startup crash-recovery check
-# below, AND from the finish script's stop-time recovery, and all of them
-# must be safe to call on an already-resolved test (a no-op). The optional
-# second argument is a failure reason to attach to the resolution report;
-# the normal timer revert passes none.
+# Safe on an already-resolved test: the timer, startup recovery, and the finish script all call this.
 revert_test() {
     local test_id="$1" reason="${2:-}" chain_backup_path chain6_backup_path resolved_marker reverted_any=0
     chain_backup_path=$(chain_backup_path_for "${test_id}")
@@ -585,10 +388,7 @@ revert_test() {
             replay_chain_backup 6 "${chain6_backup_path}"
             reverted_any=1
         else
-            # Parity with the IPv4 missing-snapshot behavior: a test
-            # applied by a pre-dual-stack add-on build has no IPv6
-            # snapshot, and guessing a chain state is worse than leaving
-            # it and saying so.
+            # Parity with the IPv4 missing-snapshot path; guessing a chain state is worse than saying so.
             bashio::log.error "Firewall test ${test_id}: no IPv6 chain snapshot (${chain6_backup_path}); leaving the ip6tables chain as-is rather than guessing."
         fi
     fi
@@ -608,8 +408,7 @@ confirm_test() {
     report_resolution "${test_id}" "confirmed"
 }
 
-# The local safety net: armed the instant a ruleset is applied, entirely
-# independent of any further poll cycle or network round-trip succeeding.
+# Armed the instant a ruleset is applied, independent of any later poll or network call.
 arm_revert_timer() {
     local test_id="$1" window_seconds="$2"
     (
@@ -619,24 +418,13 @@ arm_revert_timer() {
     disown
 }
 
-# --- Graceful stop (carried item, open-items report section 5) ----------------
-# s6 stops this service with SIGTERM on every add-on stop, restart, and
-# update. Without a trap, bash dies from the signal and the finish script
-# logs the stop as a crash-with-restart, so a routine update reads as a
-# crash loop in the add-on log. The trap only sets a flag; the loop exits
-# 0 at its next checkpoint. The trap deliberately does NOT revert an armed
-# test itself: the finish script owns stop-time recovery (work item 2.6),
-# and the per-test resolved marker keeps that revert exactly-once no
-# matter which of the recovery paths (timer, finish, next start) runs
-# first.
+# The trap only sets a flag; the finish script owns stop-time revert.
 on_stop_signal() {
     STOP_REQUESTED=1
 }
 trap on_stop_signal TERM INT
 
-# Sleep that a trapped signal interrupts immediately: `wait` returns the
-# moment the trap runs, where a foreground `sleep` would hold the trap off
-# for its full duration and make every stop look wedged for one interval.
+# `wait` returns the moment the trap runs; a foreground sleep would not.
 interruptible_sleep() {
     sleep "$1" &
     wait $! 2>/dev/null || true
@@ -648,8 +436,6 @@ exit_if_stop_requested() {
         exit 0
     fi
 }
-
-# --- Startup ------------------------------------------------------------------
 
 mkdir -p "${STATE_DIR}"
 ensure_probe_secret
@@ -671,20 +457,13 @@ fi
 
 bashio::log.info "HA SOC Probe firewall poller starting — checking for pending firewall work every ${POLL_INTERVAL_SECONDS}s."
 
-# --- Main poll loop -------------------------------------------------------
-
 poll_counter=0
 
 while true; do
     exit_if_stop_requested
     current_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
 
-    # The poll's current_test_id means "the test this add-on is still armed
-    # for". The backgrounded revert timer resolves a test without clearing
-    # this file (it only creates the resolved marker), so a resolved id is
-    # cleared here before it is reported. Without this, Core's one-test-at-
-    # a-time gate would read the stale id as a still-armed test and refuse
-    # to hand over the next apply forever.
+    # The timer resolves a test without clearing this file; clear a resolved id here or Core's one-test gate wedges.
     if [ -n "${current_test_id}" ] && [ -e "$(resolved_marker_for "${current_test_id}")" ]; then
         : > "${CURRENT_TEST_FILE}"
         current_test_id=""
@@ -708,21 +487,12 @@ while true; do
             rules_json=$(echo "${response}" | jq -c '.service_response.rules')
             window_seconds=$(echo "${response}" | jq -r '.service_response.window_seconds')
 
-            # Belt and braces on top of Core's own one-test-at-a-time gate:
-            # a fresh read of the state file, because the armed timer may
-            # have resolved (or not) since this cycle's poll was sent. If a
-            # test is still armed without its resolved marker, applying a
-            # second one would put two rulesets' worth of uncertainty on
-            # the host with one shared revert path, so this refuses and
-            # keeps polling until the held test resolves.
+            # Fresh read of the state file: never arm a second test while one is unresolved.
             held_test_id=$(cat "${CURRENT_TEST_FILE}" 2>/dev/null || echo "")
             if [ -n "${held_test_id}" ] && [ ! -e "$(resolved_marker_for "${held_test_id}")" ]; then
                 bashio::log.warning "Firewall: refusing to apply test B while test A is still armed (held ${held_test_id}, offered ${test_id})."
             elif ! valid_slug "${test_id}"; then
-                # The test id becomes file names under /data; the same
-                # slug-shaped allowlist Core's uuid hex ids always satisfy
-                # keeps path syntax out of them (work item 2.5). No report
-                # is possible for an id this end refuses to echo back.
+                # The id becomes /data file names; refuse anything not slug-shaped (no report is possible for it).
                 bashio::log.error "Firewall: refusing a delivered test id that is not a plain lowercase token."
             elif ! valid_window "${window_seconds}"; then
                 bashio::log.error "Firewall test ${test_id}: window_seconds ${window_seconds} is outside ${WINDOW_MIN_SECONDS}-${WINDOW_MAX_SECONDS}; refusing to apply."
@@ -734,21 +504,10 @@ while true; do
                 report_resolution "${test_id}" "reverted" "${RULES_REJECT_REASON}"
             else
                 probe_ipv6_supported
-                # Re-ensure both chains here, not only at startup: if
-                # ip6tables support appeared after this service started
-                # (the support probe is per-cycle), the IPv6 chain would
-                # not exist yet and the snapshot below would fail as a
-                # spurious backup_failed. ensure_chain is idempotent.
+                # Re-ensure chains here: ip6tables support can appear after startup and the snapshot would fail spuriously.
                 ensure_chain
                 bashio::log.info "Applying proposed firewall ruleset (test ${test_id}, ${window_seconds}s to confirm)."
-                # All backups, all checked (work items 2.3 and 2.4): the
-                # full per-family table dumps for manual recovery, and the
-                # per-family chain snapshots the revert replays. A test
-                # whose revert path cannot be guaranteed must never be
-                # applied, so a failure of any write refuses the whole
-                # test: nothing touched either chain yet, the net effect
-                # is the pre-test state, and the honest report status is
-                # therefore "reverted" with reason backup_failed.
+                # Any backup failure refuses the whole test; nothing has touched the chains yet, so it reports reverted/backup_failed.
                 backups_ok=1
                 iptables-save -t filter > "$(backup_path_for "${test_id}")" || backups_ok=0
                 iptables -S "${CHAIN}" > "$(chain_backup_path_for "${test_id}")" || backups_ok=0
@@ -765,12 +524,7 @@ while true; do
                     if apply_ruleset "${rules_json}"; then
                         arm_revert_timer "${test_id}" "${window_seconds}"
                     else
-                        # A rule failed to apply in one of the tables;
-                        # don't leave a half-applied ruleset live in
-                        # either. This rollback is a revert, so it is
-                        # chain-scoped like every other revert and atomic
-                        # across families (work item 2.4): replay BOTH
-                        # chain snapshots, never a whole-table restore.
+                        # Roll back both chains from their snapshots; never a whole-table restore.
                         bashio::log.error "Firewall test ${test_id} failed to apply cleanly; replaying both pre-test chain snapshots."
                         replay_chain_backup 4 "$(chain_backup_path_for "${test_id}")" || true
                         if [ "${IPV6_SUPPORTED}" -eq 1 ] && [ -r "$(chain6_backup_path_for "${test_id}")" ]; then
@@ -785,8 +539,7 @@ while true; do
             ;;
         confirm)
             test_id=$(echo "${response}" | jq -r '.service_response.test_id')
-            # The id becomes file names under /data (marker paths), so the
-            # same token allowlist as the apply branch guards it here too.
+            # Same token allowlist as apply: the id becomes file names.
             if valid_slug "${test_id}"; then
                 confirm_test "${test_id}"
                 : > "${CURRENT_TEST_FILE}"
@@ -808,10 +561,7 @@ while true; do
             ;;
     esac
 
-    # Resource hard caps: apply immediately when the delivered set changes,
-    # and re-apply every ~60s regardless — Supervisor recreates containers
-    # on add-on update/restart, silently dropping any Docker-level limit,
-    # so idempotent re-application is the only way a cap actually persists.
+    # Re-applied every ~60s because Supervisor recreates containers on update/restart.
     new_limits=$(echo "${response}" | jq -c '.service_response.resource_limits.limits // empty' 2>/dev/null || echo "")
     if [ -n "${new_limits}" ]; then
         if ! new_limits=$(printf '%s' "${new_limits}" | validate_resource_limits); then
@@ -825,7 +575,7 @@ while true; do
             fi
         fi
     elif [ -s "${LIMITS_FILE}" ] && [ "$(cat "${LIMITS_FILE}")" != "{}" ]; then
-        # Core no longer sends any caps — clear ours (resets containers).
+        # Core no longer sends any caps: clear ours (resets containers).
         echo "{}" > "${LIMITS_FILE}"
         bashio::log.info "All resource caps cleared by HA SOC — resetting containers."
         apply_resource_limits

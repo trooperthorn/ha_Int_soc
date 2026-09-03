@@ -18,19 +18,13 @@ export interface HaSocUser {
   llat_oldest_days: number | null;
   account_age_days: number | null;
   auth_provider_types: string[];
-  // False when every credential comes from a non-homeassistant auth
-  // provider (SSO/header proxy, trusted_networks, command line): HA
-  // cannot observe a second factor enforced upstream, so the Users view
-  // renders "MFA not assessable" instead of a red "none" (D-18).
+  // False when no credential comes from the homeassistant auth provider; the Users view renders "MFA not assessable".
   mfa_assessable: boolean;
 }
 
 export interface RiskFactor {
   name: string;
-  // Pre-clamp contribution. applied_points is this factor's share of the
-  // final 0-100 score after clamping; the applied_points of a result's
-  // factors sum exactly to its score (work item 3.5). Optional so a
-  // result computed by an older backend still renders.
+  // Pre-clamp contribution; applied_points is the post-clamp share, optional for older backends. See docs/protocol.md.
   points: number;
   applied_points?: number;
   detail: string;
@@ -46,10 +40,7 @@ export interface RiskResult {
 export interface PostureResult {
   score: number;
   grade: "A" | "B" | "C" | "D" | "F";
-  // Provisional posture (work item 3.4, D-10): true until every posture
-  // term has computed from real data at least once ever; missing_terms
-  // lists the ones still waiting, and term_computed_at carries each
-  // term's first-computed timestamp (null while missing).
+  // Provisional until every posture term has computed from real data at least once; see docs/protocol.md.
   provisional: boolean;
   missing_terms: string[];
   term_computed_at?: Record<string, string | null>;
@@ -103,8 +94,7 @@ export interface DashboardSummary {
   entity_state_counts: { unavailable: number; unknown: number; total: number };
 }
 
-// Mirrors vulns.py's DEVICE_STATUS_* — a device's live availability, a
-// separate axis from vulnerability severity. See that module's docstring.
+// Mirrors vulns.py's DEVICE_STATUS_*: live availability, a separate axis from severity.
 export type DeviceStatus = "available" | "partial" | "unavailable" | "disabled" | "no_entities";
 
 export interface DeviceOverviewRow {
@@ -125,10 +115,7 @@ export interface DeviceOverview {
   combined_risk_score: number;
 }
 
-// Mirrors health.py's ISSUE_CATEGORY_* — at most one category per
-// integration, priority-ordered (credential > failing > communication >
-// collection > errors > debug_logging > disabled). An integration with
-// none of these doesn't appear at all.
+// Mirrors health.py's ISSUE_CATEGORY_*: at most one category per integration, priority-ordered.
 export type IntegrationIssueCategory =
   | "credential"
   | "failing"
@@ -156,15 +143,12 @@ export interface IntegrationOverview {
   category_counts: Record<IntegrationIssueCategory, number>;
 }
 
-// Mirrors probe.py's async_probe_overview() — an honest three-way answer,
-// never silently-empty data mistakeable for "scanned, nothing found".
+// Mirrors probe.py's async_probe_overview(): a three-way answer, never silently-empty data.
 export interface OpenPort {
   port: number;
   proto: "tcp" | "udp";
   process?: string | null;
-  // Absent/null on a report from an older add-on version, or when the
-  // bind address is IPv6 (decoding that correctly wasn't worth the risk
-  // of silently showing a wrong address — see run.sh).
+  // Absent/null from an older add-on, or when the bind address is IPv6 (not decoded, see run.sh).
   address?: string | null;
   interface?: string | null;
 }
@@ -184,18 +168,10 @@ export interface ProbeOverview {
   result: HostProbeResult | null;
 }
 
-// Mirrors firewall.py's RULE_SCHEMA / pending-test state machine. See that
-// module's docstring for the full read/write safety design — Core only
-// ever proposes and displays; the add-on is the only thing that actually
-// touches iptables, and its own report (known_rules) is always the final
-// word on what's really active.
+// Mirrors firewall.py's RULE_SCHEMA / pending-test state machine; the add-on's report (known_rules) is the final word.
 export type FirewallRuleAction = "allow" | "deny";
 export type FirewallRuleProto = "tcp" | "udp";
-// Address family a rule targets (work item 2.4): "4" is written with
-// iptables, "6" with ip6tables, "both" mirrored into both tables. The
-// server derives the family from a rule's source address (an IPv4 source
-// pins "4", an IPv6 source pins "6") and rejects a contradicting explicit
-// value; a rule with no source defaults to "both".
+// Address family a rule targets; the server derives it from the source address and rejects a contradiction.
 export type FirewallRuleFamily = "4" | "6" | "both";
 
 export interface FirewallRule {
@@ -203,23 +179,13 @@ export interface FirewallRule {
   proto: FirewallRuleProto;
   port: number;
   source?: string | null;
-  // Optional because records persisted before the dual-stack change carry
-  // no family; the server treats an absent value as "both".
+  // Optional: records persisted before the dual-stack change carry no family; absent means "both".
   family?: FirewallRuleFamily;
-  // Set by the server, at read time, on every "6"/"both" rule while the
-  // add-on reports ipv6_supported=false: the IPv6 half of this rule is
-  // not on the host, and the card must say so rather than showing a
-  // silent IPv4-only success.
+  // Set by the server at read time on every "6"/"both" rule while the add-on reports ipv6_supported=false.
   partially_applied?: boolean;
 }
 
-// "expired_unreported" is the display-only status a timed-out pending test
-// carries until the add-on's own report archives it; "expired" is the same
-// state's pre-rename spelling, kept so a record persisted by an older
-// version still type-checks. "discarded_unreported" is the terminal status
-// of a history entry the owner discarded after the add-on went silent
-// mid-test (ha_soc/firewall/discard_pending); it never appears on a live
-// pending record.
+// "expired" is the pre-rename spelling of "expired_unreported"; "discarded_unreported" appears only on history entries.
 export type FirewallTestStatus =
   | "testing"
   | "confirmed"
@@ -234,43 +200,27 @@ export interface FirewallPendingTest {
   status: FirewallTestStatus;
   requested_by: string;
   requested_at: string;
-  // null until the add-on's poll actually picks this up and applies it —
-  // still "testing" but not live on the host yet.
+  // null until the add-on's poll applies it; still "testing" but not live on the host yet.
   applied_at: string | null;
-  // Until the apply is handed to the add-on this is propose time plus the
-  // window (the staleness bound for a proposal never picked up); the
-  // moment applied_at is set the server re-anchors it to applied_at plus
-  // window_seconds, so the countdown rendered from it tracks the add-on's
-  // real local revert timer instead of running up to one poll interval
-  // ahead of it.
+  // Propose time plus window until applied_at is set, then re-anchored to applied_at plus window_seconds.
   expires_at: string;
   window_seconds: number;
   resolved_at?: string;
   resolved_by?: string;
-  // The add-on's bounded explanation of a resolution (carried protocol
-  // item): "backup_failed", or the failing rule and family when an apply
-  // failed in either table. Only ever present on archived history
-  // records, because it arrives with the resolution report that archives
-  // them.
+  // The add-on's bounded reason for a resolution; only present on archived history records.
   reason?: string | null;
 }
 
 export interface FirewallStatus {
   known_rules: FirewallRule[] | null;
   known_rules_reported_at: string | null;
-  // Whether ip6tables works on the host, as last reported by the add-on
-  // (from `ip6tables -S` succeeding); null/absent until any report has
-  // carried the field. When false, the server flags every "6"/"both"
-  // rule partially_applied and the card shows the honest banner.
+  // Whether ip6tables works on the host per the add-on's last report (`ip6tables -S`); null until a report carried it.
   ipv6_supported?: boolean | null;
   pending: FirewallPendingTest | null;
   history: FirewallPendingTest[];
 }
 
-// Mirrors peripherals.py's async_peripheral_overview() — reuses Home
-// Assistant core's own USB discovery data (the same source that already
-// auto-detects a Zigbee/Z-Wave USB stick), so this is available on any
-// install where core itself can see the device, not just Supervisor ones.
+// Mirrors peripherals.py's async_peripheral_overview(), built on core's own USB discovery data.
 export interface AssignedIntegration {
   entry_id: string;
   domain: string;
@@ -296,8 +246,7 @@ export interface PeripheralOverview {
   unassigned_count: number;
 }
 
-// Mirrors store.py's SettingsData exactly — the same object backs both
-// this Settings tab and the native "Configure" options-flow dialog.
+// Mirrors store.py's SettingsData exactly; the same object backs the native options-flow dialog.
 export type AccessLevel = "owner_only" | "owner_and_admins";
 export type MfaPolicy = "audit_only" | "auto_deactivate";
 export type SyslogTransport = "disabled" | "udp" | "tcp" | "tls";
@@ -324,33 +273,24 @@ export interface HaSocSettings {
     last_sent_at: string | null;
     last_error: string | null;
   };
-  // Work item 3.3 (D-6): retention for resolved/dismissed detections and
-  // findings, distinct from the audit log's own retention above.
+  // Retention for resolved/dismissed detections and findings, distinct from audit retention.
   evidence_retention_days: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
-  // D-12: device manufacturer and model strings are sent to NIST's NVD
-  // only while this is on.
+  // Device manufacturer and model strings go to NIST's NVD only while this is on.
   nvd_lookups_enabled: boolean;
-  // Secret fields come back masked ("[redacted]" when set, "" when unset);
-  // the companion *_set booleans say whether one is configured. Send a new
-  // value to change it; send nothing (or the placeholder) to leave it.
+  // Secrets come back masked ("[redacted]" or ""); send a new value to change one, nothing or the placeholder to leave it.
   nvd_api_key: string | null;
   nvd_api_key_set?: boolean;
   github_token?: string | null;
   github_token_set?: boolean;
-  // Work item 3.0 (D-9): sparse per-rule threshold overrides; send only
-  // the fields being changed and the server merges per field. Effective
-  // values, secure defaults, and ranges come from fetchDetectionThresholds.
-  // The old risk_learning_period_days setting was replaced by the two
-  // per-rule learning_days parameters in here.
+  // Sparse per-rule threshold overrides: send only the changed fields, the server merges per field.
   detection_thresholds: Record<string, Record<string, number | boolean>>;
   access_level: AccessLevel;
   mfa_policy: MfaPolicy;
   mfa_grace_period_days: number;
   security_sources_enabled: Record<string, boolean>;
-  // UniFi Network / Protect connections. Hosts + verify_ssl round-trip
-  // plainly; the two API keys are secrets (masked like nvd/github above).
+  // UniFi Network / Protect connections; the API keys are masked secrets like nvd/github above.
   unifi_network_host: string | null;
   unifi_network_api_key?: string | null;
   unifi_network_api_key_set?: boolean;
@@ -359,15 +299,13 @@ export interface HaSocSettings {
   unifi_protect_api_key?: string | null;
   unifi_protect_api_key_set?: boolean;
   unifi_protect_verify_ssl: boolean;
-  // Pi-hole v6 connection (Network Security tab). Same host/verify_ssl/
-  // masked-secret shape as the UniFi fields above; iot_cidr is plain.
+  // Pi-hole v6 connection; same host/verify_ssl/masked-secret shape as UniFi.
   pihole_host: string | null;
   pihole_api_key?: string | null;
   pihole_api_key_set?: boolean;
   pihole_verify_ssl: boolean;
   pihole_iot_cidr: string | null;
-  // Optional Probe-hosted SNMPv3 AuthPriv listener. Passphrases are masked
-  // exactly like the other credentials and are never returned to the UI.
+  // Optional Probe-hosted SNMPv3 AuthPriv listener; passphrases are masked and never returned.
   snmp_enabled: boolean;
   snmp_listen_address: string | null;
   snmp_port: number;
@@ -387,8 +325,7 @@ export interface HaSocSettings {
   } | null;
 }
 
-// Mirrors integration_security.py's async_integration_security_overview().
-// PROVENANCE, not safety — the view must never imply "safe to run".
+// Mirrors integration_security.py's async_integration_security_overview(): provenance, not safety.
 export type IntegrationTier = "core" | "hacs" | "custom";
 
 export interface IntegrationGithubSignals {
@@ -427,9 +364,7 @@ export interface IntegrationSecurityOverview {
   refreshed_at: string | null;
 }
 
-// Mirrors containers.py's async_container_resources(). Per-container live
-// CPU/memory (add-ons + Core + Supervisor) for spotting a crashing/starving
-// container. Stat fields are null when the Supervisor doesn't report them.
+// Mirrors containers.py's async_container_resources(); stat fields are null when the Supervisor omits them.
 export interface ContainerResource {
   slug: string;
   name: string;
@@ -455,10 +390,7 @@ export interface ContainerResourceOverview {
   generated_at: string;
 }
 
-// Mirrors resource_watchdog.py. Watchdog = sustained-breach detection +
-// per-container action (alert/restart/stop — add-ons only; Core/Supervisor
-// are clamped to alert server-side). hard_limits = Docker caps applied by
-// the Probe add-on (requires its Protection Mode disabled).
+// Mirrors resource_watchdog.py; see docs/RESOURCE-WATCHDOG.md.
 export type WatchdogAction = "alert" | "restart" | "stop";
 
 export interface WatchdogOverride {
@@ -528,10 +460,7 @@ export interface WatchdogSetPayload {
   hard_limit?: { slug: string; memory_mb?: number | null; cpus?: number | null };
 }
 
-// Mirrors unifi.py's normalized contract. Every per-row field is nullable
-// on purpose: the exact UniFi field names could not be verified against a
-// live controller, so anything the console doesn't return comes through as
-// null and renders "—" rather than a guessed value. See unifi.py's docstring.
+// Mirrors unifi.py's normalized contract; every per-row field is nullable and renders as a dash when absent.
 export interface UniFiIntegrationMatch {
   domain: string;
   title: string;
@@ -568,8 +497,7 @@ export interface NetworkDeviceRow extends NetworkClientRow {
   firmware_updatable: boolean | null;
 }
 
-// Mirrors unifi.py's _normalize_acl_filter — one side (source or
-// destination) of an ACL rule.
+// Mirrors unifi.py's _normalize_acl_filter: one side of an ACL rule.
 export interface AclFilter {
   match_type: string | null;
   ip_or_subnets: string[];
@@ -578,23 +506,16 @@ export interface AclFilter {
   macs: string[];
 }
 
-// Mirrors unifi.py's _normalize_acl_rule — an order-preserving ACL rule for
-// the security-audit report, following the verified UniFi ACL Rule schema
-// (action/protocolFilter/sourceFilter/destinationFilter). Field availability
-// depends on the controller's Integration API version (see acl.available /
-// endpoint).
+// Mirrors unifi.py's _normalize_acl_rule; field availability depends on the controller's Integration API version.
 export interface AclRule {
   order: number;
   id: string | null;
   name: string | null;
-  // "IPV4" | "MAC" — which endpoint-filter shape sourceFilter/
-  // destinationFilter use.
+  // "IPV4" | "MAC": the endpoint-filter shape sourceFilter/destinationFilter use.
   rule_type: string | null;
   action: string | null;
   enabled: boolean | null;
-  // metadata.origin verbatim ("USER_DEFINED" | "SYSTEM_DEFINED" |
-  // "DERIVED"), plus the derived custom flag (true only for
-  // USER_DEFINED; null when origin itself wasn't reported).
+  // metadata.origin verbatim, plus derived custom (true only for USER_DEFINED; null when origin was not reported).
   origin: string | null;
   custom: boolean | null;
   protocols: string[];
@@ -612,13 +533,7 @@ export interface AclReport {
   rules: AclRule[];
 }
 
-// Mirrors unifi.py's _normalize_firewall_traffic_filter — one side (source
-// or destination) of a Firewall Policy. Genuinely richer than an ACL rule's
-// filter: a required zone, plus an optional typed traffic filter narrowing
-// it further (network/IP/MAC/port, or — destination only — domain/
-// application/application category). REGION/VPN_SERVER/
-// SITE_TO_SITE_VPN_TUNNEL/IPV6_IID filters are represented by filter_type
-// alone (see unifi.py's docstring for why).
+// Mirrors unifi.py's _normalize_firewall_traffic_filter: one side of a Firewall Policy. See docs/protocol.md.
 export interface FirewallTrafficFilter {
   zone: string | null;
   filter_type: string | null;
@@ -633,9 +548,7 @@ export interface FirewallTrafficFilter {
   ports_from_list: boolean;
 }
 
-// Mirrors unifi.py's _normalize_firewall_policy — one Firewall Policy, the
-// zone-based default allow/deny mechanism UniFi shows by default (Settings
-// -> Security -> Create Policy), genuinely separate from ACL Rules above.
+// Mirrors unifi.py's _normalize_firewall_policy: one zone-based Firewall Policy, separate from ACL Rules.
 export interface FirewallPolicy {
   order: number;
   id: string | null;
@@ -643,9 +556,7 @@ export interface FirewallPolicy {
   description: string | null;
   enabled: boolean | null;
   action: string | null;
-  // ALLOW-only: whether UniFi auto-creates a mirrored policy on the
-  // reverse zone pair to allow the matching return traffic. null for
-  // BLOCK/REJECT, where the field doesn't apply.
+  // ALLOW-only: whether UniFi auto-creates the mirrored return-traffic policy; null for BLOCK/REJECT.
   allow_return_traffic: boolean | null;
   origin: string | null;
   custom: boolean | null;
@@ -673,9 +584,7 @@ export interface FirewallPoliciesReport {
   zones: FirewallZone[];
 }
 
-// Mirrors unifi.py's correlate_server_ports_with_rules — the HA server's
-// own open ports cross-referenced against the ACL rules and Firewall
-// Policies above.
+// Mirrors unifi.py's correlate_server_ports_with_rules.
 export interface ServerPort {
   port: number;
   proto: string | null;
@@ -711,8 +620,7 @@ export interface ProtectCamera {
   channel_count: number;
   state: string | null;
   online: boolean | null;
-  // Deep link into the Protect console, e.g.
-  // https://192.168.30.2/protect/dashboard/devices/<id>
+  // Deep link into the Protect console (https://<host>/protect/dashboard/devices/<id>).
   link: string | null;
 }
 
@@ -812,9 +720,7 @@ export interface NetworkSecurityFinding {
   detail: string;
 }
 
-// Mirrors network_security.py's _client_summaries() — a lightweight
-// projection of the Network tab's own client rows, just enough to match a
-// rule/policy's source/destination against a real device.
+// Mirrors network_security.py's _client_summaries(): a lightweight projection of the Network tab's client rows.
 export interface NetworkSecurityClient {
   name: string | null;
   ipv4: string | null;
@@ -841,15 +747,11 @@ export interface SecurityEntityRow {
   entity_id: string;
   name: string | null;
   domain: string;
-  // Null on a registry entity with no state object at all (work plan
-  // item 4.5): its integration never loaded it. Such a row always has
-  // problem true and reason "no state (integration not loaded)".
+  // Null on a registry entity with no state object; such a row has problem true and reason "no state (integration not loaded)".
   state: string | null;
   device_class: string | null;
   problem: boolean;
-  // Why problem is true: the problem state itself ("unavailable",
-  // "unknown", "jammed") or the no-state explanation above; null on a
-  // healthy row.
+  // Why problem is true: the problem state or the no-state explanation; null on a healthy row.
   reason: string | null;
   battery_entity_id: string | null;
   battery_level: number | null;
@@ -874,15 +776,7 @@ export interface SecurityOverview {
   sources_enabled: Record<string, boolean>;
 }
 
-// Mirrors homeassistant/components/system_log's LogEntry.to_dict() exactly
-// (name/message/level/source/timestamp/exception/count/first_occurred) —
-// the same WARNING+ dedup buffer that backs Home Assistant's own
-// Settings > System > Logs page (/config/logs). Called directly rather
-// than proxied through ha_soc/* like every other command here: it's a
-// genuine core command (system_log/list, admin-gated on its own), the
-// same way HA's own frontend calls core commands directly without a
-// per-integration passthrough — and the panel already gates all tab
-// content on ha_soc/access/info before a Logs tab is ever reachable.
+// Mirrors system_log's LogEntry.to_dict() exactly; a genuine core command, so called directly rather than proxied.
 export interface HaLogEntry {
   name: string;
   message: string[];
@@ -894,9 +788,7 @@ export interface HaLogEntry {
   first_occurred: number;
 }
 
-// Mirrors entity_remap.py's async_find_references()/async_apply_remap().
-// Every reference item is honestly labeled editable/not — nothing implies a
-// fix happened until an explicit apply call returns.
+// Mirrors entity_remap.py's async_find_references()/async_apply_remap(); nothing implies a fix until apply returns.
 export type EntityRemapKind = "automation" | "script" | "scene" | "dashboard" | "helper" | "other";
 
 export interface EntityRemapReferenceItem {
@@ -926,8 +818,7 @@ export interface EntityRemapApplyResult {
   new_entity_id: string;
   fixed: Record<EntityRemapKind, number>;
   errors: string[];
-  // Pre-rewrite snapshot paths under .storage/ha_soc_remap/ (kept 30 days).
-  // Optional so a response from an older backend still renders.
+  // Pre-rewrite snapshot paths under .storage/ha_soc_remap/ (kept 30 days); optional for older backends.
   backups?: string[];
 }
 
@@ -976,11 +867,7 @@ export const revokeToken = (hass: HomeAssistant, userId: string, tokenId: string
 export const revokeAllSessions = (hass: HomeAssistant, userId: string) =>
   ws<{ revoked: number }>(hass, { type: "ha_soc/users/revoke_all_sessions", user_id: userId });
 
-// revoke_sessions defaults true server-side (work plan item 4.12):
-// whoever held the old password must be signed out, or the reset changes
-// nothing for an attacker with a live session. Long-lived tokens are
-// spared either way. The client always sends the flag explicitly so the
-// audit record reflects a deliberate choice, never a schema default.
+// revoke_sessions defaults true server-side; the client always sends it explicitly so the audit record reflects a choice.
 export const setPassword = (
   hass: HomeAssistant,
   userId: string,
@@ -1009,16 +896,14 @@ export const verifyAuditChain = (hass: HomeAssistant) =>
     ok: boolean;
     records_checked: number;
     first_break_seq: number | null;
-    // 1 when the whole chain was re-checked; greater when retention has
-    // expired the prefix and verification restarted at the stored anchor.
+    // 1 when the whole chain was re-checked; greater when verification restarted at the retention anchor.
     verified_from_seq: number;
     expired_through: string | null;
   }>(hass, {
     type: "ha_soc/audit/verify_chain",
   });
 
-// Per-category record counts and byte shares for the newest audit day,
-// so the owner can see what produces the log's bulk. Newest day only.
+// Per-category record counts and byte shares for the newest audit day only.
 export interface AuditCategoryStat {
   category: string;
   records: number;
@@ -1093,7 +978,7 @@ export const fetchDetections = (hass: HomeAssistant, status?: string) =>
 export const setDetectionStatus = (hass: HomeAssistant, detectionId: string, status: string) =>
   ws(hass, { type: "ha_soc/detections/set_status", detection_id: detectionId, status });
 
-// Work item 3.3: one action, one audit record carrying the id list.
+// One action, one audit record carrying the id list.
 export const bulkSetDetectionStatus = (hass: HomeAssistant, detectionIds: string[], status: string) =>
   ws<{ updated: number; missing: string[] }>(hass, {
     type: "ha_soc/detections/bulk_set_status",
@@ -1101,9 +986,7 @@ export const bulkSetDetectionStatus = (hass: HomeAssistant, detectionIds: string
     status,
   });
 
-// Work item 3.0 (D-9): the tunable-threshold table. Per rule and
-// parameter: the effective value, the secure default, the inclusive
-// min/max (null for booleans), and the type the input should render as.
+// Tunable-threshold table: effective value, secure default, inclusive min/max (null for booleans), input type.
 export interface DetectionThresholdParam {
   value: number | boolean;
   default: number | boolean;
@@ -1130,9 +1013,7 @@ export const fetchVulns = (hass: HomeAssistant) =>
 
 export const fetchSystemLog = (hass: HomeAssistant) => ws<HaLogEntry[]>(hass, { type: "system_log/list" });
 
-// Mirrors logs.py's async_fault_log_overview() — home-assistant.log.fault,
-// Python's faulthandler dump, only ever non-empty after a genuine fatal
-// (segfault-class) crash, never a normal Python exception.
+// Mirrors logs.py's async_fault_log_overview(): the faulthandler dump, non-empty only after a fatal crash.
 export interface FaultLogOverview {
   exists: boolean;
   content: string | null;
@@ -1144,9 +1025,7 @@ export interface FaultLogOverview {
 export const fetchFaultLog = (hass: HomeAssistant) =>
   ws<FaultLogOverview>(hass, { type: "ha_soc/logs/fault" });
 
-// Container (app/add-on) logs, served by the Supervisor's journald gateway
-// through logs.py. available=false on a non-Supervisor install, in which case
-// the Logs tab simply doesn't offer the selector.
+// Container logs via the Supervisor's journald gateway; available=false on a non-Supervisor install.
 export interface ContainerLogTarget {
   id: string; // "core" | "supervisor" | "host" | "addon:<slug>"
   name: string;
@@ -1172,9 +1051,7 @@ export const fetchLogTargets = (hass: HomeAssistant) =>
 export const fetchContainerLog = (hass: HomeAssistant, target: string) =>
   ws<ContainerLog>(hass, { type: "ha_soc/logs/container", target });
 
-// Real core command, called directly for the same reason fetchSystemLog is:
-// a genuine, already-admin-gated core command, not something worth proxying
-// through ha_soc/* just to relabel it.
+// Real core command, called directly for the same reason fetchSystemLog is.
 export interface EntityRegistryEntry {
   entity_id: string;
   name: string | null;
@@ -1192,10 +1069,7 @@ export const scanVulnsNow = (hass: HomeAssistant) =>
 export const setVulnStatus = (hass: HomeAssistant, findingId: string, status: string, note?: string) =>
   ws(hass, { type: "ha_soc/vulns/set_status", finding_id: findingId, status, note });
 
-// Mirrors scanner.py's scan_directory_report coverage record: what one
-// completed pass over a domain really looked at (work plan item 4.8). A
-// domain with no record has never been scanned and must render as "not
-// scanned", never as an implied-clean zero findings.
+// Mirrors scanner.py's coverage record; a domain with no record renders "not scanned", never zero findings.
 export interface ScannerDomainCoverage {
   scanned_files: number;
   skipped_oversize: number;
@@ -1204,9 +1078,7 @@ export interface ScannerDomainCoverage {
   scanned_at: string;
 }
 
-// Mirrors IntegrationScanner.listing_payload. coverage is optional so a
-// backend still serving the pre-coverage findings-only payload parses;
-// its absence renders the same way as an empty table: nothing scanned.
+// Mirrors IntegrationScanner.listing_payload; coverage is optional so a pre-coverage backend still parses.
 export interface ScannerListing {
   findings: Finding[];
   coverage?: Record<string, ScannerDomainCoverage>;
@@ -1262,23 +1134,14 @@ export const confirmFirewallTest = (hass: HomeAssistant, testId: string) =>
 export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/cancel", test_id: testId });
 
-// Owner-only escape hatch for an add-on gone silent mid-test: archives the
-// pending record as discarded_unreported and clears the slot. The server
-// refuses it while the countdown is still running, so the panel only
-// offers the button once the countdown has lapsed.
+// Owner-only discard of a pending test after the add-on went silent; the server refuses it while the countdown runs.
 export const discardFirewallPending = (hass: HomeAssistant) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/discard_pending" });
 
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
 
-// Mirrors github_provenance.py's async_refresh_github_signals summary.
-// reason is "no_github_token" (nothing ran) or "rate_limited" (the loop
-// stopped early, keeping what it had fetched). invalid_slugs is a COUNT
-// of malformed owner/repo slugs refused a request, not a list; the slug
-// strings themselves go to the server log only. cache_fresh counts repos
-// skipped because their cached signals are younger than the TTL. The
-// three count fields are absent on the no_github_token early return.
+// Mirrors github_provenance.py's refresh summary; see docs/protocol.md for the reason and count fields.
 export const refreshIntegrationSecurity = (hass: HomeAssistant) =>
   ws<{
     ok: boolean;
@@ -1309,10 +1172,7 @@ export const setPeripheralIgnored = (hass: HomeAssistant, key: string, ignored: 
 export const findEntityRemapReferences = (hass: HomeAssistant, entityId: string) =>
   ws<EntityRemapReport>(hass, { type: "ha_soc/entity_remap/find_references", entity_id: entityId });
 
-// backup_acknowledged is vol.Required server-side; omitting it made every
-// apply fail schema validation, so the whole feature was unreachable from
-// the panel (work plan item 0.4, UI-1). tests/test_ws_contract.py now
-// guards this whole class of missing-required-key bug.
+// backup_acknowledged is vol.Required server-side.
 export const applyEntityRemap = (
   hass: HomeAssistant,
   oldEntityId: string,
@@ -1340,8 +1200,7 @@ export const fetchNetworkOverview = (hass: HomeAssistant) =>
 export const fetchNetworkSecurityOverview = (hass: HomeAssistant) =>
   ws<NetworkSecurityOverview>(hass, { type: "ha_soc/network_security/overview" });
 
-// The calling user's own "Customize" layout for one view — never another
-// user's (see websocket_api.py's ws_layout_get/set docstring).
+// The calling user's own "Customize" layout for one view, never another user's.
 export const fetchLayout = (hass: HomeAssistant, viewId: string) =>
   ws<LayoutState>(hass, { type: "ha_soc/layout/get", view_id: viewId });
 

@@ -1,42 +1,9 @@
 """Local, heuristic static-analysis scanner for installed integrations.
 
-This is NOT a vulnerability scanner in the CVE-matching sense (see vulns.py
-for that) and it is NOT a substitute for a human security review. Every
-finding it produces is a pattern match against source text — an advisory
-signal for the instance owner to look at, never a confirmed exploit and
-never a verdict on the integration or its author. Nothing here is reported
-upstream automatically; there is no disclosure channel, GHSA submission, or
-network call anywhere in this module. `export_ghsa()` only *shapes* a
-finding into GHSA-like fields for a human to copy-paste if they choose to.
-
-Why this exists: hassfest (core's own integration-quality tool) validates
-manifests, docs, and typing — it never executes or pattern-matches an
-integration's code, and it never runs against `custom_components` at all.
-Nobody upstream reviews third-party custom integration source for security
-issues. This module fills exactly that gap, for the local instance owner,
-using a small dependency-free rule set (stdlib `ast`/`re` only) so HA SOC
-never adds a large, frequently-CVE'd static-analysis dependency to every
-install that pulls this integration in. It works identically for core
-integrations and custom ones: both are just files on the same filesystem,
-in the same trust domain as the rest of `config/`, read here and never
-executed.
-
-Explicitly out of scope for this version: any network call (PyPI staleness
-checks, typosquat detection against a package index). That is a
-`scanner_network_checks_enabled` feature for a future version and is not
-stubbed here — half-implementing it would be worse than omitting it.
-
-Coverage honesty (work plan item 4.8): every rule here matches unobfuscated
-instances only - string-built calls, computed names, and encoded literals
-are invisible by design, and the Scanner tab must say so. Each completed
-scan stores a per-domain coverage record ({scanned_files, skipped_oversize,
-skipped_over_cap, parse_failures, scanned_at}) alongside the findings, and
-`listing_payload` exposes it so a domain with no record renders as "not
-scanned", never as an implied-clean zero findings. After each rescan,
-findings absent from the new scan are reconciled to resolved with
-resolved_reason "not_found_on_rescan" - but only when their file was
-actually evaluated this pass (or deleted outright), never when it was
-skipped for size, the file cap, or a parse failure.
+Every finding is a pattern match against source text at rest, an advisory
+signal for the instance owner and never a confirmed exploit; nothing is
+executed, reported upstream, or fetched over the network (rule rationale,
+false positives, and evasion notes: docs/THREAT-MODEL.md).
 """
 from __future__ import annotations
 
@@ -64,10 +31,7 @@ from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
 
-# -- Resource bounds --------------------------------------------------------
-# Applied per integration, inside the executor job. A malicious or merely
-# huge integration directory must never be able to block the executor pool
-# indefinitely or exhaust memory parsing a single file.
+# Per-integration bounds so one huge directory cannot block the executor pool or exhaust memory.
 MAX_FILE_SIZE_BYTES = 500 * 1024
 MAX_FILES_PER_SCAN = 400
 
@@ -78,28 +42,10 @@ _PLACEHOLDER_RE = re.compile(
 _CREDENTIAL_NAME_RE = re.compile(
     r"(password|passwd|api[_-]?key|secret|access[_-]?key|auth[_-]?token)", re.IGNORECASE
 )
-# HA's own universal naming convention (homeassistant.const's CONF_PASSWORD,
-# CONF_API_KEY, etc., and every integration that follows the same pattern):
-# a CONF_* constant holds a voluptuous/config-schema KEY NAME, never a
-# secret value — the actual secret lives in a config entry or this
-# integration's own Store, entered by the user at runtime, not in source.
-# Excluded here rather than by raising the length/entropy bar, since the
-# false positive is about *what kind of thing* the name identifies, not
-# about how convincing the literal value looks.
+# CONF_* constants name config-schema keys, never secret values.
 _CONF_CONSTANT_NAME_RE = re.compile(r"^CONF_")
 
-# The sibling convention to CONF_*: an ALL_CAPS constant ending in _KEY or
-# _KEYS names a storage or dictionary KEY, not a credential (ha_soc's own
-# PROBE_PAIRING_SECRET_KEY = "probe_pairing_secret" in secrets_store.py is
-# the shape). Like the CONF_ guard, this is about what kind of thing the
-# NAME identifies; the value-shape condition exists only to keep the
-# exclusion narrow. Both must hold: the target is an ALL_CAPS *_KEY(S)
-# constant, and the literal is a multi-word, digit-free lowercase
-# identifier (words joined by underscores or dots). A lowercase variable
-# like api_key = "..." never matches the name pattern, so the rule is not
-# weakened for it, and API_KEY = "hunter2secret9" still fires on its
-# digits. The documented false-negative avenue: a genuinely digit-free,
-# multi-word, all-lowercase credential assigned to an ALL_CAPS *_KEY name.
+# ALL_CAPS *_KEY(S) constants holding identifier-shaped literals name storage keys, not credentials.
 _KEY_NAME_CONSTANT_RE = re.compile(r"^[A-Z][A-Z0-9_]*_KEYS?(?:_NAME)?$")
 _IDENTIFIER_VALUE_RE = re.compile(r"^[a-z]+(?:[_.][a-z]+)+$")
 _SENSITIVE_ARG_RE = re.compile(
@@ -121,9 +67,7 @@ def _hit(
     confidence: str,
     snippet: str | None = None,
 ) -> dict[str, Any]:
-    # A rule may pass an explicit snippet when the source line itself must
-    # not be stored verbatim (the hardcoded_credential rule masks the
-    # matched literal this way, work plan item 1.3).
+    # An explicit snippet lets a rule mask the matched literal instead of storing the line.
     if snippet is None:
         raw = lines[lineno - 1] if 0 < lineno <= len(lines) else ""
         snippet = raw.strip()[:160]
@@ -137,10 +81,8 @@ def _hit(
 
 
 def _dotted_name(node: ast.AST | None) -> str | None:
-    """Dotted name of a Name/Attribute chain, walked iteratively: a
-    crafted file can nest attribute access thousands of levels deep, and
-    a recursive walk would hit RecursionError inside a rule, aborting the
-    file's scan (work plan item 4.8)."""
+    """Dotted name of a Name/Attribute chain, walked iteratively so a deeply
+    nested chain cannot raise RecursionError inside a rule."""
     parts: list[str] = []
     while isinstance(node, ast.Attribute):
         parts.append(node.attr)
@@ -160,14 +102,9 @@ def _assign_target_name(target: ast.AST) -> str | None:
     return None
 
 
-# -- Rule 1: disabled TLS verification --------------------------------------
 def _rule_tls_verification_disabled(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
-    """`verify`/`ssl`/`cert_reqs` keyword literally `False`, or `ssl.CERT_NONE`.
-
-    Library-agnostic on purpose: matches the keyword name, not the callee, so
-    it catches requests/httpx/aiohttp-style calls without knowing which HTTP
-    client is in play.
-    """
+    """`verify`/`ssl`/`cert_reqs` keyword literally `False`, or `ssl.CERT_NONE`,
+    matched on the keyword name so it is HTTP-client agnostic."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -202,25 +139,13 @@ def _is_interpolated(node: ast.AST) -> bool:
     return False
 
 
-# os.system / os.popen always hand their argument to a shell, so they join
-# the shell rule with no shell=True co-condition needed (work plan item
-# 4.8); the interpolated-argument co-condition still applies.
+# os.system / os.popen always run a shell, so no shell=True co-condition applies to them.
 _ALWAYS_SHELL_CALLS = {"os.system", "os.popen"}
 
 
-# -- Rule 2: command injection risk -----------------------------------------
 def _rule_shell_injection_risk(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
-    """`shell=True` alone is not the signal — a hardcoded literal command run
-    with `shell=True` is not attacker-controlled. Only flag it alongside an
-    argument built from an f-string, concatenation/%-format, or `.format()`:
-    that co-condition is what makes an external value's path into the shell
-    plausible, and it's the reason this rule needs two things to be true at
-    once rather than firing on `shell=True` by itself. ``os.system`` and
-    ``os.popen`` always run a shell, so for them the interpolation
-    co-condition alone triggers the rule (work plan item 4.8). Obvious
-    false negative either way: a command assembled into a variable before
-    the call carries no interpolation at the call site and is invisible.
-    """
+    """Shell execution (`shell=True`, or os.system/os.popen) combined with an
+    argument built from an f-string, concatenation/%-format, or `.format()`."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -240,7 +165,6 @@ def _rule_shell_injection_risk(tree: ast.AST, lines: list[str]) -> list[dict[str
     return hits
 
 
-# -- Rule 3: eval/exec use ---------------------------------------------------
 def _rule_eval_exec_use(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
@@ -260,12 +184,8 @@ def _yaml_load_has_safe_loader(node: ast.Call) -> bool:
     return name is not None and name.rsplit(".", 1)[-1] in ("SafeLoader", "CSafeLoader")
 
 
-# -- Rule 4: insecure deserialization ----------------------------------------
 def _rule_insecure_deserialization(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
-    """`pickle.load(s)` is always flagged; `yaml.load(...)` only when it is
-    not explicitly given a Safe(C)Loader. `yaml.safe_load` never reaches this
-    rule at all since its func name isn't `load`.
-    """
+    """`pickle.load(s)` always; `yaml.load(...)` only without an explicit Safe(C)Loader."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
@@ -281,34 +201,12 @@ def _rule_insecure_deserialization(tree: ast.AST, lines: list[str]) -> list[dict
     return hits
 
 
-# -- Rule 5: hardcoded credentials -------------------------------------------
 def _rule_hardcoded_credential(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
-    """Name-pattern + literal-string heuristic only, with no entropy or
-    secret-format check behind it. That means fixtures, docs examples, and
-    test constants will match too — an accepted, permanent source of false
-    positives, not something a future version should "fix" by escalating
-    confidence past medium. Confidence here stays "medium" forever by design.
-
-    Two name-convention guards keep the rule honest about what a NAME
-    identifies rather than how a value looks: CONF_* constants hold
-    config-schema key names, and ALL_CAPS *_KEY(S) constants whose literal
-    is a digit-free lowercase identifier hold storage or dictionary key
-    names (see _KEY_NAME_CONSTANT_RE for the exact conditions and the
-    false-negative avenue each guard accepts). Lowercase variables such as
-    api_key = "..." are outside both guards and always evaluated.
-
-    The stored snippet is the assignment target plus a masked value, e.g.
-    ``token = "[redacted, 40 chars]"``. If the match is real, the literal is
-    a live credential, and the finding travels far beyond this module (the
-    store on disk, every WebSocket listing, the GHSA export text an operator
-    may paste elsewhere), so the literal itself must never leave this
-    function (work plan item 1.3).
-    """
+    """Credential-named assignment target with a string-literal value; the
+    stored snippet masks the literal, which must never leave this function."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
-        # AnnAssign joins the rule (work plan item 4.8): an annotated
-        # ``token: str = "..."`` is the same hardcoded credential with a
-        # type hint in front of it.
+        # An annotated assignment is the same pattern with a type hint in front.
         if isinstance(node, ast.Assign):
             targets: list[ast.AST] = list(node.targets)
         elif isinstance(node, ast.AnnAssign):
@@ -348,7 +246,6 @@ def _is_sensitive_name(node: ast.AST) -> bool:
     return isinstance(node, ast.Name) and bool(_SENSITIVE_ARG_RE.search(node.id))
 
 
-# -- Rule 6: logging sensitive fields -----------------------------------------
 def _rule_sensitive_data_logged(tree: ast.AST, lines: list[str]) -> list[dict[str, Any]]:
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
@@ -368,23 +265,12 @@ def _rule_sensitive_data_logged(tree: ast.AST, lines: list[str]) -> list[dict[st
     return hits
 
 
-# -- Cross-integration extraction rules (work plan item SEC-5) ---------------
-# Advisory AST pattern matches, never verdicts, for the extraction patterns
-# HA's lack of inter-integration process isolation enables. Design
-# rationale, static-analysis limits, and the acknowledgment-marker escape
-# hatch are in docs/THREAT-MODEL.md ("Cross-integration extraction rules").
+# Cross-integration extraction rules; see docs/THREAT-MODEL.md.
 
-# Both enumeration surfaces on hass.config_entries return other
-# integrations' ConfigEntry objects, so rule (a) watches both.
+# Both enumeration surfaces return other integrations' ConfigEntry objects.
 _ENTRY_ENUM_METHODS = {"async_entries", "async_loaded_entries"}
 
-# hass.data keys registered by core's own bootstrap and helpers modules
-# (every string below was collected from the HassKey("...") registrations in
-# homeassistant/*.py and homeassistant/helpers/*.py of core 2026.2.3).
-# Subscripting hass.data with one of these reads core infrastructure, not
-# another integration's private state, so rule (c) skips them. A custom
-# integration whose domain happens to collide with one of these names is a
-# documented false negative of that skip.
+# Core bootstrap/helper HassKey names (core 2026.2.3); reads of these are not foreign.
 _CORE_HASS_DATA_KEYS = frozenset(
     {
         "aiohttp_clientsession",
@@ -442,9 +328,7 @@ _CORE_HASS_DATA_KEYS = frozenset(
     }
 )
 
-# Method names whose call on a path-like object touches file content, plus
-# the callables that build storage paths. Used by rule (b) to decide which
-# calls' string literals are worth inspecting at all.
+# File-content methods whose calls the storage rule inspects for string literals.
 _FILE_ACCESS_ATTRS = {"open", "read_text", "read_bytes", "write_text", "write_bytes"}
 
 _EXTRACTION_PATTERNS = frozenset(
@@ -456,23 +340,13 @@ _EXTRACTION_PATTERNS = frozenset(
     }
 )
 
-# A deliberate cross-integration read can be acknowledged in source with
-#     # ha-soc-allow: <pattern_id> <reason>
-# on the flagged line or the line directly above it. The finding is still
-# produced and stored (an acknowledgment must be visible in the table, never
-# a silent skip) but is marked acknowledged and does not open a Repairs
-# issue. The marker is only honored for the four extraction rules, must name
-# the exact pattern id, and must carry a non-empty reason.
+# `# ha-soc-allow: <pattern_id> <reason>` on the flagged line or the line above acknowledges a hit.
 _ALLOW_MARKER_RE = re.compile(r"#\s*ha-soc-allow:\s*([a-z0-9_]+)\s+(\S.*?)\s*$")
 
 
 def _apply_allow_marker(hit: dict[str, Any], lines: list[str]) -> None:
     """Mark an extraction-rule hit acknowledged when its line (or the line
-    above) carries a matching ha-soc-allow marker. Text-based on purpose:
-    the marker must be greppable and reviewable exactly where the flagged
-    code is, so a comment-shaped string literal on the same line would also
-    satisfy it, which is acceptable for an advisory mechanism.
-    """
+    above) carries a matching ha-soc-allow marker."""
     if hit["pattern"] not in _EXTRACTION_PATTERNS:
         return
     lineno = hit["lineno"]
@@ -556,12 +430,9 @@ def _unwrap_mapping_exprs(value: ast.AST) -> list[ast.AST]:
 def _entry_mapping_alias_nodes(
     scope: ast.AST, entry_names: set[str]
 ) -> tuple[set[str], set[ast.AST]]:
-    """Follow one level of aliasing: ``options = entry.options or {}`` and
-    ``for mapping in (entry.options or {}, entry.data or {})`` both bind a
-    name to the entry's mapping, so uses of that name must be analyzed like
-    uses of ``entry.options`` itself. Returns the alias names and the
-    attribute nodes consumed by those bindings (which must not themselves
-    count as whole-mapping consumption)."""
+    """Follow one level of aliasing of an entry's data/options mapping.
+    Returns the alias names and the attribute nodes consumed by those
+    bindings, which must not themselves count as whole-mapping consumption."""
     aliases: set[str] = set()
     defining_attrs: set[ast.AST] = set()
 
@@ -585,23 +456,16 @@ def _entry_mapping_alias_nodes(
         if isinstance(node, ast.Assign):
             _bind(node.value, node.targets)
         elif isinstance(node, (ast.For, ast.AsyncFor)):
-            # Only a tuple iteration binds the target to the mappings
-            # themselves; iterating a bare mapping yields its keys and is
-            # classified as consumption by _mapping_use_fires instead.
+            # Only a tuple iteration binds the target to the mappings themselves.
             if isinstance(node.iter, ast.Tuple):
                 _bind(node.iter, [node.target])
     return aliases, defining_attrs
 
 
 def _subscript_key_fires(key_node: ast.AST, kind: str, domain: str) -> bool:
-    """Whether reading one key of a foreign entry's data/options mapping is
-    extraction-shaped. A non-literal key is statically invisible and never
-    fires. An indiscriminate (no-domain) enumeration fires on any literal
-    key outside INTEGRATION_LOCATOR_KEYS; a targeted (foreign-literal)
-    enumeration fires only on credential-shaped keys, because a visible,
-    auditable read of one named domain's non-secret fields is how
-    legitimate cross-integration features (hygiene checks, enrichment) are
-    built."""
+    """Whether reading one literal key of a foreign entry's mapping is
+    extraction-shaped: any non-locator key for an indiscriminate enumeration,
+    credential-shaped keys only for a targeted one."""
     if not (isinstance(key_node, ast.Constant) and isinstance(key_node.value, str)):
         return False
     key = key_node.value
@@ -610,11 +474,7 @@ def _subscript_key_fires(key_node: ast.AST, kind: str, domain: str) -> bool:
     return bool(_SENSITIVE_ARG_RE.search(key))
 
 
-# Callables that flatten a whole mapping into an inspectable or printable
-# value. Passing a foreign entry's data/options to one of these (or logging
-# it) is the canonical extraction shape; passing it to any other callable
-# has a statically unknowable effect, and the rule stays quiet there rather
-# than flag every helper function that takes a mapping.
+# Callables that flatten a whole mapping; any other callee's effect is statically unknowable.
 _MAPPING_CONSUMING_CALLS = frozenset(
     {"str", "repr", "format", "dict", "list", "tuple", "set", "sorted", "iter", "dumps", "dump", "pformat"}
 ) | _LOGGER_METHOD_NAMES
@@ -624,18 +484,8 @@ def _mapping_use_fires(
     node: ast.AST, parents: dict[ast.AST, ast.AST], kind: str, domain: str
 ) -> bool:
     """Whether one use of a foreign entry's data/options mapping (or an
-    alias of it) is extraction-shaped. Exempt uses: subscript or ``.get``
-    with a key that passes _subscript_key_fires, membership tests (``key in
-    entry.data`` reveals key presence, not values), and passing the mapping
-    to a callable outside _MAPPING_CONSUMING_CALLS (its effect is
-    statically unknowable). Every other use (f-string interpolation,
-    ``str()``/``dict()``/``json.dumps()``, logging it, iterating it,
-    ``.items()``/``.values()``, returning or re-assigning the raw mapping
-    beyond one recognized alias) consumes the mapping wholesale and
-    fires."""
-    # `entry.data or {}` is still the mapping, just with a default: climb
-    # past defaulting BoolOps so the classification looks at what the
-    # defaulted expression is used FOR.
+    alias of it) is extraction-shaped."""
+    # Climb past defaulting BoolOps (`entry.data or {}`) to classify what the mapping is used for.
     parent = parents.get(node)
     while isinstance(parent, ast.BoolOp):
         node = parent
@@ -658,36 +508,11 @@ def _mapping_use_fires(
     return True
 
 
-# -- Rule 7 (SEC-5 a): foreign config entry read -----------------------------
 def _rule_foreign_config_entry_read(
     tree: ast.AST, lines: list[str], domain: str
 ) -> list[dict[str, Any]]:
     """Enumeration of other integrations' config entries combined with an
-    extraction-shaped read of their ``data``/``options`` in the same scope.
-
-    Exact semantics: a ``config_entries.async_entries()`` or
-    ``async_loaded_entries()`` call qualifies when it passes no domain
-    (indiscriminate) or a string-literal domain different from the scanned
-    integration's own (targeted). It fires only when, in the enclosing
-    function (the whole module for a top-level call), a variable bound to
-    the enumerated entries has its ``.data`` or ``.options`` consumed in an
-    extraction-shaped way per _mapping_use_fires: wholesale (f-string,
-    ``str()``/``dict()``/``json.dumps()``, logging, iteration, assignment
-    onward beyond the one-level aliasing _entry_mapping_alias_nodes
-    recognizes), or via a literal key that is outside
-    INTEGRATION_LOCATOR_KEYS for an indiscriminate call, or
-    credential-shaped for a targeted call. Bare enumeration for
-    ``entry.domain``/``entry.state`` never fires, and a call whose domain
-    argument is a variable never fires.
-
-    Obvious false positive: a function that enumerates entries for their
-    domains and, in the same scope, legitimately reads a non-locator field
-    of its own or a cooperating integration's entry.
-
-    Evasion: a domain held in a variable, a key held in a variable, or the
-    mapping (or the entry object) passed to a helper function whose body
-    lives in another scope is invisible to this rule.
-    """
+    extraction-shaped read of their ``data``/``options`` in the same scope."""
     parents = _parent_map(tree)
     hits: list[dict[str, Any]] = []
     seen: set[int] = set()
@@ -768,36 +593,11 @@ def _call_string_literals(node: ast.Call) -> list[str]:
     return [c.value for c in found]
 
 
-# -- Rule 8 (SEC-5 b): raw .storage / secrets.yaml file access ---------------
 def _rule_storage_file_access(
     tree: ast.AST, lines: list[str], domain: str
 ) -> list[dict[str, Any]]:
     """File access whose statically visible target is ``secrets.yaml`` or
-    another namespace under ``.storage/``.
-
-    Exact semantics: only calls that touch files or build storage paths are
-    inspected (``open``, ``Path(...)``, ``.read_text``/``.read_bytes``/
-    ``.write_text``/``.write_bytes``/``.open`` methods, ``os.path.join``,
-    ``hass.config.path``). Within such a call, any string literal
-    containing ``secrets.yaml`` fires unconditionally: that file holds the
-    user's YAML secrets and no integration owns a namespace inside it. A
-    literal whose path component is exactly ``.storage`` fires only when
-    the following component (in the same literal, or the next literal
-    argument of the same call) is visible and does not start with the
-    scanned integration's own domain: ``.storage/`` files are private Store
-    payloads, and an integration's own subdirectory or key prefix there is
-    the one legitimate target. When the following component is not a
-    literal, the target cannot be determined and nothing fires.
-
-    Obvious false positive: a filename that merely contains the substring
-    ``secrets.yaml`` (for example ``my_secrets.yaml``), or a legitimately
-    cooperating tool (a backup or migration helper) reading storage it
-    documents.
-
-    Evasion: a path assembled from variables, imported constants, or
-    f-strings carries no visible literal and is invisible to this rule, as
-    is any file API not in the inspected set.
-    """
+    another integration's namespace under ``.storage/``."""
     hits: list[dict[str, Any]] = []
     seen: set[int] = set()
     for node in ast.walk(tree):
@@ -825,33 +625,11 @@ def _rule_storage_file_access(
     return hits
 
 
-# -- Rule 9 (SEC-5 c): foreign hass.data read --------------------------------
 def _rule_foreign_hass_data_read(
     tree: ast.AST, lines: list[str], domain: str
 ) -> list[dict[str, Any]]:
     """``hass.data[...]`` subscripted with a string literal that looks like
-    another integration's domain.
-
-    Exact semantics: fires on a subscript of an attribute named ``data``
-    whose base's final dotted component is ``hass`` or ``_hass`` (``hass``,
-    ``self.hass``, ``coordinator.hass``), with a string-literal key that
-    (1) is a valid integration domain per core's own ``valid_domain``,
-    (2) is not the scanned integration's own domain or a key prefixed with
-    it (``mydomain_config`` is its own namespace), and (3) is not one of
-    the core bootstrap/helper HassKey names in _CORE_HASS_DATA_KEYS (those
-    reads reach core infrastructure, not another integration; the list was
-    collected from core 2026.2.3 and a domain colliding with it is a
-    documented false negative). Reads and writes both fire, since planting
-    data in another domain's slot is cross-integration tampering.
-
-    Obvious false positive: an integration reading a core component's
-    published hass.data slot, or a cooperating family of integrations
-    sharing one literal key by documented agreement.
-
-    Evasion: a key held in a variable or imported constant (the way most
-    code spells ``hass.data[DOMAIN]``), an f-string key, or ``.get()`` on
-    hass.data instead of a subscript is invisible to this rule.
-    """
+    another integration's domain."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Subscript):
@@ -874,30 +652,11 @@ def _rule_foreign_hass_data_read(
     return hits
 
 
-# -- Rule 10 (SEC-5 d): Store built on a foreign storage key -----------------
 def _rule_foreign_storage_key(
     tree: ast.AST, lines: list[str], domain: str
 ) -> list[dict[str, Any]]:
     """``Store(...)`` constructed with a storage-key literal outside the
-    scanned integration's own namespace.
-
-    Exact semantics: fires on calls whose callee is named ``Store`` (bare,
-    dotted like ``storage.Store``, or the subscripted generic form
-    ``Store[...]``) where the key argument (third positional, or the
-    ``key`` keyword, matching core's ``Store(hass, version, key)``
-    signature) is a string literal whose first dotted component is not the
-    scanned domain or a domain-prefixed name. ``Store(hass, 1,
-    "ha_soc.secrets")`` in ha_soc passes; ``Store(hass, 1,
-    "core.config_entries")`` anywhere else opens another party's private
-    storage file through the helper that owns its format.
-
-    Obvious false positive: an integration that deliberately shares one
-    storage namespace across a documented family of related domains, or a
-    brand-prefixed key that predates the integration's current domain name.
-
-    Evasion: a subclass of Store under another name, or a key held in a
-    variable, constant, or f-string, is invisible to this rule.
-    """
+    scanned integration's own namespace."""
     hits: list[dict[str, Any]] = []
     for node in ast.walk(tree):
         if not isinstance(node, ast.Call):
@@ -936,10 +695,7 @@ _RULES: list[Callable[[ast.AST, list[str]], list[dict[str, Any]]]] = [
     _rule_sensitive_data_logged,
 ]
 
-# Rules that need to know which integration is being scanned, so "foreign"
-# and "own namespace" have a referent. Kept in a separate registry to leave
-# the original two-argument rule signature (and its direct-call tests)
-# untouched.
+# Separate registry: these rules take the scanned domain as a third argument.
 _DOMAIN_RULES: list[Callable[[ast.AST, list[str], str], list[dict[str, Any]]]] = [
     _rule_foreign_config_entry_read,
     _rule_storage_file_access,
@@ -966,9 +722,7 @@ def _finding_from_hit(hit: dict[str, Any], rel_path: str, domain: str, now: str)
         "last_seen": now,
         "status": "new",
     }
-    # Only the extraction rules carry the acknowledgment mechanism; the
-    # fields are copied through so an acknowledged read is visible in the
-    # findings table rather than silently absent from it.
+    # Acknowledgment fields are copied through so an acknowledged read stays visible.
     if "acknowledged" in hit:
         finding["acknowledged"] = hit["acknowledged"]
         if hit.get("acknowledged_reason"):
@@ -978,22 +732,8 @@ def _finding_from_hit(hit: dict[str, Any], rel_path: str, domain: str, now: str)
 
 def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
     """Run every rule against one directory tree and report both the
-    findings and the coverage actually achieved (work plan item 4.8).
-    Blocking (file I/O and ``ast.parse``): production callers go through
-    IntegrationScanner, which runs this in an executor job.
-
-    The returned dict carries:
-
-    - ``findings``: the finding dicts, exactly as before.
-    - ``coverage``: {scanned_files, skipped_oversize, skipped_over_cap,
-      parse_failures, scanned_at} - what this pass really looked at, so a
-      domain that was never scanned (or only partially scanned) is never
-      rendered as a clean "0 findings".
-    - ``scanned_paths``: relative paths of the files whose rules actually
-      ran, the only files findings reconciliation may treat as evaluated.
-    - ``candidate_paths``: every .py file that exists in the tree, so a
-      finding whose file has been deleted outright can also be resolved.
-    """
+    findings and the coverage actually achieved. Blocking (file I/O and
+    ``ast.parse``): always run via an executor job."""
     all_files = sorted(directory.rglob("*.py"))
 
     sized_files: list[Path] = []
@@ -1010,19 +750,13 @@ def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
 
     skipped_over_cap = 0
     if len(sized_files) > MAX_FILES_PER_SCAN:
-        # Deterministic cap selection by size DESCENDING with the path as
-        # the tie-break (work plan item 4.8): under the old
-        # first-N-by-path selection, the large modules that most need
-        # scanning were exactly the ones a padded directory could push
-        # past the cap. The selected set is then scanned in path order so
-        # output stays stable and diffable.
+        # Cap selects by size descending with path tie-break, then scans in path order.
         skipped_over_cap = len(sized_files) - MAX_FILES_PER_SCAN
         sized_files.sort(key=lambda item: (-item[0], item[1]))
         sized_files = sized_files[:MAX_FILES_PER_SCAN]
     selected_files = sorted(path for _size, path in sized_files)
 
-    # Coverage must never be silently under-reported: any file this scan
-    # did not look at is logged, not just dropped.
+    # Skipped files are logged so coverage is never silently under-reported.
     if skipped_too_large or skipped_over_cap:
         _LOGGER.warning(
             "HA SOC scanner: %s of %s file(s) in %s were skipped (%s over the "
@@ -1045,11 +779,7 @@ def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
     for path in selected_files:
         rel_path = str(path.relative_to(directory))
         try:
-            # The rule loop lives INSIDE the per-file try (work plan item
-            # 4.8): a rule blowing up on one pathological file (a
-            # recursion bomb that parses but breaks an AST walk, a
-            # MemoryError from a giant expression) must cost only that
-            # file's coverage, never the rest of the integration's scan.
+            # The rule loop is inside the per-file try so one pathological file costs only its own coverage.
             source = path.read_text(encoding="utf-8")
             tree = ast.parse(source)
             lines = source.splitlines()
@@ -1069,12 +799,7 @@ def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
             RecursionError,
             MemoryError,
         ) as err:
-            # One bad file (binary fixture, non-UTF-8 source, a syntax
-            # error in code that HA itself may never load, or a crafted
-            # file whose deeply-nested-but-trivial expressions drive
-            # CPython's parser into RecursionError/MemoryError) must not
-            # abort the rest of this integration's scan; it is counted as
-            # a parse failure so coverage stays honest.
+            # One bad file must not abort the scan; it is counted as a parse failure.
             parse_failures += 1
             _LOGGER.debug(
                 "HA SOC scanner: skipping %s in domain %s (%s)",
@@ -1110,9 +835,7 @@ def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
 class IntegrationScanner:
     """Runs the rule set above against one integration's files on disk.
 
-    Static analysis only: `ast.parse`/`re` against source text at rest. This
-    class never imports or executes a scanned integration's code, and never
-    makes a network call of any kind.
+    Never imports or executes scanned code, and never makes a network call.
     """
 
     def __init__(self, hass: HomeAssistant, store: HaSocData) -> None:
@@ -1134,19 +857,14 @@ class IntegrationScanner:
     def _on_config_entry_changed(self, change: ConfigEntryChange, entry: ConfigEntry) -> None:
         if change != ConfigEntryChange.ADDED:
             return
-        # The operator's scanner toggle governs EVERY scan path, the
-        # on-install one included (work plan item 4.8) - the weekly sweep
-        # already honored it and this trigger silently did not.
+        # The scanner toggle governs every scan path, this trigger included.
         if not self._store.settings.get("scanner_enabled", True):
             return
-        # Newly added integration: scan it once, off the event loop, rather
-        # than waiting for the next weekly sweep.
+        # Scan a newly added integration once, off the event loop.
         self.hass.async_create_task(self._async_scan_on_install(entry.domain))
 
     async def _async_scan_on_install(self, domain: str) -> None:
-        """Wrapper for the fire-and-forget on-install scan task: without this,
-        a raise inside async_scan_integration would surface only as a silent
-        unretrieved task exception, so log-and-continue instead."""
+        """Log-and-continue wrapper for the fire-and-forget on-install scan task."""
         try:
             await self.async_scan_integration(domain)
         except Exception:  # noqa: BLE001 - a failed on-install scan must not go unlogged
@@ -1157,18 +875,11 @@ class IntegrationScanner:
         return scan_directory_report(directory, domain)
 
     def _coverage_table(self) -> dict[str, dict[str, Any]]:
-        """domain -> coverage record for the domain's latest completed
-        scan (work plan item 4.8). setdefault rather than a store.py
-        schema change: unknown top-level keys survive the store's
-        load-time merge, and the sibling-owned StoreData TypedDict can
-        pick the key up in its own pass."""
+        """domain -> coverage record for the domain's latest completed scan."""
         return self._store.data.setdefault("scanner_coverage", {})  # type: ignore[typeddict-item]
 
     def listing_payload(self) -> dict[str, Any]:
-        """The Scanner tab's listing: findings plus per-domain coverage,
-        so the frontend can render "not scanned" for a domain with no
-        coverage record instead of an implied clean zero (work plan item
-        4.8). The WS handler is the intended caller."""
+        """The Scanner tab's listing: findings plus per-domain coverage."""
         return {
             "findings": list(self._store.data["scanner_findings"].values()),
             "coverage": dict(self._coverage_table()),
@@ -1189,10 +900,7 @@ class IntegrationScanner:
         self._coverage_table()[domain] = report["coverage"]
         self._store.async_schedule_save()
 
-        # An acknowledged extraction finding is a deliberate, documented
-        # read (see _apply_allow_marker); it stays visible in the findings
-        # table but must not open a Repairs issue, because a permanent alarm
-        # on a reviewed pattern trains alarm fatigue.
+        # Acknowledged findings stay in the table but must not open a Repairs issue.
         new_notable = [
             f
             for f in findings
@@ -1211,24 +919,17 @@ class IntegrationScanner:
                 translation_placeholders={"domain": domain, "count": str(len(new_notable))},
             )
         elif not findings:
-            # Nothing found this pass. Harmless no-op if no issue was open;
-            # clears a stale one if the integration's code was fixed since.
+            # Clears a stale issue if the code was fixed since; no-op otherwise.
             ir.async_delete_issue(self.hass, DOMAIN, f"scanner_{domain}")
 
         return findings
 
     def _reconcile_domain_findings(self, domain: str, report: dict[str, Any]) -> None:
         """Move findings absent from this rescan to resolved with
-        resolved_reason "not_found_on_rescan" (work plan item 4.8).
+        resolved_reason "not_found_on_rescan".
 
-        Fail-open guard: only a finding whose file was actually scanned
-        this pass (or no longer exists at all) may be resolved - a file
-        skipped for size, the file cap, or a parse failure was NOT
-        evaluated, and absence from an unevaluated file is not evidence
-        the pattern is gone. A dismissed finding whose pattern is gone
-        from a fully scanned file also moves to resolved: "the code no
-        longer contains this" is the more accurate closed state than "an
-        analyst chose to ignore it".
+        Only a finding whose file was scanned this pass, or no longer
+        exists at all, may be resolved.
         """
         current_ids = {f["id"] for f in report["findings"]}
         scanned_paths: set[str] = report["scanned_paths"]
@@ -1255,17 +956,13 @@ class IntegrationScanner:
                 results[domain] = await self.async_scan_integration(domain)
             except Exception:  # noqa: BLE001 - one domain's failure must not abort the whole sweep
                 _LOGGER.exception("HA SOC scanner: scan of domain %s failed", domain)
-            # Weekly sweep, not latency sensitive — but a large install can
-            # have hundreds of integrations, and each one runs a blocking
-            # executor job; yield so the event loop isn't starved between them.
+            # Yield between blocking executor jobs so a large install does not starve the loop.
             await asyncio.sleep(0)
         return results
 
     def export_ghsa(self, finding: dict[str, Any]) -> dict[str, Any]:
-        """Pure function: shapes one finding into GHSA-like fields. No I/O,
-        no submission anywhere — this is for a human to copy into an
-        advisory themselves, never an automated disclosure channel.
-        """
+        """Pure function: shapes one finding into GHSA-like fields for a human
+        to copy; no I/O and no submission anywhere."""
         pattern_words = finding["pattern"].replace("_", " ")
         return {
             "title": f"{pattern_words.title()} in {finding['domain']}",

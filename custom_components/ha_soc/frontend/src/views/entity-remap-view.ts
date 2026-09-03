@@ -26,9 +26,7 @@ const KIND_LABELS: Record<string, string> = {
   other: "Other (review manually)",
 };
 
-// Work item 1.9 added backup-path reporting to the apply result. The shared
-// EntityRemapApplyResult in ha-soc-ws.ts now carries the optional backups
-// list itself; the alias remains only so existing references keep reading.
+// Alias kept so existing references keep reading.
 type ApplyResultWithBackups = EntityRemapApplyResult;
 
 @customElement("ha-soc-entity-remap-view")
@@ -46,38 +44,26 @@ export class HaSocEntityRemapView extends HaSocCustomizableView {
   @state() private _finding = false;
   @state() private _applying = false;
   @state() private _applyResult: ApplyResultWithBackups | null = null;
-  // Same acknowledgement pattern as the firewall card's _fwBackupAck: the
-  // server refuses an apply without backup_acknowledged, so the button stays
-  // disabled until the operator has confirmed they read the consequences.
+  // The server refuses an apply without backup_acknowledged; the button stays disabled until confirmed.
   @state() private _backupAck = false;
-  // A rejected apply (invalid_format, backup_not_acknowledged, ...) renders
-  // here instead of being swallowed by an unhandled promise rejection.
+  // A rejected apply renders here instead of an unhandled rejection.
   @state() private _applyError: string | null = null;
   @state() private _broken: BrokenEntityReference[] = [];
   @state() private _brokenLoading = true;
-  // Non-null when _load itself failed. Without this a rejected registry
-  // or broken-references fetch left _brokenLoading stuck true forever,
-  // an unbounded "Loading..." with no way to tell a failure from a slow
-  // sweep (work plan item 4.12).
+  // Non-null when _load failed; otherwise _brokenLoading would stay true forever.
   @state() private _brokenError: string | null = null;
   @state() private _brokenFilter: string | null = null;
-  // Column sort for the "referenced but not found" table (see sortable.ts);
-  // null keeps the sweep's reported order.
+  // Column sort for the "referenced but not found" table; null keeps the sweep order.
   @state() private _brokenSort: SortState | null = null;
-  // Applying a remap is owner-only server-side (D-23: it rewrites
-  // configuration), while finding references stays open to admins. False
-  // by default and on a failed lookup, so the apply controls fail closed
-  // like the WS gate underneath.
+  // Apply is owner-only server-side (find references is admin); false by default and on a failed lookup, fail closed.
   @state() private _isOwner = false;
 
   private static readonly BROKEN_SORT: Record<string, (b: BrokenEntityReference) => unknown> = {
     entity_id: (b) => b.entity_id,
-    // A row can have several referrers; sort on the first one's name, which
-    // is also what the cell visibly leads with.
+    // Sort on the first referrer's name, which the cell leads with.
     referenced_by: (b) => b.referenced_by[0]?.name ?? null,
   };
-  // Pre-selected: constrain the New/replacement suggestions to the same
-  // entity domain as the Old entity (binary_sensor→binary_sensor, etc.).
+  // Constrain replacement suggestions to the Old entity's domain.
   @state() private _filterSameType = true;
 
   connectedCallback(): void {
@@ -98,8 +84,6 @@ export class HaSocEntityRemapView extends HaSocCustomizableView {
       this._broken = broken;
       this._isOwner = !!access.is_owner;
     } catch (err: any) {
-      // A failed fetch must not leave the sweep reading "Loading..."
-      // forever; store the server's message and show it distinctly.
       this._brokenError = err?.message ?? String(err);
     } finally {
       this._brokenLoading = false;
@@ -134,9 +118,7 @@ export class HaSocEntityRemapView extends HaSocCustomizableView {
     this._onFind();
   }
 
-  // Selecting a broken entity id enters it into the Old/broken field (without
-  // running the search yet), so the operator can pick a same-type replacement
-  // first. Scrolls the remap card into view.
+  // Enters the id into the Old field without searching, and scrolls the remap card into view.
   private _selectOld(entityId: string) {
     this._oldEntityId = entityId;
     this._newEntityId = "";
@@ -152,8 +134,7 @@ export class HaSocEntityRemapView extends HaSocCustomizableView {
     return entityId.includes(".") ? entityId.split(".", 1)[0] : "";
   }
 
-  // New/replacement suggestions, optionally constrained to the Old entity's
-  // domain when "Filter by same Entity Type" is on.
+  // Replacement suggestions, optionally constrained to the Old entity's domain.
   private _newEntityOptions(): EntityRegistryEntry[] {
     const domain = this._domainOf(this._oldEntityId);
     if (this._filterSameType && domain) {
@@ -182,18 +163,14 @@ export class HaSocEntityRemapView extends HaSocCustomizableView {
         this._newEntityId,
         this._backupAck
       );
-      // The acknowledgment covered THIS apply only; require a fresh one for
-      // the next run (the firewall card resets _fwBackupAck the same way).
+      // The acknowledgment covered this apply only; require a fresh one next run.
       this._backupAck = false;
-      // _onFind() clears _applyResult as part of a fresh search, so refresh
-      // the report/broken list first, then set the result last so it isn't
-      // wiped out before it ever gets a chance to render.
+      // _onFind() clears _applyResult, so refresh first and set the result last.
       await this._onFind();
       this._broken = await fetchBrokenEntityReferences(this.hass);
       this._applyResult = result;
     } catch (err: any) {
-      // Surface the server's own rejection (invalid_format on a malformed
-      // entity_id, backup_not_acknowledged, ...) instead of swallowing it.
+      // Surface the server's own rejection instead of swallowing it.
       this._applyError = err?.message ?? err?.code ?? "Applying the remap failed.";
     } finally {
       this._applying = false;

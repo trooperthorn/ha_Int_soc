@@ -27,9 +27,6 @@ def _run(rule, source: str, domain: str = DOMAIN) -> list[dict]:
     return rule(ast.parse(src), src.splitlines(), domain)
 
 
-# -- Rule (a): foreign_config_entry_read -------------------------------------
-
-
 def test_entry_read_fires_on_indiscriminate_stringify() -> None:
     hits = _run(
         _rule_foreign_config_entry_read,
@@ -261,9 +258,6 @@ def test_entry_read_fires_on_mapping_passed_to_consuming_callable() -> None:
     assert len(hits) == 1
 
 
-# -- Rule (b): storage_file_access -------------------------------------------
-
-
 def test_storage_access_fires_on_foreign_storage_literal() -> None:
     hits = _run(
         _rule_storage_file_access,
@@ -383,9 +377,6 @@ def test_storage_access_quiet_on_non_component_substring() -> None:
     assert hits == []
 
 
-# -- Rule (c): foreign_hass_data_read ----------------------------------------
-
-
 def test_hass_data_fires_on_foreign_domain_literal() -> None:
     hits = _run(
         _rule_foreign_hass_data_read,
@@ -469,9 +460,6 @@ def test_hass_data_quiet_on_non_hass_base_and_on_get() -> None:
     )
 
 
-# -- Rule (d): foreign_storage_key -------------------------------------------
-
-
 def test_storage_key_fires_on_foreign_literal() -> None:
     hits = _run(
         _rule_foreign_storage_key,
@@ -516,10 +504,7 @@ def test_storage_key_quiet_on_own_namespace() -> None:
 
 
 def test_storage_key_quiet_on_variable_key_and_subclass() -> None:
-    # A key held in a constant and a Store subclass under another name are
-    # both invisible, which the rule's docstring names as its evasion
-    # avenue; ha_soc's own HaSocStore relies on exactly this shape and is
-    # deliberately not special-cased.
+    # A key in a constant and a Store subclass under another name are the rule's documented evasion avenue.
     assert (
         _run(
             _rule_foreign_storage_key,
@@ -532,9 +517,6 @@ def test_storage_key_quiet_on_variable_key_and_subclass() -> None:
         )
         == []
     )
-
-
-# -- Acknowledgment marker ----------------------------------------------------
 
 
 def test_allow_marker_records_acknowledged_not_skipped(tmp_path: Path) -> None:
@@ -574,9 +556,6 @@ def test_allow_marker_requires_matching_pattern(tmp_path: Path) -> None:
     assert len(extraction) == 1
     assert extraction[0]["acknowledged"] is False
     assert "acknowledged_reason" not in extraction[0]
-
-
-# -- The self-scan honesty requirement ---------------------------------------
 
 
 def test_ha_soc_passes_its_own_extraction_rules() -> None:

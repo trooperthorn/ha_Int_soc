@@ -66,11 +66,6 @@ async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers
-# ---------------------------------------------------------------------------
-
-
 def test_first_picks_first_present_nonempty() -> None:
     obj = {"a": None, "b": "", "c": "value", "d": "other"}
     assert _first(obj, "a", "b", "c", "d") == "value"
@@ -248,11 +243,6 @@ def test_derive_wan_no_gateway_is_all_none() -> None:
     }
 
 
-# ---------------------------------------------------------------------------
-# async_network_overview — configuration, reachability, correlation
-# ---------------------------------------------------------------------------
-
-
 async def test_overview_not_configured(hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore) -> None:
     overview = await async_network_overview(hass, store, secrets)
     assert overview["configured"] is False
@@ -357,11 +347,6 @@ async def test_overview_full_snapshot_and_endpoint_correlation(
     assert by_ip["10.0.0.20"]["integration_match"] is None
 
     assert o["failing_endpoint_count"] == 1
-
-
-# ---------------------------------------------------------------------------
-# SSID join + ACL audit report (end to end through the overview)
-# ---------------------------------------------------------------------------
 
 
 def test_normalize_acl_rule_ipv4_resolves_networks_ports_and_order() -> None:
@@ -548,13 +533,6 @@ async def test_overview_acl_unavailable_when_no_endpoint(
 
     assert o["acl"]["available"] is False
     assert o["acl"]["endpoints_tried"]  # lists what was probed, for the audit
-
-
-# ---------------------------------------------------------------------------
-# Firewall Policies — UniFi's zone-based default allow/deny UI, genuinely
-# separate from ACL Rules (confirmed against a live controller: acl-rules
-# returned count=0 while the real rules lived under firewall/policies).
-# ---------------------------------------------------------------------------
 
 
 def test_normalize_firewall_policy_network_source_ip_destination() -> None:
@@ -772,11 +750,6 @@ async def test_overview_firewall_policies_unreachable_reports_error(
     assert o["firewall_policies"]["error"]
 
 
-# ---------------------------------------------------------------------------
-# HA server port <-> ACL rule correlation
-# ---------------------------------------------------------------------------
-
-
 def test_correlate_server_ports_no_open_ports_reports_unavailable() -> None:
     assert correlate_server_ports_with_rules(None, [])["available"] is False
     assert correlate_server_ports_with_rules([], [])["available"] is False
@@ -871,11 +844,6 @@ def test_correlate_server_ports_firewall_policy_with_string_and_range_ports() ->
     assert by_port[8123]["covered_by"] == ["Policy: Allow LAN to HA (single port)"]
     assert by_port[8443]["covered_by"] == ["Policy: Allow LAN to HA (range)"]
     assert by_port[9999]["status"] == "uncovered"
-
-
-# ---------------------------------------------------------------------------
-# Protect
-# ---------------------------------------------------------------------------
 
 
 async def test_protect_not_configured(hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore) -> None:
@@ -995,16 +963,6 @@ async def test_protect_official_event_subscription_notice_still_returns_cameras(
     assert out["events"] == []
     assert out["events_error"] is not None
     assert "/subscribe/events" in out["events_error"]
-
-
-# ---------------------------------------------------------------------------
-# SEC-3: the short-lived connection object must never print its key
-# ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# Sprint 4 client hardening (work plan item 4.11)
-# ---------------------------------------------------------------------------
 
 
 class _FakeStreamReader:

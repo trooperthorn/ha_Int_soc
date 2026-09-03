@@ -46,9 +46,6 @@ def _run(rule, source: str) -> list[dict]:
     return rule(ast.parse(source), source.splitlines())
 
 
-# -- Robustness ---------------------------------------------------------------
-
-
 def test_scanner_survives_recursion_bomb(tmp_path: Path) -> None:
     """Two bombs, one scan: a parse-level bomb (deep parentheses drive the
     parser into RecursionError, counted as a parse failure) and a
@@ -77,9 +74,6 @@ def test_deep_attribute_chain_rule_is_iterative() -> None:
     source = "value = obj" + ".attr" * 3000 + ".load(data)\n"
     hits = _rule_insecure_deserialization(ast.parse(source), source.splitlines())
     assert hits == []  # the owner is not pickle/yaml-like; the point is no crash
-
-
-# -- Coverage honesty ---------------------------------------------------------
 
 
 async def test_unscanned_domain_is_not_zero(
@@ -126,9 +120,6 @@ def test_file_cap_selects_largest_files(tmp_path: Path) -> None:
     assert report["coverage"]["skipped_over_cap"] == 1
     assert big_name in report["scanned_paths"]
     assert any(f["file"] == big_name for f in report["findings"])
-
-
-# -- Findings reconciliation --------------------------------------------------
 
 
 async def test_scanner_reconciles_findings(
@@ -181,9 +172,6 @@ async def test_reconciliation_skips_unevaluated_files(
     assert "resolved_reason" not in stored
 
 
-# -- Install-scan toggle ------------------------------------------------------
-
-
 async def test_install_scan_honors_toggle(
     hass: HomeAssistant, scanner: IntegrationScanner, store: HaSocData
 ) -> None:
@@ -198,9 +186,6 @@ async def test_install_scan_honors_toggle(
         scanner._on_config_entry_changed(ConfigEntryChange.ADDED, entry)
         await hass.async_block_till_done()
         spy.assert_awaited_once_with("some_domain")
-
-
-# -- Rule extensions ----------------------------------------------------------
 
 
 def test_os_system_and_popen_join_shell_rule() -> None:

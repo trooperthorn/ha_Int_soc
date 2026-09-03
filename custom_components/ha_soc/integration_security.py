@@ -1,43 +1,8 @@
-"""Integration Security — a PROVENANCE view of every installed integration.
+"""Integration Security: a provenance view of every installed integration.
 
-Read integration_security's companion design doc for the full rationale.
-The one rule that governs everything here: **this measures provenance, not
-safety.** A Home Assistant integration is arbitrary Python running
-in-process with no sandbox — nothing measured here proves the code is safe
-to run. It measures how much is known about where the code came from and
-how it's maintained. Every surface that shows this MUST say so; the
-frontend never renders "Safe"/"Verified"/"Trusted" or a bare shield.
-
-What this module computes locally, with no network call and no new
-privilege (signals 1/4/8/9 of the design):
-
-- **Tier** — how vetted the source is. Core (ships inside HA, hassfest-
-  validated) vs. custom (anything under custom_components/). Where HACS is
-  installed we make a best-effort attempt to tell HACS-managed content
-  apart from truly unmanaged custom code, and — per the feature request's
-  variance on signal 4 - flag only the lowest-provenance HACS origin the
-  runtime data can actually distinguish: a custom (user-added) repository,
-  never default-store HACS content. The design also named a
-  "custom_source_list" flag, but HACS's introspectable runtime data
-  carries only the default/custom repository split, so that flag is not
-  produced anywhere and this module no longer pretends it might be (work
-  plan item 4.10: produce it from HACS data or remove it; removed,
-  because there is no honest data source for it). When HACS internals
-  aren't introspectable we say so (source "unverified") rather than
-  guessing.
-- **quality_scale / integration_type** — read straight from the manifest
-  (core integrations carry a real quality_scale today).
-- **License present** (signal 8) — a local file check in the integration's
-  own directory; core inherits HA's own license.
-- **Scanner findings** (signal 9) — reuses this project's existing
-  AST-based integration scanner; no new detection, just surfacing.
-
-The GitHub-derived signals (2/5/6/7/10 — release vs branch, identity
-assurance, recency, popularity, archived) need an outbound API call and an
-optional token; they're gathered by github_provenance.py and cached in the
-store, and merged in here as a per-integration ``github`` block that is
-None/"not collected" whenever no token is set or a repo URL can't be
-discovered. This module never blocks on the network.
+This measures provenance, not safety. Nothing here proves code is safe to
+run, and the frontend never renders "Safe", "Verified", or "Trusted"
+(signal design: docs/design.md).
 """
 from __future__ import annotations
 
@@ -71,17 +36,10 @@ def _license_present_sync(path: str) -> bool:
 
 
 def _scan_custom_components_sync(root: str) -> tuple[list[str], dict[str, bool]]:
-    """One pass over custom_components/: every directory that looks like an
-    integration (has a manifest.json) — the population that most needs a
-    provenance view — plus whether each carries a license file (signal 8).
+    """One pass over custom_components/: every directory with a manifest.json,
+    plus whether each carries a license file.
 
-    Synchronous disk I/O, so this must ONLY ever run in the executor (the
-    overview below calls it via async_add_executor_job), never on the event
-    loop: Home Assistant's asyncio protection rightly flags a bare listdir
-    there, and on a slow SD card it would stall the entire loop every time
-    the Integration Security tab is opened. Doing the license check in the
-    same pass also collapses what used to be one executor hop per custom
-    integration into a single scan.
+    Synchronous disk I/O: executor only, never the event loop.
     """
     if not os.path.isdir(root):
         return [], {}
@@ -98,10 +56,7 @@ def _scan_custom_components_sync(root: str) -> tuple[list[str], dict[str, bool]]
 
 
 def _repo_url_from_integration(documentation: str | None, issue_tracker: str | None) -> str | None:
-    """Best-effort GitHub owner/repo discovery from the manifest's own URLs.
-    issue_tracker is usually a github issues link; documentation often is
-    too for custom integrations (core points at home-assistant.io, which
-    yields nothing — honestly reported as no repo URL)."""
+    """Best-effort GitHub owner/repo discovery from the manifest's own URLs."""
     for candidate in (issue_tracker, documentation):
         if not candidate:
             continue
@@ -113,13 +68,8 @@ def _repo_url_from_integration(documentation: str | None, issue_tracker: str | N
 
 
 def _hacs_domain_origins(hass: HomeAssistant) -> dict[str, str] | None:
-    """Best-effort map of {domain: origin} from HACS's own runtime data,
-    where origin is 'default' (curated store), 'custom_repo', or
-    'custom_source_list'. Returns None when HACS isn't installed or its
-    internals aren't introspectable — in which case we DON'T guess a tier
-    or a flag, we report the source as unverified. HACS internals aren't a
-    stable API, so every access is defensive.
-    """
+    """Best-effort {domain: origin} from HACS runtime data ('default' or the
+    custom-repo flag); None when HACS is absent or not introspectable."""
     hacs = hass.data.get("hacs")
     if hacs is None:
         return None
@@ -150,27 +100,22 @@ async def async_integration_security_overview(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> dict[str, Any]:
     """Everything the Integration Security view needs. Local signals only;
-    GitHub-derived signals are merged from the store cache (populated
-    out-of-band by github_provenance.py) and are None when not collected.
-
-    The token itself lives in the private secret store (SEC-1); only its
-    presence is asked for here, to drive the "configured" flag and the
-    cache merge, and the value never enters this function.
+    GitHub-derived signals are merged from the store cache and are None
+    when not collected. Only the token's presence is checked; its value
+    never enters this function.
     """
     github_configured = bool(await secrets.async_get(CONF_GITHUB_TOKEN))
     hacs_origins = _hacs_domain_origins(hass)
     hacs_installed = hacs_origins is not None or "hacs" in hass.config.components
 
-    # Disk I/O off the event loop — see _scan_custom_components_sync.
+    # Disk I/O off the event loop.
     custom_domains, license_map = await hass.async_add_executor_job(
         _scan_custom_components_sync, hass.config.path("custom_components")
     )
-    # Also include core domains that have an active config entry, so the
-    # view isn't custom-only — a user should see their whole surface.
+    # Core domains with an active config entry are included so the view is not custom-only.
     entry_domains = {entry.domain for entry in hass.config_entries.async_entries()}
     all_domains = sorted(set(custom_domains) | entry_domains)
 
-    # Scanner findings per domain (signal 9) — reuse what's already stored.
     scanner_counts: dict[str, int] = {}
     for finding in store.data.get("scanner_findings", {}).values():
         domain = finding.get("domain")
@@ -194,12 +139,7 @@ async def async_integration_security_overview(
         else:
             tier = INTEGRATION_TIER_CUSTOM
 
-        # Variance on signal 4: flag ONLY the custom-repo HACS origin.
-        # Default-store HACS content is not flagged, an unmanaged
-        # custom_components/ drop is its own tier (not a "flag"), and the
-        # once-planned custom_source_list flag is not produced because
-        # HACS runtime data exposes no such origin (see module docstring,
-        # work plan item 4.10).
+        # Only the custom-repo HACS origin is flagged.
         flags: list[str] = []
         if hacs_origins is not None and domain in hacs_origins:
             origin = hacs_origins[domain]
@@ -212,10 +152,7 @@ async def async_integration_security_overview(
 
         license_present: bool | None
         if is_custom:
-            # Precomputed by the single executor scan above for anything that
-            # actually lives under custom_components/; the fallback covers a
-            # custom domain resolved from elsewhere (shouldn't happen, but a
-            # wrong answer here would be worse than one extra executor hop).
+            # Fallback covers a custom domain resolved from outside custom_components/.
             license_present = license_map.get(domain)
             if license_present is None:
                 path = hass.config.path("custom_components", domain)
@@ -237,8 +174,7 @@ async def async_integration_security_overview(
                 "repo_url": repo_url,
                 "flags": flags,
                 "scanner_findings": scanner_counts.get(domain, 0),
-                # None => not collected (no token, or no repo URL). Never a
-                # guess. Populated from the store cache when available.
+                # None means not collected, never a guess.
                 "github": github_cache.get(repo_url) if (github_configured and repo_url) else None,
             }
         )

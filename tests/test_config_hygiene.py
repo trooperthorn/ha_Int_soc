@@ -15,15 +15,12 @@ from homeassistant.setup import async_setup_component
 from custom_components.ha_soc import config_hygiene as ch
 
 
-# -- Unknown service references (the recursive walker) -----------------------
-
-
 async def test_unknown_service_reference_is_found(hass: HomeAssistant) -> None:
     config = [
         {
             "id": "auto1",
             "alias": "Broken Service",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"service": "nonexistent_domain.nonexistent_service", "data": {}}],
         }
     ]
@@ -40,7 +37,7 @@ async def test_known_service_reference_is_not_flagged(hass: HomeAssistant) -> No
         {
             "id": "auto2",
             "alias": "Working Service",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
         }
     ]
@@ -56,7 +53,7 @@ async def test_unknown_service_found_inside_nested_choose_block(hass: HomeAssist
         {
             "id": "auto3",
             "alias": "Nested",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [
                 {
                     "choose": [
@@ -99,7 +96,7 @@ async def test_action_in_notify_data_not_reported_as_unknown_service(hass: HomeA
         {
             "id": "auto_actionable",
             "alias": "Actionable notification",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [
                 {
                     "service": "persistent_notification.create",
@@ -120,7 +117,7 @@ async def test_templated_service_call_is_not_flagged(hass: HomeAssistant) -> Non
         {
             "id": "auto4",
             "alias": "Dynamic",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"service": "{{ 'light.turn_on' }}", "data": {}}],
         }
     ]
@@ -128,24 +125,13 @@ async def test_templated_service_call_is_not_flagged(hass: HomeAssistant) -> Non
     await hass.async_block_till_done()
 
     # Should not crash, and should not report the template text itself as
-    # a broken "domain.service" — it never matches the plain-string shape.
+    # a broken "domain.service", it never matches the plain-string shape.
     found = await ch.async_unknown_service_references(hass)
     assert not any("{{" in f["service"] for f in found)
 
 
-# -- Unknown device references ------------------------------------------------
-
-
 async def test_unknown_device_reference_is_found(hass: HomeAssistant) -> None:
-    # Real finding from an earlier version of this test: HA validates
-    # every device trigger/condition/action against the device registry
-    # at automation SETUP time — an automation authored against a device
-    # that never existed fails to set up and gets disabled, with HA's own
-    # clear error log. This check's actual gap is narrower and still
-    # real: a device that existed (so the automation loaded fine) and was
-    # later REMOVED from the registry, leaving the automation's already-
-    # loaded config holding a now-dangling device_id with no HA-native
-    # warning at all. Simulate exactly that.
+    # A device removed from the registry after the automation loaded leaves a dangling device_id with no HA-native warning.
     entry = MockConfigEntry(domain="test_platform")
     entry.add_to_hass(hass)
     device = dr.async_get(hass).async_get_or_create(config_entry_id=entry.entry_id, identifiers={("test", "dev1")})
@@ -154,7 +140,7 @@ async def test_unknown_device_reference_is_found(hass: HomeAssistant) -> None:
         {
             "id": "auto5",
             "alias": "Device Automation",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"device_id": device.id, "domain": "switch", "type": "turn_on", "entity_id": "switch.x"}],
         }
     ]
@@ -171,15 +157,12 @@ async def test_unknown_device_reference_is_found(hass: HomeAssistant) -> None:
     assert any(f["device_id"] == device.id for f in found_after)
 
 
-# -- Unknown area/floor/label references -------------------------------------
-
-
 async def test_unknown_area_reference_is_found(hass: HomeAssistant) -> None:
     config = [
         {
             "id": "auto6",
             "alias": "Ghost Area",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"service": "light.turn_on", "target": {"area_id": "nonexistent-area"}}],
         }
     ]
@@ -196,7 +179,7 @@ async def test_real_area_reference_is_not_flagged(hass: HomeAssistant) -> None:
         {
             "id": "auto7",
             "alias": "Real Area",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "action": [{"service": "light.turn_on", "target": {"area_id": area.id}}],
         }
     ]
@@ -205,9 +188,6 @@ async def test_real_area_reference_is_not_flagged(hass: HomeAssistant) -> None:
 
     found = await ch.async_unknown_area_floor_label_references(hass)
     assert not any(f["ref_id"] == area.id for f in found)
-
-
-# -- alert: unknown entity/notifier references -------------------------------
 
 
 async def test_alert_unknown_entity_and_notifier(hass: HomeAssistant) -> None:
@@ -241,9 +221,6 @@ async def test_alert_with_real_entity_is_not_flagged(hass: HomeAssistant) -> Non
     assert not any(f["alert_id"] == "real_alert" for f in found)
 
 
-# -- person: unknown device_tracker -------------------------------------------
-
-
 async def test_person_unknown_tracker_is_found(hass: HomeAssistant) -> None:
     hass.states.async_set("person.alice", "home", {"device_trackers": ["device_tracker.nonexistent"]})
     found = await ch.async_person_unknown_trackers(hass)
@@ -257,16 +234,10 @@ async def test_person_real_tracker_is_not_flagged(hass: HomeAssistant) -> None:
     assert not any(f["ref"] == "device_tracker.alice_phone" for f in found)
 
 
-# -- group: unknown member -----------------------------------------------------
-
-
 async def test_group_unknown_member_is_found(hass: HomeAssistant) -> None:
     hass.states.async_set("group.all_locks", "locked", {"entity_id": ["lock.nonexistent"]})
     found = await ch.async_group_unknown_members(hass)
     assert any(f["group"] == "group.all_locks" and f["ref"] == "lock.nonexistent" for f in found)
-
-
-# -- Registry tidiness: empty areas/floors -------------------------------------
 
 
 async def test_empty_area_is_found(hass: HomeAssistant) -> None:
@@ -292,9 +263,6 @@ async def test_empty_floor_is_found(hass: HomeAssistant) -> None:
     assert "Unused Floor" in result["floors"]
 
 
-# -- customize: blocks ----------------------------------------------------------
-
-
 async def test_unknown_customize_entity_is_found(hass: HomeAssistant) -> None:
     from unittest.mock import patch
 
@@ -314,9 +282,6 @@ async def test_customize_for_real_entity_is_not_flagged(hass: HomeAssistant) -> 
         found = await ch.async_unknown_customize_entities(hass)
 
     assert "light.kitchen" not in found
-
-
-# -- Degrade-honestly paths (component not loaded at all) ---------------------
 
 
 async def test_orphaned_statistics_returns_empty_without_recorder(hass: HomeAssistant) -> None:
@@ -342,9 +307,6 @@ async def test_proximity_returns_empty_without_entries(hass: HomeAssistant) -> N
 async def test_notify_group_returns_empty_without_entries(hass: HomeAssistant) -> None:
     found = await ch.async_notify_group_unknown_members(hass)
     assert found == []
-
-
-# -- Notify coverage gaps -----------------------------------------------------
 
 
 class _FakeStore:

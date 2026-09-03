@@ -20,9 +20,6 @@ import homeassistant.util.yaml as ha_yaml
 from custom_components.ha_soc import entity_remap as remap
 
 
-# -- Pure structure-walker tests (no HA needed) ------------------------------
-
-
 def test_exact_replace_scalar():
     new_value, count = remap._exact_replace("sensor.old", "sensor.old", "sensor.new")
     assert new_value == "sensor.new"
@@ -50,9 +47,6 @@ def test_exact_replace_nested_structure():
 def test_mentions_substring_finds_template_reference():
     assert remap._mentions_substring({"value_template": "{{ states('sensor.old') }}"}, "sensor.old")
     assert not remap._mentions_substring({"value_template": "{{ states('sensor.other') }}"}, "sensor.old")
-
-
-# -- Automation detect + apply ------------------------------------------------
 
 
 AUTOMATION_YAML = [
@@ -88,7 +82,7 @@ async def test_automation_template_only_reference_is_not_editable(hass: HomeAssi
         {
             "id": "auto2",
             "alias": "Templated Automation",
-            "trigger": [{"platform": "time", "at": "12:00:00"}],
+            "trigger": [{"platform": "state", "entity_id": "sensor.never_changes"}],
             "condition": [{"condition": "template", "value_template": "{{ states('sensor.old_name') == 'on' }}"}],
             "action": [{"service": "persistent_notification.create", "data": {"message": "hi"}}],
         }
@@ -104,14 +98,7 @@ async def test_automation_template_only_reference_is_not_editable(hass: HomeAssi
 
 
 async def test_automation_not_in_flat_file_is_not_editable(hass: HomeAssistant) -> None:
-    # Real production bug this guards against: an automation with a
-    # config `id:` that's genuinely loaded (e.g. via
-    # !include_dir_merge_list into a separate file, or a package) but
-    # isn't present in the single automations.yaml this module reads and
-    # writes. Previously "editable" only checked for a unique_id, so this
-    # was promised as "will fix" in the preview and then silently did
-    # nothing on apply — deliberately no automations.yaml written here,
-    # matching that exact split-file scenario.
+    # Deliberately no automations.yaml: the loaded automation lives in a split file this module cannot edit.
     config = [
         {
             "id": "auto_split",
@@ -132,9 +119,6 @@ async def test_automation_not_in_flat_file_is_not_editable(hass: HomeAssistant) 
     result = await remap.async_apply_remap(hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True)
     assert result["fixed"]["automation"] == 0
     assert result["errors"] == []
-
-
-# -- Script detect + apply ----------------------------------------------------
 
 
 SCRIPT_YAML = {
@@ -160,9 +144,6 @@ async def test_find_and_apply_script_reference(hass: HomeAssistant) -> None:
     assert on_disk["test_script"]["sequence"][0]["target"]["entity_id"] == "sensor.new_name"
 
 
-# -- Scene detect + apply (entity_id is a dict KEY, not a value) -------------
-
-
 SCENE_YAML = [{"id": "scene1", "name": "Test Scene", "entities": {"sensor.old_name": "on"}}]
 
 
@@ -181,9 +162,6 @@ async def test_find_and_apply_scene_reference(hass: HomeAssistant) -> None:
     on_disk = ha_yaml.load_yaml(hass.config.path("scenes.yaml"))
     assert "sensor.new_name" in on_disk[0]["entities"]
     assert "sensor.old_name" not in on_disk[0]["entities"]
-
-
-# -- Helpers (config-entry-backed) -------------------------------------------
 
 
 async def test_find_and_apply_scalar_helper_reference(hass: HomeAssistant) -> None:
@@ -214,10 +192,7 @@ async def test_find_and_apply_list_helper_reference(hass: HomeAssistant) -> None
 
 
 async def test_unmodeled_entry_mention_is_detect_only(hass: HomeAssistant) -> None:
-    # SEC-4 narrowed the fallback to the INTEGRATION_LOCATOR_KEYS
-    # allowlist, so the mention must sit under a locator key (here
-    # "source") to be found at all; the non-locator case is covered by
-    # test_entity_remap_reads_only_locator_keys.
+    # The mention must sit under an INTEGRATION_LOCATOR_KEYS key (here "source") to be found at all.
     entry = MockConfigEntry(
         domain="unmodeled_domain", title="My Unmodeled", options={"source": "{{ states('sensor.old_name') }}"}
     )
@@ -279,9 +254,6 @@ async def test_no_references_produces_empty_report(hass: HomeAssistant) -> None:
     assert report["editable_count"] == 0
 
 
-# -- Broken-reference scan (Spook-inspired proactive check) -----------------
-
-
 async def test_scan_finds_broken_automation_reference(hass: HomeAssistant) -> None:
     config = [
         {
@@ -315,9 +287,6 @@ async def test_scan_ignores_live_entity_references(hass: HomeAssistant) -> None:
     broken = await remap.async_scan_broken_references(hass)
     entity_ids = [b["entity_id"] for b in broken]
     assert "sensor.alive" not in entity_ids
-
-
-# -- Lovelace dashboards ("Views") -------------------------------------------
 
 
 class _FakeDashboardConfig:
@@ -378,9 +347,6 @@ async def test_scan_finds_broken_helper_reference(hass: HomeAssistant) -> None:
     entity_ids = [b["entity_id"] for b in broken]
     assert "sensor.gone" in entity_ids
     assert broken[entity_ids.index("sensor.gone")]["referenced_by"][0]["kind"] == "helper"
-
-
-# -- Item 1.9: backups, YAML taint refusal, dict keys, entry.data, reloads ---
 
 
 async def test_remap_backs_up_dashboard_and_helper(hass: HomeAssistant) -> None:
@@ -458,11 +424,7 @@ _INCLUDE_TAINTED_AUTOMATIONS = """\
 
 
 async def _assert_tainted_yaml_refused(hass: HomeAssistant, tainted_text: str) -> None:
-    # D-13 (b): the raw file text carries !secret or !include, so every
-    # item in it must be reported "manual edit required" and the file must
-    # never be rewritten. The running automation is set up from an
-    # equivalent plain config because the loaded state and the on-disk
-    # file are separate inputs here.
+    # Tainted file text (!secret or !include) must report "manual edit required" and never be rewritten.
     path = hass.config.path("automations.yaml")
     with open(path, "w", encoding="utf-8") as file:
         file.write(tainted_text)
@@ -547,11 +509,7 @@ async def test_remap_reads_entry_data(hass: HomeAssistant) -> None:
 
 
 async def test_remap_reloads_scripts_and_scenes_once_per_domain(hass: HomeAssistant) -> None:
-    # Section 6.1 verified fact: script.reload and scene.reload take an
-    # EMPTY schema, so the apply loop must call each exactly once, with no
-    # service data, after all items are rewritten. The real services run
-    # here (not mocks), so passing any data would make the schema reject
-    # the call and fail this test.
+    # script.reload and scene.reload take an EMPTY schema; the real services run here, so any data would fail.
     scripts = {
         "s_one": {"alias": "One", "sequence": [{"service": "light.turn_on", "target": {"entity_id": "sensor.old_name"}}]},
         "s_two": {"alias": "Two", "sequence": [{"service": "light.turn_on", "target": {"entity_id": "sensor.old_name"}}]},
