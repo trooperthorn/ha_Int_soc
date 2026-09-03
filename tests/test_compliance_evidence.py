@@ -27,7 +27,7 @@ def _write_snapshots(path: Path, *, branch_available: bool = True) -> None:
                 "required_status_checks": {
                     "enforcement_level": "everyone",
                     "contexts": [
-                        "pytest (Python 3.13)",
+                        "pytest (Python 3.14)",
                         "Frontend bundle matches source",
                         "HACS validation",
                         "hassfest (manifest sanity)",

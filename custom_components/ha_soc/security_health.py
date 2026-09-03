@@ -1,42 +1,8 @@
-"""Security Integrations Health — always-on dashboard visibility into the
-entities and integrations a security-conscious install cares most about.
+"""Security Integrations Health: dashboard visibility into the entities and
+integrations a security-conscious install cares most about.
 
-Two independent sources, each toggleable via Settings
-(``security_sources_enabled``, see const.py's SECURITY_INTEGRATION_DOMAINS/
-SECURITY_ENTITY_DOMAINS for the known set):
-
-- **Entity domains** (``lock``, ``siren``, ``valve``) — every entity in
-  these domains, regardless of which integration owns it. These are the
-  entity types where "is it actually working" is a physical-security
-  question, not just a convenience one. Enumeration covers BOTH the live
-  state machine and the entity registry (work plan item 4.5): a lock
-  whose integration failed to load has no state object at all, which is
-  the worst possible state for a physical-security entity and must
-  render as ``problem: True`` with reason "no state (integration not
-  loaded)", never silently vanish from the card. Registry entries that
-  are themselves disabled are skipped (a deliberately disabled entity
-  having no state is expected, not a fault). Obvious false positive of
-  the no-state row: an integration that is merely still starting up
-  shows its entities as problems for the first moments after a restart.
-- **Integration domains** — a curated allowlist
-  (kidde_homesafe/elkm1/emporia_vue/unifiprotect/keymaster) reported the
-  same honest three-way way probe.py/peripherals.py already establish for
-  this project: not installed / installed-and-state, never silently
-  omitted just because a domain isn't present on this install.
-
-Battery level uses the same convention Home Assistant's own frontend uses
-for a device's battery icon (device_page.ts's ``findBatteryEntity``) —
-sibling entity on the same device_id, domain ``sensor`` preferred over
-``binary_sensor``, device_class ``battery`` — not a per-integration
-convention this project invented. A lock/siren/valve with no such sibling
-just reports no battery data; that's not itself a problem worth flagging.
-
-"Problem" state is deliberately narrow and domain-agnostic:
-``unavailable``/``unknown`` (generic to every entity) plus lock's real
-``jammed`` state. Anything else (a valve simply being closed, a lock
-simply being unlocked) is normal operational state, not a health issue —
-this module has no way to know whether "unlocked" is expected or alarming
-for a given install, and doesn't guess.
+Two sources, each toggleable via the ``security_sources_enabled`` setting:
+entity domains (lock, siren, valve) and a curated integration allowlist.
 """
 from __future__ import annotations
 
@@ -53,9 +19,8 @@ _PROBLEM_STATES = {"unavailable", "unknown", "jammed"}
 
 
 def _find_battery_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
-    """Mirrors HA's own frontend battery-icon lookup: a sibling entity on
-    the same device_id, sensor domain preferred, binary_sensor fallback,
-    device_class battery — not a convention this project invented."""
+    """Mirrors HA's frontend battery-icon lookup: a battery device_class
+    sibling on the same device, sensor preferred over binary_sensor."""
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
     if entry is None or entry.device_id is None:
@@ -74,9 +39,8 @@ def _find_battery_entity_id(hass: HomeAssistant, entity_id: str) -> str | None:
 
 
 def _no_state_row(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
-    """The honest row for a registry entity with no state object (work
-    plan item 4.5): its integration never loaded it, so nothing can be
-    said about it except that it is not working."""
+    """The row for a registry entity with no state object: its integration
+    never loaded it."""
     ent_reg = er.async_get(hass)
     entry = ent_reg.async_get(entity_id)
     return {
@@ -138,12 +102,7 @@ async def async_security_overview(hass: HomeAssistant, store: HaSocData) -> dict
     for domain in SECURITY_ENTITY_DOMAINS:
         if not enabled.get(domain, True):
             continue
-        # Union of the live state machine and the entity registry (work
-        # plan item 4.5): states-only enumeration silently drops exactly
-        # the entities in the worst condition - registered but never
-        # loaded, so no state object exists. Disabled registry entries
-        # are skipped: an intentionally disabled lock having no state is
-        # expected, not a fault worth alarming on.
+        # Union of state machine and registry so a never-loaded entity still appears; disabled entries skipped.
         state_ids = set(hass.states.async_entity_ids(domain))
         registry_ids = {
             entry.entity_id

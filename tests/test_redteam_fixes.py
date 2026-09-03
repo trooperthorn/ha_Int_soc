@@ -33,9 +33,6 @@ async def store(hass: HomeAssistant) -> HaSocData:
     return data
 
 
-# -- MED-1: secrets never reach the audit log verbatim -----------------------
-
-
 async def test_audit_log_redacts_secret_settings(hass: HomeAssistant, store: HaSocData) -> None:
     audit = AuditLog(hass, store)
     audit.async_log(
@@ -62,9 +59,6 @@ async def test_audit_log_redacts_secret_settings(hass: HomeAssistant, store: HaS
     assert "scanner_enabled" in blob
 
 
-# -- MED-2: verify_chain detects a truncated/deleted tail --------------------
-
-
 async def test_verify_chain_detects_deleted_tail(hass: HomeAssistant, store: HaSocData) -> None:
     audit = AuditLog(hass, store)
     audit.async_log("login_ok", user_id="u1")
@@ -75,7 +69,7 @@ async def test_verify_chain_detects_deleted_tail(hass: HomeAssistant, store: HaS
     ok = await audit.async_verify_chain()
     assert ok["ok"] is True
 
-    # Delete the day file(s) — the chain-head checkpoint still records seq=2.
+    # Delete the day file(s), the chain-head checkpoint still records seq=2.
     dir_path = hass.config.path(".storage", "ha_soc_audit")
     for name in os.listdir(dir_path):
         if name.startswith("audit-"):
@@ -84,9 +78,6 @@ async def test_verify_chain_detects_deleted_tail(hass: HomeAssistant, store: HaS
     tampered = await audit.async_verify_chain()
     assert tampered["ok"] is False
     assert tampered["reason"] == "tail_truncated"
-
-
-# -- HIGH-1: trust-on-first-use secret gate ----------------------------------
 
 
 async def test_firewall_secret_pin_and_reject(hass: HomeAssistant) -> None:
@@ -118,9 +109,6 @@ async def test_firewall_secret_pin_and_reject(hass: HomeAssistant) -> None:
     assert await async_verify_or_pin_secret(secrets, "addon-secret-2") is True
 
 
-# -- MED-7: firewall rule source must be a real IP/CIDR ----------------------
-
-
 def test_firewall_source_validation() -> None:
     from custom_components.ha_soc.firewall import RULE_SCHEMA
 
@@ -135,9 +123,6 @@ def test_firewall_source_validation() -> None:
         RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22, "source": "not-an-ip"})
     with pytest.raises(vol.Invalid):
         RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22, "source": "192.168.1.0/99"})
-
-
-# -- LOW-7: owner / self delete guard ----------------------------------------
 
 
 async def test_delete_user_blocks_owner(hass: HomeAssistant) -> None:
@@ -179,14 +164,11 @@ async def test_delete_user_missing_returns_reason(hass: HomeAssistant) -> None:
     assert reason == "user_not_found"
 
 
-# -- MED-9: revoke-all includes long-lived tokens ----------------------------
-
-
 async def test_revoke_all_reports_token_breakdown(hass: HomeAssistant) -> None:
     from custom_components.ha_soc.users import UsersManager
 
     mgr = UsersManager(hass)
     result = await mgr.async_revoke_all_sessions("no-such-user")
-    # Shape is a per-type breakdown, not a bare int — so the UI can state
+    # Shape is a per-type breakdown, not a bare int, so the UI can state
     # exactly what was cleared (including long-lived tokens).
     assert result == {"sessions": 0, "long_lived_tokens": 0}

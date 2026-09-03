@@ -580,7 +580,7 @@ Acceptance: each parameter is changeable from Settings within its range, rejecte
 
 Tests: `test_thresholds_defaults_are_secure` (asserts the table above), `test_thresholds_range_validation`, `test_thresholds_change_is_audited`, `test_reset_to_secure_defaults`, plus each rule's own test reads a non-default value and observes the change.
 
-Implementation note: `THRESHOLD_SPECS` (the table's shipped form) is kept module-level in `detections.py` rather than in `const.py`, on purpose — `const.py`'s own docstring says module-local constants live next to the code that uses them, and only `detections.py` and `risk.py` read this table. `websocket_api.py` derives the voluptuous validation schema and the Settings tab's rendered ranges from it directly, so a value can never be stored outside its range and the UI can never drift from what the server enforces.
+Implementation note: `THRESHOLD_SPECS` (the table's shipped form) is kept module-level in `detections.py` rather than in `const.py`, on purpose, `const.py`'s own docstring says module-local constants live next to the code that uses them, and only `detections.py` and `risk.py` read this table. `websocket_api.py` derives the voluptuous validation schema and the Settings tab's rendered ranges from it directly, so a value can never be stored outside its range and the UI can never drift from what the server enforces.
 
 #### 3.1  Address-family-aware prefixes  (DET-1, High, D-9 recorded)
 

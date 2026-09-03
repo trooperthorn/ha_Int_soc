@@ -17,27 +17,18 @@ import {
 
 const PAGE_SIZE_OPTIONS: (number | "all")[] = [25, 50, 100, "all"];
 
-// Client-side scheme gate for every external href this view binds (work
-// plan item 4.12). The camera and thumbnail links are built server-side
-// from controller-supplied host strings, so a hostile or misconfigured
-// controller could hand back a javascript: or data: URL; only http(s)
-// may ever reach an anchor's href. Anything else returns null and the
-// caller renders plain text instead of a link.
+// Scheme gate for every external href: only http(s) reaches an anchor; anything else returns null and renders as text.
 function safeExternalHref(href: string | null): string | null {
   if (!href) return null;
   try {
     const scheme = new URL(href).protocol;
     return scheme === "http:" || scheme === "https:" ? href : null;
   } catch {
-    // Not parseable as an absolute URL: refuse it rather than let the
-    // browser resolve it into something this check never saw.
+    // Not an absolute URL: refuse it rather than let the browser resolve it.
     return null;
   }
 }
 
-// Kept close to the Dashboard view's language on purpose — the user asked
-// the Network tab to "look close to identical to Dashboard View". Same stat
-// tiles up top, same searchable/paginated table styling below.
 @customElement("ha-soc-network-view")
 export class HaSocNetworkView extends HaSocCustomizableView {
   protected get viewId() {
@@ -248,10 +239,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
     `,
   ];
 
-  // Pre-fills the Clients table search box on arrival, when a rule/policy's
-  // resolved device on the Network Security tab was clicked (see nav.ts).
-  // Consumed once (see updated() below), then the panel clears it so a
-  // later plain navigate("network") doesn't reapply a stale filter.
+  // One-shot Clients search pre-fill from nav.ts; the panel clears it after updated() consumes it.
   @property({ attribute: false }) initialClientFilter: string | null = null;
 
   @state() private _overview: NetworkOverview | null = null;
@@ -298,7 +286,6 @@ export class HaSocNetworkView extends HaSocCustomizableView {
     }
   }
 
-  // -- formatting helpers ---------------------------------------------------
   private _fmtBytes(n: number | null | undefined): string {
     if (n == null) return "—";
     if (n < 1024) return `${n} B`;
@@ -357,7 +344,6 @@ export class HaSocNetworkView extends HaSocCustomizableView {
     return String(v);
   }
 
-  // -- match cell -----------------------------------------------------------
   private _renderMatch(row: NetworkClientRow) {
     const m = row.integration_match;
     if (!m) return html`<span class="muted">—</span>`;
@@ -511,8 +497,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
     `;
   }
 
-  // Clicking an SSID here drives the Clients table's SSID filter (toggle
-  // off if it's already the active one), then jumps down to the table.
+  // Clicking an SSID toggles the Clients table's SSID filter and jumps to the table.
   private _selectSsid(ssid: string) {
     this._clientSsidFilter = this._clientSsidFilter === ssid ? "" : ssid;
     this._clientPage = 0;
@@ -548,8 +533,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
     `;
   }
 
-  // Accessors shared by sortRows for the clients table. IP addresses sort
-  // via localeCompare with numeric:true (so 10.0.0.9 < 10.0.0.10).
+  // IP addresses sort via localeCompare numeric:true (10.0.0.9 < 10.0.0.10).
   private static readonly CLIENT_SORT: Record<string, (r: NetworkClientRow) => unknown> = {
     name: (r) => r.name,
     ipv4: (r) => r.ipv4,

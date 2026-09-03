@@ -1,31 +1,6 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# Prepare and automatically merge a consistent HA SOC release pull request.
-#
-# The bug this exists to prevent: releasing by hand let the integration
-# manifest version, the add-on version, and the git tags drift apart — and
-# HACS installs from a *tag/Release* whose tree must match, so a mismatch
-# shows up as "wrong version" or the dreaded
-# "custom_components/None/manifest.json" (an unresolved domain).
-#
-# This script bumps EVERY version in lockstep and opens an auto-merge pull
-# request. Once its required checks pass, merging to main triggers
-# .github/workflows/release.yml. That workflow creates the tag, deterministic
-# HACS ZIP, SPDX SBOM, checksums, attestations, and GitHub Release.
-#
-# Usage:
-#   scripts/release.sh                 # auto: today's date, next revision
-#   scripts/release.sh v2026.08.30.2   # explicit version (bare form works too)
-#   scripts/release.sh --skip-tests    # skip the pytest gate (not advised)
-#
-# Version format: vYYYY.MM.DD.V, the date plus a same-day revision counter
-# starting at 1. The v prefix is the canonical form everywhere a person
-# reads a version (tags, GitHub Releases, HACS, changelogs, the panel
-# footer). The three machine-read fields this script bumps (manifest.json,
-# the add-on config.yaml, SCANNER_VERSION) carry the bare number because
-# Home Assistant, the Supervisor, and the release workflow compare those
-# values with the prefix stripped; the workflow enforces tag == v+manifest.
-# ==============================================================================
+# Prepare and auto-merge a lockstep HA SOC release pull request; the merge to main triggers release.yml.
+# Usage: scripts/release.sh [vYYYY.MM.DD.N] [--skip-tests]; see docs/operations.md.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -45,13 +20,9 @@ for arg in "$@"; do
     esac
 done
 
-# --- Determine the new version -----------------------------------------------
 if [ -z "${VERSION}" ]; then
     today="$(date +%Y.%m.%d)"
-    # Highest existing same-day revision, considering BOTH tags and the
-    # current manifest version — so if the manifest is already ahead of any
-    # tag for today (a bumped-but-untagged version), we never version
-    # backwards. Default 0, then +1.
+    # Highest same-day revision across tags AND the manifest, so a bumped-but-untagged manifest never versions backwards.
     manifest_ver="$(python3 -c "import json;print(json.load(open('custom_components/ha_soc/manifest.json'))['version'])")"
     manifest_rev=""
     case "${manifest_ver}" in
@@ -64,8 +35,7 @@ if [ -z "${VERSION}" ]; then
     VERSION="${today}.${next}"
 fi
 
-# Accept the canonical v-prefixed form as input; everything internal works
-# on the bare number and the v is re-added exactly once, on the tag.
+# Internal work uses the bare number; the v prefix is re-added exactly once, on the tag.
 VERSION="${VERSION#v}"
 
 if ! echo "${VERSION}" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+$'; then
@@ -87,7 +57,6 @@ if [ "${branch}" = "main" ]; then
     git switch -c "${branch}"
 fi
 
-# --- Bump every version in lockstep ------------------------------------------
 python3 - "$VERSION" <<'PY'
 import re, sys, pathlib
 
@@ -113,7 +82,6 @@ for path, pattern, repl in edits:
     print(f"  updated {path}")
 PY
 
-# --- Validate before opening the release PR ---------------------------------
 if [ "${SKIP_TESTS}" -eq 0 ]; then
     if [ -x ".venv/bin/pytest" ]; then
         echo "Running backend tests…"
@@ -124,7 +92,6 @@ if [ "${SKIP_TESTS}" -eq 0 ]; then
 fi
 python3 -m py_compile custom_components/ha_soc/*.py
 
-# --- Commit, push, and enable merge-after-checks -----------------------------
 git add custom_components/ha_soc/manifest.json ha_soc_probe/config.yaml \
     ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
 git commit -m "Release ${VERSION}"

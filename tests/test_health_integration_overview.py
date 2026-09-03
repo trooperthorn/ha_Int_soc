@@ -42,7 +42,7 @@ def _category(record: dict, reauth_entry_ids: set[str] = frozenset(), debug_doma
 
 
 def test_issue_category_priority_order() -> None:
-    # Credential wins even over a failing state — a broken credential is
+    # Credential wins even over a failing state, a broken credential is
     # usually the root cause.
     assert (
         _category(_record(state=ConfigEntryState.SETUP_ERROR.value), reauth_entry_ids={"entry1"})
@@ -117,7 +117,7 @@ async def test_integration_overview_excludes_healthy_entries(hass: HomeAssistant
     await hass.async_block_till_done()
 
     overview = await entry.runtime_data.health.async_integration_overview()
-    # Our own freshly-loaded entry is healthy — it must not appear.
+    # Our own freshly-loaded entry is healthy, it must not appear.
     assert all(i["entry_id"] != entry.entry_id for i in overview["integrations"])
     assert set(overview["category_counts"]) == {
         ISSUE_CATEGORY_CREDENTIAL,

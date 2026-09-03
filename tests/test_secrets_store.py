@@ -54,9 +54,6 @@ async def entry(hass: HomeAssistant) -> MockConfigEntry:
     return config_entry
 
 
-# -- SEC-1: the store itself --------------------------------------------------
-
-
 async def test_secret_store_is_private_and_separate(hass: HomeAssistant) -> None:
     """The underlying Store must be private (0o600 on write), atomic, and a
     different file than the general ha_soc.storage store."""
@@ -109,9 +106,6 @@ async def test_secret_store_rejects_unknown_keys(hass: HomeAssistant) -> None:
         await secrets.async_set("not_a_secret_key", "x")
     with pytest.raises(ValueError):
         await secrets.async_get("not_a_secret_key")
-
-
-# -- SEC-1: settings carry no secret values ----------------------------------
 
 
 async def test_settings_never_contain_secret_values(
@@ -169,9 +163,6 @@ async def test_settings_never_contain_secret_values(
     assert runtime.store.settings["scanner_enabled"] is False
 
 
-# -- SEC-2: entry.options stays empty -----------------------------------------
-
-
 async def test_entry_options_stay_empty(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -213,9 +204,6 @@ async def test_legacy_entry_options_scrubbed_once(hass: HomeAssistant) -> None:
 
     assert await hass.config_entries.async_unload(config_entry.entry_id)
     await hass.async_block_till_done()
-
-
-# -- SEC-1: the one-time migration --------------------------------------------
 
 
 async def test_migration_moves_settings_secrets_out_of_old_store(

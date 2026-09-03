@@ -1,19 +1,6 @@
-"""User security data access — the only HA SOC module that touches hass.auth.
+"""User security data access: the only HA SOC module that touches hass.auth.
 
-Everything here reads and writes the real Home Assistant auth store
-(hass.auth); it holds no state of its own beyond the in-memory
-LiveSessionRegistry below. Two limitations are load-bearing, not bugs:
-
-- "Last login" is inferred from refresh-token activity
-  (created_at / last_used_at). A token refresh looks identical to a fresh
-  login to this API, so last_login_at is best described as "last time this
-  user's session was active", not a true authentication timestamp.
-- MFA state can be read and audited (async_get_enabled_mfa) but never
-  enforced from here — Home Assistant core has no hook to require MFA for a
-  user, so HA SOC can only report on it.
-
-This module knows nothing about websocket_api, audit.py, or any other HA SOC
-module. It talks to hass.auth and nothing else.
+It talks to hass.auth and nothing else; see docs/design.md for its limits.
 """
 from __future__ import annotations
 
@@ -52,9 +39,7 @@ def _iso(value) -> str | None:
 
 
 async def _async_get_ha_auth_provider(hass: HomeAssistant):
-    # Core's signature is synchronous despite the async_ prefix, but that
-    # prefix convention has flipped before elsewhere in core — tolerate
-    # either shape rather than guessing.
+    # Core's async_get_provider is sync despite the prefix; tolerate either shape.
     result = auth_ha.async_get_provider(hass)
     if inspect.isawaitable(result):
         result = await result
@@ -92,21 +77,13 @@ class UsersManager:
             oldest = min(token.created_at for token in llat_tokens)
             llat_oldest_days = (dt.utcnow() - oldest).days
 
-        # Best-effort proxy only — Home Assistant does not record a true
-        # "account created" timestamp on User, so this is the age of the
-        # user's oldest surviving refresh token instead.
+        # HA records no account-creation time; the oldest surviving refresh token stands in.
         account_age_days: int | None = None
         if user.refresh_tokens:
             oldest_token = min(t.created_at for t in user.refresh_tokens.values())
             account_age_days = (dt.utcnow() - oldest_token).days
 
-        # Credential creation age, for the never_logged_in risk factor
-        # (work item 3.5): a user with credentials but no refresh tokens
-        # has no account_age_days at all. The installed core's Credentials
-        # model carries NO created_at field (verified against
-        # homeassistant/auth/models.py), so this getattr probe yields None
-        # today and only starts reporting an age if a future core adds
-        # the field - risk.py's factor says "unknown age" until then.
+        # Credentials carry no created_at in current core, so this yields None today.
         credential_age_days: int | None = None
         credential_created = [
             created
@@ -119,14 +96,7 @@ class UsersManager:
         auth_provider_types = sorted(
             {cred.auth_provider_type for cred in user.credentials}
         )
-        # Decision D-18 option (a): MFA compliance is only assessable for
-        # users Home Assistant's own auth provider authenticates. A user
-        # whose ONLY credentials come from a non-homeassistant provider
-        # (an SSO/header-auth proxy, trusted_networks, a command-line
-        # provider) may well satisfy MFA upstream where HA cannot see it,
-        # so mfa_policy.py exempts them from auto_deactivate and the UI
-        # reports "MFA not assessable". A user with no credentials at all
-        # stays assessable - there is no external provider to defer to.
+        # Users authenticated only by non-homeassistant providers are not MFA-assessable.
         mfa_assessable = not auth_provider_types or "homeassistant" in auth_provider_types
 
         mfa_modules = await self.hass.auth.async_get_enabled_mfa(user)
@@ -206,12 +176,7 @@ class UsersManager:
     async def async_revoke_all_sessions(self, user_id: str) -> dict[str, int]:
         """Revoke this user's sessions AND long-lived access tokens.
 
-        Used as an incident-response "lock this account out now" action, so
-        it must not quietly leave a compromised account's persistent API
-        tokens standing — long-lived access tokens are included here, unlike
-        an earlier version that skipped them. Returns a per-type breakdown so
-        the UI can state exactly what was revoked rather than implying a
-        clean sweep it didn't perform.
+        Returns a per-type breakdown of what was revoked.
         """
         user = await self.hass.auth.async_get_user(user_id)
         if user is None:
@@ -230,14 +195,7 @@ class UsersManager:
     async def async_revoke_interactive_sessions(self, user_id: str) -> int:
         """Revoke this user's interactive sessions, keeping long-lived tokens.
 
-        The post-password-reset revocation (work item 4.12): a password
-        reset says "whoever held the old password must be signed out", so
-        every normal/webhook refresh token goes. Long-lived access tokens
-        are deliberately spared here - they are not password-derived, and
-        silently killing a user's automations on a routine reset would
-        punish the wrong thing; revoke_all_sessions remains the
-        incident-response hammer that takes those too. Returns the number
-        of sessions revoked.
+        Returns the number of sessions revoked.
         """
         user = await self.hass.auth.async_get_user(user_id)
         if user is None:
@@ -267,10 +225,7 @@ class UsersManager:
         if user is None:
             return False
 
-        # Defense in depth for callers outside websocket_api: the generic
-        # update primitive must never be usable to deactivate the owner.
-        # The dedicated deactivate method already gets this protection from
-        # Home Assistant core, but async_update_user does not.
+        # Core's async_update_user does not protect the owner; refuse deactivation here.
         if user.is_owner and changes.get("is_active") is False:
             return False
 
@@ -288,9 +243,7 @@ class UsersManager:
             return (False, "user_not_found")
 
         try:
-            # Also revokes all of this user's refresh tokens as a side
-            # effect of core's async_deactivate_user — intentional, not
-            # something this method needs to duplicate.
+            # Core's async_deactivate_user also revokes all of the user's refresh tokens.
             await self.hass.auth.async_deactivate_user(user)
         except ValueError:
             return (False, "cannot_deactivate_owner")
@@ -303,11 +256,7 @@ class UsersManager:
         if user is None:
             return (False, "user_not_found")
 
-        # Guard the owner and self-deletion, matching the protection already
-        # applied to deactivate/set_password. Core's async_remove_user does
-        # NOT block removing the owner (verified), which would leave the
-        # instance with no owner at all — the account this whole tool exists
-        # to protect, erased through the tool itself.
+        # Core's async_remove_user does not block removing the owner.
         if user.is_owner:
             return (False, "cannot_delete_owner")
         if requesting_user_id is not None and user.id == requesting_user_id:
@@ -319,8 +268,7 @@ class UsersManager:
     async def async_set_password(
         self, user_id: str, new_password: str, *, requesting_user_is_owner: bool
     ) -> tuple[bool, str | None]:
-        # Mirrors core's admin_change_password websocket command exactly:
-        # owner-only, not merely admin-only. Do not weaken this check.
+        # Owner-only, mirroring core's admin_change_password; do not weaken.
         if not requesting_user_is_owner:
             return (False, "owner_required")
 
@@ -342,12 +290,7 @@ class UsersManager:
 
 
 class LiveSessionRegistry:
-    """In-memory tracker of currently-open websocket connections.
-
-    No persistence: this reflects live sessions right now, not history. A
-    different module (websocket_api.py) drives add()/remove()/touch() from
-    the connection lifecycle of an actual websocket command.
-    """
+    """In-memory tracker of currently-open websocket connections. No persistence."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, dict[str, Any]] = {}

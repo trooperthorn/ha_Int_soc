@@ -164,7 +164,7 @@ async def test_restored_compliance_clears_the_grace_clock(
 ) -> None:
     store.data["mfa_grace_started"][hass_admin_user.id] = dt_util.utcnow().isoformat()
 
-    # This pass reports the same user as compliant (e.g. MFA now enabled) —
+    # This pass reports the same user as compliant (e.g. MFA now enabled) , 
     # simulated here by simply omitting them from the noncompliant set,
     # since _is_noncompliant only looks at the fields on the passed dict.
     compliant_record = await _user_record(users_manager, hass_admin_user.id)

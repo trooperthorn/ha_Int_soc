@@ -1,6 +1,5 @@
 #!/usr/bin/with-contenv bashio
-# Optional Net-SNMP supervisor. Configuration comes only from the owner-only
-# HA SOC settings service and can represent only SNMPv3 USM AuthPriv.
+# Optional Net-SNMP supervisor; configuration arrives only from the owner-only HA SOC settings service (SNMPv3 USM AuthPriv only).
 set -uo pipefail
 
 STATE_DIR="/data/ha_soc_snmp"
@@ -39,8 +38,7 @@ valid_port() {
 valid_address() {
     printf '%s' "$1" | grep -Eq '^[0-9A-Fa-f:.]{2,45}$' || return 1
     [ "$1" != "0.0.0.0" ] && [ "$1" != "::" ] || return 1
-    # Binding must be to an address actually assigned in the shared host
-    # network namespace, not merely something that looks like an IP.
+    # Must be an address actually assigned in the shared host network namespace.
     ip -o addr show | awk '{print $4}' | cut -d/ -f1 | grep -Fxq "$1"
 }
 
@@ -75,8 +73,7 @@ stop_agent() {
 
 disable_agent() {
     stop_agent
-    # Disabling is credential retirement, not merely a stopped process.
-    # Remove the runtime config and localized USM database.
+    # Disabling is credential retirement: remove the runtime config and localized USM database.
     find "${CONFIG_DIR}" "${PERSIST_DIR}" -type f -delete 2>/dev/null || true
     rm -f "${PUBLIC_STATE_FILE}"
     CURRENT_ADDRESS=""
@@ -116,16 +113,12 @@ write_config() {
         "dontLogTCPWrappersConnects yes" \
         > "${CONFIG_DIR}/snmpd.conf"
 
-    # Net-SNMP consumes this createUser directive at startup and rewrites
-    # the file with engine-localized keys. Plaintext exists only in this
-    # mode-0600 file during that one initialization window.
+    # Net-SNMP rewrites this createUser file with localized keys at startup; plaintext exists only until then.
     printf 'createUser %s SHA-256 "%s" AES "%s"\n' \
         "${username}" "${auth_pass}" "${priv_pass}" \
         > "${PERSIST_DIR}/snmpd.conf"
     chmod 600 "${CONFIG_DIR}/snmp.conf" "${CONFIG_DIR}/snmpd.conf" "${PERSIST_DIR}/snmpd.conf"
-    # snmpd drops to its dedicated account after opening the listener. Its
-    # persistent directory must remain writable by that account so engine
-    # boots/time and localized USM keys survive a clean shutdown.
+    # snmpd drops to ha_soc_snmp; its persistent dir must stay writable by that account.
     chown ha_soc_snmp:ha_soc_snmp "${PERSIST_DIR}" "${PERSIST_DIR}/snmpd.conf"
 }
 

@@ -1,120 +1,8 @@
 """Rule-based detection engine over the HA SOC audit log.
 
-Honesty principle (non-negotiable for this module): every rule below is
-built only from signals `audit.py` actually captures. Where the "obvious"
-version of a rule needs a signal Home Assistant does not expose anywhere,
-it is NOT approximated with a guess. It is either re-derived from the
-closest real signal available, or left unimplemented and documented as a
-coverage gap here. Concretely, against the 12-rule spec this module was
-designed against:
-
- 1. Brute force - per USERNAME: NOT IMPLEMENTED. A per-user brute-force
-    rule needs the attempted username on a failed login, and Home
-    Assistant's ban middleware never logs one anywhere reachable from an
-    integration (see audit.py's module docstring). `rule_id
-    "brute_force_user"` is intentionally never emitted. Instead, rule 2
-    below implements the closest real signal: brute force grouped by
-    source IP.
- 2. Brute force - per source IP: IMPLEMENTED as `brute_force_ip`.
- 3. Password spraying (many usernames, one/few passwords, one attacker):
-    NOT IMPLEMENTED, same missing-username reason as (1). Approximating
-    it off IP alone would just be brute_force_ip again wearing a
-    different name, so it is skipped rather than faked.
- 4. Success after a failure burst: IMPLEMENTED as
-    `success_after_failures`, using the successful login's IP to
-    cross-reference recent failures from that same IP - this is the one
-    place IP correlation legitimately substitutes for the missing
-    username, because the successful event itself supplies the user_id.
-    With `require_new_token` (secure default: on) the success must be a
-    genuinely NEW refresh token - audit.py tags each login_ok record with
-    whether it came from the previous-is-None branch of its token poll -
-    so an ordinary token refresh can never satisfy the rule. With
-    `derate_shared_ip` (secure default: on) the severity de-rates from
-    CRITICAL to HIGH when the source IP carried logins from more than one
-    user inside the window, because a shared household NAT explains the
-    correlation as well as an attacker does.
- 5. New-IP login: IMPLEMENTED as `new_ip_login`, WITHOUT amnesty: every
-    `login_ok` since the per-user checkpoint is evaluated, not just the
-    newest one. A prefix joins the trusted baseline only after being seen
-    on `baseline_days_required` distinct days, baseline entries expire
-    after `prefix_expiry_days` without a sighting, and a prefix is never
-    consulted as trusted in the same pass that flagged it (trust is
-    evaluated against the pre-pass snapshot). The very first pass for a
-    user seeds the baseline silently, exactly like off_hours below,
-    because on day one every prefix in the history would otherwise be
-    "new".
- 6. Off-hours anomaly: IMPLEMENTED as `off_hours_anomaly`. The first
-    pass for a user fills the histogram and sets the checkpoint WITHOUT
-    emitting; on later passes the burst threshold scales with the scanned
-    span so a catch-up pass covering several intervals cannot fake a
-    burst, and the pass `now` is used as both the query `until` and the
-    checkpoint so no event is ever counted twice.
- 7. Dormant account revival: IMPLEMENTED as `dormant_revival`.
- 8. Privilege escalation: IMPLEMENTED as `privilege_escalation`. The
-    per-user group snapshot is persisted in `user_baselines` (work item
-    3.10), so an escalation that happens while HA SOC is stopped is
-    detected on the first pass after restart instead of being silently
-    re-baselined; only a user never observed before is baselined
-    silently.
- 9. Mass entity control burst: IMPLEMENTED as `mass_entity_burst`.
-10. Token minting anomaly: IMPLEMENTED as `token_minting_anomaly`.
-11. Disabled-user activity attempt: IMPLEMENTED as
-    `disabled_user_activity`, bounded to one detection per
-    (user, category) per pass (work item 3.2); the matching risk factor
-    is capped in risk.py via the rule's `risk_cap_points` threshold.
-12. Config/diagnostics exfiltration pattern: NOT IMPLEMENTED. `audit.py`
-    has no capture path for diagnostics or backup downloads in this
-    version (no bus event, no log hook) - this is a known coverage gap,
-    not a silent omission.
-
-Beyond that 12-rule spec, one rule watches HA SOC's own attack surface:
-`probe_auth_rejected` (HIGH) fires from the audit category of the same
-name, which probe.py writes whenever a call to the Probe callback
-services fails the Supervisor-context or shared-secret check. At most one
-detection is opened per (caller, hour); every underlying rejection stays
-individually queryable in the audit log.
-
-Tunable thresholds (work item 3.0, decision D-9): every rule parameter an
-operator may reasonably tune lives in THRESHOLD_SPECS below - the secure
-default, the inclusive allowed range, and the type. "Secure default"
-means the most sensitive value that does not alert on ordinary
-same-network activity: it misses the fewest attacks, at the cost of more
-alerts, and the Settings tab says so next to the controls. Rules read
-their live values through the one helper `thresholds(store, rule)`, which
-merges the owner's stored overrides over the secure defaults - a missing
-key therefore always means "secure default", never "off". Changing a
-threshold is owner-only (the Settings path), audited as
-`soc_config_change` with a per-field diff, and reversible in one action
-via the "Reset to secure defaults" control
-(`ha_soc/detections/thresholds_reset`).
-
-Detection records are additive and explainable: every detection this
-engine writes down states plainly which rule fired and why (`detail`),
-and every rule's docstring below names its dominant false-positive shape
-so an analyst reading the alert already knows how to sanity-check it.
-
-Stability / idempotency: `async_run_pass` runs on a timer (every few
-minutes, per __init__.py). Each rule computes a deterministic
-`detection_id` as sha256(f"{rule_id}:{subject}:{bucket}")[:24], where
-`bucket` is an hour-floor timestamp. Re-running the pass while the same
-episode is still ongoing therefore updates the SAME store row instead of
-forking a new one every five minutes; a still-ongoing episode that
-crosses an hour boundary intentionally opens a new row for the new hour,
-since "this has now gone on for another hour" is itself worth surfacing.
-Closed episodes stay closed (work item 3.9): `_upsert_detection` bumps
-`last_seen` only when the TRIGGERING EVENT's timestamp is newer than the
-stored one - re-scanning the same stale events on a later pass changes
-nothing - and `recurrence_count` counts distinct triggering events, not
-how many passes happened to re-observe the same one. A detection's
-`status` is never downgraded by re-detection: once an analyst has marked
-a row `ack`/`resolved`, later re-detections never flip `status` back to
-`open` (store.async_upsert_detection enforces the same rule for every
-other writer, e.g. the resource watchdog).
-
-Evidence retention (work item 3.3, decision D-6): at the end of every
-pass the engine asks the store to prune `resolved` detections and
-`resolved`/`dismissed` findings older than the `evidence_retention_days`
-setting (default 365). Open and acknowledged items never expire.
+Every rule is built only from signals audit.py actually captures; rules
+whose signal Home Assistant does not expose are left unimplemented rather
+than approximated (coverage gaps and rule semantics: docs/security.md).
 """
 from __future__ import annotations
 
@@ -137,17 +25,12 @@ from .const import (
 from .store import HaSocData
 
 if TYPE_CHECKING:
-    # Deliberately not imported at runtime: this module stays independently
-    # importable/testable even before audit.py / users.py exist, matching
-    # the module-boundary convention used elsewhere in HA SOC (see
-    # audit.py's comment on why it duplicates rather than imports from
-    # users.py).
+    # Not imported at runtime so this module stays importable without audit.py/users.py.
     from .audit import AuditLog
     from .users import UsersManager
 
 _LOGGER = logging.getLogger(__name__)
 
-# -- Rule identifiers ---------------------------------------------------
 RULE_BRUTE_FORCE_IP = "brute_force_ip"
 RULE_SUCCESS_AFTER_FAILURES = "success_after_failures"
 RULE_NEW_IP_LOGIN = "new_ip_login"
@@ -159,20 +42,7 @@ RULE_TOKEN_MINTING_ANOMALY = "token_minting_anomaly"
 RULE_DISABLED_USER_ACTIVITY = "disabled_user_activity"
 RULE_PROBE_AUTH_REJECTED = "probe_auth_rejected"
 
-# -- Tunable thresholds (work item 3.0, decision D-9) ----------------------
-# The single source of truth for every tunable detection parameter: its
-# secure default, its inclusive allowed range, and (implicitly, via the
-# default's type) whether it is an int, float, or bool. websocket_api.py
-# derives the voluptuous validation schema and the Settings tab's rendered
-# ranges from this table, so a value can never be stored outside its range
-# and the UI can never drift from what the server enforces. Kept
-# module-level here rather than in const.py on purpose: const.py's own
-# docstring says module-local constants live next to the code that uses
-# them, and only detections.py and risk.py read these.
-#
-# Ranges are inclusive. The table transcribes the work plan's item 3.0
-# parameter set exactly; the plan is the review-approved authority on both
-# the secure defaults and the bounds.
+# websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
     RULE_BRUTE_FORCE_IP: {
         "failures": {"default": 5, "min": 3, "max": 100},
@@ -226,15 +96,7 @@ def secure_default_thresholds(rule: str) -> dict[str, Any]:
 
 
 def thresholds(store: HaSocData, rule: str) -> dict[str, Any]:
-    """Effective thresholds for `rule`: stored overrides over secure defaults.
-
-    The merge direction is the whole point (work item 3.0): a key missing
-    from the stored settings always resolves to its secure default, so a
-    partially-written or older settings blob can never silently turn a
-    rule off or leave a parameter undefined. Unknown stored keys (from a
-    future version, or a hand-edited store) are ignored rather than
-    trusted.
-    """
+    """Effective thresholds for `rule`: stored overrides over secure defaults."""
     effective = secure_default_thresholds(rule)
     stored = (store.settings.get("detection_thresholds") or {}).get(rule) or {}
     for key, value in stored.items():
@@ -243,11 +105,7 @@ def thresholds(store: HaSocData, rule: str) -> dict[str, Any]:
     return effective
 
 
-# -- Non-tunable per-rule query bounds -------------------------------------
-# Lookbacks and query limits are deliberately NOT in THRESHOLD_SPECS: they
-# bound how much history a pass reads, not what the rule considers
-# suspicious, and letting an operator shrink them would quietly blind a
-# rule rather than tune it.
+# Query bounds are deliberately not operator-tunable: shrinking them would blind a rule.
 BRUTE_FORCE_IP_LOOKBACK_DAYS = 7
 BRUTE_FORCE_IP_QUERY_LIMIT = 10000
 
@@ -256,10 +114,7 @@ SUCCESS_AFTER_FAILURES_QUERY_LIMIT = 5000
 
 NEW_IP_LOGIN_BASELINE_LOOKBACK_DAYS = 30
 NEW_IP_LOGIN_QUERY_LIMIT = 10000
-# Distinct sighting days retained per baseline prefix. Only
-# baseline_days_required (max 30) of them ever matter for trust, and
-# expiry keys off last_seen, so the list is capped to keep a long-lived
-# prefix entry from growing without bound.
+# Caps the per-prefix sighting-day list so a long-lived entry cannot grow without bound.
 NEW_IP_LOGIN_MAX_TRACKED_DAYS = 90
 
 OFF_HOURS_INITIAL_SCAN_LOOKBACK_DAYS = 30
@@ -285,10 +140,7 @@ DISABLED_USER_ACTIVITY_QUERY_LIMIT = 5000
 PROBE_AUTH_REJECTED_LOOKBACK_HOURS = 24
 PROBE_AUTH_REJECTED_QUERY_LIMIT = 5000
 
-# Distinct triggering-event timestamps kept per detection row, for the
-# recurrence_count dedup (work item 3.9). Old entries fall off the front;
-# an episode with more than this many distinct triggers within one hour
-# bucket would merely undercount recurrences, never re-open or re-bump.
+# Oldest trigger timestamps fall off the front; overflow only undercounts recurrences.
 MAX_TRIGGER_EVENTS_TRACKED = 200
 
 
@@ -305,15 +157,7 @@ def _make_detection_id(rule_id: str, subject: str, bucket: str) -> str:
 def _network_prefix(
     ip: str, *, ipv4_prefix: int = 24, ipv6_prefix: int = 64
 ) -> str | None:
-    """The baseline network prefix for an address, per address family.
-
-    Work item 3.1: the old implementation applied /24 to everything, which
-    is a defect for IPv6 - a /24 of a global IPv6 address lumps entire
-    registries together, so every v6 login looked like it came from one
-    "network". The prefix length now follows the address family, with the
-    secure defaults /24 (IPv4) and /64 (IPv6, the standard end-site subnet
-    size) supplied by the new_ip_login thresholds.
-    """
+    """The baseline network prefix for an address, per address family."""
     try:
         addr = ipaddress.ip_address(ip)
         prefix = ipv6_prefix if addr.version == 6 else ipv4_prefix
@@ -326,20 +170,12 @@ def _is_private_ip(ip: str) -> bool:
     try:
         return ipaddress.ip_address(ip).is_private
     except ValueError:
-        # Not a parseable IP at all - treat conservatively as "private" so
-        # it never gets flagged off garbage input.
+        # Unparseable input counts as private so garbage is never flagged.
         return True
 
 
 def _analysis_interval() -> timedelta:
-    """The periodic pass interval, read from __init__ at call time.
-
-    Imported lazily because __init__ imports this module at load time; by
-    the time a pass actually runs the package is fully loaded. The
-    fallback matches the value __init__ has shipped with since the first
-    release and only exists so an isolated unit import can never crash a
-    rule.
-    """
+    """The periodic pass interval, read lazily from __init__ to avoid the import cycle."""
     try:
         from . import ANALYSIS_INTERVAL
 
@@ -349,12 +185,8 @@ def _analysis_interval() -> timedelta:
 
 
 def _in_quiet_window(hour: int, quiet_start: int, quiet_end: int) -> bool:
-    """True when `hour` falls inside the [quiet_start, quiet_end) window.
-
-    The window may wrap midnight (the secure default 23 -> 6 does). Equal
-    start and end means a zero-length window - no hour is quiet - which is
-    an explicit owner choice within the allowed range, not a failure mode.
-    """
+    """True when `hour` falls inside the [quiet_start, quiet_end) window, which
+    may wrap midnight; equal start and end means no hour is quiet."""
     if quiet_start == quiet_end:
         return False
     if quiet_start < quiet_end:
@@ -363,12 +195,7 @@ def _in_quiet_window(hour: int, quiet_start: int, quiet_end: int) -> bool:
 
 
 class DetectionEngine:
-    """Runs all implemented detection rules against the audit log and store.
-
-    Every rule call reuses the SAME `users.async_list_users()` snapshot and
-    the SAME `now` for the whole pass, so results are internally consistent
-    even though the pass takes a little wall-clock time to run.
-    """
+    """Runs all implemented detection rules against the audit log and store."""
 
     def __init__(
         self,
@@ -406,28 +233,18 @@ class DetectionEngine:
             except Exception:  # noqa: BLE001 - one bad rule must not sink the pass
                 _LOGGER.exception("HA SOC detection rule %s failed", rule.__name__)
 
-        # Work item 3.3 (D-6): the periodic pass is where resolved
-        # detections and resolved/dismissed findings past the evidence
-        # retention period get pruned. Kept out of the rule loop so a rule
-        # failure never blocks retention and vice versa.
+        # Retention runs outside the rule loop so neither can block the other.
         try:
             self.store.async_prune_evidence(now)
         except Exception:  # noqa: BLE001 - retention must never sink the pass
             _LOGGER.exception("HA SOC evidence retention sweep failed")
 
-        # Work item 3.4 (D-10): record that a detection pass has completed,
-        # so the posture engine can honestly claim its detection term has
-        # computed at least once. Written even when individual rules failed
-        # above - the term reflects that the engine ran, not that every
-        # rule succeeded, and a partially-failed pass still evaluated the
-        # open-detection state the term is built from.
+        # Recorded even when rules failed: the posture term reflects that the engine ran.
         self.store.async_note_detection_pass_completed(
             dt_util.as_utc(now).isoformat()
         )
 
         return touched
-
-    # -- Upsert helper --------------------------------------------------
 
     def _upsert_detection(
         self,
@@ -445,14 +262,8 @@ class DetectionEngine:
     ) -> dict[str, Any]:
         """Create or update the detection row for (rule, subject, bucket).
 
-        `event_ts` is the timestamp of the TRIGGERING EVENT (work item
-        3.9), not of the pass observing it. `last_seen` only ever advances
-        to a newer event timestamp - a later pass re-reading the same
-        stale events leaves the row untouched - and `recurrence_count`
-        counts distinct triggering events via the recorded timestamp set.
-        A rule with no single natural trigger event (an observation made
-        at pass time, like a group-membership diff) omits `event_ts` and
-        the pass `now` stands in for it.
+        `event_ts` is the triggering event's timestamp; when omitted the
+        pass `now` stands in for it.
         """
         detection_id = _make_detection_id(rule_id, subject, bucket)
         now_iso = dt_util.as_utc(now).isoformat()
@@ -461,9 +272,7 @@ class DetectionEngine:
 
         if existing is not None:
             triggers = existing.setdefault(
-                # A row written by an older build has no trigger list; its
-                # stored last_seen is the only honest stand-in for the one
-                # trigger it is known to have had.
+                # Rows from older builds have no trigger list; last_seen stands in.
                 "trigger_event_ts",
                 [existing.get("last_seen") or existing.get("ts")],
             )
@@ -475,8 +284,7 @@ class DetectionEngine:
                 if event_iso > (existing.get("last_seen") or ""):
                     existing["last_seen"] = event_iso
                 existing["detail"] = detail
-            # status intentionally left untouched - never downgrade
-            # ack/resolved back to open on re-detection.
+            # status is never downgraded here: ack/resolved must survive re-detection.
             detection = existing
         else:
             detection = {
@@ -497,12 +305,7 @@ class DetectionEngine:
         self.store.async_upsert_detection(detection["id"], detection)
         return detection
 
-    # -- Rule 2: brute_force_ip -------------------------------------------
-
     async def _rule_brute_force_ip(self, now, users, users_by_id):
-        # False positive: a household's shared NAT/public IP (or a busy
-        # guest network) can rack up failed logins from unrelated people
-        # fat-fingering passwords, not one attacker.
         th = thresholds(self.store, RULE_BRUTE_FORCE_IP)
         since = now - timedelta(days=BRUTE_FORCE_IP_LOOKBACK_DAYS)
         events = await self.audit.async_query(
@@ -550,15 +353,7 @@ class DetectionEngine:
                     break  # one flag per ip per pass; bucket dedups anyway
         return results
 
-    # -- Rule 4: success_after_failures ------------------------------------
-
     async def _rule_success_after_failures(self, now, users, users_by_id):
-        # False positive: the account owner mistypes their password a
-        # handful of times, then remembers it and logs in fine - same
-        # shape as a real compromise but with intent instead of attack.
-        # require_new_token (D-9, work item 3.8) removes the noisiest
-        # sub-case: a background token refresh that merely happened to
-        # share an IP with someone else's failures.
         th = thresholds(self.store, RULE_SUCCESS_AFTER_FAILURES)
         window = timedelta(minutes=th["window_minutes"])
         since = now - timedelta(hours=SUCCESS_AFTER_FAILURES_LOOKBACK_HOURS)
@@ -582,11 +377,7 @@ class DetectionEngine:
         for ip in fails_by_ip:
             fails_by_ip[ip].sort()
 
-        # (user_id, ts) pairs per IP across the whole lookback, for the
-        # derate_shared_ip check: an IP that carried logins from more than
-        # one user around the same time is a shared egress (household NAT,
-        # office network), which weakens the IP-correlation this rule
-        # rests on - hence HIGH instead of CRITICAL, never a suppression.
+        # For derate_shared_ip: a multi-user IP is a shared egress, so HIGH rather than CRITICAL.
         logins_by_ip: dict[str, list[tuple[str, datetime]]] = defaultdict(list)
         for ev in ok_events:
             ip = ev.get("ip")
@@ -605,11 +396,7 @@ class DetectionEngine:
             if th["require_new_token"] and not (ev.get("detail") or {}).get(
                 "new_token"
             ):
-                # Only a login_ok audit.py explicitly tagged as a NEW
-                # refresh token qualifies. Records from before the tag
-                # existed carry no field and are skipped the same way: the
-                # rule's stated semantics are "a new token appeared", and
-                # that cannot be proven for an untagged record.
+                # Untagged (pre-tag) records are skipped too: a new token cannot be proven for them.
                 continue
             candidates = fails_by_ip.get(ip, [])
             count = sum(1 for f in candidates if ts - window <= f < ts)
@@ -647,16 +434,7 @@ class DetectionEngine:
                 )
         return results
 
-    # -- Rule 5: new_ip_login -----------------------------------------------
-
     async def _rule_new_ip_login(self, now, users, users_by_id):
-        # False positive: mobile carrier CGNAT or a VPN hands out a
-        # different public-looking prefix on every session even though it
-        # is the same person on the same phone. The distinct-days baseline
-        # requirement means such a user is flagged for the first
-        # baseline_days_required days on each prefix - noisy, but that is
-        # the recorded secure-default trade (D-9): amnesty for it would
-        # also grant amnesty to an attacker's first login.
         th = thresholds(self.store, RULE_NEW_IP_LOGIN)
         now_iso = dt_util.as_utc(now).isoformat()
         since = now - timedelta(days=NEW_IP_LOGIN_BASELINE_LOOKBACK_DAYS)
@@ -682,8 +460,6 @@ class DetectionEngine:
             )
             seeding = checkpoint is None
 
-            # Expire baseline entries not sighted within prefix_expiry_days
-            # (D-9): a prefix trusted last winter is a stranger again.
             for prefix in list(prefix_baseline):
                 last_seen = dt_util.parse_datetime(
                     prefix_baseline[prefix].get("last_seen") or ""
@@ -691,10 +467,7 @@ class DetectionEngine:
                 if last_seen is None or now - last_seen > expiry:
                     del prefix_baseline[prefix]
 
-            # Trust is evaluated against this PRE-PASS snapshot, which is
-            # exactly what "never baseline a prefix in the pass that
-            # flagged it" means: sightings recorded below can only make a
-            # prefix trusted from the NEXT pass onward.
+            # Trust is evaluated against the pre-pass snapshot; sightings below count from the next pass.
             required_days = th["baseline_days_required"]
             trusted = {
                 prefix
@@ -703,17 +476,12 @@ class DetectionEngine:
                 or len(set(entry.get("days") or [])) >= required_days
             }
 
-            # Maturity gate: no flags until the user has learning_days of
-            # observed login history (per-rule learning_days replaced the
-            # old hard-coded 14-day constant, work items 3.0/3.5).
+            # Maturity gate: no flags until learning_days of observed login history.
             first_seen_raw = baseline.get("first_login_seen_at")
             first_seen = (
                 dt_util.parse_datetime(first_seen_raw) if first_seen_raw else None
             )
 
-            # Work item 3.6: EVERY login since the checkpoint is evaluated,
-            # not just the newest - the old code granted amnesty to all but
-            # the last event of a burst.
             flagged: dict[str, tuple[datetime, str]] = {}
             for ev in sorted(user_events, key=lambda e: e.get("ts") or ""):
                 ts = dt_util.parse_datetime(ev["ts"]) if ev.get("ts") else None
@@ -738,16 +506,12 @@ class DetectionEngine:
                     and (now - first_seen).days >= th["learning_days"]
                 )
                 if not seeding and mature and prefix not in trusted:
-                    # One detection per (user, prefix) per pass, anchored
-                    # to the newest triggering login.
+                    # One detection per (user, prefix) per pass, anchored to the newest login.
                     prev = flagged.get(prefix)
                     if prev is None or ts > prev[0]:
                         flagged[prefix] = (ts, ip)
 
-                # Record the sighting AFTER trust evaluation. Flagged
-                # prefixes accrue distinct days too: continued use across
-                # baseline_days_required days is what eventually earns
-                # trust, but never within the pass that flagged it.
+                # Recorded after trust evaluation so a flagged prefix never earns trust in the same pass.
                 entry = prefix_baseline.setdefault(
                     prefix, {"days": [], "last_seen": None}
                 )
@@ -761,9 +525,7 @@ class DetectionEngine:
                 if ts_iso > (entry.get("last_seen") or ""):
                     entry["last_seen"] = ts_iso
 
-            # The pass `now` is both the query `until` and the checkpoint,
-            # so no login is ever evaluated twice (same contract as
-            # off_hours, work item 3.7).
+            # `now` is both the query `until` and the checkpoint, so no login is evaluated twice.
             baseline["new_ip_checkpoint"] = now_iso
             self.store.async_schedule_save()
 
@@ -797,17 +559,7 @@ class DetectionEngine:
     def _prefix_baseline(
         baseline: dict[str, Any], now_iso: str
     ) -> dict[str, dict[str, Any]]:
-        """This user's prefix baseline, migrating the legacy flat list once.
-
-        Pre-3.6 builds stored `seen_prefixes` as a plain list with no day
-        tracking and no expiry. Those prefixes WERE the operative baseline
-        under the old regime, so they are grandfathered as trusted
-        (`legacy_trusted`) rather than re-flagged: re-alerting an owner
-        about every network they have used for months would be noise, not
-        sensitivity. They still expire like any other entry once unused
-        for prefix_expiry_days, at which point re-earning trust takes the
-        full distinct-days baseline like everything else.
-        """
+        """This user's prefix baseline, migrating the legacy flat list once."""
         prefix_baseline = baseline.get("prefix_baseline")
         if prefix_baseline is None:
             prefix_baseline = {}
@@ -820,11 +572,7 @@ class DetectionEngine:
             baseline["prefix_baseline"] = prefix_baseline
         return prefix_baseline
 
-    # -- Rule 6: off_hours_anomaly -------------------------------------------
-
     async def _rule_off_hours_anomaly(self, now, users, users_by_id):
-        # False positive: the account owner is travelling, jet-lagged, or
-        # just can't sleep, and genuinely operates the house at 3am.
         th = thresholds(self.store, RULE_OFF_HOURS_ANOMALY)
         results = []
         baselines = self.store.data["user_baselines"]
@@ -844,9 +592,7 @@ class DetectionEngine:
                 now - timedelta(days=OFF_HOURS_INITIAL_SCAN_LOOKBACK_DAYS)
             )
 
-            # `until=now` matches the checkpoint written below (work item
-            # 3.7): the next pass starts exactly where this one stopped,
-            # so no event is ever histogrammed or burst-counted twice.
+            # `until=now` matches the checkpoint written below, so no event is counted twice.
             events = await self.audit.async_query(
                 since=scan_since,
                 until=now,
@@ -854,9 +600,7 @@ class DetectionEngine:
                 user_id=user_id,
                 limit=OFF_HOURS_QUERY_LIMIT,
             )
-            # context_parent_id is None => a direct user action, never an
-            # automation acting under this user's context - automations
-            # must never poison the learned baseline.
+            # context_parent_id None means a direct user action; automations must not shape the baseline.
             direct_events = [e for e in events if e.get("context_parent_id") is None]
 
             if not baseline.get("learning_started_at") and direct_events:
@@ -877,11 +621,7 @@ class DetectionEngine:
             self.store.async_schedule_save()
 
             if first_pass:
-                # Work item 3.7: the seeding pass fills the histogram and
-                # sets the checkpoint SILENTLY. Its scan spans up to 30
-                # days, so "count this pass" is meaningless as a burst
-                # signal and emitting from it would flag a month of normal
-                # life at once.
+                # Seeding pass fills the histogram silently; its 30-day scan is no burst signal.
                 continue
 
             learning_started_raw = baseline.get("learning_started_at")
@@ -898,11 +638,7 @@ class DetectionEngine:
             if total_activity == 0:
                 continue
 
-            # A pass that covers more than one analysis interval (missed
-            # timer ticks, a restart) sees proportionally more events, so
-            # the burst threshold scales with the span (work item 3.7) -
-            # otherwise a catch-up pass would fake a burst out of a normal
-            # rate.
+            # Burst threshold scales with the scanned span so a catch-up pass cannot fake a burst.
             span = now - scan_since
             scale = max(1.0, span / interval)
             effective_burst = th["burst_threshold"] * scale
@@ -915,10 +651,7 @@ class DetectionEngine:
                     hour, th["quiet_start_hour"], th["quiet_end_hour"]
                 ):
                     continue
-                # Ratio includes this pass's own burst, which slightly
-                # under-counts how rare the hour "historically" was - an
-                # intentional, conservative simplification rather than
-                # tracking a separate pre-burst snapshot.
+                # Ratio includes this pass's own burst, a deliberate conservative simplification.
                 historical_ratio = histogram[hour] / total_activity
                 if historical_ratio >= th["ratio_threshold"]:
                     continue
@@ -945,11 +678,7 @@ class DetectionEngine:
 
         return results
 
-    # -- Rule 7: dormant_revival ---------------------------------------------
-
     async def _rule_dormant_revival(self, now, users, users_by_id):
-        # False positive: a seasonal resident (vacation home, college kid
-        # home for the summer) genuinely disappears for months at a time.
         th = thresholds(self.store, RULE_DORMANT_REVIVAL)
         since = now - timedelta(days=DORMANT_REVIVAL_LOOKBACK_DAYS)
         events = await self.audit.async_query(
@@ -1007,21 +736,8 @@ class DetectionEngine:
 
         return results
 
-    # -- Rule 8: privilege_escalation -----------------------------------------
-
     async def _rule_privilege_escalation(self, now, users, users_by_id):
-        # False positive: none, by design - a legitimate promotion to admin
-        # looks identical to an attacker granting themselves admin. This
-        # rule is always logged as an audit trail entry, not treated as
-        # proof of compromise; that judgment call belongs to whoever
-        # reviews it.
-        #
-        # The per-user group snapshot is PERSISTED in user_baselines (work
-        # item 3.10): an escalation performed while HA SOC (or all of Home
-        # Assistant) was stopped is caught on the first pass after
-        # restart, instead of being silently re-baselined the way the old
-        # in-memory snapshot forced. Only a user with no stored snapshot
-        # at all (never observed before) is baselined without comparison.
+        # Group snapshot is persisted so an escalation during downtime is caught after restart.
         results = []
         baselines = self.store.data["user_baselines"]
 
@@ -1058,9 +774,7 @@ class DetectionEngine:
                 baseline["groups_snapshot"] = sorted(current_groups)
                 self.store.async_schedule_save()
 
-        # Snapshots of deleted users are garbage-collected by
-        # store.async_purge_user together with the rest of their baseline,
-        # so no sweep is needed here.
+        # Deleted users' snapshots are purged by store.async_purge_user.
         return results
 
     async def _find_privilege_escalation_actor(
@@ -1068,9 +782,8 @@ class DetectionEngine:
     ) -> str | None:
         """Best-effort: who performed the user_updated that granted admin.
 
-        `user_updated` events' `detail` shape isn't guaranteed to carry the
-        target user id at all - if it can't be resolved, this returns None
-        rather than guessing.
+        Returns None rather than guessing when the target user cannot be
+        resolved from the event detail.
         """
         since = now - timedelta(minutes=PRIVILEGE_ESCALATION_ACTOR_LOOKBACK_MINUTES)
         events = await self.audit.async_query(
@@ -1089,11 +802,7 @@ class DetectionEngine:
         matches.sort(key=lambda e: e.get("ts", ""))
         return matches[-1].get("user_id")
 
-    # -- Rule 9: mass_entity_burst --------------------------------------------
-
     async def _rule_mass_entity_burst(self, now, users, users_by_id):
-        # False positive: a human manually tapping through many tiles for
-        # a "goodnight"/"everyone's home" scene by hand instead of a script.
         th = thresholds(self.store, RULE_MASS_ENTITY_BURST)
         since = now - timedelta(minutes=MASS_ENTITY_BURST_LOOKBACK_MINUTES)
         events = await self.audit.async_query(
@@ -1146,11 +855,7 @@ class DetectionEngine:
                         break
         return results
 
-    # -- Rule 10: token_minting_anomaly ---------------------------------------
-
     async def _rule_token_minting_anomaly(self, now, users, users_by_id):
-        # False positive: the user is legitimately setting up several new
-        # devices/integrations in one sitting (new phone, new add-on, etc).
         th = thresholds(self.store, RULE_TOKEN_MINTING_ANOMALY)
         since = now - timedelta(hours=TOKEN_MINTING_LOOKBACK_HOURS)
         events = await self.audit.async_query(
@@ -1193,18 +898,8 @@ class DetectionEngine:
                     break
         return results
 
-    # -- Rule 11: disabled_user_activity --------------------------------------
-
     async def _rule_disabled_user_activity(self, now, users, users_by_id):
-        # False positive: a forgotten wall tablet or an old script still
-        # holding a token, quietly retrying against a since-deactivated
-        # account - not necessarily anyone actively trying to get back in.
-        #
-        # Bounded (work item 3.2): ONE detection per (user, category) per
-        # pass, bucketed by the pass rather than per event, so a retry
-        # loop firing every few seconds cannot mint hundreds of rows out
-        # of one stuck tablet. The matching risk factor is additionally
-        # capped via this rule's risk_cap_points threshold in risk.py.
+        # One detection per (user, category) per pass, bucketed by the pass, so a retry loop cannot mint rows.
         disabled_ids = {u["id"] for u in users if u.get("is_active") is False}
         if not disabled_ids:
             return []
@@ -1254,13 +949,7 @@ class DetectionEngine:
                 )
         return results
 
-    # -- Extra rule: probe_auth_rejected --------------------------------------
-
     async def _rule_probe_auth_rejected(self, now, users, users_by_id):
-        # False positive: an outdated Probe add-on build that predates the
-        # probe_secret field keeps reporting without one and is rejected
-        # with reason no_secret until it is updated - noisy, but honest,
-        # since Core genuinely cannot tell it from a forger.
         since = now - timedelta(hours=PROBE_AUTH_REJECTED_LOOKBACK_HOURS)
         events = await self.audit.async_query(
             since=since,
@@ -1268,10 +957,7 @@ class DetectionEngine:
             limit=PROBE_AUTH_REJECTED_QUERY_LIMIT,
         )
 
-        # At most one detection per (caller, hour): the deterministic
-        # detection id already collapses re-runs of the pass onto the same
-        # row, and this in-pass set keeps a burst of rejections within one
-        # hour from producing multiple upsert calls for that row.
+        # At most one detection per (caller, hour).
         emitted: set[tuple[str, str]] = set()
         results = []
         for ev in events:

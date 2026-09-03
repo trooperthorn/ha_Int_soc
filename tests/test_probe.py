@@ -103,9 +103,6 @@ async def test_on_supervisor_addon_installed_but_stopped(hass: HomeAssistant, st
     assert overview["update_available"] is True
 
 
-# -- Fixtures for the service-call tests -----------------------------------
-
-
 @pytest.fixture
 async def entry(hass: HomeAssistant) -> MockConfigEntry:
     """A plain (non-Supervisor) install: services must NOT be registered."""
@@ -143,9 +140,6 @@ async def supervisor_entry(hass: HomeAssistant, supervisor_user) -> MockConfigEn
 @pytest.fixture
 def supervisor_context(supervisor_user) -> Context:
     return Context(user_id=supervisor_user.id)
-
-
-# -- Legitimate add-on calls (Supervisor context + secret) ------------------
 
 
 async def test_ingest_service_stores_result(
@@ -210,29 +204,26 @@ async def test_ingest_service_rejects_bad_port(
         )
 
 
-async def test_supervisor_user_id_prefers_hassio_config_store(
+async def test_supervisor_user_id_prefers_hassio_supervisor_user(
     hass: HomeAssistant, supervisor_user
 ) -> None:
-    """When the hassio component's config store is loaded, its recorded id
-    wins over the auth-registry fallback."""
+    """The hassio component's recorded Supervisor user wins over the
+    auth-registry fallback."""
     from types import SimpleNamespace
 
-    from homeassistant.components.hassio.const import DATA_CONFIG_STORE
+    from homeassistant.components.hassio.const import DATA_HASSIO_SUPERVISOR_USER
 
-    hass.data[DATA_CONFIG_STORE] = SimpleNamespace(
-        data=SimpleNamespace(hassio_user="preferred-id-from-config-store")
+    hass.data[DATA_HASSIO_SUPERVISOR_USER] = SimpleNamespace(
+        id="preferred-id-from-config-store"
     )
     try:
         assert await _async_supervisor_user_id(hass) == "preferred-id-from-config-store"
     finally:
-        del hass.data[DATA_CONFIG_STORE]
+        del hass.data[DATA_HASSIO_SUPERVISOR_USER]
 
-    # Without the config store, the system-generated user named Supervisor
+    # Without the hassio record, the system-generated user named Supervisor
     # is found through the public auth registry.
     assert await _async_supervisor_user_id(hass) == supervisor_user.id
-
-
-# -- Rejections: wrong or missing context, missing secret -------------------
 
 
 async def test_probe_requires_supervisor_context(
@@ -361,11 +352,7 @@ async def test_probe_rejection_is_audited_and_detected(
     hass: HomeAssistant, supervisor_entry: MockConfigEntry, tmp_path
 ) -> None:
     runtime = supervisor_entry.runtime_data
-    # The harness shares one config dir across tests, so audit day files
-    # accumulate there; point this test's audit log at a private directory
-    # (the same isolation test_audit.py uses) and drop any detections the
-    # startup analysis pass derived from the shared files, so the counts
-    # below are this test's own.
+    # Per-test audit dir and cleared detections: the harness config dir is shared across tests.
     runtime.audit._dir_path = str(tmp_path / "audit")
     runtime.store.data["detections"].clear()
     attacker = MockUser()

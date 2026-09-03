@@ -45,11 +45,6 @@ async def store(hass: HomeAssistant) -> HaSocData:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Store-level
-# ---------------------------------------------------------------------------
-
-
 def test_get_user_panel_layout_defaults_to_empty(store: HaSocData) -> None:
     assert store.get_user_panel_layout("nobody", "network_security") == {}
 
@@ -78,11 +73,6 @@ def test_purge_user_drops_their_layout(store: HaSocData) -> None:
     store.async_set_user_panel_layout("user1", "network_security", ["a"], [])
     store.async_purge_user("user1")
     assert store.get_user_panel_layout("user1", "network_security") == {}
-
-
-# ---------------------------------------------------------------------------
-# WS commands
-# ---------------------------------------------------------------------------
 
 
 async def test_get_unset_view_returns_empty_order_and_hidden(

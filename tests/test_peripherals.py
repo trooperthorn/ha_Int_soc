@@ -116,17 +116,7 @@ async def test_ignoring_a_device_removes_it_from_unassigned_count(hass: HomeAssi
 
 
 async def test_serial_device_without_vid_pid_does_not_crash(hass: HomeAssistant, store: HaSocData) -> None:
-    # A real, dynamically-confirmed HA core behavior change: newer
-    # scan_serial_ports() versions (backed by the `serialx` library)
-    # return a USBDevice | SerialDevice union — native/platform serial
-    # ports with no USB vendor/product descriptor come back as
-    # SerialDevice, which has no vid/pid attributes at all. The installed
-    # HA core in this dev venv predates that split (USBDevice only), so
-    # this uses a duck-typed stand-in matching the real SerialDevice shape
-    # (device, resolved_device, serial_number, manufacturer, description,
-    # interface_description, interface_num — confirmed against HA core's
-    # actual homeassistant/components/usb/models.py) rather than the real
-    # class, which genuinely isn't importable here yet.
+    # Duck-typed stand-in for SerialDevice (no vid/pid), which the installed HA core cannot import yet.
     serial_device = SimpleNamespace(
         device="/dev/ttyS0",
         resolved_device="/dev/ttyS0",
@@ -149,7 +139,7 @@ async def test_serial_device_without_vid_pid_does_not_crash(hass: HomeAssistant,
 
 async def test_resolved_device_field_used_when_present(hass: HomeAssistant, store: HaSocData) -> None:
     # Newer HA core computes the realpath itself (resolved_device) rather
-    # than this module doing its own os.path.realpath — verify it's used
+    # than this module doing its own os.path.realpath, verify it's used
     # directly instead of falling back to the realpath computation.
     device = SimpleNamespace(
         device="/dev/serial/by-id/usb-FTDI_FT232R-if00-port0",
@@ -257,11 +247,7 @@ async def test_realpath_runs_in_executor(hass: HomeAssistant, store: HaSocData, 
 
 
 async def test_usb_component_unavailable_degrades_honestly(hass: HomeAssistant, store: HaSocData) -> None:
-    # Simulate the `usb` component genuinely not being importable (e.g. its
-    # aiousbwatcher/pyserial requirements missing) by blanking the module
-    # out of sys.modules — a standard technique to force the next `from X
-    # import Y` to raise ImportError, exercising the real except branch
-    # rather than one only reachable by mocking peripherals.py itself.
+    # Blanking the modules out of sys.modules forces the real ImportError branch.
     with patch.dict(sys.modules, {"homeassistant.components.usb": None, "homeassistant.components.usb.utils": None}):
         overview = await async_peripheral_overview(hass, store)
     assert overview == {"available": False, "devices": [], "total_count": 0, "unassigned_count": 0}

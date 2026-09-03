@@ -44,7 +44,7 @@ async def test_config_not_found_returns_none_quietly(
 
     assert config is None
     # Handled as an expected, quiet state (debug), never the alarming
-    # warning+traceback line — that's the exact thing a real user mistook
+    # warning+traceback line, that's the exact thing a real user mistook
     # for a crash and reported.
     assert "has no saved configuration yet" in caplog.text
     assert "Failed to load dashboard config" not in caplog.text

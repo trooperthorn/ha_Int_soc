@@ -1,35 +1,7 @@
-"""Custom WebSocket API — the single surface the frontend panel talks to.
+"""Custom WebSocket API: the single surface the frontend panel talks to.
 
-Every command is gated by `@require_soc_access` (admin, plus HA SOC's own
-owner-only/owner+admin access_level setting), regardless of whether the
-panel itself is registered `require_admin=True` — panel visibility is
-cosmetic (see `permissions.py`); the real gate has to be here. The one
-exception is `ha_soc/access/info`, which stays on plain
-`@websocket_api.require_admin` so an admin currently blocked by
-access_level can still ask why.
-
-Above that baseline sit two owner-only tiers. `@require_owner` gates the
-commands that can take the platform over or rewrite configuration
-outright: Settings, the watchdog/hard-cap configuration, every firewall
-command including status (D-4, D-5), `entity_remap/apply`, and
-`permissions/sidebar/push` (D-23). Additionally, the four user-management
-commands that can cut a user off (`users/deactivate`, `users/delete`,
-`users/revoke_token`, `users/revoke_all_sessions`) become owner-only
-whenever the TARGET is an admin-group user, resolved server-side from
-hass.auth (D-23 option (a)); a non-owner admin keeps them for non-admin
-targets, so the admins tier still means routine user management.
-
-Command namespace is `ha_soc/*`. Mutating/PII-bearing commands never return
-raw refresh-token secrets or JWT material to the frontend — only metadata
-(ids, timestamps, client names).
-
-HA SOC's own actions are in its own audit chain (work item 1.4, decision
-D-14 option (a)): every mutating command here writes an audit record, and
-the three privileged READS (host/Supervisor/add-on container logs, the
-crash log, and a user's detail including their token list) write a
-`privileged_read` record naming the target. Ordinary list/summary reads
-are deliberately not audited (D-14 rejected option (b)); logging every
-panel refresh would bury the records that matter.
+Every command is gated by @require_soc_access, with owner-only tiers on top;
+the access model and audit rules are in docs/security.md.
 """
 from __future__ import annotations
 
@@ -130,12 +102,7 @@ def _syslog_host(value: Any) -> str | None:
 def _detection_thresholds_schema() -> vol.Schema:
     """The voluptuous schema for a detection_thresholds settings payload.
 
-    Derived from detections.THRESHOLD_SPECS (work item 3.0) so every
-    numeric parameter is vol.Range-validated against the same inclusive
-    bounds the Settings tab renders - the table is the single source of
-    truth, and a value outside its range is rejected here before it can
-    ever be stored. Unknown rules or parameters are rejected outright
-    (vol.Schema is strict by default), never stored-and-ignored.
+    Unknown rules or parameters are rejected; the schema is strict.
     """
     rules: dict[Any, Any] = {}
     for rule, params in THRESHOLD_SPECS.items():
@@ -179,7 +146,7 @@ def _threshold_table_payload(store) -> dict[str, Any]:
 
 
 def _runtime(hass: HomeAssistant):
-    # Local import to avoid a circular import with __init__.py at module load time.
+    # Local import: avoids a circular import with __init__.py.
     from . import get_runtime_data
 
     return get_runtime_data(hass)
@@ -188,14 +155,7 @@ def _runtime(hass: HomeAssistant):
 def require_soc_access(func):
     """Admin-gate every ha_soc/* command, then apply HA SOC's own access_level.
 
-    Modeled directly on websocket_api.require_admin (same signature, same
-    "raise Unauthorized, don't call func" shape) so it composes with
-    @websocket_command/@async_response exactly the way require_admin does.
-    On top of the baseline admin check, a non-owner admin is only let
-    through when the setting is explicitly opened up to
-    ACCESS_LEVEL_OWNER_AND_ADMINS — a security-posture tool is itself a
-    high-value target, so it defaults to owner-only and fails closed if the
-    runtime (and therefore the setting) isn't reachable yet.
+    Fails closed to owner-only when the runtime is not reachable yet.
     """
 
     @wraps(func)
@@ -218,28 +178,7 @@ def require_soc_access(func):
 
 
 def require_owner(func):
-    """Owner-only gate — stricter than require_soc_access, ignoring access_level.
-
-    A non-owner admin is refused here even under owner_and_admins. What
-    carries this gate, and why (decisions D-4, D-5, D-23):
-
-    - Settings: they hold the security-sensitive controls, including the
-      access level itself and the API credentials. The detection-threshold
-      reset (ha_soc/detections/thresholds_reset) sits in this tier too,
-      since it rewrites the same stored setting.
-    - Every firewall command, status included (D-4): a firewall change can
-      end with the platform unreachable, and reading the ruleset maps the
-      attack surface, so no account but the owner may even look.
-    - The watchdog/hard-cap configuration: enforcement controls that
-      restart add-ons and change host containers.
-    - entity_remap/apply and permissions/sidebar/push (D-23): both rewrite
-      configuration or per-user policy, the same takeover surface D-4
-      closes for the firewall.
-
-    Commands that act on a TARGET user apply a second, conditional owner
-    gate inside their handlers instead (see _async_target_is_admin), so
-    admins keep routine management of non-admin users.
-    """
+    """Owner-only gate, stricter than require_soc_access; ignores access_level."""
 
     @wraps(func)
     def with_owner(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -255,18 +194,8 @@ async def _async_target_is_admin(hass: HomeAssistant, user_id: str) -> bool:
     """True when the TARGET of a user-management command is the owner or a
     member of the admin group, resolved server-side from hass.auth.
 
-    Decision D-23 option (a): deactivating, deleting, or revoking the
-    sessions or tokens of an admin-group user is owner-only, because an
-    admin who can cut off other admins (or the owner) through HA SOC can
-    take the platform over; admins keep those commands for non-admin
-    targets. The check never trusts anything the client sent beyond the
-    user id, and it looks at group membership directly rather than
-    User.is_admin because is_admin is False for a DEACTIVATED admin-group
-    user, and a deactivated admin is still exactly the kind of account
-    this gate protects (deleting one, or clearing its tokens, stays an
-    owner call). An unknown user id returns False so the command's own
-    not-found handling answers, which discloses nothing beyond the id's
-    absence.
+    Checks group membership, not User.is_admin, which is False for a
+    deactivated admin. An unknown id returns False.
     """
     from homeassistant.auth.const import GROUP_ID_ADMIN
 
@@ -353,21 +282,13 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         websocket_api.async_register_command(hass, handler)
 
 
-# ----------------------------------------------------------------------------
-# Access control
-# ----------------------------------------------------------------------------
-
-
 @websocket_api.require_admin
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/access/info"})
 @websocket_api.async_response
 async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
     """Tell the frontend (and a blocked admin) exactly where it stands.
 
-    Deliberately stays on plain @websocket_api.require_admin rather than
-    @require_soc_access — an admin who's been locked out by access_level
-    still needs a way to find out why, instead of every command in the
-    panel just silently 401ing with no explanation.
+    Stays on plain require_admin so a blocked admin can learn why.
     """
     runtime = _runtime(hass)
     user = connection.user
@@ -387,17 +308,9 @@ async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/version/get"})
 @websocket_api.async_response
 async def ws_version_get(hass: HomeAssistant, connection, msg: dict) -> None:
-    """The version shown in the panel's footer, on every tab.
+    """The version shown in the panel's footer, read from manifest.json.
 
-    Reads manifest.json (the single source of truth HA itself already
-    uses for update-checking) via the loader, rather than duplicating the
-    version as a second hardcoded string somewhere in this file — exactly
-    the kind of two-places-to-update drift the probe add-on's run.sh
-    SCANNER_VERSION constant already has to be manually kept in lockstep
-    for. Plain @websocket_api.require_admin, same as ha_soc/access/info:
-    a version number isn't sensitive, and an admin locked out by
-    access_level should still see it on the denied screen, not just once
-    they're let in.
+    Plain require_admin so a blocked admin still sees it.
     """
     from homeassistant.loader import async_get_integration
 
@@ -405,11 +318,6 @@ async def ws_version_get(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(
         msg["id"], {"version": str(integration.version) if integration.version else None}
     )
-
-
-# ----------------------------------------------------------------------------
-# Users & Access
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -427,10 +335,7 @@ async def ws_users_list(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_detail(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    # Privileged read (work item 1.4, D-14): the detail includes the target
-    # user's refresh-token list. The ATTEMPT is what gets audited, before
-    # the fetch, so a probe for a nonexistent user id still leaves a
-    # record; a not_found answer discloses nothing beyond the id's absence.
+    # Audited before the fetch, so a probe for a missing id still leaves a record.
     runtime.audit.async_log(
         "privileged_read",
         user_id=connection.user.id,
@@ -484,18 +389,13 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
         if k in ("name", "is_active", "group_ids", "local_only")
     }
 
-    # Updating an admin-group account is the same takeover surface as the
-    # dedicated deactivate/delete/revoke commands below: a non-owner admin
-    # must not be able to demote, deactivate, or otherwise rewrite the owner
-    # or another administrator through this more general endpoint.
+    # Admin-group targets are owner-only, as for deactivate/delete/revoke.
     if not connection.user.is_owner and await _async_target_is_admin(
         hass, msg["user_id"]
     ):
         raise Unauthorized
 
-    # Home Assistant's dedicated deactivate path protects the owner, but
-    # async_update_user accepts is_active directly.  Preserve the same
-    # invariant here even for a request made by the owner themself.
+    # Core's async_update_user accepts is_active directly; keep the owner invariant.
     target = await hass.auth.async_get_user(msg["user_id"])
     if target is not None and target.is_owner and changes.get("is_active") is False:
         connection.send_error(
@@ -522,8 +422,7 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    # D-23: deactivating an admin-group user is owner-only; a non-owner
-    # admin keeps this command for non-admin targets.
+    # Admin-group targets are owner-only.
     if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
         raise Unauthorized
     ok, reason = await runtime.users.async_deactivate_user(msg["user_id"])
@@ -545,7 +444,7 @@ async def ws_users_deactivate(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.async_response
 async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    # D-23: deleting an admin-group user is owner-only.
+    # Admin-group targets are owner-only.
     if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
         raise Unauthorized
     ok, reason = await runtime.users.async_delete_user(
@@ -574,8 +473,7 @@ async def ws_users_delete(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    # D-23: revoking an admin-group user's token is owner-only; cutting an
-    # admin's session or automation token off is a takeover primitive.
+    # Admin-group targets are owner-only.
     if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
         raise Unauthorized
     ok = await runtime.users.async_revoke_token(msg["user_id"], msg["token_id"])
@@ -597,7 +495,7 @@ async def ws_users_revoke_token(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.async_response
 async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
-    # D-23: revoking an admin-group user's sessions wholesale is owner-only.
+    # Admin-group targets are owner-only.
     if not connection.user.is_owner and await _async_target_is_admin(hass, msg["user_id"]):
         raise Unauthorized
     revoked = await runtime.users.async_revoke_all_sessions(msg["user_id"])
@@ -606,8 +504,6 @@ async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dic
         user_id=connection.user.id,
         detail={"target_user_id": msg["user_id"], "action": "revoked_all_sessions", "revoked": revoked},
     )
-    # revoked = {"sessions": N, "long_lived_tokens": M} so the UI can state
-    # exactly what was cleared, including the long-lived tokens.
     connection.send_result(msg["id"], {"revoked": revoked})
 
 
@@ -617,12 +513,7 @@ async def ws_users_revoke_all_sessions(hass: HomeAssistant, connection, msg: dic
         vol.Required("type"): "ha_soc/users/set_password",
         vol.Required("user_id"): str,
         vol.Required("password"): str,
-        # Work item 4.12: a password reset revokes the target's interactive
-        # sessions by default - whoever held the old password must be
-        # signed out, or the reset changes nothing for an attacker with a
-        # live session. Long-lived access tokens are spared (see
-        # users.async_revoke_interactive_sessions); revoke_all_sessions
-        # remains the full hammer. Opting out is explicit.
+        # Default True: a reset must sign out whoever held the old password.
         vol.Optional("revoke_sessions", default=True): bool,
     }
 )
@@ -659,11 +550,6 @@ async def ws_users_set_password(hass: HomeAssistant, connection, msg: dict) -> N
     connection.send_result(msg["id"], {"ok": True, "sessions_revoked": sessions_revoked})
 
 
-# ----------------------------------------------------------------------------
-# Live sessions (Browser-Mod style handshake)
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/sessions/connect"})
 @websocket_api.async_response
@@ -685,11 +571,6 @@ async def ws_sessions_connect(hass: HomeAssistant, connection, msg: dict) -> Non
 async def ws_sessions_list(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     connection.send_result(msg["id"], {"sessions": runtime.live_sessions.list_sessions()})
-
-
-# ----------------------------------------------------------------------------
-# Audit log
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -734,17 +615,9 @@ async def ws_audit_verify_chain(hass: HomeAssistant, connection, msg: dict) -> N
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/audit/category_stats"})
 @websocket_api.async_response
 async def ws_audit_category_stats(hass: HomeAssistant, connection, msg: dict) -> None:
-    """Per-category record counts and byte shares for the newest audit day,
-    so the owner can see what actually produces the log's bulk (the
-    open-items report's 10 MB/day observation). Newest day only, one pass,
-    no new storage - see audit.async_category_stats."""
+    """Per-category record counts and byte shares for the newest audit day."""
     runtime = _runtime(hass)
     connection.send_result(msg["id"], await runtime.audit.async_category_stats())
-
-
-# ----------------------------------------------------------------------------
-# Permissions matrix
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -817,9 +690,7 @@ async def ws_permissions_dashboard_flags_set(hass: HomeAssistant, connection, ms
     if not ok:
         connection.send_error(msg["id"], reason or "set_failed", "Could not update dashboard flags")
         return
-    # Work item 1.4: only the flags actually present in the message are
-    # recorded, so the record says what changed, not what happened to be
-    # omitted.
+    # Only flags present in the message are recorded.
     runtime.audit.async_log(
         "lovelace_change",
         user_id=connection.user.id,
@@ -836,10 +707,7 @@ async def ws_permissions_dashboard_flags_set(hass: HomeAssistant, connection, ms
     connection.send_result(msg["id"], {"ok": True})
 
 
-# Owner-only (D-23): this rewrites another user's stored sidebar policy,
-# and configuration/policy rewrites carry the same takeover reasoning D-4
-# applied to the firewall. Non-owner admins get the standard unauthorized
-# error; the command's existing lovelace_change audit record is unchanged.
+# Owner-only: rewrites another user's stored sidebar policy.
 @require_owner
 @websocket_api.websocket_command(
     {
@@ -857,9 +725,6 @@ async def ws_permissions_sidebar_push(hass: HomeAssistant, connection, msg: dict
     if not ok:
         connection.send_error(msg["id"], reason or "push_failed", "Could not update sidebar for that user")
         return
-    # Work item 1.4: this is a per-user visibility change (cosmetic, per
-    # permissions.py's labeling, but still an admin acting on another
-    # user), so the record carries the target user and the full hidden set.
     runtime.audit.async_log(
         "lovelace_change",
         user_id=connection.user.id,
@@ -880,11 +745,6 @@ async def ws_permissions_drift_check(hass: HomeAssistant, connection, msg: dict)
     connection.send_result(msg["id"], {"drift": await runtime.permissions.async_check_drift()})
 
 
-# ----------------------------------------------------------------------------
-# Risk & posture
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/risk/list"})
 @websocket_api.async_response
@@ -901,11 +761,6 @@ async def ws_risk_posture(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     posture = runtime.risk.last_posture_result or await runtime.risk.async_compute_posture()
     connection.send_result(msg["id"], posture)
-
-
-# ----------------------------------------------------------------------------
-# Detections
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -935,11 +790,7 @@ async def ws_detections_set_status(hass: HomeAssistant, connection, msg: dict) -
     from homeassistant.util import dt as dt_util
 
     runtime = _runtime(hass)
-    # The store records status_by/status_at/previous_status on the
-    # detection itself and hands the record back so the audit entry can
-    # carry the rule id and the transition (work item 1.4). An unknown id
-    # is an error now, not a silent {"ok": True}: nothing changed, so
-    # claiming success would be false and auditing it would be fiction.
+    # An unknown id is an error, not a silent success.
     detection = runtime.store.async_set_detection_status(
         msg["detection_id"],
         msg["status"],
@@ -972,14 +823,9 @@ async def ws_detections_set_status(hass: HomeAssistant, connection, msg: dict) -
 )
 @websocket_api.async_response
 async def ws_detections_bulk_set_status(hass: HomeAssistant, connection, msg: dict) -> None:
-    """Set many detections to one status in one action (work item 3.3).
+    """Set many detections to one status in one action.
 
-    Same gate as the single set_status: require_soc_access, with the
-    per-record bookkeeping (status_by/status_at/previous_status) applied
-    to each row. Audited ONCE, carrying the list of ids that actually
-    changed - one record per row would bury the analyst action it exists
-    to document. Unknown ids are reported back, never silently ignored as
-    successes.
+    Audited once with the ids that changed; unknown ids are reported back.
     """
     from homeassistant.util import dt as dt_util
 
@@ -1012,24 +858,18 @@ async def ws_detections_bulk_set_status(hass: HomeAssistant, connection, msg: di
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/detections/thresholds"})
 @websocket_api.async_response
 async def ws_detections_thresholds_get(hass: HomeAssistant, connection, msg: dict) -> None:
-    """The full threshold table (work item 3.0): per rule and parameter the
-    effective value, secure default, inclusive range, and type, so the
-    Settings tab and the rule inventory render exactly what the server
-    enforces. Read-only, so it sits at require_soc_access; CHANGING a
-    value goes through owner-only ha_soc/settings/set."""
+    """The full threshold table: per rule and parameter the effective value,
+    secure default, inclusive range, and type. Read-only."""
     runtime = _runtime(hass)
     connection.send_result(msg["id"], {"rules": _threshold_table_payload(runtime.store)})
 
 
-# Owner-only like Settings itself: this rewrites the same stored setting
-# ha_soc/settings/set guards, just in the reset direction.
+# Owner-only: rewrites the same stored setting ha_soc/settings/set guards.
 @require_owner
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/detections/thresholds_reset"})
 @websocket_api.async_response
 async def ws_detections_thresholds_reset(hass: HomeAssistant, connection, msg: dict) -> None:
-    """One-action "Reset to secure defaults" (work item 3.0, D-9). Clears
-    every stored override and audits the reset as soc_config_change with a
-    per-field diff of what actually changed."""
+    """One-action "Reset to secure defaults"; audits a per-field diff."""
     runtime = _runtime(hass)
     diff: dict[str, dict[str, Any]] = {}
     stored = runtime.store.settings.get("detection_thresholds") or {}
@@ -1050,11 +890,6 @@ async def ws_detections_thresholds_reset(hass: HomeAssistant, connection, msg: d
     connection.send_result(msg["id"], {"rules": _threshold_table_payload(runtime.store)})
 
 
-# ----------------------------------------------------------------------------
-# Device vulnerabilities
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/vulns/list"})
 @websocket_api.async_response
@@ -1070,12 +905,8 @@ async def ws_vulns_scan_now(hass: HomeAssistant, connection, msg: dict) -> None:
     from homeassistant.util import dt as dt_util
 
     runtime = _runtime(hass)
-    # The tracker fetches the NVD API key from the secret store right
-    # before each request (SEC-3); no key is handled here.
     findings = await runtime.vulns.async_run_scan()
-    # Work item 3.4: a completed manual scan is positive evidence the
-    # p_vuln posture term has computed, even when the scan found nothing -
-    # the one case the store's findings table cannot prove on its own.
+    # A completed scan proves p_vuln computed even when nothing was found.
     runtime.store.async_mark_posture_term_computed(
         "p_vuln", dt_util.utcnow().isoformat()
     )
@@ -1098,11 +929,6 @@ async def ws_vulns_set_status(hass: HomeAssistant, connection, msg: dict) -> Non
         msg["finding_id"], msg["status"], user_id=connection.user.id, note=msg.get("note")
     )
     connection.send_result(msg["id"], {"ok": True})
-
-
-# ----------------------------------------------------------------------------
-# Integration security scanner
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -1142,20 +968,13 @@ async def ws_scanner_export(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], runtime.scanner.export_ghsa(finding))
 
 
-# ----------------------------------------------------------------------------
-# Integration health & misconfiguration
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/health/list"})
 @websocket_api.async_response
 async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     findings = list(runtime.store.data["misconfig_findings"].values())
-    # Most severe first — SEVERITY_ORDER is critical/high/medium/low/info, so a
-    # finding whose severity isn't in that list (shouldn't happen, but never
-    # trust stored data blindly) sorts last rather than raising.
+    # Most severe first; an unknown severity sorts last rather than raising.
     findings.sort(
         key=lambda f: SEVERITY_ORDER.index(f["severity"]) if f["severity"] in SEVERITY_ORDER else len(SEVERITY_ORDER)
     )
@@ -1168,21 +987,13 @@ async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
     )
 
 
-# ----------------------------------------------------------------------------
-# Logs
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/logs/fault"})
 @websocket_api.async_response
 async def ws_logs_fault(hass: HomeAssistant, connection, msg: dict) -> None:
     from .logs import async_fault_log_overview
 
-    # Privileged read (work item 1.4, D-14): the crash/fault log is Core's
-    # own post-mortem dump and can carry anything that was in scope when a
-    # thread died. The attempt is audited even when the file turns out not
-    # to exist.
+    # Privileged read; audited before the fetch even if the file is absent.
     runtime = _runtime(hass)
     runtime.audit.async_log(
         "privileged_read",
@@ -1216,11 +1027,7 @@ async def ws_logs_container(hass: HomeAssistant, connection, msg: dict) -> None:
     logs.py against the Supervisor's own add-on list, never interpolated raw."""
     from .logs import async_fetch_container_log
 
-    # Privileged read (work item 1.4, D-14): host, Supervisor, Core, and
-    # add-on logs routinely carry material their own UIs gate behind admin.
-    # The audited target is the plain slug for an add-on ("addon:" prefix
-    # stripped) or core/supervisor/host, and the attempt is audited before
-    # the fetch so a failed or rejected fetch still leaves a record.
+    # Privileged read; audited before the fetch, add-on targets as the bare slug.
     runtime = _runtime(hass)
     runtime.audit.async_log(
         "privileged_read",
@@ -1256,11 +1063,6 @@ async def ws_misconfig_set_status(hass: HomeAssistant, connection, msg: dict) ->
         at=dt_util.utcnow().isoformat(),
     )
     connection.send_result(msg["id"], {"ok": True})
-
-
-# ----------------------------------------------------------------------------
-# Dashboard summary (one round trip for the SOC Dashboard view's KPI row)
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -1350,11 +1152,6 @@ async def ws_dashboard_integrations(hass: HomeAssistant, connection, msg: dict) 
     connection.send_result(msg["id"], overview)
 
 
-# ----------------------------------------------------------------------------
-# Host Probe (optional add-on)
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/probe/status"})
 @websocket_api.async_response
@@ -1364,11 +1161,6 @@ async def ws_probe_status(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     overview = await async_probe_overview(hass, runtime.store)
     connection.send_result(msg["id"], overview)
-
-
-# ----------------------------------------------------------------------------
-# Local Peripherals (USB/serial devices)
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -1402,13 +1194,6 @@ async def ws_peripherals_set_ignored(hass: HomeAssistant, connection, msg: dict)
     connection.send_result(msg["id"], {"ok": True})
 
 
-# ----------------------------------------------------------------------------
-# Entity ReMap — find and fix broken/stale entity_id references across
-# automations, scripts, scenes, dashboards, and helpers. See entity_remap.py
-# for exactly what's editable vs. detect-only and why.
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/entity_remap/find_references", vol.Required("entity_id"): str}
@@ -1421,17 +1206,12 @@ async def ws_entity_remap_find_references(hass: HomeAssistant, connection, msg: 
     connection.send_result(msg["id"], report)
 
 
-# Owner-only (D-23): applying a remap rewrites YAML configuration files,
-# stored dashboards, and helper entries, and a configuration rewrite is the
-# same takeover surface D-4 closed for the firewall. Finding references
-# stays open to admins; only the write is gated.
+# Owner-only: applying a remap rewrites configuration files.
 @require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/entity_remap/apply",
-        # cv.entity_id enforces the domain.object_id shape, so a typo'd or
-        # empty string can't be substituted into an entity_id field and
-        # silently break the automation/script on next reload.
+        # cv.entity_id enforces domain.object_id, so a typo cannot break automations on reload.
         vol.Required("old_entity_id"): cv.entity_id,
         vol.Required("new_entity_id"): cv.entity_id,
         vol.Required("backup_acknowledged"): bool,
@@ -1475,12 +1255,6 @@ async def ws_entity_remap_broken_references(hass: HomeAssistant, connection, msg
     connection.send_result(msg["id"], {"broken": broken})
 
 
-# ----------------------------------------------------------------------------
-# Security Integrations Health — always-present Dashboard card. See
-# security_health.py for exactly what "problem"/"low battery" mean and why.
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/security_health/list"})
 @websocket_api.async_response
@@ -1492,14 +1266,7 @@ async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) ->
     connection.send_result(msg["id"], overview)
 
 
-# ----------------------------------------------------------------------------
-# Firewall rules — read AND write host iptables state via the Probe add-on.
-# Owner-only end to end, status included (decision D-4): full rationale in
-# docs/THREAT-MODEL.md ("Firewall control access gating"). See firewall.py's
-# module docstring for the test/confirm/revert safety design.
-# ----------------------------------------------------------------------------
-
-
+# Every firewall command is owner-only, status included; see docs/THREAT-MODEL.md.
 @require_owner
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/status"})
 @websocket_api.async_response
@@ -1575,10 +1342,7 @@ async def ws_firewall_confirm(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.async_response
 async def ws_firewall_reset_pairing(hass: HomeAssistant, connection, msg: dict) -> None:
     """Owner-only recovery: clear the pinned add-on secret so the next
-    non-empty one re-pins (trust-on-first-use). Use if the add-on was
-    reinstalled/rotated its secret, or a bad first-boot pin locked out the
-    real add-on.
-    """
+    non-empty one re-pins (trust-on-first-use)."""
     from .firewall import async_reset_addon_secret
 
     runtime = _runtime(hass)
@@ -1619,15 +1383,8 @@ async def ws_firewall_cancel(hass: HomeAssistant, connection, msg: dict) -> None
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/firewall/discard_pending"})
 @websocket_api.async_response
 async def ws_firewall_discard_pending(hass: HomeAssistant, connection, msg: dict) -> None:
-    """Owner-only escape hatch (decision D-5): archive a pending test whose
-    report will never arrive because the add-on went silent mid-test. The
-    server refuses the discard while the countdown is still running
-    (window_not_lapsed) so it can never race a report that is merely late;
-    the panel offers the button under the same condition. The archive and
-    the firewall_pending_discarded audit record (flushed immediately) are
-    written by firewall.async_discard_pending so the state machine stays
-    the single owner of the pending slot.
-    """
+    """Owner-only escape hatch: archive a pending test whose report will
+    never arrive because the add-on went silent mid-test."""
     from .firewall import async_discard_pending
 
     runtime = _runtime(hass)
@@ -1638,13 +1395,6 @@ async def ws_firewall_discard_pending(hass: HomeAssistant, connection, msg: dict
         connection.send_error(msg["id"], "firewall_discard_rejected", reason)
         return
     connection.send_result(msg["id"], {"ok": True})
-
-
-# ----------------------------------------------------------------------------
-# Integration Security — provenance (NOT safety) view of every installed
-# integration. See integration_security.py's docstring for the rule that
-# governs it: nothing here proves code is safe to run.
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -1669,7 +1419,6 @@ async def ws_integration_security_refresh(hass: HomeAssistant, connection, msg: 
     from .integration_security import async_integration_security_overview
 
     runtime = _runtime(hass)
-    # Discover the repo URLs to look up from the current local overview.
     overview = await async_integration_security_overview(hass, runtime.store, runtime.secrets)
     repo_urls = [r["repo_url"] for r in overview["integrations"] if r.get("repo_url")]
     result = await async_refresh_github_signals(hass, runtime.store, repo_urls, runtime.secrets)
@@ -1697,9 +1446,7 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], runtime.watchdog.status())
 
 
-# The watchdog and hard-cap configuration are enforcement controls — a bad
-# threshold auto-restarts add-ons, a hard cap changes host containers — so
-# mutation is OWNER-ONLY like Settings, regardless of access_level.
+# Owner-only: thresholds and hard caps restart add-ons and change host containers.
 @require_owner
 @websocket_api.websocket_command(
     {
@@ -1710,10 +1457,7 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
         vol.Optional("default_action"): vol.In(WATCHDOG_ACTIONS),
         vol.Optional("sustained_samples"): vol.All(vol.Coerce(int), vol.Range(min=1, max=30)),
         vol.Optional("interval_seconds"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3600)),
-        # Per-container override — slug + any subset of the fields; passing
-        # clear=True removes the override entirely (back to defaults).
-        # Both slugs are shape-validated here (work item 2.2) and checked
-        # against the Supervisor's installed add-on list in the handler.
+        # clear=True removes the override; slugs are also checked against installed add-ons below.
         vol.Optional("override"): vol.Schema(
             {
                 vol.Required("slug"): vol.All(str, vol.Match(ADDON_SLUG_PATTERN)),
@@ -1724,8 +1468,7 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
                 vol.Optional("clear"): bool,
             }
         ),
-        # Docker hard cap for one add-on — memory_mb/cpus of None (or both
-        # missing) clears the cap. Applied by the Probe, not by Core.
+        # memory_mb and cpus both None clears the cap; applied by the Probe, not Core.
         vol.Optional("hard_limit"): vol.Schema(
             {
                 vol.Required("slug"): vol.All(str, vol.Match(ADDON_SLUG_PATTERN)),
@@ -1739,14 +1482,7 @@ async def ws_watchdog_status(hass: HomeAssistant, connection, msg: dict) -> None
 async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
 
-    # Work item 2.2: a slug that is about to be STORED must name an add-on
-    # the Supervisor itself reports as installed, and on a non-Supervisor
-    # install (where no add-on exists at all) the request is refused as
-    # not_supervisor. Clears are deliberately exempt from the installed
-    # check: an override or cap left behind by a since-uninstalled add-on
-    # must stay removable, and a clear never sends the slug anywhere (the
-    # Probe resets removed caps from its own previously-applied list). The
-    # slug's shape is schema-enforced above for clears too.
+    # Clears skip the installed check so a stale entry for a removed add-on stays removable.
     from .resource_watchdog import async_installed_addon_slugs
 
     stored_slugs: list[str] = []
@@ -1805,7 +1541,7 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
         slug = hl.pop("slug")
         if not hl.get("memory_mb") and not hl.get("cpus"):
             cfg.setdefault("hard_limits", {}).pop(slug, None)
-            # Stale applied-state would read as "still capped" — drop it too.
+            # Stale applied-state would read as "still capped"; drop it too.
             cfg.setdefault("hard_limit_state", {}).pop(slug, None)
             changes["hard_limit_cleared"] = slug
         else:
@@ -1817,8 +1553,7 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
 
     if changes:
         runtime.store.async_schedule_save()
-        # Re-arm the sampling timer so enabled/interval changes take effect
-        # immediately rather than on the next restart.
+        # Re-arm the timer so enabled/interval changes apply immediately.
         runtime.watchdog.async_start()
         runtime.audit.async_log(
             "soc_config_change",
@@ -1826,15 +1561,6 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
             detail={"action": "watchdog_config_changed", "changes": changes},
         )
     connection.send_result(msg["id"], runtime.watchdog.status())
-
-
-# ----------------------------------------------------------------------------
-# Network — UniFi Network / Protect direct-to-console read-only overview.
-# One snapshot command backs the whole Network tab (status, WAN, clients,
-# devices, Protect summary). Never mutates controller state; a connection
-# problem comes back as reachable=False with a human-readable reason rather
-# than a WS error, so the tab renders a "not reachable" card, not a failure.
-# ----------------------------------------------------------------------------
 
 
 @require_soc_access
@@ -1848,15 +1574,6 @@ async def ws_network_overview(hass: HomeAssistant, connection, msg: dict) -> Non
     connection.send_result(msg["id"], overview)
 
 
-# ----------------------------------------------------------------------------
-# Network Security — ACL rules (with ports/networks), the HA server's own
-# open ports cross-referenced against those rules, Pi-hole DNS visibility for
-# the IoT network, and the advisory findings derived from both. One snapshot
-# command backs the whole tab, same shape as ha_soc/network/overview above.
-# Never mutates UniFi or Pi-hole state.
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/network_security/overview"})
 @websocket_api.async_response
@@ -1868,19 +1585,7 @@ async def ws_network_security_overview(hass: HomeAssistant, connection, msg: dic
     connection.send_result(msg["id"], overview)
 
 
-# ----------------------------------------------------------------------------
-# Panel "Customize" layout — per-user card order/visibility for the card-
-# based views (Dashboard, Network, Network Security, etc.). A personal UI
-# preference, not a security control: @require_soc_access, not
-# @require_owner, and every command reads/writes only the CALLING user's
-# own layout (connection.user.id), never another user's — there is no
-# "set someone else's layout" command. Not audited (D-14's "ordinary
-# reads/writes of the caller's own preferences" carve-out, same reasoning
-# as why panel refreshes aren't logged): this is furniture-rearranging,
-# not a security-relevant change.
-# ----------------------------------------------------------------------------
-
-
+# Layout commands touch only the calling user's own layout and are not audited.
 @require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/layout/get", vol.Required("view_id"): str}
@@ -1912,32 +1617,13 @@ async def ws_layout_set(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"order": msg["order"], "hidden": msg["hidden"]})
 
 
-# ----------------------------------------------------------------------------
-# Settings — the in-panel Settings tab. OWNER-ONLY (@require_owner): settings
-# carry the security-sensitive controls (access level, API credentials), so
-# they are reachable by the account owner alone, regardless of access_level.
-# HaSocData.settings is the single source of truth for every non-secret
-# setting; secret values live only in the private secret store (SEC-1), and
-# the old entry.options mirror is gone entirely (SEC-2): a legacy mirror is
-# scrubbed to {} once at setup. See config_flow.py's docstring.
-# ----------------------------------------------------------------------------
-
-
 async def _masked_settings(settings: dict, secrets) -> dict:
     """A copy of settings safe to send to the frontend: every secret key is
-    present as a redaction placeholder (when set) or "" (when unset), and a
-    companion "<key>_set" boolean says whether one is configured, so the
-    form can show "configured" without ever receiving the raw secret.
-
-    Secret VALUES no longer live in the settings dict at all (they moved to
-    the private secret store, SEC-1), so presence is asked of that store
-    per key; the wire shape is byte-for-byte what it was before the move,
-    which is why the frontend needed no change.
-    """
+    present as a redaction placeholder (when set) or "" (when unset), plus a
+    companion "<key>_set" boolean."""
     out = dict(settings)
     for key in SECRET_SETTING_KEYS:
-        # Defensive pop: settings must never carry a secret value anymore,
-        # but if a stray one ever appeared it must not reach the wire.
+        # Defensive pop: a stray secret value must not reach the wire.
         out.pop(key, None)
         is_set = bool(await secrets.async_get(key))
         out[key] = REDACTED_PLACEHOLDER if is_set else ""
@@ -1970,47 +1656,34 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SYSLOG_HOST): _syslog_host,
         vol.Optional(CONF_SYSLOG_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         vol.Optional(CONF_SYSLOG_TLS_VERIFY): bool,
-        # local0 through local7; keeping this narrow avoids accidental use
-        # of kernel/auth facilities at a shared receiver.
+        # local0 through local7 only.
         vol.Optional(CONF_SYSLOG_FACILITY): vol.All(vol.Coerce(int), vol.Range(min=16, max=23)),
-        # Work item 3.3 (D-6): how long resolved/dismissed detections and
-        # findings are kept. The floor stops an accidental "1" from
-        # erasing an incident's evidence trail a month later.
+        # The floor of 30 stops an accidental "1" from erasing an evidence trail.
         vol.Optional("evidence_retention_days"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3650)),
         vol.Optional(CONF_SCANNER_ENABLED): bool,
         vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
-        # D-12: the off switch for sending device manufacturer/model
-        # strings to NIST's NVD (consumed by vulns.py).
+        # Off switch for NVD lookups (consumed by vulns.py).
         vol.Optional("nvd_lookups_enabled"): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
         vol.Optional(CONF_GITHUB_TOKEN): str,
-        # Work item 3.0 (D-9): partial per-rule threshold overrides, every
-        # numeric field range-validated against detections.THRESHOLD_SPECS.
-        # risk_learning_period_days is gone from this schema - it was
-        # replaced by the two per-rule learning_days parameters in here
-        # (store.py migrates a stored legacy value once).
+        # Partial per-rule overrides; ranges come from detections.THRESHOLD_SPECS.
         vol.Optional("detection_thresholds"): _detection_thresholds_schema(),
         vol.Optional(CONF_MFA_POLICY): vol.In([MFA_POLICY_AUDIT_ONLY, MFA_POLICY_AUTO_DEACTIVATE]),
         vol.Optional(CONF_MFA_GRACE_PERIOD_DAYS): vol.All(vol.Coerce(int), vol.Range(min=1, max=365)),
         vol.Optional(CONF_SECURITY_SOURCES_ENABLED): {str: bool},
-        # UniFi Network / Protect connections. Hosts accept a string or None
-        # (None/"" clears the connection); the API keys are secrets handled
-        # by the placeholder-means-unchanged logic below.
+        # None or "" clears a host; API keys use the placeholder-means-unchanged logic below.
         vol.Optional(CONF_UNIFI_NETWORK_HOST): vol.Any(str, None),
         vol.Optional(CONF_UNIFI_NETWORK_API_KEY): str,
         vol.Optional(CONF_UNIFI_NETWORK_VERIFY_SSL): bool,
         vol.Optional(CONF_UNIFI_PROTECT_HOST): vol.Any(str, None),
         vol.Optional(CONF_UNIFI_PROTECT_API_KEY): str,
         vol.Optional(CONF_UNIFI_PROTECT_VERIFY_SSL): bool,
-        # Pi-hole v6 direct connection (Network Security tab). Same
-        # host/None-clears/secret-placeholder handling as the UniFi fields
-        # above; iot_cidr is a plain (non-secret) setting.
+        # Same host and secret handling as UniFi; iot_cidr is not a secret.
         vol.Optional(CONF_PIHOLE_HOST): vol.Any(str, None),
         vol.Optional(CONF_PIHOLE_API_KEY): str,
         vol.Optional(CONF_PIHOLE_VERIFY_SSL): bool,
         vol.Optional(CONF_PIHOLE_IOT_CIDR): vol.Any(str, None),
-        # Probe-hosted Net-SNMP. Only an explicit unicast listener and
-        # SNMPv3 AuthPriv credentials are representable.
+        # Only an explicit unicast listener and SNMPv3 AuthPriv are representable.
         vol.Optional(CONF_SNMP_ENABLED): bool,
         vol.Optional(CONF_SNMP_LISTEN_ADDRESS): snmp_ip_address,
         vol.Optional(CONF_SNMP_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
@@ -2023,18 +1696,12 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
     changes = {k: v for k, v in msg.items() if k not in ("type", "id")}
-    # A secret field left as the redaction placeholder means "leave it as
-    # it is" — the frontend never round-trips the real value back, so treat
-    # the placeholder as no-change rather than overwriting the stored secret
-    # with the mask string.
+    # The placeholder means "unchanged"; the frontend never round-trips the real value.
     for key in SECRET_SETTING_KEYS:
         if changes.get(key) == REDACTED_PLACEHOLDER:
             del changes[key]
 
-    # Secret values are routed to the private secret store and never enter
-    # the settings dict (SEC-1). An empty string clears the stored secret,
-    # matching the pre-SEC-1 behavior where "" made the "<key>_set" flag
-    # read false.
+    # Secrets go to the secret store, never the settings dict; "" clears one.
     secret_changes = {
         key: changes.pop(key) for key in list(changes) if key in SECRET_SETTING_KEYS
     }
@@ -2058,20 +1725,13 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
             )
             for key in (CONF_SNMP_AUTH_PASSPHRASE, CONF_SNMP_PRIV_PASSPHRASE)
         }
-        # Validate the complete prospective configuration before writing
-        # either store, so a failed enable/rotation cannot partially apply.
+        # Validate the full prospective config before writing either store.
         validate_enabled_config(prospective_settings, prospective_secrets)
 
     for key, value in secret_changes.items():
         await runtime.secrets.async_set(key, value)
 
-    # detection_thresholds arrives as a PARTIAL override ({rule: {param:
-    # value}}) and is merged per field into the stored overrides rather
-    # than replacing them wholesale, so the Settings tab can send exactly
-    # the field the owner touched. The audit record carries a per-field
-    # diff against the previously EFFECTIVE value (stored override or
-    # secure default), which is the number the operator actually changed
-    # (work item 3.0).
+    # Partial override merged per field; the audit diff is against the effective value.
     threshold_diff: dict[str, Any] = {}
     threshold_payload = changes.pop("detection_thresholds", None)
     if threshold_payload:
@@ -2109,10 +1769,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
         await runtime.syslog.async_reconfigure()
 
     if changes or secret_changes or threshold_diff:
-        # The audit record names every changed key. Secret values are
-        # replaced with the placeholder HERE so no raw secret even enters
-        # the audit path; audit.async_log's own _redact_secrets_deep stays
-        # behind this as defense in depth.
+        # Secrets are masked here, before entering the audit path.
         audited_changes: dict[str, Any] = {
             **changes,
             **{key: REDACTED_PLACEHOLDER for key in secret_changes},
@@ -2130,11 +1787,6 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], payload)
 
 
-# ----------------------------------------------------------------------------
-# Live-update subscription
-# ----------------------------------------------------------------------------
-
-
 @require_soc_access
 @websocket_api.websocket_command(
     {vol.Required("type"): "ha_soc/subscribe", vol.Optional("topic", default="dashboard"): str}
@@ -2143,9 +1795,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
 def ws_subscribe(hass: HomeAssistant, connection, msg: dict) -> None:
     """Push a lightweight 'refresh' ping whenever the named topic updates.
 
-    The frontend re-fetches the relevant list/summary command on receipt —
-    this only tells it *that* something changed, not what, keeping payloads
-    small and this module decoupled from every consumer's exact shape.
+    Signals only that something changed, not what.
     """
 
     @callback

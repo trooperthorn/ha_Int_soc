@@ -1,46 +1,7 @@
 """GitHub-derived provenance signals for the Integration Security view.
 
-Gathers the design's signals 2/5/6/7/10 for a set of "owner/repo" repos:
-
-  - **2 release vs. branch**: does the installed version match a real tag?
-    (has_releases / latest release tag)
-  - **5 identity assurance**: is the repo's default-branch head commit
-    cryptographically verified? (`verification.verified` — a real, public
-    field). Measures assurance on the artifact, never "does the maintainer
-    have MFA" (not exposed, and converging on universal anyway). Describe
-    the artifact, never the author.
-  - **6 recency**: last push timestamp.
-  - **7 popularity**: stars / forks (gameable — weak positive only).
-  - **10 archived**: the repo's own `archived` flag.
-
-All of this needs an outbound call and the optional owner-configured token
-(raising GitHub's 60/hr unauthenticated limit to 5,000/hr). With no token,
-NOTHING here runs and every signal stays honestly "not collected" — never
-a guess. Results are cached in the store keyed by "owner/repo", and a repo
-whose cached signals are younger than INTEGRATION_SECURITY_CACHE_TTL_HOURS
-is not re-fetched by a refresh (work plan item 4.10); the GitHub endpoint
-is a hardcoded constant and the token is a header, never spliced into a
-URL string.
-
-Hardening (work plan item 4.10, GH-1): the "owner/repo" slug comes out of
-a third-party manifest's documentation/issue_tracker URLs, and yarl
-normalizes ``..`` path segments before sending (verified in the work
-plan's section 6.1), so an unvalidated slug like ``../../user/repos``
-would redirect the owner's token to an arbitrary GitHub API path and
-cache the response. Every slug is therefore validated against
-``^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`` with ``.`` and ``..`` components
-rejected outright before any URL is built; an invalid slug is skipped
-and counted, never fetched. A 403 whose X-RateLimit-Remaining header is
-0 stops the whole refresh and reports ``rate_limited``, so a big install
-does not burn its remaining quota discovering the limit one repo at a
-time. Obvious false positive of the slug validation: a legitimately
-renamed repo whose manifest still carries a malformed URL stays "not
-collected" until the manifest is fixed.
-
-The token lives in the private secret store (secrets_store.py) and is
-fetched immediately before each per-repo lookup, then dropped with that
-call frame (work item SEC-3): no parameter threading, attribute, or module
-global carries the token across the refresh loop.
+With no token configured nothing here runs and every signal stays "not
+collected" (signals, slug hardening, and caching: docs/security.md).
 """
 from __future__ import annotations
 
@@ -67,22 +28,16 @@ from .store import HaSocData
 _LOGGER = logging.getLogger(__name__)
 
 _TIMEOUT_SECONDS = 15
-# Cap how many repos a single refresh will look up, so one refresh can't
-# blow a whole hour's rate budget on a huge install; the rest keep their
-# cached values (or stay "not collected") until the next refresh.
+# Caps rate-budget use per refresh; the rest keep cached values until the next one.
 _MAX_REPOS_PER_REFRESH = 60
 
-# The only slug shape ever allowed into a request path (work plan item
-# 4.10). Dot-only components are rejected separately below because "." and
-# ".." match this character class while still being path-traversal tokens.
+# Dot-only components match this class and are rejected separately in _valid_repo_slug.
 _REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 
 
 def _valid_repo_slug(owner_repo: str) -> bool:
     """Whether the string is safe to place into the /repos/{owner}/{repo}
-    path: matches the allowed character set AND neither component is a
-    dot segment (yarl collapses those before sending, which would point
-    the token at a different API path entirely)."""
+    path: allowed character set and neither component is a dot segment."""
     if not isinstance(owner_repo, str) or not _REPO_SLUG_RE.match(owner_repo):
         return False
     owner, repo = owner_repo.split("/", 1)
@@ -90,9 +45,7 @@ def _valid_repo_slug(owner_repo: str) -> bool:
 
 
 class _RateLimited(Exception):
-    """GitHub answered 403 with X-RateLimit-Remaining: 0 - the token's
-    quota is exhausted, so the refresh must stop rather than burn the
-    error budget one repo at a time."""
+    """GitHub answered 403 with X-RateLimit-Remaining: 0; the refresh must stop."""
 
 
 def _headers(token: str) -> dict[str, str]:
@@ -106,18 +59,13 @@ def _headers(token: str) -> dict[str, str]:
 async def _fetch_repo_signals(
     session: aiohttp.ClientSession, owner_repo: str, secrets: HaSocSecretStore
 ) -> dict[str, Any] | None:
-    """Two calls per repo: the repo object (stars/forks/archived/pushed_at)
-    and the default-branch head commit (verification). Returns a signal
-    dict, or None on any error (the caller keeps that repo 'not collected').
-
-    The token is fetched from the secret store here, right before the
-    requests it authenticates, and goes out of scope when this function
-    returns (SEC-3).
+    """Fetch the repo object and the default-branch head commit for one repo.
+    Returns a signal dict, or None on any error. The token is fetched here
+    and goes out of scope when this function returns.
     """
     token = await secrets.async_get(CONF_GITHUB_TOKEN)
     if not token:
-        # The caller checked presence before starting the loop; the token
-        # being cleared mid-refresh just leaves the rest "not collected".
+        # A token cleared mid-refresh leaves the rest "not collected".
         return None
     base = f"{GITHUB_API_BASE}/repos/{owner_repo}"
     try:
@@ -164,9 +112,7 @@ async def _fetch_repo_signals(
                 has_release = None
 
     except (aiohttp.ClientError, asyncio.TimeoutError, ValueError) as err:
-        # ValueError covers json.JSONDecodeError (work plan item 4.10): a
-        # bad body from one repository leaves that repo "not collected"
-        # instead of aborting the whole refresh loop.
+        # ValueError covers json.JSONDecodeError so one bad body does not abort the loop.
         _LOGGER.warning("GitHub provenance lookup failed for %s: %s", owner_repo, err)
         return None
 
@@ -189,21 +135,15 @@ async def async_refresh_github_signals(
     secrets: HaSocSecretStore,
 ) -> dict[str, Any]:
     """Refresh cached GitHub signals for the given owner/repo list. Returns
-    a summary; the per-repo data lands in the store cache. A no-op (with a
-    clear reason) when no token is configured. Invalid slugs are skipped
-    and counted, cache entries younger than the TTL are kept as-is, and an
-    exhausted rate limit stops the loop with reason "rate_limited" while
-    keeping everything fetched so far (work plan item 4.10)."""
-    # Presence check only; the value is fetched per repo inside
-    # _fetch_repo_signals and never held across the loop (SEC-3).
+    a summary; the per-repo data lands in the store cache."""
+    # Presence check only; the value is fetched per repo and never held across the loop.
     if not await secrets.async_get(CONF_GITHUB_TOKEN):
         return {"ok": False, "reason": "no_github_token", "refreshed": 0}
 
     unique = [r for r in dict.fromkeys(repo_urls) if r]
     invalid = [r for r in unique if not _valid_repo_slug(r)]
     if invalid:
-        # Slug names only are logged; they came from third-party
-        # manifests and are exactly the values being refused a request.
+        # Only slug names are logged; they are the values being refused a request.
         _LOGGER.warning(
             "GitHub provenance refresh skipped %d invalid repo slug(s): %s",
             len(invalid),
@@ -225,9 +165,7 @@ async def async_refresh_github_signals(
         if cached is not None:
             collected_at = dt_util.parse_datetime(str(cached.get("collected_at") or ""))
             if collected_at is not None and now - collected_at < ttl:
-                # Honor INTEGRATION_SECURITY_CACHE_TTL_HOURS (work plan
-                # item 4.10): recently collected signals are kept, and
-                # the rate budget goes to stale or missing repos.
+                # Cache entries younger than the TTL are kept.
                 fresh_skipped += 1
                 continue
         try:

@@ -29,7 +29,7 @@ from custom_components.ha_soc.secrets_store import HaSocSecretStore
 from custom_components.ha_soc.store import HaSocData
 
 # A stand-in for what github_provenance._fetch_repo_signals returns for one
-# repo — shape mirrors the real signal dict, values are arbitrary.
+# repo, shape mirrors the real signal dict, values are arbitrary.
 FAKE_SIGNALS = {
     "stars": 42,
     "forks": 3,
@@ -80,9 +80,6 @@ def _owner_connection() -> MagicMock:
     return connection
 
 
-# -- 1: overview shape, and github honestly "not collected" without a token --
-
-
 async def test_overview_shape_and_no_github_without_token(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -112,9 +109,6 @@ async def test_overview_shape_and_no_github_without_token(
     assert all(row["github"] is None for row in overview["integrations"])
 
 
-# -- 2: this repo's own integration appears as a custom row ------------------
-
-
 async def test_ha_soc_itself_is_a_custom_row(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -125,17 +119,8 @@ async def test_ha_soc_itself_is_a_custom_row(
     row = next(r for r in overview["integrations"] if r["domain"] == DOMAIN)
     assert row["tier"] == INTEGRATION_TIER_CUSTOM
     assert row["is_custom"] is True
-    # custom_components/ha_soc/ ships its own LICENSE copy (added alongside
-    # the repo-root one for the HACS license check), so the local license
-    # check reports True. The check runs against the HARNESS config dir's
-    # custom_components, which doesn't exist there — so it falls back to the
-    # per-row executor check against... the harness path, and reports False.
-    # Assert the honest harness-visible value: no LICENSE at the harness's
-    # config-dir path means False here, True on a real install.
+    # The check runs against the harness config dir, which has no LICENSE, so False here and True on a real install.
     assert row["license_present"] is False
-
-
-# -- 3: any core row must be consistent (is_custom False, license present) ---
 
 
 async def test_core_rows_are_consistent(
@@ -153,9 +138,6 @@ async def test_core_rows_are_consistent(
         assert row["license_present"] is True
 
 
-# -- 4: refresh with no token is a no-op and touches no network -------------
-
-
 async def test_refresh_without_token_is_noop(
     hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
 ) -> None:
@@ -169,9 +151,6 @@ async def test_refresh_without_token_is_noop(
 
     assert result == {"ok": False, "reason": "no_github_token", "refreshed": 0}
     mock_fetch.assert_not_called()  # never reached the network layer
-
-
-# -- 5: refresh with a token populates the cache and merges into the row -----
 
 
 async def test_refresh_with_token_caches_and_merges(
@@ -208,9 +187,6 @@ async def test_refresh_with_token_caches_and_merges(
     post = await async_integration_security_overview(hass, store, secrets)
     merged_row = next(r for r in post["integrations"] if r["domain"] == DOMAIN)
     assert merged_row["github"] == FAKE_SIGNALS
-
-
-# -- 6: the two WebSocket handlers ------------------------------------------
 
 
 async def test_ws_list_returns_overview(
@@ -250,11 +226,7 @@ async def test_ws_refresh_without_token_reports_noop(
     mock_fetch.assert_not_called()
 
 
-# -- 7: the custom_components disk scan must never run on the event loop -----
-# Regression for a real deployment log: HA's asyncio protection flagged
-# "Detected blocking call to listdir ... inside the event loop" at
-# integration_security.py's os.listdir. The scan (and the license checks
-# folded into it) must go through async_add_executor_job.
+# The custom_components disk scan must never run on the event loop (regression for a real blocking-call log).
 
 
 async def test_custom_components_scan_runs_in_executor(
@@ -272,10 +244,7 @@ async def test_custom_components_scan_runs_in_executor(
         scan_threads.append(threading.get_ident())
         return real_scan(root)
 
-    # patch with new= (a bare function), NOT side_effect=: the test harness's
-    # async_add_executor_job deliberately runs Mock targets inline on the loop
-    # (pytest_homeassistant_custom_component common.py), which would make this
-    # thread assertion meaningless for a MagicMock.
+    # patch with new= (a bare function), not side_effect=: the harness runs Mock targets inline on the loop.
     with patch.object(mod, "_scan_custom_components_sync", new=_spy):
         await async_integration_security_overview(
             hass, entry.runtime_data.store, entry.runtime_data.secrets
@@ -286,9 +255,6 @@ async def test_custom_components_scan_runs_in_executor(
         "disk scan executed on the event-loop thread — must go through "
         "async_add_executor_job"
     )
-
-
-# -- 8: sprint 4 hardening (work plan item 4.10) ------------------------------
 
 
 def test_repo_slug_validation() -> None:

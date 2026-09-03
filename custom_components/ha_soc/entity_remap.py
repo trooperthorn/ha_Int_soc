@@ -1,67 +1,9 @@
-"""Entity ReMap — find and fix broken/stale entity_id references.
+"""Entity ReMap: find and fix broken or stale entity_id references.
 
-Home Assistant has no feature for this today, in core or in the well-known
-`Spook` HACS add-on (research done before writing this module confirmed
-both directly against their source): renaming an entity_id, or an entity
-simply disappearing (replaced hardware, a re-added integration, a typo'd
-YAML edit), only ever touches the entity registry. Every automation,
-script, scene, Lovelace dashboard, and helper that referenced the old
-entity_id keeps the literal old string and silently breaks — Home
-Assistant's own delete-confirmation dialog says as much ("you will need
-to update those manually"). This module is that manual step, automated,
-with real limits stated honestly rather than papered over:
-
-- Automations/scripts/scenes: real, structured entity_id fields (a
-  trigger's `entity_id:`, a service call's `target:`, a condition) are
-  found via core's own `referenced_entities` extraction and safely
-  rewritten by replicating the exact read/lock/atomic-write/reload
-  primitives `homeassistant.components.config`'s own editor views use
-  (there is no importable library function for this — the views are
-  tied to the HTTP layer). A reference that only exists inside a Jinja
-  template string (`{{ states('sensor.old') }}`) is NOT found by
-  `referenced_entities` (core's own extractor explicitly skips templated
-  fields) and is NEVER auto-rewritten — a regex could just as easily
-  corrupt a similarly-named entity_id or miss a computed one. Templates
-  are flagged detect-only, for a human to fix.
-- Lovelace dashboards ("Views"): storage-mode dashboards are freely
-  read/writable through the same `LovelaceConfig` object core's frontend
-  uses. YAML-mode dashboards are a confirmed, hard dead end — core's own
-  `LovelaceYAML.async_save()` raises `HomeAssistantError("Not
-  supported")` — surfaced as "manual edit required" with the file path,
-  never silently skipped.
-- Helpers: config-entry-backed helpers (derivative, utility_meter,
-  threshold, generic_thermostat, generic_hygrostat, integration,
-  min_max, filter, switch_as_x, trend, history_stats, statistics,
-  mold_indicator) store their source entity_id(s) as plain fields in
-  the entry's options (or, for imported/older entries, its data),
-  actively rewritten via `config_entries.async_update_entry` +
-  `async_schedule_reload`. Template helpers store a Jinja string with no
-  structured field to rewrite — same detect-only treatment as automation
-  templates. Any other config entry gets a best-effort substring check
-  across the allowlisted locator fields of its stored data and options
-  (const.INTEGRATION_LOCATOR_KEYS, via the same helper peripherals.py
-  uses for USB-path matching); a hit is reported, never rewritten.
-  Credentials in other integrations' entries are deliberately never
-  read (work plan item SEC-4), so an entity_id that only appears inside
-  a stored password is not reported, and that is correct.
-
-Safety rails around apply (work plan item 1.9, decision D-13 (a) plus
-(b)): comment, anchor, and key-order loss in rewritten YAML is accepted
-and stated up front, exactly as core's own config editor behaves; every
-YAML config file is copied aside before its first rewrite; storage-mode
-dashboards and helper config entries get a JSON snapshot of their
-previous state under `.storage/ha_soc_remap/` (files 0o600, directory
-0o700, pruned after 30 days) before they are rewritten; the backup
-paths are returned in the apply result; and a YAML file whose text
-contains `!include` or `!secret` is refused entirely, with every item
-in it reported as "manual edit required" (see _yaml_text_tainted for
-the verified platform behavior that makes the refusal necessary).
-
-Nothing here performs an entity registry rename. This module's job is
-strictly the *consuming configuration* — the old entity_id, whether it
-still exists in the registry or not, is left alone; if the user also
-wants it renamed, that's Home Assistant's own existing Settings > Entities
-rename, unrelated to and safe to combine with what this module does.
+Structured references in automations, scripts, scenes, storage dashboards,
+and config-entry helpers are rewritten in place; template references are
+detect-only. Nothing here renames an entity in the registry. Scope,
+limits, and safety rails are in docs/design.md and docs/decisions.md.
 """
 from __future__ import annotations
 
@@ -83,22 +25,12 @@ from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
 
-# JSON snapshots of storage dashboards and helper entries land here before
-# each rewrite (work plan item 1.9). Relative to the config directory.
 REMAP_BACKUP_DIR = os.path.join(".storage", "ha_soc_remap")
 _BACKUP_RETENTION_DAYS = 30
 
-# The one reason string D-13 (b) prescribes for a refused YAML file.
 YAML_TAINT_REASON = "contains !include or !secret; manual edit required"
 
-# Per-file locks so two overlapping remaps (or a remap racing our own
-# re-scan) can't interleave a read-modify-write on the same config file and
-# silently drop one write. This coordinates HA SOC's OWN writers; it cannot
-# share Home Assistant core's config-editor view locks (those are tied to
-# the HTTP view instances and aren't importable), so a simultaneous edit
-# through HA's native UI is still a theoretical race — but that's a much
-# narrower window than the previous no-lock state, and every write here is
-# preceded by a backup (see _backup_file_once).
+# Coordinates HA SOC's own writers only; core's config-editor view locks are not importable.
 _FILE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
@@ -130,19 +62,9 @@ async def _backup_file_once(
 
 
 def _yaml_text_tainted(text: str) -> bool:
-    """Does this YAML text carry a tag the rewrite pipeline must refuse?
-
-    Decision D-13 (b): a file containing ``!include`` or ``!secret`` is
-    never rewritten. The platform behavior that makes this necessary was
-    verified against core 2026.2.3 (work plan section 6.1): ``load_yaml``
-    without a Secrets object raises HomeAssistantError ("Secrets not
-    supported in this YAML file") on ``!secret``, so such a file fails
-    loudly and nothing is written; ``!include`` is worse, because it is
-    resolved at load time and a write-back would INLINE the included
-    content into the parent file, destroying the include structure. The
-    check is a plain text scan, so a quoted literal "!include" in, say,
-    an alias also refuses the file; over-refusing is safe, silently
-    inlining an include is not.
+    """Whether the YAML text carries ``!include`` or ``!secret``; such a file is
+    never rewritten. Plain text scan: over-refusing is safe, inlining an
+    include is not.
     """
     return "!include" in text or "!secret" in text
 
@@ -160,17 +82,11 @@ def _yaml_file_tainted_sync(path: str) -> bool:
 def _write_json_backup_sync(dir_path: str, stem: str, stamp: str, payload: Any) -> str:
     """Write one pre-rewrite JSON snapshot; sync, executor-only.
 
-    The directory is created (and re-chmodded, migrating any existing
-    wider-mode directory) 0o700 and the file is opened 0o600, matching
-    the audit store's file-mode posture: the previous config of a
-    dashboard or helper is operator data, not world-readable data. A
-    serialization failure propagates so the caller skips the rewrite; a
-    rewrite must never proceed without its backup on disk.
+    A serialization failure propagates so the caller skips the rewrite.
     """
     os.makedirs(dir_path, mode=0o700, exist_ok=True)
     os.chmod(dir_path, 0o700)
-    # A url_path is a slug and an entry_id is hex, so the separator strip
-    # is defense in depth, not an expected code path.
+    # Defense in depth: a url_path is a slug and an entry_id is hex.
     safe_stem = stem.replace(os.sep, "_")
     path = os.path.join(dir_path, f"{safe_stem}-{stamp}.json")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
@@ -181,10 +97,7 @@ def _write_json_backup_sync(dir_path: str, stem: str, stamp: str, payload: Any) 
 
 
 def _prune_backups_sync(dir_path: str) -> None:
-    """Delete remap backups older than the retention period; sync,
-    executor-only. Runs at the start of every apply so the directory is
-    bounded by use, without a background timer to maintain.
-    """
+    """Delete remap backups older than the retention period; sync, executor-only."""
     if not os.path.isdir(dir_path):
         return
     cutoff = time.time() - _BACKUP_RETENTION_DAYS * 24 * 3600
@@ -194,8 +107,7 @@ def _prune_backups_sync(dir_path: str) -> None:
             if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
                 os.unlink(path)
         except OSError:
-            # A file that vanished or resists deletion must not block the
-            # apply that triggered the pruning pass.
+            # A vanished or undeletable file must not block the apply.
             continue
 
 REFERENCE_KIND_AUTOMATION = "automation"
@@ -205,10 +117,7 @@ REFERENCE_KIND_DASHBOARD = "dashboard"
 REFERENCE_KIND_HELPER = "helper"
 REFERENCE_KIND_OTHER = "other"
 
-# Config-entry-backed helper domains whose source entity_id(s) live in a
-# single scalar option field, verified directly against the installed
-# homeassistant package's const.py/config_flow.py for each domain (not
-# guessed) — see this module's docstring for the reasoning.
+# Field names verified against each domain's const.py/config_flow.py in the installed core.
 _HELPER_SCALAR_FIELDS: dict[str, list[str]] = {
     "derivative": ["source"],
     "utility_meter": ["source"],
@@ -229,17 +138,9 @@ _HELPER_LIST_FIELDS: dict[str, list[str]] = {
 }
 
 
-# -- Generic structure walkers (automations/scripts/scenes/dashboards) ------
-
-
 def _exact_replace(value: Any, old_id: str, new_id: str) -> tuple[Any, int]:
-    """Recursively replace exact-match entity_id strings.
-
-    Only an exact string match is replaced — never a substring. This is
-    what makes it safe against Jinja templates: `{{ states('sensor.old')
-    }}` never equals `sensor.old`, so it passes through untouched, while
-    a structured `entity_id: sensor.old` or `entities: [sensor.old, ...]`
-    field does get rewritten. Returns (new_value, count_replaced).
+    """Recursively replace exact-match entity_id strings; never a substring, so
+    Jinja templates pass through untouched. Returns (new_value, count_replaced).
     """
     if isinstance(value, str):
         return (new_id, 1) if value == old_id else (value, 0)
@@ -275,9 +176,8 @@ def _contains_exact_value(value: Any, entity_id: str) -> bool:
 
 
 def _contains_exact_key(value: Any, entity_id: str) -> bool:
-    """Exact match in dict KEY position (a scene-style ``entities:`` map
-    keys on entity_ids). _exact_replace never renames a key, so a key-only
-    hit is reported detect-only rather than promised as fixable."""
+    """Exact match in dict KEY position; _exact_replace never renames a key,
+    so a key-only hit is reported detect-only."""
     if isinstance(value, list):
         return any(_contains_exact_key(v, entity_id) for v in value)
     if isinstance(value, dict):
@@ -302,15 +202,6 @@ def _mentions_substring(value: Any, entity_id: str) -> bool:
     if isinstance(value, dict):
         return any(_mentions_substring(v, entity_id) for v in value.values())
     return False
-
-
-# -- Automations / scripts / scenes ------------------------------------------
-# All three are edited the same way: read the whole YAML file, find the one
-# entry, rewrite it in memory, write the whole file back atomically, then
-# call that domain's reload service — replicating exactly what
-# homeassistant.components.config's own EditIdBasedConfigView /
-# EditKeyBasedConfigView do internally (there's no importable library
-# function for this; those views are tied to the HTTP layer).
 
 
 def _find_automation_refs(hass: HomeAssistant, entity_id: str, known_ids: set[str]) -> list[dict[str, Any]]:
@@ -421,13 +312,7 @@ async def _apply_yaml_list_fix(
     from homeassistant.util.file import write_utf8_file_atomic
 
     def _read() -> Any:
-        # Re-check D-13 (b) taint on the raw text inside the lock: the
-        # find step already marked a tainted file's items non-editable,
-        # but the file can change between find and apply, and a load of
-        # an !include here would hand back content that a write would
-        # inline. Raising turns that race into a reported per-item error
-        # with nothing written. See _yaml_text_tainted for the verified
-        # !secret/!include load behavior.
+        # Re-check taint inside the lock: the file can change between find and apply.
         try:
             with open(path, encoding="utf-8") as file:
                 text = file.read()
@@ -450,11 +335,7 @@ async def _apply_yaml_list_fix(
         else:
             entry = next((item for item in data if item.get(CONF_ID) == config_id), None)
         if entry is None:
-            # async_find_references already filters to ids confirmed present
-            # in this exact file, so this should be unreachable in normal
-            # operation — kept as a loud failure (not a silent 0) for the
-            # narrow race where the file changed between find and apply,
-            # rather than reporting a false "nothing to fix".
+            # Loud failure for the find-to-apply race, never a silent 0.
             raise LookupError(f"{config_id!r} not found in {path}")
 
         new_entry, count = _exact_replace(entry, old_id, new_id)
@@ -484,16 +365,13 @@ async def _apply_scene_fix(
     stamp: str,
     backed_up: dict[str, str | None],
 ) -> int:
-    """Scenes are id-based like automations, but the entity_id lives as a
-    DICT KEY under `entities:` (`{sensor.old: "on"}`), not a value — the
-    generic exact-value walker can't rename a key, so this handles that
-    one field specially and reuses the same read/write primitives."""
+    """Scenes are id-based like automations, but the entity_id is a DICT KEY
+    under `entities:`, which the generic value walker cannot rename."""
     from homeassistant.const import CONF_ID
     from homeassistant.util.file import write_utf8_file_atomic
 
     def _read() -> Any:
-        # Same in-lock D-13 (b) taint re-check as _apply_yaml_list_fix,
-        # for the same find-to-apply race.
+        # Same in-lock taint re-check as _apply_yaml_list_fix.
         try:
             with open(path, encoding="utf-8") as file:
                 text = file.read()
@@ -519,9 +397,7 @@ async def _apply_scene_fix(
         if not isinstance(entities, dict) or old_id not in entities:
             return 0
 
-        # Collision: the scene already configures state for new_id too.
-        # Silently overwriting new_id's existing state would be data loss,
-        # so refuse and let the caller surface it rather than clobbering.
+        # Refuse when the scene already configures new_id; overwriting it would be data loss.
         if new_id in entities:
             raise ValueError(
                 f"scene {config_id!r} already has state for {new_id!r}; "
@@ -532,9 +408,6 @@ async def _apply_scene_fix(
         await _backup_file_once(hass, path, stamp, backed_up)
         await hass.async_add_executor_job(_write, data)
         return 1
-
-
-# -- Lovelace dashboards ("Views") -------------------------------------------
 
 
 def _iter_dashboards(hass: HomeAssistant):
@@ -559,11 +432,7 @@ async def _find_dashboard_refs(hass: HomeAssistant, entity_id: str) -> list[dict
         key_hit = _contains_exact_key(loaded, entity_id)
         if not value_hit and not key_hit:
             continue
-        # A dict-KEY occurrence is detect-only: _exact_replace rewrites
-        # values, never keys, so promising a fix for a key-only hit would
-        # be a silent no-op at apply time. When values and keys both hit,
-        # the values are fixed and the remaining key occurrence is called
-        # out so the operator knows the fix is partial.
+        # A key-only occurrence is detect-only; _exact_replace rewrites values, never keys.
         if not is_storage:
             reason = "YAML-mode dashboard; edit its file manually."
         elif not value_hit:
@@ -612,10 +481,7 @@ async def _apply_dashboard_fix(
     loaded = await config.async_load(True)
     new_config, count = _exact_replace(loaded, old_id, new_id)
     if count:
-        # Work plan item 1.9: snapshot the previous config before the save.
-        # _exact_replace builds new containers rather than mutating, so
-        # ``loaded`` still holds the pre-rewrite state here. A backup
-        # failure raises and the save never happens.
+        # ``loaded`` still holds the pre-rewrite state; a backup failure raises before the save.
         backup_path = await hass.async_add_executor_job(
             _write_json_backup_sync,
             hass.config.path(REMAP_BACKUP_DIR),
@@ -628,18 +494,12 @@ async def _apply_dashboard_fix(
     return count
 
 
-# -- Helpers (config-entry-backed) -------------------------------------------
-
-
 def _find_helper_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for entry in hass.config_entries.async_entries():
         matched = False
 
-        # Helpers created through the UI store their source fields in
-        # entry.options; imported or older entries can carry the same
-        # fields in entry.data instead (work plan item 1.9), so both
-        # mappings are checked structurally.
+        # UI-created helpers store fields in options; imported/older entries in data. Check both.
         for mapping in (entry.options or {}, entry.data or {}):
             for field in _HELPER_SCALAR_FIELDS.get(entry.domain, []):
                 if mapping.get(field) == entity_id:
@@ -661,15 +521,7 @@ def _find_helper_refs(hass: HomeAssistant, entity_id: str) -> list[dict[str, Any
             )
             continue
 
-        # Allowlisted detect-only fallback (work plan item SEC-4). Only
-        # the locator fields in const.INTEGRATION_LOCATOR_KEYS are read;
-        # credentials in other integrations' entries are deliberately
-        # never read, so a mention that only exists inside a password no
-        # longer matches, and that is correct. This fallback also runs
-        # for helper domains whose structural fields did not match, so a
-        # helper whose locator field holds a template (rather than a bare
-        # entity_id) is still surfaced for manual review instead of being
-        # skipped by the structural check above.
+        # Allowlisted detect-only fallback: only INTEGRATION_LOCATOR_KEYS are read, never credentials.
         locator_values = chain(
             iter_locator_strings(entry.data or {}), iter_locator_strings(entry.options or {})
         )
@@ -716,10 +568,7 @@ async def _apply_helper_fix(
                 changed = True
         return changed
 
-    # Item 1.9 reads entry.data as well as entry.options: whichever
-    # mapping holds the structural field gets the rewrite. Pristine
-    # copies for the backup are taken before rewriting; _rewritten only
-    # reassigns top-level slots, so the shallow copies stay intact.
+    # Shallow copies stay intact because _rewritten only reassigns top-level slots.
     previous = {
         "entry_id": entry.entry_id,
         "domain": entry.domain,
@@ -734,10 +583,7 @@ async def _apply_helper_fix(
     if not changed_options and not changed_data:
         return False
 
-    # Work plan item 1.9: snapshot the previous entry state before the
-    # update. The snapshot carries both mappings because this same item
-    # extends rewriting into entry.data. A backup failure raises and the
-    # entry is never updated.
+    # Snapshot both mappings before the update; a backup failure raises first.
     backup_path = await hass.async_add_executor_job(
         _write_json_backup_sync,
         hass.config.path(REMAP_BACKUP_DIR),
@@ -757,20 +603,9 @@ async def _apply_helper_fix(
     return True
 
 
-# -- Public API ---------------------------------------------------------------
-
-
 async def _load_flat_file_ids(hass: HomeAssistant, path: str, *, key_based: bool) -> set[str]:
     """Which config ids are actually present in the flat automations.yaml/
-    scripts.yaml/scenes.yaml file the apply step reads and writes.
-
-    An automation/script/scene can have a config `id:` and still not live
-    here at all — split across multiple files via `!include_dir_merge_list`,
-    or defined inside a package. Home Assistant's own UI editor can't edit
-    those either (it only ever reads/writes this exact file); checking this
-    upfront is what keeps the "will fix" label in the preview honest,
-    instead of promising a fix that silently no-ops at apply time.
-    """
+    scripts.yaml/scenes.yaml file the apply step reads and writes."""
     from homeassistant.const import CONF_ID
 
     def _read() -> Any:
@@ -788,8 +623,7 @@ async def _load_flat_file_ids(hass: HomeAssistant, path: str, *, key_based: bool
 
 
 def _mark_manual_for_taint(items: list[dict[str, Any]]) -> None:
-    """Decision D-13 (b): every item from a tainted YAML file becomes
-    detect-only with the one prescribed reason, whatever it was before."""
+    """Every item from a tainted YAML file becomes detect-only with the one prescribed reason."""
     for item in items:
         item["editable"] = False
         item["reason"] = YAML_TAINT_REASON
@@ -797,7 +631,7 @@ def _mark_manual_for_taint(items: list[dict[str, Any]]) -> None:
 
 async def async_find_references(hass: HomeAssistant, entity_id: str) -> dict[str, Any]:
     """Everything referencing entity_id, grouped by kind, for the Entity
-    ReMap page's preview. Every item is labeled editable/not — nothing here
+    ReMap page's preview. Every item is labeled editable/not; nothing here
     implies a fix will happen until async_apply_remap is actually called."""
     from homeassistant.config import (
         AUTOMATION_CONFIG_PATH,
@@ -809,12 +643,7 @@ async def async_find_references(hass: HomeAssistant, entity_id: str) -> dict[str
     script_path = hass.config.path(SCRIPT_CONFIG_PATH)
     scene_path = hass.config.path(SCENE_CONFIG_PATH)
 
-    # D-13 (b) taint check on the raw text, BEFORE any load_yaml: a file
-    # with !secret would make load_yaml raise, and one with !include
-    # would load with the include silently resolved (see
-    # _yaml_text_tainted). A tainted file's item ids are unknowable
-    # without loading it, so its known-ids set stays empty and every item
-    # for that kind is marked manual below.
+    # Taint check on the raw text before any load_yaml; a tainted file's ids are unknowable.
     def _taints() -> dict[str, bool]:
         return {
             "automation": _yaml_file_tainted_sync(automation_path),
@@ -869,16 +698,8 @@ async def async_apply_remap(
     editable reference found. Returns per-kind counts so the caller can
     audit-log and the frontend can show exactly what changed.
 
-    This bulk-rewrites production automations, scripts, scenes, dashboards,
-    and helper config in one pass, so — matching the firewall feature's own
-    safety pattern — it refuses to run unless the caller has acknowledged
-    that a backup will be taken. Every write is preceded by a backup: each
-    YAML config file is copied aside (``<file>.ha_soc-<timestamp>.bak``)
-    before its first rewrite, and each storage dashboard and helper entry
-    gets a pre-rewrite JSON snapshot under ``.storage/ha_soc_remap/`` (work
-    plan item 1.9). All backup paths come back in the result's ``backups``
-    list, and backups older than 30 days are pruned at the start of each
-    apply. A server-side gate, not a client-only one.
+    Refuses to run unless the caller acknowledged the backup (a server-side
+    gate); every write is preceded by a backup whose path is returned.
     """
     if not backup_acknowledged:
         return {
@@ -895,8 +716,7 @@ async def async_apply_remap(
     report = await async_find_references(hass, old_id)
     fixed: dict[str, int] = {"automation": 0, "script": 0, "scene": 0, "dashboard": 0, "helper": 0}
     errors: list[str] = []
-    # Millisecond stamp (work plan item 4.14) so two applies inside the
-    # same second cannot collide on a backup filename.
+    # Millisecond stamp so two applies inside the same second cannot collide on a filename.
     stamp = dt_util.utcnow().strftime("%Y%m%dT%H%M%S%f")[:-3]
     backed_up: dict[str, str | None] = {}
     json_backups: list[str] = []
@@ -971,13 +791,7 @@ async def async_apply_remap(
             _LOGGER.warning("Entity ReMap: failed to fix helper %s", item["id"], exc_info=True)
             errors.append(f"helper {item['name']}: {err}")
 
-    # Reload once per domain after the loop, not once per item. The
-    # script.reload and scene.reload services are registered with an
-    # EMPTY schema (verified against core 2026.2.3, work plan section
-    # 6.1), so these calls must carry no data; automation.reload above
-    # stays per-item with {"id": ...}, which core's schema
-    # (vol.Schema({vol.Optional(CONF_ID): str})) accepts and which is
-    # the cheaper call.
+    # script.reload and scene.reload are registered with an empty schema: pass no data.
     if fixed["script"]:
         await hass.services.async_call("script", "reload")
     if fixed["scene"]:
@@ -995,21 +809,9 @@ async def async_apply_remap(
 
 async def async_scan_broken_references(hass: HomeAssistant) -> list[dict[str, Any]]:
     """Spook-inspired proactive scan: every entity_id referenced by an
-    automation, script, or scene (or a structured helper field) that
-    doesn't correspond to any currently known entity. One linear pass
-    over every automation/script/scene/helper (not one search per
-    entity), collecting every reference and checking each once — the
-    inverse direction from async_find_references, and much cheaper for
-    "scan everything" than calling that once per entity would be.
-
-    Deliberately does not walk Lovelace dashboards here: there's no core
-    helper enumerating "every entity_id any card anywhere references"
-    the way referenced_entities does for automations/scripts, and a full
-    recursive walk of every dashboard for every possible entity_id is
-    real, recurring work this periodic sweep doesn't take on. Views are
-    still fully covered by the interactive Entity ReMap search for one
-    specific entity_id — this scan is only the "what needs attention"
-    proactive half.
+    automation, script, scene, or structured helper field that does not
+    correspond to any currently known entity. One linear pass; Lovelace
+    dashboards are deliberately not walked here.
     """
     known = set(hass.states.async_entity_ids())
     from homeassistant.helpers import entity_registry as er
@@ -1053,9 +855,7 @@ async def async_scan_broken_references(hass: HomeAssistant) -> list[dict[str, An
                     )
 
     for entry in hass.config_entries.async_entries():
-        # Structural helper fields can live in entry.options or, for
-        # imported/older entries, entry.data (work plan item 1.9). The
-        # per-entry set de-duplicates a value present in both mappings.
+        # Fields may live in options or data; the set de-duplicates a value present in both.
         refs: set[str] = set()
         for mapping in (entry.options or {}, entry.data or {}):
             for field in _HELPER_SCALAR_FIELDS.get(entry.domain, []):

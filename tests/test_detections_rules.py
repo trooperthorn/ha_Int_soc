@@ -123,9 +123,6 @@ def _detections(store: HaSocData, rule_id: str) -> list[dict[str, Any]]:
     return [d for d in store.data["detections"].values() if d["rule_id"] == rule_id]
 
 
-# -- 3.1: address-family-aware prefixes ------------------------------------
-
-
 def test_network_prefix_ipv6() -> None:
     """Two unrelated global IPv6 addresses land in different prefixes; two
     addresses inside one /64 land in the same one. The old /24-for-
@@ -148,9 +145,6 @@ def test_network_prefix_ipv6() -> None:
     )
 
 
-# -- 3.2: bounded disabled_user_activity -----------------------------------
-
-
 async def test_disabled_user_activity_bounded(hass: HomeAssistant, store: HaSocData) -> None:
     """A retry loop of many events yields ONE detection per (user,
     category) per pass, with the event count in the detail."""
@@ -166,9 +160,6 @@ async def test_disabled_user_activity_bounded(hass: HomeAssistant, store: HaSocD
     assert len(rows) == 1
     assert rows[0]["detail"]["event_count"] == 30
     assert len(results) == 1
-
-
-# -- 3.3 adjunct: closed episodes stay closed (3.9) ------------------------
 
 
 async def test_detection_last_seen_is_event_time(hass: HomeAssistant, store: HaSocData) -> None:
@@ -214,9 +205,6 @@ async def test_brute_force_reads_threshold(hass: HomeAssistant, store: HaSocData
     store.async_update_settings(detection_thresholds={})
     await engine._rule_brute_force_ip(now, [], {})
     assert len(_detections(store, RULE_BRUTE_FORCE_IP)) == 1
-
-
-# -- 3.8: success_after_failures on new tokens only ------------------------
 
 
 async def test_success_after_failures_not_on_refresh(hass: HomeAssistant, store: HaSocData) -> None:
@@ -296,9 +284,6 @@ async def test_success_after_failures_reads_threshold(hass: HomeAssistant, store
     assert _detections(store, RULE_SUCCESS_AFTER_FAILURES) == []
 
 
-# -- 3.6: new_ip_login without amnesty -------------------------------------
-
-
 async def _seed_new_ip_baseline(engine, store, audit, users, home_ip="93.184.216.34", base_now=None):
     """First (silent) pass: three distinct days of home-prefix logins.
 
@@ -326,10 +311,7 @@ async def test_new_ip_login_no_amnesty(hass: HomeAssistant, store: HaSocData) ->
     audit = FakeAudit()
     users = [_user("u1")]
     engine = _engine(hass, store, users, audit)
-    # Pinned to a fixed, mid-day instant rather than the real wall clock:
-    # the assertion below depends on two timestamps 15 minutes apart
-    # falling on the same calendar day, which the real clock cannot
-    # guarantee near a UTC midnight boundary.
+    # Fixed mid-day instant: two timestamps 15 minutes apart must fall on the same calendar day.
     base_now = datetime(2024, 1, 15, 13, 0, tzinfo=dt_util.UTC)
     checkpoint = await _seed_new_ip_baseline(engine, store, audit, users, base_now=base_now)
 
@@ -451,9 +433,6 @@ async def test_new_ip_login_legacy_seen_prefixes_grandfathered(
     assert baseline["prefix_baseline"]["93.184.216.0/24"]["legacy_trusted"] is True
 
 
-# -- 3.7: silent seeding pass for off_hours --------------------------------
-
-
 def _daytime_seed(audit: FakeAudit, user_id: str, now: datetime, count: int) -> None:
     """Spread `count` direct service calls across daytime hours over the
     last ten days, so the histogram has a real daytime bulk."""
@@ -569,9 +548,6 @@ async def test_off_hours_reads_threshold(hass: HomeAssistant, store: HaSocData) 
         assert results == []
 
 
-# -- 3.2/3.0: dormant_revival, mass_entity_burst, token_minting ------------
-
-
 async def test_dormant_revival_reads_threshold(hass: HomeAssistant, store: HaSocData) -> None:
     audit = FakeAudit()
     now = dt_util.utcnow()
@@ -638,9 +614,6 @@ async def test_token_minting_reads_threshold(hass: HomeAssistant, store: HaSocDa
     assert _detections(store, RULE_TOKEN_MINTING_ANOMALY) == []
 
 
-# -- 3.10: privilege escalation snapshot persists --------------------------
-
-
 async def test_privilege_escalation_survives_restart(hass: HomeAssistant, store: HaSocData) -> None:
     """The group snapshot lives in user_baselines: a fresh engine over the
     same store (a restart) still detects an escalation that happened in
@@ -672,9 +645,6 @@ async def test_privilege_escalation_survives_restart(hass: HomeAssistant, store:
         now + timedelta(minutes=10), newcomer, {"u2": newcomer[0]}
     )
     assert results == []
-
-
-# -- full pass wiring ------------------------------------------------------
 
 
 async def test_run_pass_notes_completion_and_prunes(hass: HomeAssistant, store: HaSocData) -> None:

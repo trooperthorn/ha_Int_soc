@@ -21,23 +21,15 @@ export class HaSocPeripheralsView extends HaSocCustomizableView {
 
   @state() private _overview: PeripheralOverview | null = null;
   @state() private _loading = true;
-  // Non-null when the load itself failed. Without this, a failed fetch
-  // left _overview null and rendered as "USB discovery isn't available",
-  // which is a real backend state (overview.available === false), not
-  // what a rejected WebSocket call means (work plan item 4.12).
+  // Non-null when the load failed; distinct from overview.available === false, a real backend state.
   @state() private _error: string | null = null;
   @state() private _busyKey: string | null = null;
   @state() private _showIgnored = false;
-  // Independent sort state for the active and the ignored table (see
-  // sortable.ts); null keeps the discovery order the backend reported.
+  // Independent sort state per table; null keeps the backend's discovery order.
   @state() private _sort: SortState | null = null;
   @state() private _ignoredSort: SortState | null = null;
 
-  // One accessor map serves both tables; keys not present as columns in a
-  // table are simply never requested by it. VID/PID sorts as the combined
-  // vid:pid string the cell displays; the assigned-integration accessor
-  // returns the integration title, with unassigned devices sinking to the
-  // bottom the way sortRows treats any absent value.
+  // One accessor map serves both tables; VID/PID sorts as the displayed vid:pid string, unassigned integrations sink.
   private static readonly DEVICE_SORT: Record<string, (d: PeripheralDevice) => unknown> = {
     name: (d) => d.raw_name,
     tty: (d) => d.tty_path,

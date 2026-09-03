@@ -1,25 +1,6 @@
 #!/usr/bin/env bash
-# ==============================================================================
-# HA SOC review, decision D-21: verify the Probe add-on's platform facts on a
-# real Supervisor install (Home Assistant OS or Supervised).
-#
-# Read-only. Every command below inspects; nothing here changes add-on state,
-# firewall rules, files, or settings.
-#
-# Run it from the "Terminal & SSH" or "Advanced SSH & Web Terminal" add-on:
-#
-#     bash ha_soc_verify_supervisor.sh | tee ha_soc_verify_$(date +%Y%m%d).txt
-#
-# Two levels of detail:
-#   1. Supervisor API level (always works): uses the `ha` CLI.
-#   2. Container level (needs the `docker` CLI): only available when the SSH
-#      add-on runs with Protection Mode DISABLED. That grant is exactly the
-#      condition HA SOC's `addon_unprotected` check flags; re-enable Protection
-#      Mode on the SSH add-on when you are done.
-#
-# Paste the whole output file back into the review thread. Lines starting
-# with "FACT" are the answers the work plan's section 6.2 is waiting on.
-# ==============================================================================
+# Read-only verification of the Probe add-on's platform facts on a real Supervisor install; nothing here changes state.
+# Run from the SSH add-on: bash ha_soc_verify_supervisor.sh | tee ha_soc_verify_$(date +%Y%m%d).txt; see docs/operations.md.
 set -uo pipefail
 
 PROBE_NAME="HA SOC Probe"
@@ -41,9 +22,7 @@ JQ=""
 if have jq; then JQ="jq"; else note "jq not found; raw JSON is printed instead of extracted fields."; fi
 
 section "Platform versions"
-# The ha CLI wraps every payload in {"result": ..., "data": {...}}; unwrap
-# .data first or every extracted field prints null (seen on the first live
-# run, Supervisor 2026.08.0).
+# The ha CLI wraps every payload in {"result", "data"}; unwrap .data first or every field prints null.
 ha info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {supervisor, homeassistant, hassos, operating_system, machine, arch, supported, healthy}' || cat; }
 ha supervisor info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {version, version_latest, supported, healthy, addons_repositories}' || cat; }
 ha os info --raw-json 2>/dev/null | { [ -n "$JQ" ] && jq '(.data // .) | {version, version_latest, board, boot, data_disk, update_available}' || cat; }
@@ -123,11 +102,7 @@ if ! have docker; then
 elif [ -z "$SLUG" ]; then
     note "Probe slug unknown; container-level facts skipped."
 else
-    # Discover the container instead of assuming addon_<slug>: with
-    # auto_update on, the Supervisor recreates the container on every add-on
-    # update, and the first live run hit exactly that window ("No such
-    # container"). Fall back to the conventional name, and say what IS
-    # running when neither matches so a retry is informed, not blind.
+    # Discover the container by name first; an auto-update can recreate addon_<slug> mid-run.
     C=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -m1 "ha_soc_probe" || true)
     if [ -z "$C" ]; then C="addon_$SLUG"; fi
     if ! docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$C"; then

@@ -1,6 +1,6 @@
 # HA SOC frontend
 
-Lit + TypeScript sidebar panel, bundled with Rollup — the same pattern
+Lit + TypeScript sidebar panel, bundled with Rollup, the same pattern
 Alarmo and Browser Mod use. The built output (`dist/ha-soc-panel.js`) is
 committed so HACS installs need no Node.js build step; only contributors
 touching `src/` need to rebuild.

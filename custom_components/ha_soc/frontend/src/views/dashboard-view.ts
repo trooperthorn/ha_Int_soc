@@ -67,16 +67,7 @@ const ISSUE_CATEGORY_LABELS: Record<IntegrationIssueCategory, string> = {
   disabled: "Disabled",
 };
 
-// Issue category -> the same operational-status vocabulary the Device
-// Status tiles above already use (available/partial/unavailable/
-// disabled/no_entities), extended with "Warning" for the two categories
-// that are informational rather than a functional failure. Every
-// category short of "disabled" that actually stops the integration from
-// working (a failed setup, bad credentials, no communication, or a
-// device-collection ratio bad enough to flag) reads as Unavailable —
-// deliberately not split into finer severities, since this project has
-// no independent signal to rank them against each other and a false
-// precision there would be worse than an honest, coarser bucket.
+// Issue category -> the Device Status tiles' operational-status vocabulary; see docs/design.md.
 const ISSUE_STATUS: Record<IntegrationIssueCategory, { label: string; colorVar: string }> = {
   failing: { label: "Unavailable", colorVar: "var(--status-critical)" },
   credential: { label: "Unavailable", colorVar: "var(--status-critical)" },
@@ -87,10 +78,7 @@ const ISSUE_STATUS: Record<IntegrationIssueCategory, { label: string; colorVar: 
   disabled: { label: "Disabled", colorVar: "var(--cat-other)" },
 };
 
-// Sort rank for the Issues table's Severity column. The key order of
-// ISSUE_CATEGORY_LABELS already runs worst to mildest, so the index in
-// that object is the rank; deriving it here means there is no second
-// list that could drift out of sync with the labels.
+// Rank is the key index in ISSUE_CATEGORY_LABELS (ordered worst to mildest), so nothing can drift.
 const ISSUE_CATEGORY_RANK: Record<IntegrationIssueCategory, number> = Object.fromEntries(
   Object.keys(ISSUE_CATEGORY_LABELS).map((key, i) => [key, i])
 ) as Record<IntegrationIssueCategory, number>;
@@ -638,9 +626,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
   @state() private _risk: Record<string, RiskResult> = {};
   @state() private _users: HaSocUser[] = [];
   @state() private _loading = true;
-  // Non-null when the load failed: rendered as a distinct could-not-load
-  // state carrying the server's message, never a blank dashboard (work
-  // plan item 4.12).
+  // Non-null when the load failed; rendered as a could-not-load state, never a blank dashboard.
   @state() private _error: string | null = null;
   @state() private _deviceSearch = "";
   @state() private _deviceStatusFilter: DeviceStatus | null = null;
@@ -684,9 +670,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       this._risk = risk;
       this._users = users;
     } catch (err: any) {
-      // One rejected fetch fails the whole Promise.all; showing a partial
-      // dashboard would misrepresent which numbers are current, so store
-      // the server's message and render the could-not-load state.
+      // One rejected fetch fails the whole load; a partial dashboard would misrepresent what is current.
       this._error = err?.message ?? String(err);
     } finally {
       this._loading = false;
@@ -717,13 +701,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     this.renderRoot.querySelector("#devices-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
-  // Accessors for sortRows on the All Devices table. Health sorts by the
-  // STATUS_TILES order (healthiest first when ascending) rather than the
-  // raw status string, so alphabetical accidents like "disabled" landing
-  // between "available" and "unavailable" cannot happen. Severity is one
-  // composite number so a single column orders by critical, then high,
-  // then medium, then low; 1e9/1e6/1e3 spacing holds as long as no tier
-  // count reaches 1000, far above anything a real scan produces.
+  // Health sorts by STATUS_TILES order; Severity is one composite (1e9/1e6/1e3 spacing, safe below 1000 per tier).
   private static readonly DEVICE_SORT: Record<string, (r: DeviceOverviewRow) => unknown> = {
     status: (r) => STATUS_TILES.findIndex((t) => t.key === r.status),
     name: (r) => r.name,
@@ -752,8 +730,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     return sortRows(filtered, this._deviceSort, HaSocDashboardView.DEVICE_SORT);
   }
 
-  // Severity sorts by issue-category rank; sortRows is stable, so rows in
-  // the same category keep the backend's error_count_24h desc order.
+  // Severity sorts by category rank; sortRows is stable so backend error_count order holds within a category.
   private static readonly INTEGRATION_SORT: Record<string, (r: IntegrationIssueRow) => unknown> = {
     title: (r) => r.title,
     severity: (r) => ISSUE_CATEGORY_RANK[r.issue_category],
@@ -762,8 +739,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
   private _filteredIntegrations(): IntegrationIssueRow[] {
     const integrations = this._integrationOverview?.integrations ?? [];
     const q = this._integrationSearch.trim().toLowerCase();
-    // With no sort chosen, the backend's error_count_24h desc order is
-    // kept; filtering alone must not reorder rows.
+    // null keeps the backend's error_count_24h desc order; filtering alone must not reorder.
     const filtered = q
       ? integrations.filter(
           (row) => row.title.toLowerCase().includes(q) || row.domain.toLowerCase().includes(q)
@@ -772,8 +748,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     return sortRows(filtered, this._integrationSort, HaSocDashboardView.INTEGRATION_SORT);
   }
 
-  // Human labels for the posture terms named by missing_terms (work item
-  // 3.4, D-10). An unknown term falls back to its raw id.
+  // Labels for posture terms named by missing_terms; unknown terms fall back to the raw id.
   private static readonly POSTURE_TERM_LABELS: Record<string, string> = {
     p_user: "user risk",
     p_vuln: "device vulnerabilities",
@@ -808,9 +783,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     const points = samples.map((item, index) => `${xFor(index).toFixed(1)},${yFor(item.score).toFixed(1)}`).join(" ");
     const area = `${left},${bottom} ${points} ${right},${bottom}`;
     const formatDate = (value: string) => {
-      // Posture history stores a local calendar date (YYYY-MM-DD), not a
-      // UTC timestamp. Parsing that form directly with new Date(value)
-      // treats it as UTC and can display the previous day west of UTC.
+      // Posture dates are local YYYY-MM-DD; new Date(value) would parse them as UTC and show the previous day west of UTC.
       const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
       const parsed = dateOnly
         ? new Date(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3]))
@@ -1090,9 +1063,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
     const allFilteredDevices = this._sortedFilteredDevices();
     const shownDevices =
       this._devicePageSize === "all" ? allFilteredDevices : allFilteredDevices.slice(0, this._devicePageSize);
-    // Both cards below truncate to the first N rows rather than paging, so
-    // there is no page index to reset on a sort change; the slice always
-    // shows the top of the new order.
+    // Both cards truncate rather than page, so there is no page index to reset on sort.
     const onDeviceSort = (next: SortState) => {
       this._deviceSort = next;
     };

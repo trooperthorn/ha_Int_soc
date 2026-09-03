@@ -19,16 +19,7 @@ import {
 import { matchClientsForEntries } from "../device-match";
 import { buildZoneMatrix } from "../firewall-matrix";
 
-// The ACL Rules card, the HA-server-port correlation, and the Pi-hole DNS
-// section used to live scattered across the Network tab; this view is the
-// dedicated security-audit surface the Network tab's ACL card moved into,
-// plus the newer pieces (Firewall Policies, server-port coverage, Pi-hole)
-// tied together with the advisory findings list this project derives from
-// all of them. ACL Rules and Firewall Policies are genuinely separate
-// UniFi resources, not two names for the same feature — Firewall Policies
-// (zone-based) is what current UniFi Network firmware shows by default
-// under Settings -> Security -> Create Policy, and a controller can have
-// rules under either, both, or neither.
+// Security-audit surface: findings, Firewall Policies (zone-based), ACL Rules, HA server ports, Pi-hole.
 @customElement("ha-soc-network-security-view")
 export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   protected get viewId() {
@@ -283,10 +274,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   @state() private _aclSort: SortState | null = null;
   @state() private _firewallPolicySort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
-  // Firewall Policies card: Table (the full sortable list) vs Matrix (a
-  // zone x zone at-a-glance grid). Selecting a matrix cell filters the
-  // table down to that one zone pair and switches back to Table view —
-  // set to null to clear the filter and see every policy again.
+  // Firewall Policies card: Table vs Matrix; a matrix cell filters the table to one zone pair (null clears).
   @state() private _fwViewMode: "table" | "matrix" = "table";
   @state() private _fwZonePairFilter: { src: string; dst: string } | null = null;
 
@@ -338,7 +326,6 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- Findings ---------------------------------------------------------
 
   private _renderFindings(findings: NetworkSecurityFinding[]) {
     return html`
@@ -361,13 +348,8 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- Firewall Policies ----------------------------------------------------
 
-  // Shared between the ACL and Firewall Policy tables: metadata.origin is
-  // "USER_DEFINED" for a rule the account owner created themselves, so
-  // this is a direct visual answer to "did my custom rule actually get
-  // picked up" — not a guess, since a null origin (an older private-API
-  // fallback row) renders nothing rather than a false "not custom".
+  // metadata.origin USER_DEFINED marks a rule the owner created; a null origin renders nothing, not "not custom".
   private _renderCustomBadge(custom: boolean | null) {
     return custom ? html`<span class="badge-custom">custom</span>` : nothing;
   }
@@ -379,10 +361,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     return ` · ${customCount} custom / ${rows.length} total`;
   }
 
-  // -- Device tie-in: resolve a rule/policy's IP/subnet/MAC entries against
-  // the Network tab's own client list, so the reader sees a device name
-  // instead of a bare address, and can click through to it (task: "tie the
-  // Source/Destination to the devices in the Network Tab Clients Table").
+  // Resolve a rule/policy's IP/subnet/MAC entries against the Network tab's client list.
 
   private _renderDeviceChips(entries: string[]) {
     const clients = this._overview?.clients ?? [];
@@ -638,7 +617,6 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- ACL rules ----------------------------------------------------------
 
   private _aclActionClass(action: string | null): string {
     const a = (action ?? "").toLowerCase();
@@ -755,7 +733,6 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- HA server ports ------------------------------------------------------
 
   private _portStatusClass(status: string): string {
     if (status === "covered") return "healthy";
@@ -835,7 +812,6 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
-  // -- Pi-hole --------------------------------------------------------------
 
   private _renderPihole(p: PiHoleOverview) {
     if (!p.configured) {

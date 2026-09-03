@@ -1,34 +1,8 @@
 """Read-only snapshots of the core ``unifi`` / ``unifiprotect`` integrations.
 
-When the user already runs Home Assistant's own UniFi Network and UniFi
-Protect integrations, those integrations hold a websocket-fresh copy of the
-controller state in memory (clients, devices, WLANs, the Protect bootstrap).
-This module copies the fields HA SOC needs out of that in-memory state into
-plain dicts, so unifi.py can fill the gaps the direct X-API-KEY Integration
-API leaves blank (SSID, VLAN, uptime, bandwidth, WAN health, Protect events).
-
-Design constraints, and why they are absolute:
-
-* ``aiounifi`` and ``uiprotect`` are installed on a box only because the core
-  integrations are configured there. Importing either library here (or any
-  ``homeassistant.components.unifi*`` / ``unifiprotect*`` module, which import
-  those libraries at top level) would crash HA SOC on every install without
-  them. So this module never imports them: it duck-types every object with
-  ``getattr`` and hardcodes the ``"unifi"`` / ``"unifiprotect"`` domain
-  strings.
-* ``ConfigEntry.runtime_data`` is deleted on unload, so it is only ever read
-  via ``getattr(entry, "runtime_data", None)`` on entries that are LOADED
-  (``async_loaded_entries`` filters to those).
-* Everything here is read-only. No handler ``.update()``, no mutating call,
-  no I/O of any kind; the owning integrations keep the state fresh over their
-  own websockets.
-* Secrets never cross this boundary. Instead of copying ``.raw`` wholesale
-  and redacting, each snapshot copies an explicit whitelist of fields, so
-  ``x_passphrase``, ``x_authkey``, serials, tokens, and the rest of the
-  ``x_*`` family cannot leak into a panel payload by accident.
-* Every access is failure-isolated per entry: this is private core API with
-  no stability contract, so a shape change in a future HA release degrades to
-  "no enrichment" instead of breaking the panel.
+Copies whitelisted fields out of the loaded core integrations' in-memory
+state into plain dicts. Never imports aiounifi or uiprotect, never mutates,
+never copies secrets; see docs/design.md and docs/security.md.
 """
 from __future__ import annotations
 
@@ -39,38 +13,27 @@ from homeassistant.core import HomeAssistant
 
 _LOGGER = logging.getLogger(__name__)
 
-# Hardcoded on purpose: importing these constants from the core components
-# would import aiounifi/uiprotect transitively (see module docstring).
+# Hardcoded: importing the core constants would import aiounifi/uiprotect transitively.
 CORE_NETWORK_DOMAIN = "unifi"
 CORE_PROTECT_DOMAIN = "unifiprotect"
 
-# Row-origin markers so the payload is honest about where a row came from
-# when it was built entirely from core in-memory data rather than the
-# direct Integration API.
 NETWORK_ORIGIN = "core_unifi"
 PROTECT_ORIGIN = "core_unifiprotect"
 
-# hass.data key holding the core unifi integration's registry of MACs that
-# are known to be wireless. It survives the controller's "wired bug" where a
-# wireless client is momentarily reported as wired.
+# Core unifi's registry of MACs known to be wireless; survives the controller's wired bug.
 _WIRELESS_CLIENTS_KEY = "unifi_wireless_clients"
 
-# The aiounifi client/device "uptime" field is sometimes a duration in
-# seconds and sometimes an epoch start timestamp; core unifi disambiguates
-# with this same threshold (anything at or above it is an epoch).
+# At or above this the uptime field is an epoch timestamp, not a duration (same rule as core unifi).
 _EPOCH_THRESHOLD = 1_000_000_000
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
-# DeviceState enum names that mean "this device is not reachable right now".
-# The names come from the aiounifi DeviceState IntEnum.
+# aiounifi DeviceState names meaning the device is not reachable right now.
 OFFLINE_DEVICE_STATES = frozenset({"DISCONNECTED", "HEARTBEAT_MISSED", "ISOLATED"})
 
 
 def normalize_mac(value: Any) -> str | None:
-    """Lowercase colon-separated MAC, or None. UniFi Network reports MACs as
-    ``aa:bb:cc:dd:ee:ff`` while Protect reports them uppercase without
-    separators, so both sides are normalized to one form before any join."""
+    """Lowercase colon-separated MAC, or None; Network and Protect report different forms."""
     if value in (None, ""):
         return None
     text = str(value).strip().lower().replace(":", "").replace("-", "")
@@ -81,9 +44,7 @@ def normalize_mac(value: Any) -> str | None:
 
 
 def uptime_to_seconds(value: Any, now_ts: int) -> int | None:
-    """Uptime in seconds from the controller's ambiguous uptime field. Below
-    the epoch threshold the value already is a duration; at or above it, it
-    is the moment the client came up, so the duration is now minus then."""
+    """Uptime in seconds from the controller's ambiguous uptime field."""
     try:
         v = int(value)
     except (TypeError, ValueError):
@@ -103,9 +64,7 @@ def _to_int(value: Any) -> int | None:
 
 
 def _to_epoch(value: Any) -> int | None:
-    """Epoch seconds from an int/float or a datetime-like object (anything
-    with a callable ``timestamp()``). Protect hands out datetimes; Network
-    hands out epoch ints."""
+    """Epoch seconds from an int/float or a datetime-like object."""
     if value is None:
         return None
     if isinstance(value, (int, float)):
@@ -120,8 +79,7 @@ def _to_epoch(value: Any) -> int | None:
 
 
 def _enum_str(value: Any) -> str | None:
-    """String form of an enum-ish value: prefer ``.value`` (uiprotect string
-    enums), fall back to ``.name`` (aiounifi IntEnums), else str()."""
+    """String form of an enum-ish value: ``.value``, then ``.name``, else str()."""
     if value is None:
         return None
     inner = getattr(value, "value", None)
@@ -135,8 +93,7 @@ def _enum_str(value: Any) -> str | None:
 
 def _loaded_runtime_data(hass: HomeAssistant, domain: str) -> list[Any]:
     """runtime_data of every LOADED config entry for a domain. getattr with a
-    None default is mandatory here because runtime_data is deleted (not set
-    to None) when an entry unloads."""
+    None default is mandatory: runtime_data is deleted, not set to None, on unload."""
     out: list[Any] = []
     try:
         entries = hass.config_entries.async_loaded_entries(domain)
@@ -151,9 +108,7 @@ def _loaded_runtime_data(hass: HomeAssistant, domain: str) -> list[Any]:
 
 
 def _handler_values(handler: Any) -> list[Any]:
-    """Materialized values of an aiounifi handler container. These containers
-    are not dicts (no ``.keys()``, no ``len()``); ``.values()`` is the
-    supported way in."""
+    """Materialized values of an aiounifi handler container; not a dict, so ``.values()`` is the way in."""
     values = getattr(handler, "values", None)
     if not callable(values):
         return []
@@ -184,25 +139,15 @@ def _wireless_macs(hass: HomeAssistant) -> frozenset[str]:
     return frozenset(out)
 
 
-# ---------------------------------------------------------------------------
-# UniFi Network snapshot
-# ---------------------------------------------------------------------------
-
-
 def _snapshot_client(client: Any, wireless: frozenset[str]) -> dict[str, Any] | None:
-    """One aiounifi Client copied to a plain whitelisted dict. Reads go
-    through the library's properties where they exist (they absorb the
-    hyphenated raw key names like ``rx_bytes-r``); ``vlan``, ``network`` and
-    ``network_id`` have no property and are raw-only."""
+    """One aiounifi Client copied to a plain whitelisted dict."""
     mac = normalize_mac(getattr(client, "mac", None))
     if mac is None:
         return None
     raw = getattr(client, "raw", None)
     raw = raw if isinstance(raw, dict) else {}
     is_wired = bool(getattr(client, "is_wired", False))
-    # The wireless-clients registry outranks the is_wired flag because it
-    # survives the controller's wired bug (a wireless client briefly
-    # reported as wired would otherwise lose its SSID and rate keys).
+    # The wireless registry outranks is_wired because it survives the wired bug.
     if mac in wireless:
         is_wired = False
     return {
@@ -225,9 +170,7 @@ def _snapshot_client(client: Any, wireless: frozenset[str]) -> dict[str, Any] | 
 
 
 def _snapshot_uplink(device: Any) -> dict[str, Any]:
-    """Whitelisted copy of a device's uplink dict. On a gateway this is the
-    WAN interface: ``ip`` is the WAN IP and the ``*_r`` counters are live
-    bytes-per-second rates."""
+    """Whitelisted copy of a device's uplink dict."""
     uplink = getattr(device, "uplink", None)
     if not isinstance(uplink, dict):
         return {}
@@ -250,8 +193,7 @@ def _snapshot_uplink(device: Any) -> dict[str, Any]:
 
 
 def _snapshot_uptime_stats(device: Any) -> dict[str, Any]:
-    """WAN/WAN2 monitor stats, keeping only the probe fields HA SOC reads.
-    ``availability`` is the WAN-up signal core itself never surfaces."""
+    """WAN/WAN2 monitor stats, keeping only the probe fields HA SOC reads."""
     stats = getattr(device, "uptime_stats", None)
     if not isinstance(stats, dict):
         return {}
@@ -291,9 +233,9 @@ def _snapshot_networks(device: Any) -> list[dict[str, Any]]:
             continue
         out.append(
             {
-                "id": net.get("_id"),  # VERIFY: network_table row id key.
+                "id": net.get("_id"),
                 "name": net.get("name"),
-                "vlan": net.get("vlan"),  # VERIFY: numeric VLAN id key.
+                "vlan": net.get("vlan"),
                 "vlan_enabled": net.get("vlan_enabled"),
                 "ip_subnet": net.get("ip_subnet"),
                 "purpose": net.get("purpose"),
@@ -306,8 +248,7 @@ def _snapshot_networks(device: Any) -> list[dict[str, Any]]:
 
 
 def _snapshot_device(device: Any) -> dict[str, Any] | None:
-    """One aiounifi Device copied to a plain whitelisted dict. ``serial`` and
-    ``x_*`` keys are deliberately absent (see the redaction note up top)."""
+    """One aiounifi Device copied to a plain whitelisted dict; ``serial`` and ``x_*`` keys are deliberately absent."""
     mac = normalize_mac(getattr(device, "mac", None))
     if mac is None:
         return None
@@ -333,9 +274,7 @@ def _snapshot_device(device: Any) -> dict[str, Any] | None:
 
 
 def _snapshot_wlans(api: Any) -> list[dict[str, Any]]:
-    """SSID inventory from hub.api.wlans. Only id/name/enabled are copied;
-    a Wlan object also carries x_passphrase, which must never leave core
-    memory, and the whitelist guarantees it cannot."""
+    """SSID inventory from hub.api.wlans: id/name/enabled only, never x_passphrase."""
     out: list[dict[str, Any]] = []
     for wlan in _handler_values(getattr(api, "wlans", None)):
         wlan_id = getattr(wlan, "id", None)
@@ -379,9 +318,7 @@ def network_snapshot(hass: HomeAssistant) -> dict[str, Any]:
                 if entry is None:
                     continue
                 snap["devices"][entry["mac"]] = entry
-                # The gateway is the device that owns WAN state: uptime_stats
-                # and network_table exist only on it, which is a stronger
-                # signal than parsing model names.
+                # The gateway is the device carrying uptime_stats/network_table, a stronger signal than model names.
                 if snap["gateway"] is None and (
                     entry["uptime_stats"] or entry["network_table"]
                 ):
@@ -396,11 +333,8 @@ def network_snapshot(hass: HomeAssistant) -> dict[str, Any]:
 
 
 def resolve_client_vlan(client: dict[str, Any], networks: list[dict[str, Any]]) -> Any:
-    """A client's VLAN: the raw ``vlan`` value when the controller sent one,
-    otherwise resolved through the gateway's network_table by the client's
-    network id or network name. When the table has no numeric VLAN either,
-    the network name is returned because a named network is still far more
-    useful in the table than a blank cell."""
+    """A client's VLAN: the raw ``vlan`` value, else resolved through the
+    gateway's network_table, else the network name."""
     vlan = client.get("vlan")
     if vlan not in (None, ""):
         return vlan
@@ -418,13 +352,7 @@ def resolve_client_vlan(client: dict[str, Any], networks: list[dict[str, Any]]) 
 
 
 def client_bandwidth(client: dict[str, Any]) -> dict[str, int] | None:
-    """Live throughput for a client in the payload's bandwidth shape. The
-    controller splits the rate counters by connection type (``rx_bytes-r``
-    for wireless, ``wired-rx_bytes-r`` for wired), so the client's own type
-    picks the pair; the other pair is a fallback because a client caught by
-    the wired bug reports the wrong type and would otherwise show blank.
-    The values are bytes per second surfaced through the existing
-    rx_bytes/tx_bytes keys, which the direct API never filled at all."""
+    """Live throughput for a client in the payload's bandwidth shape."""
     if client.get("is_wired"):
         pairs = (
             ("wired_rx_bytes_r", "wired_tx_bytes_r"),
@@ -449,9 +377,7 @@ def client_bandwidth(client: dict[str, Any]) -> dict[str, int] | None:
 
 
 def device_bandwidth(device: dict[str, Any]) -> dict[str, int] | None:
-    """Cumulative uplink byte counters for an infrastructure device, matching
-    the semantics the direct API's device-detail endpoint uses for the same
-    payload field."""
+    """Cumulative uplink byte counters for an infrastructure device."""
     uplink = device.get("uplink") or {}
     rx = _to_int(uplink.get("rx_bytes"))
     tx = _to_int(uplink.get("tx_bytes"))
@@ -463,10 +389,8 @@ def device_bandwidth(device: dict[str, Any]) -> dict[str, int] | None:
 
 
 def wan_from_gateway(gateway: dict[str, Any]) -> dict[str, Any]:
-    """WAN health derived from a snapshot gateway dict, in the same key
-    vocabulary as unifi.py's _derive_wan plus ``availability`` (a percent
-    from the controller's own WAN probes, the best up/down signal it has)
-    and ``internet`` (the controller's own internet-reachability verdict)."""
+    """WAN health from a snapshot gateway dict, in unifi.py's _derive_wan
+    vocabulary plus ``availability`` and ``internet``."""
     out: dict[str, Any] = {
         "port": None,
         "up": None,
@@ -501,8 +425,7 @@ def wan_from_gateway(gateway: dict[str, Any]) -> dict[str, Any]:
                 availability is None or value > availability
             ):
                 availability = float(value)
-        # WAN2 is only consulted when the primary WAN reported no monitors,
-        # so a dead-but-probed primary link is not masked by a backup link.
+        # WAN2 is consulted only when the primary WAN reported no monitors.
         break
     out["availability"] = availability
 
@@ -538,11 +461,6 @@ def network_name_map(networks: list[dict[str, Any]]) -> dict[str, str]:
         label = f"{name}" + (f" (VLAN {vlan})" if vlan not in (None, "") else "")
         out[str(net_id)] = label
     return out
-
-
-# ---------------------------------------------------------------------------
-# UniFi Protect snapshot
-# ---------------------------------------------------------------------------
 
 
 def _snapshot_camera(camera: Any) -> dict[str, Any] | None:
@@ -608,9 +526,7 @@ def _snapshot_event(event: Any) -> dict[str, Any] | None:
     ]
     camera_name = None
     try:
-        # event.camera is a resolver property joining back into the
-        # bootstrap; it is wrapped because a dangling camera id inside a
-        # third-party object must not sink the whole snapshot.
+        # event.camera resolves into the bootstrap; a dangling camera id must not sink the snapshot.
         camera = getattr(event, "camera", None)
         camera_name = getattr(camera, "name", None) or getattr(
             camera, "display_name", None

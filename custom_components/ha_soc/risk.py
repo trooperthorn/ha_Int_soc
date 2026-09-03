@@ -1,52 +1,8 @@
 """Per-user risk scoring and whole-install security posture scoring.
 
-Honesty principle (non-negotiable for this module): every score produced
-here is additive, capped, and explainable. A `RiskResult`'s `factors` list
-is not decoration - it is the actual, complete arithmetic behind `score`,
-sorted so the frontend can show "why" (its top 3 chips) without hiding
-anything. Nothing in here infers intent or fabricates a signal; factors
-that read behavioral history read it off detections.py's output, and
-detections.py's own docstring already states plainly which signals Home
-Assistant does not expose and which rules were left unimplemented rather
-than approximated. `dormant_revival` is a deliberate example of that
-honesty applied to scoring, not just detection: the design intent behind
-that rule is a notification ("a familiar face is back"), not a penalty,
-so it contributes zero risk points here even though it is a real,
-persisted detection.
-
-Two independent scoring passes live here:
-
-- `async_recompute_all` - one `RiskResult` per user, combining static
-  posture facts about the account (admin/MFA, staleness, token load) with
-  time-decayed contributions from that user's own open detections.
-- `async_compute_posture` - a single whole-install score blending the
-  aggregate user risk with vulnerability, misconfiguration, integration
-  health, and open-detection posture terms tracked elsewhere in the store.
-
-Factor arithmetic (work item 3.5): every factor carries both `points`
-(its pre-clamp contribution) and `applied_points` (its share of the final
-0-100 score after clamping), so the factor list always sums exactly to
-the score the user sees - no hidden truncation. Every named factor is
-capped; the caps for `disabled_user_activity` and `privilege_escalation`
-are the tunable `risk_cap_points` thresholds from detections.py's
-THRESHOLD_SPECS (work items 3.0/3.2), applied here with `min`. The
-long-lived-token bonus for a very old token is applied BEFORE that
-factor's cap, so the cap is a real ceiling.
-
-Provisional posture (work item 3.4, decision D-10, option (a) with
-"computed once ever"): `async_compute_posture` always returns a score and
-grade, but marks the result `provisional: True` with a `missing_terms`
-list until every one of the five posture terms has computed from real
-data at least once ever (persisted across restarts in the store's
-posture_terms map). What counts as "computed" per term is spelled out at
-_POSTURE_TERM_* below; where a source that ran clean is indistinguishable
-from one that never ran, the term stays missing - erring toward showing
-the provisional badge longer, never toward hiding it.
-
-Every threshold, weight, half-life, and cap is a named module-level
-constant (or a tunable read through detections.thresholds), specifically
-so a future tuning pass never has to go hunting for a bare number buried
-in a conditional.
+Every score is additive, capped, and explainable: a result's `factors`
+list is the complete arithmetic behind its `score` (factor rationale and
+weights: docs/design.md).
 """
 from __future__ import annotations
 
@@ -78,33 +34,20 @@ from .detections import (
 from .store import HaSocData
 
 if TYPE_CHECKING:
-    # See detections.py's equivalent comment - kept a forward-reference-only
-    # dependency so this module stays independently importable.
+    # Not imported at runtime so this module stays importable without users.py.
     from .users import UsersManager
 
 _LOGGER = logging.getLogger(__name__)
 
-# -- Risk bands -----------------------------------------------------------
 BAND_LOW_MAX = 29
 BAND_MODERATE_MAX = 59
 BAND_HIGH_MAX = 79
 # critical is anything above BAND_HIGH_MAX, up to 100
 
-# -- Posture-level facts (read straight off users.async_list_users()) -----
 ADMIN_WITHOUT_MFA_POINTS = 25
 NON_ADMIN_WITHOUT_MFA_POINTS = 8
 
-# never_logged_in (work item 3.5): an ACTIVE account holding at least one
-# credential but zero refresh tokens has a working way in that nobody has
-# ever used - standing attack surface with no behavioral history to
-# anchor any other rule on. The account-age gate applies only where an
-# age is actually known: with no refresh tokens the only age signal core
-# offers would be a credential creation time, and the installed core's
-# Credentials model carries no created_at field (verified against
-# homeassistant/auth/models.py), so the factor honestly reports "unknown
-# age" instead of inventing one. users.py probes for the field with
-# getattr so the "where available" branch comes alive if a future core
-# adds it.
+# Age gate applies only when credential_age_days is known; core's Credentials has no created_at.
 NEVER_LOGGED_IN_POINTS = 10
 NEVER_LOGGED_IN_MIN_ACCOUNT_AGE_DAYS = 14
 
@@ -113,18 +56,13 @@ STALE_ACCOUNT_90D_POINTS = 8
 STALE_ACCOUNT_180D_DAYS = 180
 STALE_ACCOUNT_180D_POINTS = 12
 
-# The old-token bonus is added BEFORE the cap is applied (work item 3.5),
-# so LLAT_POINTS_CAP is the factor's true ceiling; the previous build
-# added the bonus after min(), letting the factor reach cap + bonus.
+# The old-token bonus is added before the cap, so LLAT_POINTS_CAP is a true ceiling.
 LLAT_POINTS_PER_TOKEN = 3
 LLAT_POINTS_CAP = 12
 LLAT_OLD_TOKEN_DAYS = 365
 LLAT_OLD_TOKEN_BONUS_POINTS = 4
 
-# -- Behavioral facts (read off store.data["detections"], decayed) --------
-# points = base_points * 0.5 ** (days_since / half_life_days); a
-# contribution is dropped entirely once it decays below 1 point rather
-# than carrying an invisible fractional trickle forever.
+# A decayed contribution below this is dropped entirely, not carried as a fraction.
 DECAY_DROP_THRESHOLD = 1.0
 
 SUCCESS_AFTER_FAILURES_BASE_POINTS = 12
@@ -140,12 +78,7 @@ OFF_HOURS_BASE_POINTS = 6
 OFF_HOURS_HALF_LIFE_DAYS = 3.5
 OFF_HOURS_CAP = 10
 
-# Flat, not exponential: a hard cutoff at PRIVILEGE_ESCALATION_WINDOW_DAYS,
-# because "you were just promoted" is either still recent context worth
-# surfacing or it isn't - there's no meaningful partial-credit shape here.
-# The factor total is capped by the rule's tunable risk_cap_points
-# threshold (secure default 24, work items 3.0/3.2), read live from
-# detections.thresholds() where the factor is computed.
+# Flat within the window, no decay; the total is capped by the rule's tunable risk_cap_points.
 PRIVILEGE_ESCALATION_POINTS = 8
 PRIVILEGE_ESCALATION_WINDOW_DAYS = 30
 
@@ -153,19 +86,11 @@ TOKEN_MINTING_BASE_POINTS = 5
 TOKEN_MINTING_HALF_LIFE_DAYS = 3.5
 TOKEN_MINTING_CAP = 10
 
-# Flat while open (no decay - an unresolved disabled-account hit is a
-# live concern), then decays once acked/resolved so it fades once handled.
-# The factor total is capped by the rule's tunable risk_cap_points
-# threshold (secure default 40, work items 3.0/3.2) - previously this
-# factor was uncapped, so a burst of retries from one dead tablet could
-# saturate the whole score on its own.
+# Flat while open, decays once acked; the total is capped by the rule's tunable risk_cap_points.
 DISABLED_USER_ACTIVITY_OPEN_POINTS = 20
 DISABLED_USER_ACTIVITY_HALF_LIFE_DAYS = 7
 
-# Generic catch-all: every OPEN detection attributed to this user,
-# regardless of rule (including ones already scored by a named factor
-# above - this is deliberate double-counting of "still open right now",
-# separate from the named factors' decayed "how recently" signal).
+# Deliberately double-counts open detections already scored by a named factor.
 GENERIC_OPEN_DETECTION_SEVERITY_POINTS = {
     SEVERITY_CRITICAL: 25,
     SEVERITY_HIGH: 15,
@@ -177,7 +102,6 @@ GENERIC_OPEN_DETECTION_CAP = 30
 USER_SCORE_MIN = 0
 USER_SCORE_MAX = 100
 
-# -- Posture weights --------------------------------------------------------
 POSTURE_WEIGHT_USER = 0.35
 POSTURE_WEIGHT_VULN = 0.25
 POSTURE_WEIGHT_MISCONFIG = 0.20
@@ -231,11 +155,7 @@ GRADE_D_MIN = 60
 
 POSTURE_HISTORY_MAX_DAYS = 90
 
-# -- Provisional posture (work item 3.4, decision D-10) --------------------
-# Five posture terms, each stamped only on real evidence it has computed at
-# least once; the honesty caveat (a term that ran and found nothing looks
-# identical to one that never ran) and per-term evidence rules are in
-# docs/HA-SOC-Security-Work-Plan.md, item 3.4.
+# Each posture term is stamped only on real evidence that it computed at least once.
 POSTURE_TERM_USER = "p_user"
 POSTURE_TERM_VULN = "p_vuln"
 POSTURE_TERM_MISCONFIG = "p_misconfig"
@@ -284,16 +204,8 @@ def _decayed_points(ts_str: str | None, now: datetime, base: float, half_life_da
 
 
 def _is_public_ip(ip: str | None) -> bool:
-    """True IPv4/IPv6 global-unicast address, not just "not RFC1918".
-
-    Deliberately checks `is_global` rather than `not is_private`: the
-    detection that produced this IP already excluded RFC1918/loopback via
-    `is_private` (see detections.py's new_ip_login rule), so `not
-    is_private` would always be True here and the base/public split would
-    never actually differ. `is_global` additionally excludes CGNAT/shared
-    address space (100.64.0.0/10) and other reserved-but-not-private
-    ranges, which is the real distinction the higher base points are for.
-    """
+    """True IPv4/IPv6 global-unicast address (`is_global`), so CGNAT and other
+    reserved-but-not-private ranges do not count as public."""
     if not ip:
         return False
     try:
@@ -312,8 +224,6 @@ class RiskEngine:
 
         self.last_risk_results: dict[str, dict[str, Any]] = {}
         self.last_posture_result: dict[str, Any] | None = None
-
-    # -- Per-user risk ----------------------------------------------------
 
     async def async_recompute_all(self) -> dict[str, dict[str, Any]]:
         now = dt_util.utcnow()
@@ -361,14 +271,7 @@ class RiskEngine:
         last_login_at = user.get("last_login_at")
         account_age_days = user.get("account_age_days")
 
-        # Work item 3.5: a credentialed account with zero refresh tokens
-        # has never logged in at all, and with no tokens there is no
-        # account_age_days (users.py derives it from the oldest token) -
-        # the old age-gated condition could therefore never fire for
-        # exactly the accounts it described. The age gate now applies only
-        # when an age is actually known (credential_age_days, present only
-        # on a core whose Credentials model records creation time); with
-        # no age signal the factor fires with an honest "unknown age".
+        # Age gate applies only when credential_age_days is known; otherwise fires with unknown age.
         credentials_count = user.get("credentials_count") or 0
         refresh_token_count = user.get("refresh_token_count") or 0
         credential_age_days = user.get("credential_age_days")
@@ -424,8 +327,7 @@ class RiskEngine:
             detail_msg = f"{llat_count} long-lived access token(s)"
             llat_oldest_days = user.get("llat_oldest_days")
             if llat_oldest_days is not None and llat_oldest_days > LLAT_OLD_TOKEN_DAYS:
-                # Bonus BEFORE the cap (work item 3.5): the cap is the
-                # factor's ceiling, not a waypoint the bonus rides past.
+                # Bonus before the cap so the cap is the factor's ceiling.
                 raw_llat += LLAT_OLD_TOKEN_BONUS_POINTS
                 detail_msg += f", oldest {llat_oldest_days}d"
             llat_points = min(raw_llat, LLAT_POINTS_CAP)
@@ -433,21 +335,17 @@ class RiskEngine:
                 {"name": "long_lived_token_load", "points": llat_points, "detail": detail_msg}
             )
 
-        # Behavioral factors, from detections.py output. `resolved`
-        # detections never contribute (neither named factors nor the
-        # generic catch-all below).
+        # Resolved detections never contribute to any factor.
         active_detections = [d for d in user_detections if d.get("status") != "resolved"]
 
         self._add_success_after_failures_factor(factors, active_detections, now)
         self._add_new_ip_login_factor(factors, active_detections, now)
         self._add_off_hours_factor(factors, active_detections, now)
-        # dormant_revival: informational only by design - intentionally
-        # contributes no factor and no points (see module docstring).
+        # dormant_revival is informational by design and contributes no points.
         self._add_privilege_escalation_factor(factors, active_detections, now)
         self._add_token_minting_factor(factors, active_detections, now)
         self._add_disabled_user_activity_factor(factors, active_detections, now)
-        # mass_entity_burst has no bespoke factor - it only ever feeds the
-        # generic open-detections catch-all below.
+        # mass_entity_burst feeds only the generic catch-all below.
         self._add_generic_open_detections_factor(factors, active_detections)
 
         factors.sort(key=lambda f: f["points"], reverse=True)
@@ -468,12 +366,8 @@ class RiskEngine:
     ) -> None:
         """Give every factor an `applied_points` that sums exactly to `score`.
 
-        Work item 3.5: `points` is a factor's pre-clamp contribution and
-        stays untouched, but the displayed list must add up to the number
-        on the card. Each factor's applied share is its proportional slice
-        of the clamped score, rounded to one decimal, and the rounding
-        residue is folded into the largest factor so the sum is exact
-        rather than off by a few tenths.
+        Shares are proportional, rounded to one decimal, with the rounding
+        residue folded into the largest factor.
         """
         if not factors:
             return
@@ -561,8 +455,7 @@ class RiskEngine:
                 continue
             days_since = (now - ts).days
             total += PRIVILEGE_ESCALATION_POINTS if days_since <= PRIVILEGE_ESCALATION_WINDOW_DAYS else 0
-        # Tunable cap (work items 3.0/3.2): previously uncapped, so many
-        # near-simultaneous promotions could dominate the score alone.
+        # Capped by the rule's tunable risk_cap_points.
         total = min(
             total,
             thresholds(self.store, RULE_PRIVILEGE_ESCALATION)["risk_cap_points"],
@@ -613,9 +506,7 @@ class RiskEngine:
                 total += _decayed_points(
                     d.get("ts"), now, DISABLED_USER_ACTIVITY_OPEN_POINTS, DISABLED_USER_ACTIVITY_HALF_LIFE_DAYS
                 )
-        # Tunable cap via min (work items 3.0/3.2, secure default 40):
-        # previously uncapped, so one stuck retry loop could saturate the
-        # whole 0-100 score by itself.
+        # Capped by the rule's tunable risk_cap_points.
         total = min(
             total,
             thresholds(self.store, RULE_DISABLED_USER_ACTIVITY)["risk_cap_points"],
@@ -647,12 +538,8 @@ class RiskEngine:
                 }
             )
 
-    # -- Whole-install posture ----------------------------------------------
-
     async def async_compute_posture(self) -> dict[str, Any]:
-        # Always recompute risk first so P_user reflects the current
-        # detection/account state, not a possibly-stale cache from the
-        # last periodic pass.
+        # Recompute risk first so P_user reflects current state, not the last cached pass.
         risk_results = await self.async_recompute_all()
         users = await self.users.async_list_users()
 
@@ -678,10 +565,7 @@ class RiskEngine:
         result = {
             "score": posture_score,
             "grade": grade,
-            # D-10 option (a): the grade always shows, labeled provisional
-            # until every term has computed once ever - a hidden grade
-            # reads as a broken tile; a labeled one is honest and useful
-            # on day one.
+            # The grade always shows, labeled provisional until every term has computed once.
             "provisional": bool(missing_terms),
             "missing_terms": missing_terms,
             "term_computed_at": term_computed_at,
@@ -702,10 +586,8 @@ class RiskEngine:
     def _update_posture_terms(self) -> dict[str, str | None]:
         """Stamp newly-computable terms and return term -> first computed_at.
 
-        The per-term evidence rules are documented at POSTURE_TERMS above.
-        Stamps persist in the store ("computed once ever", D-10), so a
-        restart or a source table that later empties never resurrects the
-        provisional badge for a term that has genuinely computed.
+        Stamps persist in the store, so a term that has computed once never
+        turns provisional again.
         """
         now_iso = dt_util.utcnow().isoformat()
         data = self.store.data
@@ -786,9 +668,7 @@ class RiskEngine:
         return min(total, P_DETECTION_CAP)
 
     def _maybe_append_posture_snapshot(self, posture_score: int, grade: str) -> None:
-        # Guard against appending more than one snapshot per calendar day -
-        # this runs far more often (every periodic analysis pass) than the
-        # 30-90d sparkline needs.
+        # At most one snapshot per calendar day.
         today = dt_util.now().strftime("%Y-%m-%d")
         history = self.store.data["posture_history"]
         if history and history[-1].get("date") == today:

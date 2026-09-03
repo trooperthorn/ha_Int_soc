@@ -1,7 +1,4 @@
-# Catches the class of problem that broke HACS install (a manifest/hacs.json
-# HACS can't parse, a missing required key, a bad domain) BEFORE a release is
-# cut. The HACS validation action checks exactly what HACS itself needs to
-# install this repository.
+# HACS and hassfest validation, so a manifest or hacs.json HACS cannot install fails before a release is cut.
 name: Validate
 
 on:
@@ -11,9 +8,7 @@ on:
   schedule:
     - cron: "0 6 * * 1" # weekly, catches drift from HACS requirement changes
 
-# Validation only reads the repository, so the workflow token gets read-only
-# scope; a compromised step must not be able to push or publish (work plan
-# item 0.6, CI-1).
+# Read-only token: validation only reads the repository.
 permissions:
   contents: read
 
@@ -22,14 +17,9 @@ jobs:
     name: HACS validation
     runs-on: ubuntu-latest
     steps:
-      # Third-party actions are pinned by commit SHA so a moved or
-      # compromised tag cannot change the code this workflow runs. The
-      # matching release or ref is recorded in each trailing comment.
+      # Actions are pinned by commit SHA; the trailing comment names the matching release or ref.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # hacs/action is the canonical HACS validator and its documented ref is
-      # @main; upstream stopped tagging releases at 22.5.0, so the pin is the
-      # head of main at pin time. Bump the digest deliberately when the
-      # weekly run starts failing on new HACS requirements.
+      # hacs/action publishes no tags after 22.5.0; the pin is head of main, bumped when the weekly run fails.
       - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main on 2026-08-30
         with:
           category: integration
@@ -39,6 +29,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      # home-assistant/actions documents @master and publishes no release
-      # tags for hassfest, so the pin is the head of master at pin time.
+      # hassfest publishes no release tags; the pin is head of master.
       - uses: home-assistant/actions/hassfest@a7c616ce81ccda50150bf1595786c71b1883fabb # master on 2026-08-30

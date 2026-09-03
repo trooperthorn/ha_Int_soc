@@ -1,6 +1,4 @@
-/** Cross-view navigation: any view can ask the panel to switch tabs by
- * dispatching this bubbling, composed event — it crosses shadow DOM
- * boundaries up to <ha-soc-panel>, which owns the actual tab state. */
+/** Cross-view navigation: a bubbling, composed event that crosses shadow DOM up to <ha-soc-panel>, which owns tab state. */
 export type SocTab =
   | "dashboard"
   | "network"
@@ -26,11 +24,8 @@ export interface SocWorkspaceDefinition {
 }
 
 /**
- * The console's stable information architecture. The leaf tab ids remain
- * unchanged so stored per-view layouts, cross-view navigation events, and
- * backend authorization contracts do not migrate or lose state. Only the
- * shell presentation changes: related tools are grouped into six workspaces
- * instead of competing in one long horizontal list.
+ * The console's information architecture. Leaf tab ids are stable: stored
+ * layouts, navigation events, and backend authorization key on them.
  */
 export const SOC_WORKSPACES: SocWorkspaceDefinition[] = [
   {
@@ -102,10 +97,7 @@ export const HA_SOC_NAVIGATE = "ha-soc-navigate";
 
 export interface HaSocNavigateDetail {
   tab: SocTab;
-  // Pre-fills the target tab's own search/filter box (currently only the
-  // Network tab's Clients table search consumes this) so "jump from a
-  // rule's resolved device to that device on the Network tab" lands
-  // already filtered to it, not just on the tab.
+  // Pre-fills the target tab's search box (only the Network tab's Clients table consumes it).
   clientFilter?: string;
 }
 
@@ -120,23 +112,12 @@ export function navigate(el: HTMLElement, tab: SocTab, clientFilter?: string): v
 }
 
 /**
- * Navigate elsewhere in Home Assistant's own frontend (e.g. its native
- * Devices dashboard) without a full page reload. A custom panel's JS
- * module runs in the same document as core frontend (confirmed against
- * home-assistant/frontend source: `mainWindow` resolves to `window` itself
- * for a non-iframe panel_custom), so pushing history state and firing the
- * `location-changed` event core's own router listens for is the standard,
- * documented pattern third-party panels/cards use to navigate the app's
- * router — the same thing `history.back()`-aware core links do internally.
- *
- * Only call this with URLs verified to actually support what you're
- * relying on. Confirmed against source: `/config/devices/dashboard`
- * accepts `?config_entry=<id>` and `?domain=<domain>` as real pre-applied
- * filters. It does NOT support any availability/state filter — devices
- * have no "state" concept in that table at all, only disabled/enabled —
- * and the entities dashboard's status filter cannot be preset via URL
- * either (UI-click + sessionStorage only). Don't construct a URL implying
- * either of those unless that changes upstream.
+ * Navigate elsewhere in Home Assistant's own frontend without a full page
+ * reload, by pushing `history` state and firing the `location-changed` event
+ * core's router listens for (`mainWindow` is `window` for a non-iframe
+ * panel_custom). Only `/config/devices/dashboard` with `?config_entry=<id>`
+ * or `?domain=<domain>` is verified; no availability/state filter exists via
+ * URL, see docs/design.md.
  */
 export function navigateToHaPath(path: string): void {
   window.history.pushState(null, "", path);

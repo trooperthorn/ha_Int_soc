@@ -55,7 +55,7 @@ async def test_misconfig_findings_sorted_most_severe_first(
 
     result = connection.send_result.call_args[0][1]
     # Real startup checks (e.g. cloud_egress_inventory) also populate
-    # findings in this fixture's real config-entry setup — filter to just
+    # findings in this fixture's real config-entry setup, filter to just
     # the ones this test controls, preserving relative order.
     mine = {"f-low", "f-critical", "f-medium", "f-info", "f-high"}
     ordered_ids = [f["id"] for f in result["misconfig_findings"] if f["id"] in mine]

@@ -1,10 +1,4 @@
-/**
- * Minimal subset of Home Assistant's frontend `HomeAssistant` interface —
- * just enough surface for this panel (callWS + connection.subscribeMessage).
- * There is no officially published typed package for custom-panel authors,
- * so integrations either vendor a full copy of frontend's types.ts (Alarmo's
- * approach) or, like here, declare only what they actually touch.
- */
+/** Minimal subset of Home Assistant's frontend `HomeAssistant` interface: callWS and connection.subscribeMessage. */
 export interface Connection {
   subscribeMessage<T>(
     callback: (result: T) => void,

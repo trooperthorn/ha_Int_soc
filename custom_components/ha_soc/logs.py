@@ -1,21 +1,4 @@
-"""Home Assistant's own crash artifact — home-assistant.log.fault.
-
-Python's faulthandler module (enabled by homeassistant/__main__.py for the
-entire process lifetime, writing to this exact filename in the config
-directory) only writes here when the process receives a fatal signal —
-SIGSEGV, SIGABRT, SIGBUS, SIGILL, SIGFPE — a genuine low-level crash, never
-a normal Python exception (those already show up in the regular log /
-system_log, which is what logs-view's main table already covers).
-
-__main__.py deletes the file if it's empty after a clean shutdown, but a
-session that actually crashes never reaches that cleanup code — the fatal
-signal kills the process right where faulthandler caught it. So a
-non-empty file here means at least one crash happened, and — since the
-file is reopened in append mode on every subsequent start — it keeps
-growing across restarts until someone clears it by hand. This module only
-ever reads it; it never truncates or deletes anything on the user's
-behalf.
-"""
+"""Home Assistant's own crash artifact, home-assistant.log.fault, read-only."""
 from __future__ import annotations
 
 import logging
@@ -30,10 +13,6 @@ _LOGGER = logging.getLogger(__name__)
 
 FAULT_LOG_FILENAME = "home-assistant.log.fault"
 
-# Advisory glance, not a full log viewer — a crash dump carries one stack
-# per thread and can be large, especially after several incidents have
-# accumulated. The tail is what answers "did this crash, and how" — older
-# history in the same file is still there on disk for anyone who needs it.
 _MAX_READ_BYTES = 64 * 1024
 
 
@@ -71,19 +50,10 @@ async def async_fault_log_overview(hass: HomeAssistant) -> dict[str, Any]:
     return await hass.async_add_executor_job(_read)
 
 
-# ---------------------------------------------------------------------------
-# Container (add-on / Core / Supervisor / host) logs, via Supervisor's
-# journald gateway. Transport choice and its two quirks (no Range header,
-# ANSI stripping) are in docs/OPERATIONS-NOTES.md.
-# ---------------------------------------------------------------------------
-
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
 _MAX_CONTAINER_LOG_BYTES = 128 * 1024
 _LOG_FETCH_TIMEOUT = 30
 
-# Fixed system targets (Supervisor journald paths that always exist on a
-# Supervisor install). Add-on targets are "addon:<slug>", validated against
-# the live add-on list so a slug can never traverse the path.
 _SYSTEM_LOG_PATHS = {
     "core": "/core/logs",
     "supervisor": "/supervisor/logs",
@@ -141,8 +111,7 @@ async def async_fetch_container_log(hass: HomeAssistant, target: str) -> dict[st
         path = _SYSTEM_LOG_PATHS[target]
     elif target.startswith("addon:"):
         slug = target.removeprefix("addon:")
-        # The slug is interpolated into a Supervisor URL - only ever accept
-        # one that the Supervisor itself reports as installed.
+        # The slug is interpolated into a Supervisor URL; accept only a slug the Supervisor reports installed.
         if slug not in _addons_by_slug(hass):
             result["error"] = f"Unknown add-on slug: {slug}"
             return result
@@ -170,8 +139,7 @@ async def async_fetch_container_log(hass: HomeAssistant, target: str) -> dict[st
     text = _ANSI_SGR_RE.sub("", text)
     raw = text.encode("utf-8", errors="replace")
     if len(raw) > _MAX_CONTAINER_LOG_BYTES:
-        # Keep the tail: the newest lines answer "what just happened". Cut on
-        # a line boundary so the first visible line isn't a torn fragment.
+        # Cut on a line boundary so the first visible line is not a torn fragment.
         tail = raw[-_MAX_CONTAINER_LOG_BYTES:]
         newline = tail.find(b"\n")
         if newline != -1:

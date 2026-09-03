@@ -10,9 +10,9 @@ explicit opt-in escape hatch for hard caps.
 The watchdog samples per-container stats, and on a **sustained** breach of
 its threshold takes a per-container action:
 
-- `alert` — raise a finding, take no action on the container.
-- `restart` — restart the add-on via the real Supervisor API.
-- `stop` — stop the add-on via the real Supervisor API.
+- `alert`: raise a finding, take no action on the container.
+- `restart`: restart the add-on via the real Supervisor API.
+- `stop`: stop the add-on via the real Supervisor API.
 
 `restart` and `stop` are only ever applied to add-ons, never to Core or to
 the Supervisor itself.

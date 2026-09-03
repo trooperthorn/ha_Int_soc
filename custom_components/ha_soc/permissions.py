@@ -1,32 +1,6 @@
-"""Dashboard/view "permissions matrix" — cosmetic visibility, not access control.
+"""Dashboard/view "permissions matrix": cosmetic visibility, not access control.
 
-Read this before wiring this module into anything that implies real
-security:
-
-Everything here is COSMETIC. Setting a view's `visible` list, flipping a
-dashboard's `require_admin`/`show_in_sidebar`, or pushing `hiddenPanels`
-into a user's sidebar only changes what that user's OWN frontend chooses to
-render. None of it is enforced by Home Assistant's backend: any
-authenticated user can call the `lovelace/config` websocket command for ANY
-dashboard `url_path` and get back its full, unredacted configuration —
-cards, entity ids, and all — regardless of anything this module has set.
-There is no permission check on that command in Home Assistant core as of
-the 2025.x/dev branch this was written against, and nothing below changes
-that.
-
-The only real enforcement lever for "should this user be able to see/reach
-X" is the admin / non-admin group split on the user's account, handled in
-users.py, not here. Treat every method below as "manage what the dashboard
-UI shows", never as "manage what the account can fetch".
-
-This module also talks to several internal, version-sensitive Home
-Assistant surfaces (lovelace's runtime `hass.data` container, its
-dashboards storage collection, the frontend's per-user storage helper).
-None of those are formally public API — "internal but stable" at best — so
-every access path here is wrapped defensively and degrades to a logged
-WARNING plus a clear `error_reason` string instead of raising, both so a
-version mismatch never crashes HA setup and so the websocket layer can
-surface a real message instead of a stack trace.
+Nothing here is enforced by Home Assistant's backend; see docs/security.md.
 """
 from __future__ import annotations
 
@@ -43,15 +17,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _LOVELACE_UPDATED_EVENT = "lovelace_updated"
 
-# Plausible attribute names for the dashboards storage collection off the
-# lovelace runtime data container — tried in order, first hit wins.
+# Candidate attribute names on the lovelace runtime container; first hit wins.
 _DASHBOARDS_COLLECTION_ATTRS = ("dashboards_collection", "collection")
 
-# permissions_matrix is keyed by real url_path strings; the default
-# dashboard's url_path is None, which is not a safe/round-trippable JSON
-# dict key (Store serializes it as the literal string "null" on save, but
-# never converts it back to None on load), so it gets this sentinel key
-# instead everywhere this module reads or writes the store.
+# The default dashboard's url_path is None, which does not round-trip as a Store key.
 _DEFAULT_DASHBOARD_KEY = "__default__"
 
 
@@ -64,13 +33,8 @@ def _from_storage_key(key: str) -> str | None:
 
 
 def _visible_user_ids(visible: Any) -> list[str] | None:
-    """Return the explicit user-id allow-list from a view's `visible`.
-
-    None means `visible` is not a per-user list at all (True/absent =
-    visible to everyone, False = hidden from everyone) — the caller must
-    tell that apart from an explicit-but-empty list, which means hidden
-    from everyone too, just spelled differently.
-    """
+    """Return the explicit user-id allow-list from a view's `visible`, or None
+    when `visible` is not a per-user list at all."""
     if isinstance(visible, list):
         return [
             entry.get("user")
@@ -85,8 +49,7 @@ def _find_view(config: dict[str, Any], view_path: str) -> dict[str, Any] | None:
     for view in views:
         if isinstance(view, dict) and view.get("path") == view_path:
             return view
-    # Real dashboards sometimes omit "path" on a view entirely — fall back
-    # to treating view_path as a positional index into the views list.
+    # A view may omit "path"; fall back to view_path as a positional index.
     try:
         index = int(view_path)
     except (TypeError, ValueError):
@@ -99,11 +62,7 @@ def _find_view(config: dict[str, Any], view_path: str) -> dict[str, Any] | None:
 class PermissionsMatrix:
     """Manages cosmetic dashboard/view visibility and per-user sidebar hiding.
 
-    See the module docstring: nothing here is enforced server-side. This
-    class only edits lovelace dashboard configs and per-user frontend
-    storage, and mirrors the intended state into HaSocData so the matrix UI
-    and async_check_drift() have a source of truth to compare the live
-    config against.
+    Nothing here is enforced server-side.
     """
 
     def __init__(self, hass: HomeAssistant, store: HaSocData) -> None:
@@ -111,9 +70,7 @@ class PermissionsMatrix:
         self.store = store
         self._unsub_bus: Callable[[], None] | None = None
         self._unsub_collection: Callable[[], None] | None = None
-        # Cached once found; never cached negative, so a lovelace integration
-        # that finishes loading after async_start() still gets picked up on
-        # the first call that needs it.
+        # Never cached negative, so lovelace finishing after async_start() is still found.
         self._dashboards_collection: Any | None = None
 
     async def async_start(self) -> None:
@@ -154,8 +111,6 @@ class PermissionsMatrix:
     @callback
     def _on_dashboards_changed(self, change_type: str, item_id: str, config: Any) -> None:
         _LOGGER.debug("Dashboards collection changed: %s %s", change_type, item_id)
-
-    # -- Internal: reaching lovelace's runtime state -------------------------
 
     def _get_lovelace_data(self) -> Any | None:
         try:
@@ -245,8 +200,6 @@ class PermissionsMatrix:
             return item.get(name)
         return getattr(item, name, None)
 
-    # -- Dashboard inventory --------------------------------------------------
-
     async def async_list_dashboards(self) -> list[dict[str, Any]]:
         dashboards = self._get_dashboards()
         if dashboards is None:
@@ -287,13 +240,7 @@ class PermissionsMatrix:
         try:
             return await lovelace_config.async_load(False)
         except HomeAssistantError as err:
-            # ConfigNotFound specifically means "this dashboard is
-            # registered but has never actually been saved/configured" —
-            # a normal state (e.g. a just-created additional dashboard
-            # nobody has opened yet), not a failure. Logging that at
-            # warning+traceback level reads as a crash when it isn't one;
-            # every other HomeAssistantError here is genuinely unexpected
-            # and keeps the louder log.
+            # ConfigNotFound is a normal never-saved state, not a failure; log it quietly.
             from homeassistant.components.lovelace.const import ConfigNotFound
 
             if isinstance(err, ConfigNotFound):
@@ -312,8 +259,6 @@ class PermissionsMatrix:
                 exc_info=True,
             )
             return None
-
-    # -- View visibility --------------------------------------------------
 
     async def async_set_view_visibility(
         self, url_path: str | None, view_path: str, user_ids: list[str]
@@ -357,9 +302,7 @@ class PermissionsMatrix:
 
         previous_user_ids = _visible_user_ids(view.get("visible")) or []
 
-        # Empty user_ids means "reset to visible for everyone" — writing an
-        # empty list instead would mean "visible to no one", which is a
-        # different and surprising state, so it is never written here.
+        # Empty user_ids resets to visible-for-everyone; an empty list would mean visible to no one.
         view["visible"] = [{"user": uid} for uid in user_ids] if user_ids else True
 
         try:
@@ -381,10 +324,7 @@ class PermissionsMatrix:
             )
             return (False, "lovelace_internals_unavailable")
 
-        # expected_policy[uid] = True means "this user should see the view".
-        # Users newly listed get True; users dropped from an explicit list
-        # get False; but if user_ids is empty (visible-to-all reset), any
-        # previously-restricted user now also gets True, not False.
+        # A visible-to-all reset also flips formerly restricted users back to True.
         expected_policy: dict[str, bool] = {uid: True for uid in user_ids}
         for uid in previous_user_ids:
             expected_policy.setdefault(uid, not user_ids)
@@ -399,8 +339,6 @@ class PermissionsMatrix:
             )
 
         return (True, None)
-
-    # -- Dashboard-level flags ------------------------------------------------
 
     async def async_set_dashboard_flags(
         self,
@@ -442,8 +380,6 @@ class PermissionsMatrix:
             return (False, "dashboard_update_failed")
 
         return (True, None)
-
-    # -- Sidebar push ---------------------------------------------------------
 
     async def async_push_sidebar_policy(
         self, user_id: str, hidden_dashboard_paths: list[str]
@@ -509,14 +445,8 @@ class PermissionsMatrix:
 
         return (True, None)
 
-    # -- Drift detection ------------------------------------------------------
-
     async def async_check_drift(self) -> list[dict[str, Any]]:
-        """Compare stored intent against live dashboard configs.
-
-        Read-only by design: the matrix UI re-applies a mismatch with an
-        explicit call to async_set_view_visibility, this never writes.
-        """
+        """Compare stored intent against live dashboard configs. Never writes."""
         mismatches: list[dict[str, Any]] = []
 
         dashboards = self._get_dashboards()

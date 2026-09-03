@@ -38,7 +38,7 @@ SNAPSHOTS = (
 )
 OPTIONAL_SNAPSHOTS = {"immutable_releases.json"}
 REQUIRED_STATUS_CHECKS = {
-    "pytest (Python 3.13)",
+    "pytest (Python 3.14)",
     "Frontend bundle matches source",
     "HACS validation",
     "hassfest (manifest sanity)",

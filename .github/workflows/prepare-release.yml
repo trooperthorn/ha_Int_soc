@@ -1,5 +1,4 @@
-# Turns release-bearing changes on protected main into a tested CalVer bump PR.
-# The existing Release workflow remains the sole tag and asset publisher.
+# Turns release-bearing changes on protected main into a tested CalVer bump PR; release.yml stays the sole publisher.
 name: Prepare release
 
 on:
@@ -11,8 +10,7 @@ concurrency:
   group: prepare-release-${{ github.repository }}
   cancel-in-progress: false
 
-# The event token only inspects state. A short-lived, repository-scoped GitHub
-# App token is created later and used solely for the controlled release branch.
+# The event token only inspects state; a short-lived App token handles the release branch.
 permissions:
   actions: read
   contents: read

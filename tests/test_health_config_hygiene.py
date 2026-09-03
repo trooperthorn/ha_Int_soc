@@ -77,11 +77,7 @@ async def test_empty_areas_check_clears_once_populated(hass: HomeAssistant, heal
 
 
 async def test_no_findings_when_nothing_broken(hass: HomeAssistant, health: IntegrationHealth) -> None:
-    # _check_unused_labels_and_blueprints deliberately excluded: the test
-    # harness's own config dir ships a real default example blueprint
-    # (homeassistant/*.yaml), so that check correctly reports it as
-    # unused here — genuine, correct behavior, not something to assert
-    # away as "nothing found".
+    # _check_unused_labels_and_blueprints is excluded: the harness config dir ships a real example blueprint.
     checks = (
         health._check_unknown_service_references,
         health._check_unknown_device_references,

@@ -271,7 +271,7 @@ async def test_ingest_probe_result_without_firewall_fields_is_a_noop_for_firewal
         hass, store, rules=RULES, backup_acknowledged=True, user_id="u1"
     )
 
-    # Older/base add-on report shape — no firewall_* fields at all. Must
+    # Older/base add-on report shape, no firewall_* fields at all. Must
     # not disturb an in-flight pending test.
     await _ingest(hass, supervisor_context, open_ports=[{"port": 22, "proto": "tcp"}])
 
@@ -405,12 +405,6 @@ async def test_ingest_ipv6_supported_reaches_status(
     await _ingest(hass, supervisor_context, firewall_ipv6_supported=True)
     status = await firewall.async_get_status(hass, store)
     assert status["ipv6_supported"] is True
-
-
-# ---------------------------------------------------------------------------
-# The add-on's shell half of the contract (work items 2.2, 2.3, 2.4, 2.5,
-# 2.6, and the carried graceful-stop item).
-# ---------------------------------------------------------------------------
 
 
 def _script_text(name: str) -> str:

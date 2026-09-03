@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Pure validation/serialization helpers for privileged Docker resource limits.
-# The firewall service sources this file; keeping the boundary functions pure
-# also lets CI exercise hostile payloads without a Docker socket or Supervisor.
+# Pure validation/serialization helpers for privileged Docker resource limits, sourced by the firewall service.
 
 validate_resource_limits() {
     jq -ce '

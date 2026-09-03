@@ -30,9 +30,6 @@ async def health(hass: HomeAssistant) -> IntegrationHealth:
     return IntegrationHealth(hass, store)
 
 
-# -- 4.1: startup grace -------------------------------------------------------
-
-
 async def test_sweep_respects_startup_grace(hass: HomeAssistant, health: IntegrationHealth) -> None:
     spy = AsyncMock(return_value=[])
     with patch.object(health, "_check_http_insecure", spy):
@@ -50,9 +47,6 @@ async def test_sweep_respects_startup_grace(hass: HomeAssistant, health: Integra
         health._started_at = dt_util.utcnow() - STARTUP_GRACE - timedelta(seconds=1)
         await health.async_run_misconfig_checks()
         spy.assert_awaited()
-
-
-# -- 4.1: confirmed findings survive an empty pass ---------------------------
 
 
 async def test_confirmed_survives_empty_pass(hass: HomeAssistant, health: IntegrationHealth) -> None:
@@ -78,9 +72,6 @@ async def test_confirmed_survives_empty_pass(hass: HomeAssistant, health: Integr
         logger.setLevel(previous)
 
 
-# -- 4.1: could_not_evaluate leaves findings untouched ------------------------
-
-
 async def test_could_not_evaluate_leaves_findings(hass: HomeAssistant, health: IntegrationHealth) -> None:
     from homeassistant.exceptions import HomeAssistantError
 
@@ -104,9 +95,6 @@ async def test_could_not_evaluate_leaves_findings(hass: HomeAssistant, health: I
         assert await health._check_alert_unknown_references() == []
     stored = health._store.data["misconfig_findings"][finding_id]
     assert stored["status"] == "new"
-
-
-# -- 4.2: proxy trust ---------------------------------------------------------
 
 
 async def test_proxy_trust_check(hass: HomeAssistant, health: IntegrationHealth) -> None:
@@ -174,9 +162,6 @@ async def test_narrow_proxy_quiets_no_ssl_finding(hass: HomeAssistant, health: I
     assert finding["severity"] == "low"
 
 
-# -- 4.2: trusted_users mapping to an admin or the owner ----------------------
-
-
 class _FakeProvider:
     type = "trusted_networks"
     id = "tn"
@@ -223,9 +208,6 @@ async def test_trusted_users_non_admin_mapping_is_quiet(hass: HomeAssistant, hea
     ):
         findings = await health._check_trusted_networks()
     assert findings == []
-
-
-# -- 4.4: lifecycle status, dismissed Repairs cleanup, detail caps ------------
 
 
 def test_new_finding_has_status() -> None:
@@ -288,9 +270,6 @@ async def test_unknown_repairs_severity_maps_to_warning(
         if i.domain == DOMAIN and i.issue_id == "misconfig:weird"
     )
     assert issue.severity == ir.IssueSeverity.WARNING
-
-
-# -- 4.7: one YAML load per sweep --------------------------------------------
 
 
 async def test_yaml_loaded_once_per_sweep(hass: HomeAssistant, health: IntegrationHealth) -> None:

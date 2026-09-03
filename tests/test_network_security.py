@@ -131,7 +131,7 @@ def test_acl_empty_but_firewall_policies_has_rules_is_not_flagged() -> None:
 
 
 def test_no_rules_finding_requires_both_confirmed_empty() -> None:
-    # firewall_policies unavailable (error) — must not claim "no rules" when
+    # firewall_policies unavailable (error), must not claim "no rules" when
     # one side genuinely couldn't be checked.
     unifi = _unifi(acl={"available": True, "rules": []})
     findings = build_findings(unifi, _UNCONFIGURED_PIHOLE)
@@ -154,7 +154,7 @@ def test_broad_allow_rule_flagged() -> None:
                 },
                 {
                     # A BLOCK rule with the same shape must never be flagged
-                    # as a "broad allow" — it's the opposite intent.
+                    # as a "broad allow", it's the opposite intent.
                     "id": "r10",
                     "order": 1,
                     "name": "Block everything",
@@ -164,7 +164,7 @@ def test_broad_allow_rule_flagged() -> None:
                     "source": {"ip_or_subnets": [], "networks": [], "macs": []},
                 },
                 {
-                    # Scoped to a source network — must not be flagged.
+                    # Scoped to a source network, must not be flagged.
                     "id": "r11",
                     "order": 2,
                     "name": "LAN only",
@@ -218,7 +218,7 @@ def test_firewall_policy_broad_allow_flagged() -> None:
                     "destination": {"zone": "External", "filter_type": None},
                 },
                 {
-                    # Has a traffic filter narrowing it — must not be flagged.
+                    # Has a traffic filter narrowing it, must not be flagged.
                     "id": "p2",
                     "order": 1,
                     "name": "IoT to printer only",
@@ -228,7 +228,7 @@ def test_firewall_policy_broad_allow_flagged() -> None:
                     "destination": {"zone": "Internal", "filter_type": "IP_ADDRESS"},
                 },
                 {
-                    # BLOCK with no filter — opposite intent, never flagged.
+                    # BLOCK with no filter, opposite intent, never flagged.
                     "id": "p3",
                     "order": 2,
                     "name": "Deny all",

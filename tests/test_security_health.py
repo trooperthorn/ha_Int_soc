@@ -139,12 +139,7 @@ async def test_disabled_source_excludes_domain(hass: HomeAssistant, store: HaSoc
 
 
 async def test_installed_integration_reports_state(hass: HomeAssistant, store: HaSocData) -> None:
-    # Deliberately left at its default (not_loaded) state rather than
-    # mock_state()'d to LOADED: elkm1 is a real core integration, and
-    # forcing a "loaded" state makes hass fixture teardown attempt a real
-    # unload, which imports elkm1's actual PyPI dependency (elkm1_lib) —
-    # not installed in this test venv, and irrelevant to what's under
-    # test here (the state string just passes through unmodified).
+    # Left NOT_LOADED on purpose: forcing LOADED makes teardown import elkm1_lib, which is not installed here.
     entry = MockConfigEntry(domain="elkm1", title="My Elk Panel")
     entry.add_to_hass(hass)
     assert entry.state is ConfigEntryState.NOT_LOADED

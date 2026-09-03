@@ -63,11 +63,6 @@ async def secrets(hass: HomeAssistant) -> HaSocSecretStore:
     return data
 
 
-# ---------------------------------------------------------------------------
-# Duck-typed fakes for the core integrations' in-memory objects
-# ---------------------------------------------------------------------------
-
-
 class FakeHandler:
     """aiounifi handler stand-in: values() only, deliberately not a dict."""
 
@@ -241,11 +236,6 @@ def _install_core_entry(hass: HomeAssistant, domain: str, runtime) -> MockConfig
     return entry
 
 
-# ---------------------------------------------------------------------------
-# Pure helpers (unifi_core)
-# ---------------------------------------------------------------------------
-
-
 def test_normalize_mac_forms() -> None:
     # Protect style (uppercase, no separators) and Network style (colons)
     # must land on the same normalized form for the MAC join to work.
@@ -346,11 +336,6 @@ def test_wan_from_gateway_rates_availability_and_internet() -> None:
         "uptime_stats": {"WAN": {"monitors": [{"availability": 0.0}]}}
     }
     assert unifi_core.wan_from_gateway(only_probe)["up"] is False
-
-
-# ---------------------------------------------------------------------------
-# Snapshots against a fake hass (no core integration required)
-# ---------------------------------------------------------------------------
 
 
 class FakeConfigEntries:
@@ -479,11 +464,6 @@ def test_protect_snapshot_absent_entries() -> None:
     snap = unifi_core.protect_snapshot(FakeHass({}))
     assert snap["available"] is False
     assert snap["cameras"] == [] and snap["events"] == []
-
-
-# ---------------------------------------------------------------------------
-# Network overview enrichment (end to end through async_network_overview)
-# ---------------------------------------------------------------------------
 
 
 def _dispatch_get(clients, devices):
@@ -692,11 +672,6 @@ async def test_overview_unloaded_core_entry_changes_nothing(
     assert o["reachable"] is False
     assert o["clients"] == []
     assert o["devices"] == []
-
-
-# ---------------------------------------------------------------------------
-# Protect enrichment (end to end through async_protect_status)
-# ---------------------------------------------------------------------------
 
 
 def _protect_runtime(now: datetime) -> FakeProtectData:

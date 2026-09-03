@@ -65,3 +65,59 @@ this controller version (github.com/beezly/unifi-apis), parsed directly
 rather than through a lossy summarizer, since developer.ui.com itself is
 unreachable from every environment this project has been built in.
 
+
+## Verified response shapes
+
+Facts moved out of `unifi.py` and `unifi_core.py`. "Verified" means checked against the versioned OpenAPI artifacts above or a live controller response; "Unverified" rows are the candidate-key mappings that `backlog.md` lists for confirmation.
+
+### Client, device, and pagination shapes
+
+| Fact | Verified |
+| --- | --- |
+| `_rows` tolerates a bare list or `{"data": [...]}`, the Integration API paginated envelope. `_get_paginated` follows offset/limit pagination and falls back to a single unpaginated response; a bare list or a short page means there is no more to fetch. Pagination is bounded by `_PAGE_LIMIT` (200) and `_MAX_PAGES`. | Verified |
+| The site identifier is `id` on the Integration API and `name` or `_id` on the legacy API. | Unverified (backlog) |
+| `_as_epoch` accepts an epoch in seconds or milliseconds (a 13-digit value above 10,000,000,000 is milliseconds) or an ISO string. | Verified (code) |
+| The Integration client object exposes IPv6 as a list (`ipv6Addresses`); other shapes use a single string. | Unverified (backlog) |
+| Byte counters are nested under `statistics` (and a device's under `statistics.uplink`). | Unverified (backlog) |
+| A wireless client carries either the SSID name directly or a reference to a WiFi broadcast whose name lives in `/wifi/broadcasts`. | Unverified (backlog) |
+| VLAN is a first-class field on some firmwares (`vlan`, `vlanId`, `networkVlanId`, `vlan_id`), nested under `access` on others, and otherwise derivable only from the network. | Unverified (backlog) |
+| Client uptime is an explicit seconds field if present (`uptime`, `uptimeSeconds`, `uptime_seconds`), otherwise derived from `connectedAt`, which is what the Integration API returns for a client. | Verified for `connectedAt` |
+| Firmware-updatable is a boolean on the device detail object (`firmwareUpdatable`, `updateAvailable`, `update_available`). | Unverified (backlog) |
+| A gateway's `interfaces` may be a dict (`interfaces.wan` / `interfaces.ports`) or a list; the WAN-port or uplink shape is the single most uncertain mapping. | Unverified (backlog) |
+| `/devices/{id}` supplies configuration and detail fields and `/devices/{id}/statistics/latest` supplies heartbeat, utilization, uptime, and uplink rates; each request is independent and non-fatal, and detail values win over list values. | Verified |
+
+### ACL rule schema (Network 10.4.57 OpenAPI)
+
+| Fact | Verified |
+| --- | --- |
+| Each rule has `type` (IPV4 or MAC), `action` (ALLOW or BLOCK), `index`, and `metadata.origin` (USER_DEFINED for a rule the owner created, SYSTEM_DEFINED for a UniFi default, DERIVED for one the controller generated), surfaced as `custom`. | Verified |
+| IPV4 rules only carry a top-level `protocolFilter` restricted to TCP and UDP. | Verified |
+| `sourceFilter` and `destinationFilter` form a discriminated union on `type`. IPV4 rules use an "IP ACL rule endpoint": IP_ADDRESSES_OR_SUBNETS (`ipAddressesOrSubnets` plus `portFilter`), NETWORKS (`networkIds` plus `portFilter`), or PORTS (`portFilter` only). MAC rules use a "MAC ACL rule endpoint": MAC_ADDRESSES (`macAddresses` plus `prefixLength`). | Verified |
+| A MAC rule carries no network in either filter; its scope comes from the rule-level `networkIdFilter` (one network per MAC rule), which `_normalize_acl_rule` resolves into the same `networks` list an IPV4 rule's filters populate. | Verified |
+| Every ACL `portFilter` is a plain array of ints (1 to 65535), never a range or a string; `_port_list` still tolerates a string port or a `start-end` range defensively. | Verified |
+| A filter that is not a dict (absent, or a legacy flat string) normalizes to an empty-but-shaped record. `_resolve_network_refs` maps id, name, or object references through the network map (id to "Name (VLAN x)"), falls back to the stringified reference, dedupes, and preserves order. | Verified (code) |
+
+### Firewall Policy schema
+
+| Fact | Verified |
+| --- | --- |
+| `action` is a typed ALLOW, BLOCK, or REJECT object; `index`; `ipProtocolScope` carries `ipVersion` (IPV4, IPV6, IPV4_AND_IPV6) and `protocolFilter`, which discriminates on NAMED_PROTOCOL (AH, DCCP, TCP, UDP, ICMP, and so on) or PRESET (TCP_UDP), with `name` the readable protocol string in either case (None means all protocols); `connectionStateFilter`; `loggingEnabled`; `schedule` (None means always active); `metadata.origin` surfaced as `custom`. | Verified |
+| `source` and `destination` each carry a required `zoneId` plus an optional `trafficFilter`. | Verified |
+| `allowReturnTraffic` is ALLOW-only and required whenever the action is ALLOW: whether UniFi auto-creates a derived policy on the mirrored zone pair, the reason a list often shows paired "X" and "X (Return)" entries; None for BLOCK and REJECT. | Verified (live controller response) |
+| A port-matching entry is PORT_NUMBER or PORT_NUMBER_RANGE and is kept as a string because it can genuinely be a range. A port filter has the same shape standalone or nested inside a NETWORK, IP_ADDRESS, or similar filter: type PORTS carries explicit items; type TRAFFIC_MATCHING_LIST references a saved list the project does not resolve by name. | Verified |
+| The primary MAC_ADDRESS filter carries `macAddresses` as a list, while a NETWORK, IP_ADDRESS, or IPV6_IID source filter may carry an extra single-MAC constraint object. | Verified |
+| REGION, VPN_SERVER, SITE_TO_SITE_VPN_TUNNEL, and IPV6_IID nested field names. | Unverified (surfaced by type only) |
+| `_fetch_firewall_zones` returns `[{id, name, networks}]`; `_port_in_dest_list` handles ACL ints and policy strings that may be a single number or a range. | Verified (code) |
+
+### Protect 7.2.105
+
+| Fact | Verified |
+| --- | --- |
+| `/cameras` is an unpaginated JSON array; Network-style offset/limit parameters must not be appended. | Verified |
+| Events are exposed only as the WebSocket subscription `GET /subscribe/events`; there is no historical REST `/events`, `/detections`, or `/alarms`, so the snapshot makes no undocumented calls and `events_error` explains that while the loaded core unifiprotect integration supplies its in-memory buffer. | Verified |
+| `isRecording` is a boolean on some firmwares and `recordingSettings.mode` ("always", "detections", "never") on others; each channel typically carries a name and/or width and height. | Unverified (backlog) |
+| `licensePlate` can be a bare string or nested under `metadata`. The console deep link for a device is `{origin}/protect/dashboard/devices/{id}`. | Verified (code) |
+
+### Client hardening
+
+Redirects are never followed (a 3xx is an error, so `X-API-KEY` can never be carried to a redirect target; aiohttp strips only Authorization-family headers on cross-origin redirects), bodies are capped at 8 MB by both declared Content-Length and actual read, the whole Network overview runs under one 60-second budget (`_OVERVIEW_TIMEOUT_SECONDS`), and the configured host must be plain http or https with no userinfo (`_validate_host`) (work plan item 4.11). The Probe add-on's decoding of `/proc/net/tcp[6]` is the source of the HA server's own LAN IPs used by `_server_ip_addresses`.

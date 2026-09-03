@@ -1,11 +1,6 @@
 import { css } from "lit";
 
-/**
- * Shared styles built entirely on Home Assistant's own CSS custom
- * properties (--primary-color, --card-background-color, etc.) so the panel
- * automatically follows the user's light/dark mode and custom theme instead
- * of shipping its own palette.
- */
+/** Shared styles built on Home Assistant's own CSS custom properties so the panel follows the user's theme. */
 export const sharedStyles = css`
   :host {
     display: block;
