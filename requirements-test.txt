@@ -4,7 +4,7 @@
 # that core's package_constraints.txt (bump both together, work plan
 # section 7). Kept as its own file (rather than inline in the workflow) so
 # Dependabot's pip ecosystem can open update PRs for it.
-pytest-homeassistant-custom-component==0.13.316
+pytest-homeassistant-custom-component==0.13.361
 home-assistant-frontend==20260128.6
 aiousbwatcher
 pyserial
