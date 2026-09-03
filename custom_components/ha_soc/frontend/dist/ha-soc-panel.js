@@ -4804,7 +4804,15 @@ ${t.exception}</pre
             <span class="brand-context">Protected detail workspace</span>
           </span>
         </div>
-        <span class="access-indicator">${this._access.is_owner?"Owner access":"Administrator access"}</span>
+        <span
+          class="access-indicator"
+          title=${this._access.is_owner?"Owner access":"Administrator access"}
+          aria-label=${this._access.is_owner?"Owner access":"Administrator access"}
+        >
+          <span class="access-indicator-label"
+            >${this._access.is_owner?"Owner access":"Administrator access"}</span
+          >
+        </span>
         ${"settings"===this._tab?B``:B`
               <button
                 type="button"
@@ -5041,7 +5049,7 @@ ${t.exception}</pre
     :host([narrow]) .header {
       padding-top: 12px;
     }
-    :host([narrow]) .access-indicator {
+    :host([narrow]) .access-indicator .access-indicator-label {
       display: none;
     }
     :host([narrow]) .brand-title {

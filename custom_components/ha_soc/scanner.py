@@ -369,23 +369,10 @@ def _rule_sensitive_data_logged(tree: ast.AST, lines: list[str]) -> list[dict[st
 
 
 # -- Cross-integration extraction rules (work plan item SEC-5) ---------------
-# Home Assistant has no process isolation between integrations: any
-# integration can enumerate every config entry, open any file the Core
-# process can read, and reach into any other integration's hass.data. The
-# four rules below flag the extraction patterns that boundary-lessness
-# enables. Like every other rule in this module they are advisory pattern
-# matches, never verdicts.
-#
-# All four rules only see what is statically visible in one file's AST. A
-# target held in a variable, a constant imported from another module, an
-# f-string, or a subclass wrapper is invisible to them, and each rule's
-# docstring names that evasion avenue. They also honor a scoped, visible
-# acknowledgment marker (see _apply_allow_marker) so a deliberate,
-# documented cross-integration read can be recorded as acknowledged in the
-# findings table instead of ringing as an open alarm forever. HA SOC's own
-# code must pass all four rules with zero open findings (SEC-4/SEC-5), and
-# nothing here special-cases the ha_soc domain string: the rules' precise
-# definitions are what its legitimate reads pass through.
+# Advisory AST pattern matches, never verdicts, for the extraction patterns
+# HA's lack of inter-integration process isolation enables. Design
+# rationale, static-analysis limits, and the acknowledgment-marker escape
+# hatch are in docs/THREAT-MODEL.md ("Cross-integration extraction rules").
 
 # Both enumeration surfaces on hass.config_entries return other
 # integrations' ConfigEntry objects, so rule (a) watches both.

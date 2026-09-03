@@ -232,21 +232,10 @@ GRADE_D_MIN = 60
 POSTURE_HISTORY_MAX_DAYS = 90
 
 # -- Provisional posture (work item 3.4, decision D-10) --------------------
-# The five posture terms, and what counts as evidence each has computed
-# from real data at least once ever:
-# - p_user: computed live from the auth store on every posture pass, so
-#   it is stamped the first time posture computes at all.
-# - p_detection: the detection engine has completed at least one pass
-#   (detections.py writes detections_meta.last_pass_completed_at).
-# - p_vuln / p_misconfig / p_integration: the backing store table has held
-#   at least one record while posture computed, OR (for p_vuln) a manual
-#   scan completed (websocket_api stamps it directly). HONESTY CAVEAT: a
-#   source that ran and found literally nothing is indistinguishable from
-#   one that never ran using only the store, so such a term stays listed
-#   as missing and the badge stays up - the conservative direction. In
-#   practice health.py writes one integration_health record per config
-#   entry on its first sweep and an inventory INFO finding for any cloud
-#   integration, so on a real install these terms stamp within minutes.
+# Five posture terms, each stamped only on real evidence it has computed at
+# least once; the honesty caveat (a term that ran and found nothing looks
+# identical to one that never ran) and per-term evidence rules are in
+# docs/HA-SOC-Security-Work-Plan.md, item 3.4.
 POSTURE_TERM_USER = "p_user"
 POSTURE_TERM_VULN = "p_vuln"
 POSTURE_TERM_MISCONFIG = "p_misconfig"

@@ -94,6 +94,13 @@ NVD_TIMEOUT_SECONDS = 15
 # headroom rather than cutting it exactly to the published limit.
 NVD_DELAY_NO_KEY = 6
 NVD_DELAY_WITH_KEY = 0.7
+# A 429 means NVD is actively telling us to slow down, which is different
+# from a generic transient failure: one bounded retry (honoring its
+# Retry-After header when present) recovers the common case of a scan
+# racing another consumer of the same key/IP, without turning a single
+# rate-limited page into an unbounded stall.
+NVD_MAX_RATE_LIMIT_RETRIES = 1
+NVD_RATE_LIMIT_FALLBACK_DELAY = NVD_DELAY_NO_KEY * 2
 
 # Re-fetch the same match_string at most once per this window. Backed by an
 # in-memory dict on the tracker instance rather than anything persisted: a
@@ -217,6 +224,17 @@ def _severity_for_score(score: float | None) -> str:
     if score >= 4.0:
         return SEVERITY_MEDIUM
     return SEVERITY_LOW
+
+
+def _parse_retry_after(value: str | None, default: float) -> float:
+    """Parse an HTTP Retry-After header's seconds form (NVD sends seconds,
+    not the HTTP-date form, so that's the only form handled here)."""
+    if value is None:
+        return default
+    try:
+        return max(float(value), 0.0)
+    except ValueError:
+        return default
 
 
 def _cve_description(cve: dict[str, Any]) -> str:
@@ -568,18 +586,42 @@ class DeviceVulnerabilityTracker:
                 "resultsPerPage": str(NVD_RESULTS_PER_PAGE),
                 "startIndex": str(start_index),
             }
-            try:
-                async with asyncio.timeout(NVD_TIMEOUT_SECONDS):
-                    async with session.get(
-                        NVD_API_URL, params=params, headers=headers
-                    ) as response:
-                        response.raise_for_status()
-                        data = await response.json()
-            except (aiohttp.ClientError, asyncio.TimeoutError) as err:
-                _LOGGER.warning(
-                    "NVD query failed for %s=%s: %s", query_param, match_string, err
-                )
-                return collected if collected else None
+            for attempt in range(NVD_MAX_RATE_LIMIT_RETRIES + 1):
+                try:
+                    async with asyncio.timeout(NVD_TIMEOUT_SECONDS):
+                        async with session.get(
+                            NVD_API_URL, params=params, headers=headers
+                        ) as response:
+                            if response.status == 429:
+                                if attempt < NVD_MAX_RATE_LIMIT_RETRIES:
+                                    wait = _parse_retry_after(
+                                        response.headers.get("Retry-After"),
+                                        NVD_RATE_LIMIT_FALLBACK_DELAY,
+                                    )
+                                    _LOGGER.debug(
+                                        "NVD rate limit (429) for %s=%s; retrying in %ss",
+                                        query_param, match_string, wait,
+                                    )
+                                    await asyncio.sleep(wait)
+                                    continue
+                                # Retries exhausted while NVD kept returning
+                                # 429: stop honestly with whatever pages were
+                                # already collected rather than looping
+                                # indefinitely against a live limiter, and
+                                # never attempt to parse a 429's body.
+                                _LOGGER.warning(
+                                    "NVD rate limit persisted for %s=%s after retrying",
+                                    query_param, match_string,
+                                )
+                                return collected if collected else None
+                            response.raise_for_status()
+                            data = await response.json()
+                            break
+                except (aiohttp.ClientError, asyncio.TimeoutError) as err:
+                    _LOGGER.warning(
+                        "NVD query failed for %s=%s: %s", query_param, match_string, err
+                    )
+                    return collected if collected else None
 
             batch = data.get("vulnerabilities", [])
             collected.extend(batch)

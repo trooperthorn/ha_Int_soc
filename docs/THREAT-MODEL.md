@@ -23,6 +23,43 @@ NVD/GitHub; and HA to the SIEM.
 | Dependency or CI compromise | shipped vulnerable code | lockfile, pinned Actions, CodeQL, npm audit, Bandit, ShellCheck, Dependabot, owner review | enable vulnerability alerts; add signed releases/SBOM/provenance |
 | Availability attack or response amplification | HA/SIEM degradation | time/body/fan-out/queue bounds, cancellation-safe lifecycle, rate-conscious polling | load/failure drills and monitoring |
 
+## Mechanism notes
+
+### Cross-integration extraction rules (work plan item SEC-5)
+
+Home Assistant has no process isolation between integrations: any
+integration can enumerate every config entry, open any file the Core
+process can read, and reach into any other integration's `hass.data`. The
+static scanner's extraction rules (`scanner.py`) flag the patterns that
+boundary-lessness enables, feeding the "Malicious integration in shared HA
+process" row above.
+
+All four rules only see what is statically visible in one file's AST. A
+target held in a variable, a constant imported from another module, an
+f-string, or a subclass wrapper is invisible to them, and each rule's
+docstring names that evasion avenue. They honor a scoped, visible
+acknowledgment marker (`scanner.py::_apply_allow_marker`) so a deliberate,
+documented cross-integration read can be recorded as acknowledged in the
+findings table instead of ringing as an open alarm forever. HA SOC's own
+code must pass all four rules with zero open findings (SEC-4/SEC-5), and
+nothing in the rules special-cases the `ha_soc` domain string: the rules'
+precise definitions are what its legitimate reads pass through.
+
+### Firewall control access gating (decision D-4)
+
+`websocket_api.py`'s firewall command handlers read AND write host
+`iptables` state via the optional HA SOC Probe add-on's `NET_ADMIN`
+capability. See `firewall.py`'s module docstring for the full
+test/confirm/revert safety design; every mutating command is audit-logged
+since this is the one control in the project that actually changes a host
+security setting rather than just reporting on one.
+
+The entire feature is owner-only, status included, regardless of
+`access_level`: a firewall change can end with the platform unreachable and
+is therefore a takeover primitive, and even the read-only status maps the
+attack surface. The panel hides the card from non-owner admins for the same
+reason; the server-side gate is what actually enforces it.
+
 ## Assumptions
 
 The HA owner account and host OS/Supervisor are trusted, local DNS/routing are
