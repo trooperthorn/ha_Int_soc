@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-SCANNER_VERSION="2026.09.02.4"
+SCANNER_VERSION="2026.09.03.1"
 
 CORE_SERVICE_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
 
