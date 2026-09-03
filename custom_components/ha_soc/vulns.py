@@ -592,20 +592,28 @@ class DeviceVulnerabilityTracker:
                         async with session.get(
                             NVD_API_URL, params=params, headers=headers
                         ) as response:
-                            if (
-                                response.status == 429
-                                and attempt < NVD_MAX_RATE_LIMIT_RETRIES
-                            ):
-                                wait = _parse_retry_after(
-                                    response.headers.get("Retry-After"),
-                                    NVD_RATE_LIMIT_FALLBACK_DELAY,
+                            if response.status == 429:
+                                if attempt < NVD_MAX_RATE_LIMIT_RETRIES:
+                                    wait = _parse_retry_after(
+                                        response.headers.get("Retry-After"),
+                                        NVD_RATE_LIMIT_FALLBACK_DELAY,
+                                    )
+                                    _LOGGER.debug(
+                                        "NVD rate limit (429) for %s=%s; retrying in %ss",
+                                        query_param, match_string, wait,
+                                    )
+                                    await asyncio.sleep(wait)
+                                    continue
+                                # Retries exhausted while NVD kept returning
+                                # 429: stop honestly with whatever pages were
+                                # already collected rather than looping
+                                # indefinitely against a live limiter, and
+                                # never attempt to parse a 429's body.
+                                _LOGGER.warning(
+                                    "NVD rate limit persisted for %s=%s after retrying",
+                                    query_param, match_string,
                                 )
-                                _LOGGER.debug(
-                                    "NVD rate limit (429) for %s=%s; retrying in %ss",
-                                    query_param, match_string, wait,
-                                )
-                                await asyncio.sleep(wait)
-                                continue
+                                return collected if collected else None
                             response.raise_for_status()
                             data = await response.json()
                             break
@@ -614,15 +622,6 @@ class DeviceVulnerabilityTracker:
                         "NVD query failed for %s=%s: %s", query_param, match_string, err
                     )
                     return collected if collected else None
-            else:
-                # Retries exhausted while NVD kept returning 429: stop
-                # honestly with whatever pages were already collected
-                # rather than looping indefinitely against a live limiter.
-                _LOGGER.warning(
-                    "NVD rate limit persisted for %s=%s after retrying",
-                    query_param, match_string,
-                )
-                return collected if collected else None
 
             batch = data.get("vulnerabilities", [])
             collected.extend(batch)
