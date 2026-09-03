@@ -580,6 +580,8 @@ Acceptance: each parameter is changeable from Settings within its range, rejecte
 
 Tests: `test_thresholds_defaults_are_secure` (asserts the table above), `test_thresholds_range_validation`, `test_thresholds_change_is_audited`, `test_reset_to_secure_defaults`, plus each rule's own test reads a non-default value and observes the change.
 
+Implementation note: `THRESHOLD_SPECS` (the table's shipped form) is kept module-level in `detections.py` rather than in `const.py`, on purpose — `const.py`'s own docstring says module-local constants live next to the code that uses them, and only `detections.py` and `risk.py` read this table. `websocket_api.py` derives the voluptuous validation schema and the Settings tab's rendered ranges from it directly, so a value can never be stored outside its range and the UI can never drift from what the server enforces.
+
 #### 3.1  Address-family-aware prefixes  (DET-1, High, D-9 recorded)
 
 `detections.py::_network_prefix`: uses `ipv4_prefix` and `ipv6_prefix` from item 3.0 (secure defaults 24 and 64). Test: `test_network_prefix_ipv6` asserts two unrelated global IPv6 addresses yield different prefixes and that two addresses in one `/64` yield the same one.
@@ -595,6 +597,10 @@ One detection per `(user, category)` per pass (bucket by pass, not by event hour
 #### 3.4  Provisional posture  (DET-3, Medium, Decision D-10 safe default)
 
 `risk.py`: each term records `computed_at`; `async_compute_posture` returns `provisional: True` and `missing_terms: [...]` until every term has computed at least once; the dashboard tile shows the badge and the list. Test: `test_posture_provisional_until_complete`.
+
+The five posture terms, and what counts as evidence each has computed from real data at least once: `p_user` is computed live from the auth store on every posture pass, so it is stamped the first time posture computes at all. `p_detection` requires the detection engine to have completed at least one pass (`detections.py` writes `detections_meta.last_pass_completed_at`). `p_vuln`, `p_misconfig`, and `p_integration` require the backing store table to have held at least one record while posture computed, or (for `p_vuln`) a manual scan to have completed (`websocket_api.py` stamps it directly).
+
+Honesty caveat: a source that ran and found literally nothing is indistinguishable from one that never ran, using only the store, so such a term stays listed as missing and the badge stays up. That is the conservative direction. In practice `health.py` writes one `integration_health` record per config entry on its first sweep and an inventory INFO finding for any cloud integration, so on a real install these terms stamp within minutes.
 
 #### 3.5  Reachable `never_logged_in`, reconciled factors, live learning period  (DET-3)
 

@@ -72,17 +72,9 @@ async def async_fault_log_overview(hass: HomeAssistant) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Container (add-on / Core / Supervisor / host) logs, via Supervisor.
-#
-# Neither aiohasupervisor 0.3.x nor the HassIO handler exposes a dedicated
-# log method, but Supervisor's journald gateway serves plain-text logs at
-# fixed paths (addons/<slug>/logs, core/logs, supervisor/logs, host/logs).
-# We call them through the hassio component's own send_command with
-# return_text=True, the same transport core's proxy view forwards for its
-# frontend. Two constraints of that route, handled here rather than
-# surprising the panel: no Range header is possible (so no server-side line
-# count, we tail-cap the text after fetch), and journald colors its output
-# (ANSI SGR escapes are stripped before returning).
+# Container (add-on / Core / Supervisor / host) logs, via Supervisor's
+# journald gateway. Transport choice and its two quirks (no Range header,
+# ANSI stripping) are in docs/OPERATIONS-NOTES.md.
 # ---------------------------------------------------------------------------
 
 _ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")

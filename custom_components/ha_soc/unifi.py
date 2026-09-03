@@ -1094,20 +1094,10 @@ async def _fetch_acl_rules(
 
 
 # ---------------------------------------------------------------------------
-# Firewall Policies — UniFi's zone-based default allow/deny UI (Settings ->
-# Security -> Create Policy), a genuinely separate resource from ACL Rules
-# above, not another name for the same thing. Confirmed real (not probed
-# like the ACL candidates): a live controller returned
-# {"offset":0,"limit":25,"count":0,"totalCount":0,"data":[]} for
-# GET /sites/{siteId}/acl-rules on an install whose actual rules turned out
-# to live under Firewall Policies instead — the two coexist, and an honest
-# security audit reads both. Schema verified against the community-
-# maintained OpenAPI extraction for this controller version
-# (github.com/beezly/unifi-apis), parsed directly rather than through a
-# lossy summarizer, since developer.ui.com itself is unreachable from every
-# environment this project has been built in. Confirmed real paths:
-#   GET /sites/{siteId}/firewall/zones     (id, name, networkIds)
-#   GET /sites/{siteId}/firewall/policies  (the rules)
+# Firewall Policies — a genuinely separate resource from ACL Rules above,
+# not another name for the same thing; both are read since either can hold
+# the controller's actual rules. Endpoint confirmation and sourcing are in
+# docs/UNIFI-LOCAL-API-CONTRACT.md ("Firewall Policies vs. ACL Rules").
 # ---------------------------------------------------------------------------
 
 

@@ -30,16 +30,18 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.13"
-      # The harness pin brings Home Assistant core 2026.2.3, and the
-      # home-assistant-frontend pin must match the version in that core's
-      # package_constraints.txt. When the harness is bumped, read the new
-      # constraint and bump the frontend pin in the same change (work plan
-      # section 7). Per decision D-16's safe default, CI tests only this
-      # pinned latest version until a minimum-version job is decided.
+          cache: pip
+          cache-dependency-path: requirements-test.txt
+      # Pins live in requirements-test.txt (not inline here) so Dependabot's
+      # pip ecosystem can open update PRs for them. The harness pin brings
+      # Home Assistant core 2026.2.3, and the home-assistant-frontend pin
+      # must match the version in that core's package_constraints.txt. When
+      # the harness is bumped, read the new constraint and bump the frontend
+      # pin in the same change (work plan section 7). Per decision D-16's
+      # safe default, CI tests only this pinned latest version until a
+      # minimum-version job is decided.
       - name: Install the test harness
-        run: >
-          pip install "pytest-homeassistant-custom-component==0.13.316"
-          "home-assistant-frontend==20260128.6" aiousbwatcher pyserial pyudev
+        run: pip install -r requirements-test.txt
       - name: Run the suite
         run: pytest tests/ -q
 

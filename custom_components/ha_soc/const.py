@@ -338,20 +338,10 @@ FIREWALL_TEST_DISCARDED_UNREPORTED = "discarded_unreported"
 DEFAULT_FIREWALL_TEST_WINDOW_SECONDS = 45
 
 # -- Container Resource Watchdog ------------------------------------------
-# Supervisor exposes NO API to cap an add-on's CPU/memory (verified against
-# aiohasupervisor's full AddonsClient surface), so "make sure no container
-# runs away" is built from what IS supported plus an explicit opt-in
-# escape hatch:
-#   * the watchdog samples per-container stats, and on a SUSTAINED breach
-#     of its threshold takes a per-container action — alert, restart, or
-#     stop — via the real Supervisor API (restart/stop only ever for
-#     add-ons, never Core or the Supervisor themselves);
-#   * hard caps (real Docker --memory/--cpus) are delivered to the Probe
-#     add-on over the existing poll channel and applied against the Docker
-#     socket — which requires the Probe's Protection Mode to be DISABLED,
-#     a root-equivalent grant the UI spells out before anything is applied,
-#     and which must be re-applied whenever Supervisor recreates a
-#     container (the add-on re-applies on a timer for exactly that reason).
+# Sustained per-container breaches trigger alert/restart/stop; hard Docker
+# caps are a separate opt-in path through the Probe. Full design (why
+# Supervisor's API can't do this alone, the Protection Mode tradeoff, and
+# the recreate-reapply requirement) is in docs/RESOURCE-WATCHDOG.md.
 WATCHDOG_ACTION_ALERT = "alert"
 WATCHDOG_ACTION_RESTART = "restart"
 WATCHDOG_ACTION_STOP = "stop"

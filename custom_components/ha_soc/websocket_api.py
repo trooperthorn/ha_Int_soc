@@ -1493,19 +1493,10 @@ async def ws_security_health_list(hass: HomeAssistant, connection, msg: dict) ->
 
 
 # ----------------------------------------------------------------------------
-# Firewall rules — read AND write host iptables state via the optional
-# HA SOC Probe add-on's NET_ADMIN capability. See firewall.py's module
-# docstring for the full test/confirm/revert safety design; every mutating
-# command here is audit-logged since this is the one control in the project
-# that actually changes a host security setting rather than just reporting
-# on one.
-#
-# The ENTIRE feature is owner-only, status included (decision D-4),
-# regardless of access_level: a firewall change can end with the platform
-# unreachable and is therefore a takeover primitive, and even the read-only
-# status maps the attack surface. The panel hides the card from non-owner
-# admins for the same reason; this gate is the one that actually enforces
-# it.
+# Firewall rules — read AND write host iptables state via the Probe add-on.
+# Owner-only end to end, status included (decision D-4): full rationale in
+# docs/THREAT-MODEL.md ("Firewall control access gating"). See firewall.py's
+# module docstring for the test/confirm/revert safety design.
 # ----------------------------------------------------------------------------
 
 

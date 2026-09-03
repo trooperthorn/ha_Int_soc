@@ -45,3 +45,23 @@ event source and otherwise shows an explicit limitation.
 Contract regression tests fail if the versioned bases drift, guessed event
 routes return, or the required statistics/subscription paths disappear.
 
+### Firewall Policies vs. ACL Rules
+
+These are two genuinely separate resources, not two names for the same
+thing. `GET /sites/{siteId}/acl-rules` is real and probed, but a live
+controller returned `{"offset":0,"limit":25,"count":0,"totalCount":0,"data":[]}`
+for it on an install whose actual rules turned out to live under Firewall
+Policies instead (Settings -> Security -> Create Policy in the UniFi UI,
+UniFi's newer zone-based default allow/deny model). An honest security
+audit reads both.
+
+Confirmed real paths:
+
+- `GET /sites/{siteId}/firewall/zones` (`id`, `name`, `networkIds`)
+- `GET /sites/{siteId}/firewall/policies` (the rules)
+
+Schema verified against the community-maintained OpenAPI extraction for
+this controller version (github.com/beezly/unifi-apis), parsed directly
+rather than through a lossy summarizer, since developer.ui.com itself is
+unreachable from every environment this project has been built in.
+
