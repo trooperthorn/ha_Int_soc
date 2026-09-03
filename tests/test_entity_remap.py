@@ -10,14 +10,34 @@ import stat
 import time
 from types import SimpleNamespace
 
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
+from datetime import timedelta
+
+import pytest
+from pytest_homeassistant_custom_component.common import (
+    MockConfigEntry,
+    async_capture_events,
+    async_fire_time_changed,
+)
 
 from homeassistant.const import EVENT_CALL_SERVICE
 from homeassistant.core import HomeAssistant
 from homeassistant.setup import async_setup_component
+import homeassistant.util.dt as dt_util
 import homeassistant.util.yaml as ha_yaml
 
 from custom_components.ha_soc import entity_remap as remap
+
+
+@pytest.fixture(autouse=True)
+async def _flush_delayed_store_writes(hass: HomeAssistant):
+    """Fire the config-entry store's delayed save before teardown.
+
+    Updating an entry schedules a delayed Store write; when the test ends
+    first, the harness reports it as a lingering timer.
+    """
+    yield
+    async_fire_time_changed(hass, dt_util.utcnow() + timedelta(seconds=5))
+    await hass.async_block_till_done()
 
 
 def test_exact_replace_scalar():
