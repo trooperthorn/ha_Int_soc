@@ -357,7 +357,15 @@ async def test_remap_backs_up_dashboard_and_helper(hass: HomeAssistant) -> None:
         {"views": [{"cards": [{"type": "entities", "entities": ["sensor.old_name"]}]}]},
     )
     hass.data[LOVELACE_DATA] = SimpleNamespace(dashboards={None: storage_config})
-    entry = MockConfigEntry(domain="derivative", title="My Derivative", options={"source": "sensor.old_name"})
+    # A complete option set, so the reload core triggers on the options
+    # update sets up cleanly instead of leaving a delayed store write.
+    derivative_options = {
+        "source": "sensor.old_name",
+        "round": 2,
+        "time_window": {"hours": 0, "minutes": 0, "seconds": 0},
+        "unit_time": "h",
+    }
+    entry = MockConfigEntry(domain="derivative", title="My Derivative", options=derivative_options)
     entry.add_to_hass(hass)
 
     # A stale backup from an earlier run is pruned at the start of the apply.
@@ -394,7 +402,7 @@ async def test_remap_backs_up_dashboard_and_helper(hass: HomeAssistant) -> None:
     with open(helper_backup, encoding="utf-8") as file:
         snapshot = json.load(file)
     assert snapshot["entry_id"] == entry.entry_id
-    assert snapshot["options"] == {"source": "sensor.old_name"}
+    assert snapshot["options"] == derivative_options
 
     # The live objects really did move on while the backups kept the past.
     assert storage_config.saved["views"][0]["cards"][0]["entities"] == ["sensor.new_name"]
