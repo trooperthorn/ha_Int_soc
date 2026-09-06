@@ -147,6 +147,12 @@ Every failure returns `(False, error_reason)` with a stable string (listed in `p
 
 If `frontend/dist/ha-soc-panel.js` is missing, panel registration is skipped with a warning; build `frontend/` first (see frontend/README.md).
 
+The panel is one JavaScript module. `panel.py` registers it with a module URL that ends in `?v=<token>`, where the token is the first sixteen hex characters of the bundle's SHA-256, and serves the file with caching disabled, so every new bundle has a new URL. The same token is passed to the frontend as `panel.config.bundle_token`.
+
+Updating the panel still needs a browser reload, and no server-side action can avoid it: Home Assistant's frontend is a single-page application, and once the old module has defined the `ha-soc-panel` element the browser cannot replace that definition until the page is reloaded. The panel therefore detects the situation itself: it reads the `?v=` token from `import.meta.url` (the URL its own code was loaded from) and compares it with `panel.config.bundle_token`; when they differ it shows a banner with a Reload button above the header. The banner appears after a Core restart on a new release, and after Reconfigure when a new bundle is on disk.
+
+The Configure dialog (Settings, Devices and services, HA SOC, Configure) holds no settings. Submitting it reloads the config entry, which re-registers the panel with the bundle currently on disk and refreshes the token. That is the tool to use when the bundle changed without a Core restart, for example during frontend development; a HACS update still needs the Core restart for its Python code. Removing and re-adding the integration is never required for a panel update.
+
 ## Probe add-on
 
 ### Privileges and options (config.yaml)

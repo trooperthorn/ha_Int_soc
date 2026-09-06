@@ -47,7 +47,7 @@ const STATUS_TILES: { key: DeviceStatus; label: string }[] = [
   { key: "partial", label: "Partial" },
   { key: "unavailable", label: "Unavailable" },
   { key: "disabled", label: "Disabled" },
-  { key: "no_entities", label: "No Entities" },
+  { key: "no_entities", label: "No entities" },
 ];
 
 const SEVERITY_ORDER: (keyof DeviceOverviewRow["severity_counts"])[] = [
@@ -82,6 +82,28 @@ const ISSUE_STATUS: Record<IntegrationIssueCategory, { label: string; colorVar: 
 const ISSUE_CATEGORY_RANK: Record<IntegrationIssueCategory, number> = Object.fromEntries(
   Object.keys(ISSUE_CATEGORY_LABELS).map((key, i) => [key, i])
 ) as Record<IntegrationIssueCategory, number>;
+
+// Priority queue pill tint per detection severity; info and unknown fall back to the neutral pill.
+const SEVERITY_PILL: Record<string, string> = {
+  critical: "critical",
+  high: "serious",
+  medium: "warning",
+};
+
+const capitalize = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
+
+/** Coarse age for the priority queue; the cell's title carries the exact timestamp. */
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  if (!Number.isFinite(ms)) return iso;
+  const minutes = Math.round(ms / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  return `${days} day${days === 1 ? "" : "s"} ago`;
+}
 
 const DEVICE_PAGE_SIZE_OPTIONS: (number | "all")[] = [10, 20, 50, 100, "all"];
 const INTEGRATION_PAGE_SIZE_OPTIONS: (number | "all")[] = [10, 20, 50, 100, "all"];
@@ -178,8 +200,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       .overview-kpi {
         appearance: none;
         min-width: 0;
-        min-height: 126px;
-        padding: 16px;
+        padding: 16px 18px 14px;
         border: 1px solid var(--soc-border);
         border-radius: var(--soc-card-radius);
         background: var(--soc-surface);
@@ -188,7 +209,11 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         text-align: left;
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
+      }
+      .overview-kpi-label {
+        color: var(--secondary-text-color);
+        font-size: 13px;
+        line-height: 1.3;
       }
       button.overview-kpi {
         cursor: pointer;
@@ -200,16 +225,51 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       }
       .overview-kpi-value {
         display: block;
-        margin: 10px 0 4px;
-        font-size: 34px;
-        font-weight: 720;
+        margin: 8px 0 6px;
+        font-size: 32px;
+        font-weight: 700;
         line-height: 1;
+        letter-spacing: -0.02em;
         font-variant-numeric: tabular-nums;
       }
       .overview-kpi-context {
         color: var(--secondary-text-color);
-        font-size: 11.5px;
+        font-size: 12.5px;
         line-height: 1.35;
+      }
+      .state-pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 4px 10px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.2;
+        white-space: nowrap;
+        background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.07);
+        color: var(--primary-text-color);
+      }
+      .state-pill.good {
+        background: rgba(12, 163, 12, 0.14);
+        color: var(--status-good);
+      }
+      .state-pill.warning {
+        background: rgba(250, 178, 25, 0.18);
+        color: #9a6700;
+      }
+      :host(.dark) .state-pill.warning {
+        color: var(--status-warning);
+      }
+      .state-pill.serious {
+        background: rgba(236, 131, 90, 0.18);
+        color: #b4471c;
+      }
+      :host(.dark) .state-pill.serious {
+        color: var(--status-serious);
+      }
+      .state-pill.critical {
+        background: rgba(208, 59, 59, 0.14);
+        color: var(--status-critical);
       }
       .overview-visuals {
         display: grid;
@@ -265,15 +325,11 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         color: var(--secondary-text-color);
         font-size: 11px;
       }
-      .posture-grade-line {
-        font-size: 22px;
-        font-weight: 700;
-        margin-bottom: 8px;
-      }
       .posture-description {
         color: var(--secondary-text-color);
-        font-size: 12px;
+        font-size: 13px;
         line-height: 1.45;
+        margin: 10px 0 0;
       }
       .posture-trend {
         width: 100%;
@@ -470,6 +526,16 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       }
       .priority-table-wrap table {
         min-width: 680px;
+      }
+      .priority-table-wrap th {
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .priority-table-wrap td {
+        font-size: 13.5px;
+        vertical-align: middle;
       }
       .priority-actions {
         display: flex;
@@ -856,6 +922,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
         : scoreClass === "warning"
         ? "var(--status-warning)"
         : "var(--status-critical)";
+    const postureLabel = scoreClass === "good" ? "Healthy" : scoreClass === "warning" ? "Needs attention" : "At risk";
     const trend = this._postureTrendGeometry(summary.posture_history, posture.score);
     const trendDelta = `${trend.delta >= 0 ? "+" : ""}${trend.delta.toFixed(0)}`;
 
@@ -870,22 +937,22 @@ export class HaSocDashboardView extends HaSocCustomizableView {
 
       <div class="overview-kpis">
         <div class="overview-kpi">
-          <span class="metric-label">Posture score</span>
+          <span class="overview-kpi-label">Posture score</span>
           <span class="overview-kpi-value">${posture.score}</span>
           <span class="overview-kpi-context">Grade ${posture.grade}${posture.provisional ? " · provisional" : " · stable"}</span>
         </div>
         <button class="overview-kpi" type="button" @click=${() => this._goto("audit")}>
-          <span class="metric-label">Open detections</span>
+          <span class="overview-kpi-label">Open detections</span>
           <span class="overview-kpi-value" style="color:${openDetections.length ? "var(--status-critical)" : "inherit"}">${openDetections.length}</span>
           <span class="overview-kpi-context">${highPriorityDetections} high priority</span>
         </button>
         <button class="overview-kpi" type="button" @click=${() => this._goto("scanner")}>
-          <span class="metric-label">Critical / high findings</span>
+          <span class="overview-kpi-label">Critical / high findings</span>
           <span class="overview-kpi-value" style="color:${criticalHighFindings ? "var(--status-serious)" : "inherit"}">${criticalHighFindings.toLocaleString()}</span>
           <span class="overview-kpi-context">Across ${devices.devices.length.toLocaleString()} assets</span>
         </button>
         <div class="overview-kpi">
-          <span class="metric-label">Telemetry sources</span>
+          <span class="overview-kpi-label">Telemetry sources</span>
           <span class="overview-kpi-value">${enabledSources} / ${sourceTotal}</span>
           <span class="overview-kpi-context">${sourceTotal ? "Configured source categories" : "No source categories configured"}</span>
         </div>
@@ -928,10 +995,9 @@ export class HaSocDashboardView extends HaSocCustomizableView {
             <div class="posture-ring-value"><strong>${posture.score}</strong><span>of 100</span></div>
           </div>
           <div>
-            <div class="posture-grade-line">Grade ${posture.grade}</div>
             ${posture.provisional
-              ? html`<span class="tag cosmetic" title="Waiting on: ${missing.join(", ")}">provisional</span>`
-              : html`<span class="tag enforced">Healthy</span>`}
+              ? html`<span class="state-pill warning" title="Waiting on: ${missing.join(", ")}">Provisional</span>`
+              : html`<span class="state-pill ${scoreClass}">${postureLabel}</span>`}
             <p class="posture-description">
               ${trend.delta < 0
                 ? "Posture declined over the displayed period. Review the priority queue below."
@@ -968,7 +1034,7 @@ export class HaSocDashboardView extends HaSocCustomizableView {
       <div class="card trend-card overview-card">
         <div class="card-head">
           <div><h3>Posture trend</h3><div class="metric-context">${summary.posture_history.length ? "Thirty-day score history" : "History begins after the first completed posture calculation"}</div></div>
-          <span class="tag ${trend.delta >= 0 ? "enforced" : "cosmetic"}">${trendDelta}</span>
+          <span class="state-pill ${trend.delta >= 0 ? "good" : "critical"}">${trendDelta}</span>
         </div>
         <svg class="posture-trend" viewBox="0 0 560 142" role="img" aria-label="Posture score trend, ${trendDelta} points">
           <line class="grid-line" x1="12" y1="22" x2="548" y2="22"></line>
@@ -1000,11 +1066,13 @@ export class HaSocDashboardView extends HaSocCustomizableView {
                     ${openDetections.map(
                       (detection) => html`
                         <tr>
-                          <td><span class="pill ${detection.severity}"><span class="dot"></span>${detection.severity}</span></td>
+                          <td>
+                            <span class="state-pill ${SEVERITY_PILL[detection.severity] ?? ""}">${capitalize(detection.severity)}</span>
+                          </td>
                           <td>${detection.title}</td>
                           <td>${this._nameFor(detection.user_id)}</td>
                           <td>Open</td>
-                          <td>${new Date(detection.last_seen).toLocaleString()}</td>
+                          <td title=${new Date(detection.last_seen).toLocaleString()}>${relativeTime(detection.last_seen)}</td>
                           <td>
                             <span class="priority-actions">
                               <button class="ha-btn" @click=${() => this._onAck(detection.id)}>Ack</button>
@@ -1408,10 +1476,10 @@ export class HaSocDashboardView extends HaSocCustomizableView {
             <div class="metric-context">Locks, sirens, valves, and local peripherals</div>
           </div>
           ${sec.problem_count || sec.low_battery_count
-            ? html`<span class="tag" style="background:rgba(219,68,55,0.15);color:var(--error-color,#db4437);">
+            ? html`<span class="state-pill critical">
                 ${sec.problem_count} problem${sec.problem_count === 1 ? "" : "s"} · ${sec.low_battery_count} low battery
               </span>`
-            : html`<span class="tag enforced">all clear</span>`}
+            : html`<span class="state-pill good">All clear</span>`}
         </div>
         <div class="security-health-grid">
           ${Object.entries(SECURITY_ENTITY_DOMAIN_LABELS)

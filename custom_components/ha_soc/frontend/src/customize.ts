@@ -3,8 +3,9 @@ import { customElement, property } from "lit/decorators.js";
 
 /**
  * Shared "Customize" layout: per-user card order/visibility for every
- * card-based view in the panel. <ha-soc-customize-list> owns the reorder and
- * show-hide mechanics; see network-security-view.ts for the reference usage.
+ * card-based view in the panel. <ha-soc-customize-list> is the editor only
+ * (reorder and show-hide); the owning view renders the sections themselves
+ * through HaSocCustomizableView._renderSections.
  */
 
 export interface LayoutSection {
@@ -123,16 +124,12 @@ export class HaSocCustomizeList extends LitElement {
 
   @property({ attribute: false }) sections: LayoutSection[] = [];
   @property({ attribute: false }) layout: LayoutState = EMPTY_LAYOUT;
-  @property({ type: Boolean }) editMode = false;
 
   private _dragId: string | null = null;
 
   render() {
     const ordered = effectiveOrder(this.sections, this.layout);
     const hiddenSet = new Set(this.layout.hidden);
-    if (!this.editMode) {
-      return html`${ordered.filter((s) => !hiddenSet.has(s.id)).map((s) => s.render())}`;
-    }
     return html`
       <div class="customize-list">
         <p class="customize-hint">
