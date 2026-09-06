@@ -88,3 +88,15 @@ async def test_unrelated_static_route_failure_is_not_hidden(panel_mocks) -> None
 
     register_panel.assert_not_awaited()
     assert panel._DATA_STATIC_PATH_REGISTERED not in hass.data
+
+
+async def test_panel_config_carries_bundle_token(panel_mocks) -> None:
+    """The running bundle compares this token with its module URL to offer a reload."""
+    register_panel, _remove_panel = panel_mocks
+    hass = _FakeHass(AsyncMock())
+
+    await panel.async_register_panel(hass)
+
+    kwargs = register_panel.await_args.kwargs
+    assert kwargs["config"] == {"bundle_token": "0123456789abcdef"}
+    assert kwargs["module_url"].endswith("?v=0123456789abcdef")

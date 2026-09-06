@@ -24,6 +24,15 @@ import "./views/settings-view";
 
 type TabId = SocTab;
 
+/** Cache token of the bundle this code was loaded from; the server appends it to the module URL as ?v=. */
+function loadedBundleToken(): string | null {
+  try {
+    return new URL(import.meta.url).searchParams.get("v");
+  } catch {
+    return null;
+  }
+}
+
 @customElement("ha-soc-panel")
 export class HaSocPanel extends LitElement {
   static styles = css`
@@ -199,6 +208,32 @@ export class HaSocPanel extends LitElement {
       font-size: 13.5px;
       line-height: 1.5;
     }
+    .stale-banner {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 12px max(16px, calc((100% - 1400px) / 2)) 0;
+      padding: 10px 14px;
+      border: 1px solid rgba(var(--rgb-primary-color, 3, 155, 229), 0.35);
+      border-radius: var(--ha-card-border-radius, 12px);
+      background: rgba(var(--rgb-primary-color, 3, 155, 229), 0.08);
+      color: var(--primary-text-color);
+      font-size: 13px;
+    }
+    .stale-banner span {
+      flex: 1;
+    }
+    .stale-banner button {
+      font: inherit;
+      font-size: 13px;
+      font-weight: 600;
+      padding: 6px 14px;
+      border-radius: 100px;
+      border: 1px solid var(--primary-color);
+      background: var(--primary-color);
+      color: #fff;
+      cursor: pointer;
+    }
     .footer {
       padding: 10px 16px 14px;
       font-size: 11px;
@@ -272,6 +307,26 @@ export class HaSocPanel extends LitElement {
     }
   }
 
+  /** True when the server has registered a newer bundle than the one this page loaded. */
+  private _bundleIsStale(): boolean {
+    const served = this.panel?.config?.bundle_token;
+    const loaded = loadedBundleToken();
+    return typeof served === "string" && served.length > 0 && loaded !== null && served !== loaded;
+  }
+
+  private _renderStaleBanner() {
+    if (!this._bundleIsStale()) return html``;
+    return html`
+      <div class="stale-banner" role="status">
+        <span>
+          HA SOC was updated on the server. This page is still running the previous version; reload to use the
+          new one.
+        </span>
+        <button type="button" @click=${() => window.location.reload()}>Reload</button>
+      </div>
+    `;
+  }
+
   private _renderFooter() {
     if (!this._version) return html``;
     const probeText =
@@ -304,6 +359,7 @@ export class HaSocPanel extends LitElement {
     }
     const activeWorkspace = workspaceForTab(this._tab);
     return html`
+      ${this._renderStaleBanner()}
       <div class="header">
         <div class="brand">
           <span class="brand-mark">SOC</span>

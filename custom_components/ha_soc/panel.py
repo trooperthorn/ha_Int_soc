@@ -82,7 +82,8 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         sidebar_title=PANEL_TITLE,
         sidebar_icon=PANEL_ICON,
         require_admin=True,
-        config={},
+        # The running bundle compares this with its own module URL to offer a reload; see docs/operations.md.
+        config={"bundle_token": cache_token},
         config_panel_domain=DOMAIN,
     )
 

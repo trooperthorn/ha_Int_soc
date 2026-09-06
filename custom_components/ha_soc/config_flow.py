@@ -1,14 +1,14 @@
 """Config flow for HA SOC: single instance, no user input required at setup.
 
-The options flow is informational only; settings live in the owner-only
-panel Settings tab (see docs/security.md).
+The options flow carries no settings (they live in the owner-only panel
+Settings tab, see docs/security.md); submitting it reloads the entry so the
+panel re-registers with the bundle currently on disk (see docs/operations.md).
 """
 from __future__ import annotations
 
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 
@@ -38,11 +38,12 @@ class HaSocConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class HaSocOptionsFlow(OptionsFlow):
-    """Informational only; all settings live in the owner-only Settings tab."""
+    """No settings here; submitting reloads the entry and re-registers the panel."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> Any:
         if user_input is not None:
-            # Always {}: a save here must never repopulate entry.options.
+            # Options stay {} so core's change-triggered reload never fires; reload explicitly.
+            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
             return self.async_create_entry(title="", data={})
 
         return self.async_show_form(
@@ -51,6 +52,8 @@ class HaSocOptionsFlow(OptionsFlow):
             description_placeholders={
                 "where": "Open the HA SOC panel from the sidebar and go to the "
                 "Settings tab. All settings live there and are available to the "
-                "account owner only."
+                "account owner only. Submitting this dialog reloads HA SOC and "
+                "re-registers the panel with the bundle currently installed; "
+                "reload the browser afterwards to load it."
             },
         )

@@ -1,7 +1,7 @@
 import { LitElement, html } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { HomeAssistant } from "./types";
-import { EMPTY_LAYOUT, LayoutSection, LayoutState } from "./customize";
+import { EMPTY_LAYOUT, LayoutSection, LayoutState, effectiveOrder } from "./customize";
 import "./customize";
 import { fetchLayout, saveLayout } from "./data/ha-soc-ws";
 
@@ -39,15 +39,25 @@ export abstract class HaSocCustomizableView extends LitElement {
     saveLayout(this.hass, this.viewId, e.detail).catch(() => {});
   };
 
-  /** Wrap a view's declared sections in the shared reorder/show-hide list. */
+  /**
+   * Render the view's sections in stored order, or the shared editor in
+   * Customize mode. Section templates render here, in the view's own shadow
+   * root, because sharedStyles and the view's styles apply only inside it;
+   * see docs/design.md.
+   */
   protected _renderSections(sections: LayoutSection[]) {
-    return html`
-      <ha-soc-customize-list
-        .sections=${sections}
-        .layout=${this._layout}
-        .editMode=${this.customizeMode}
-        @layout-change=${this._onLayoutChange}
-      ></ha-soc-customize-list>
-    `;
+    if (this.customizeMode) {
+      return html`
+        <ha-soc-customize-list
+          .sections=${sections}
+          .layout=${this._layout}
+          @layout-change=${this._onLayoutChange}
+        ></ha-soc-customize-list>
+      `;
+    }
+    const hidden = new Set(this._layout.hidden);
+    return html`${effectiveOrder(sections, this._layout)
+      .filter((section) => !hidden.has(section.id))
+      .map((section) => section.render())}`;
   }
 }
