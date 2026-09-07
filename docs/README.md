@@ -5,7 +5,7 @@ One line per document, stating what it is responsible for, so a reader knows whe
 ## Core documents
 
 - `design.md`: architecture and rationale by subsystem (audit chain, store and secrets, WebSocket API and access control, detections and risk, scanner and provenance, health and hygiene, network integrations, probe and firewall, frontend, CI and release, tests). Why a thing is built the way it is.
-- `protocol.md`: wire and device facts (Supervisor endpoints, WebSocket message shapes, audit chain on-disk format, NVD and GitHub and Pi-hole response shapes, USB and serial facts, the Probe add-on protocol). What crosses a boundary and in what shape.
+- `protocol.md`: wire and device facts (Supervisor endpoints, WebSocket message shapes, audit chain on-disk format, NVD and GitHub and Pi-hole response shapes, USB and serial facts, the Probe add-on protocol, the external audit ingest contract). What crosses a boundary and in what shape.
 - `operations.md`: configuration keys and their consequences, thresholds and defaults, detection threshold table, health check table, the Probe's privilege and option table, runtime knobs, troubleshooting, release and CI operations.
 - `security.md`: trust boundaries, enforced versus cosmetic controls, secret handling, redaction rules, audit chain integrity reasoning, detection false positives, scanner rule false positives and evasion.
 - `decisions.md`: dated decisions, each with the alternative rejected and why.

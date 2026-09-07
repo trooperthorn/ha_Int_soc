@@ -11,6 +11,31 @@
 # registered services to be described, and honestly labeling an internal
 # surface beats hiding it.
 
+ingest_audit:
+  name: Ingest external audit records
+  description: Accept hash-chained audit records from a tool on this host (the Elk Programmer app) after verifying the caller is the Supervisor and the per-source secret matches; each source's chain is checked for gaps, breaks, and rewritten history.
+  fields:
+    source:
+      name: Source
+      description: The tool's slug; lowercase letters, digits, and underscores.
+      required: true
+      example: elk_programmer
+      selector:
+        text:
+    secret:
+      name: Secret
+      description: The source's pairing secret, pinned on its first accepted call.
+      required: true
+      selector:
+        text:
+          type: password
+    records:
+      name: Records
+      description: Up to 200 records in sequence order, each with seq, time, event, user_id, user_name, details, previous, and hash.
+      required: true
+      selector:
+        object:
+
 ingest_probe_result:
   name: Ingest probe result
   description: >-

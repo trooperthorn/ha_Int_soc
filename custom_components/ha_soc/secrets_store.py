@@ -18,9 +18,14 @@ SECRET_STORAGE_VERSION = 1
 
 # On-disk key that re-pairs a running add-on; never rename without a migration.
 PROBE_PAIRING_SECRET_KEY = "probe_pairing_secret"
+# One JSON map of source slug to secret for ha_soc.ingest_audit callers, pinned per source.
+EXTERNAL_AUDIT_SECRETS_KEY = "external_audit_secrets"
 
 # Enforced on every get/set; add a new key to SECRET_SETTING_KEYS first.
-ALLOWED_SECRET_KEYS: frozenset[str] = SECRET_SETTING_KEYS | {PROBE_PAIRING_SECRET_KEY}
+ALLOWED_SECRET_KEYS: frozenset[str] = SECRET_SETTING_KEYS | {
+    PROBE_PAIRING_SECRET_KEY,
+    EXTERNAL_AUDIT_SECRETS_KEY,
+}
 
 
 class HaSocSecretStore:

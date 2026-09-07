@@ -49,9 +49,9 @@ ignore RFC 5424 structured data.
 | CEF value | Categories |
 |---:|---|
 | 10 | `audit_chain_reset` |
-| 9 | `probe_auth_rejected` |
+| 9 | `probe_auth_rejected`, `external_audit_chain_break`, `external_audit_rejected` |
 | 7 | `login_fail`, `user_removed`, `user_deactivated`, `firewall_pending_discarded` |
-| 5 | known security/configuration changes, privileged reads, token creation, watchdog and detection-status events |
+| 5 | known security/configuration changes, privileged reads, token creation, watchdog and detection-status events, `external_audit`, `programming_session` |
 | 3 | `login_ok`, `service_call`, `session_seen` |
 | 4 | unknown/unclassified future categories |
 

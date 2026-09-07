@@ -12,6 +12,14 @@ In `async_setup_entry`, the private secret store is loaded before anything else 
 
 ## Audit chain
 
+External sources: `external_audit.py` lets another tool on the host push its own
+hash-chained records (`ha_soc.ingest_audit`); each accepted record becomes an
+`external_audit` entry in this chain, and per-source heads in the store make a
+break, gap, or rewrite in the source's history detectable here. The first source
+is the Elk Programmer app; its session claims also arrive as bus events from the
+`elkm1` integration and are recorded as `programming_session`. The contract is in
+`protocol.md`; the trust reasoning is in `security.md`.
+
 The audit module (`AuditLog`) is the closest thing HA SOC has to a security camera pointed at Home Assistant's own auth, service, and registry surface. It is intentionally narrow: it listens only to bus events, one dispatcher signal, and log records core already emits, and never to `state_changed` or a `MATCH_ALL` listener. It states honestly what is captured directly, what is inferred, and what is structurally impossible from inside an integration, because overclaiming in a security product is worse than not having the feature.
 
 ### Captured directly

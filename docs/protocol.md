@@ -125,6 +125,44 @@ Network reports MACs as `aa:bb:cc:dd:ee:ff` and Protect uppercase without separa
 - Docker Engine API over `/var/run/docker.sock`: `POST http://localhost/containers/addon_<slug>/update` with `Memory`, `MemorySwap`, `NanoCpus` (memory bytes = memory_mb x 1048576, NanoCpus = cpus x 1e9). `0` means unlimited (the reset body also sends `CpuShares: 0`). `MemorySwap` must equal `Memory` or Docker rejects the update, and a cap the container can dodge by swapping is not a cap. HTTP 200 is applied, 404 container not found, curl `000` socket unreachable.
 - s6 behavior relied on: every service starts as root; SIGTERM on every stop, restart, and update; the finish script receives the exit code as `$1`; a non-zero exit is restarted once finish returns.
 
+## External audit ingest
+
+`ha_soc.ingest_audit` accepts hash-chained audit records from another tool on the
+host, today the Elk Programmer app. The caller must carry the Supervisor user's
+context (an app reaching Core through `http://supervisor/core/api/services/ha_soc/ingest_audit`
+with `SUPERVISOR_TOKEN`) and present `secret`, pinned per `source` on the first
+accepted call and compared with `hmac.compare_digest` after that; the pinned
+secrets live as one JSON map under the `external_audit_secrets` key of the secret
+store. Registered only on Supervisor installs, like the Probe services.
+
+Request: `{source, secret, records: [{seq, time, event, user_id, user_name, details, previous, hash}]}`,
+1 to 200 records in sequence order; `source` matches `^[a-z][a-z0-9_]{0,31}$`.
+
+Record contract: `hash` is SHA-256 over the canonical compact JSON
+(`sort_keys`, separators `,` and `:`) of `{time, event, user_id, user_name, details, previous}`
+followed by `previous`; the first record's `previous` is the empty string. This is
+exactly what the Elk Programmer's audit log writes, so its file verifies unchanged.
+
+Per source HA SOC keeps `{seq, hash, at}` of the last accepted record in the store
+(`external_audit_heads`). Each record is checked in order: a sequence at or below
+the head is a replay and is skipped, unless it carries a different hash under the
+head's own sequence (`rewritten_history`); a sequence above `head + 1` is `gap`
+(the link to the missing records cannot be verified); `previous` must equal the
+head's hash (`previous_hash_mismatch`); the recomputed hash must match
+(`hash_mismatch`); `details` above 8192 bytes of JSON is `details_too_large`.
+Accepted records become `external_audit` entries in HA SOC's own chain carrying
+the source's sequence, hash, time, event, user id, and details (redacted at the
+usual chokepoint). The first failure stops the batch and writes one
+`external_audit_chain_break` record; a rejected caller writes
+`external_audit_rejected`.
+
+Response (`return_response`): `{accepted, last_seq, rejected}`; `last_seq` is where a
+source resumes after a gap.
+
+HA SOC also records `elkm1.programming_started` and `elkm1.programming_ended` bus
+events as `programming_session` entries (phase, source, purpose, attributed,
+rp_seen), so an unattributed panel programming session is in the same chain.
+
 ## Unverified
 
 Wire and platform claims carried from code comments that were not re-verified in this pass:

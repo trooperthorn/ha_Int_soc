@@ -21,6 +21,10 @@ from .health import IntegrationHealth
 from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
 from .permissions import PermissionsMatrix
+from .external_audit import (
+    async_register_external_audit_service,
+    async_unregister_external_audit_service,
+)
 from .probe import async_register_probe_service, async_unregister_probe_service
 from .repairs import (
     async_sync_admin_mfa_issues,
@@ -145,6 +149,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     async_register_websocket_api(hass)
     async_register_probe_service(hass, store, audit, secrets)
+    async_register_external_audit_service(hass, store, audit, secrets)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -234,5 +239,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
         runtime.watchdog.async_stop()
 
     async_unregister_probe_service(hass)
+    async_unregister_external_audit_service(hass)
     await async_unregister_panel(hass)
     return True

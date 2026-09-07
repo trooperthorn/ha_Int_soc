@@ -64,6 +64,9 @@ _CEF_EVENT_NAMES = {
     "detection_status_changed": "Detection Status Change",
     "device_registry_change": "Device Registry Change",
     "entity_registry_change": "Entity Registry Change",
+    "external_audit": "External Audit Record",
+    "external_audit_chain_break": "External Audit Chain Break",
+    "external_audit_rejected": "External Audit Ingest Rejected",
     "firewall_pending_discarded": "Pending Firewall Change Discarded",
     "firewall_resolved": "Firewall Change Resolved",
     "floor_registry_change": "Floor Registry Change",
@@ -72,6 +75,7 @@ _CEF_EVENT_NAMES = {
     "login_ok": "Successful Login",
     "lovelace_change": "Dashboard Change",
     "privileged_read": "Privileged Read",
+    "programming_session": "Panel Programming Session",
     "probe_auth_rejected": "Probe Authentication Rejected",
     "service_call": "Service Call Attempted",
     "session_seen": "Session Observed",
@@ -84,7 +88,7 @@ _CEF_EVENT_NAMES = {
 }
 
 _CEF_VERY_HIGH_10 = {"audit_chain_reset"}
-_CEF_VERY_HIGH_9 = {"probe_auth_rejected"}
+_CEF_VERY_HIGH_9 = {"probe_auth_rejected", "external_audit_chain_break", "external_audit_rejected"}
 _CEF_HIGH_7 = {
     "firewall_pending_discarded",
     "login_fail",
@@ -93,6 +97,8 @@ _CEF_HIGH_7 = {
 }
 _CEF_MEDIUM_5 = {
     "detection_status_changed",
+    "external_audit",
+    "programming_session",
     "firewall_resolved",
     "privileged_read",
     "token_created",
@@ -120,7 +126,12 @@ def _sd_value(value: Any) -> str:
 
 def _severity(record: dict[str, Any]) -> int:
     category = str(record.get("category") or "")
-    if category in {"audit_chain_reset", "probe_auth_rejected"}:
+    if category in {
+        "audit_chain_reset",
+        "probe_auth_rejected",
+        "external_audit_chain_break",
+        "external_audit_rejected",
+    }:
         return 3  # error
     if category in {"login_fail", "user_removed", "user_deactivated"}:
         return 4  # warning
