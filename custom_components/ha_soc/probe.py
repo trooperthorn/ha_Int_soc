@@ -10,23 +10,25 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
+import homeassistant.util.dt as dt_util
 import voluptuous as vol
-
 from homeassistant.const import HASSIO_USER_NAME
 from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers.hassio import is_hassio
-import homeassistant.util.dt as dt_util
 
 from .const import (
     DOMAIN,
+    FIREWALL_CAPABILITIES,
     FIREWALL_REPORT_REASON_MAX,
+    FIREWALL_RULE_ACTIONS,
+    FIREWALL_RULE_FAMILIES,
+    FIREWALL_RULE_PROTOS,
     PROBE_ADDON_NAME,
     SERVICE_INGEST_PROBE_RESULT,
     SERVICE_POLL_FIREWALL_COMMAND,
     SERVICE_POLL_SNMP_CONFIG,
 )
 from .firewall import (
-    RULE_SCHEMA,
     async_next_addon_command,
     async_report_from_addon,
     async_verify_or_pin_secret,
@@ -55,12 +57,37 @@ _PORT_SCHEMA = vol.Schema(
     }
 )
 
+# What the add-on reads back from iptables: RULE_SCHEMA's vocabulary plus the numeric icmp_code
+# it cannot name; firewall.normalize_known_rule settles the shape before storage.
+KNOWN_RULE_SCHEMA = vol.Schema(
+    {
+        vol.Required("action"): vol.In(FIREWALL_RULE_ACTIONS),
+        vol.Required("proto"): vol.In(FIREWALL_RULE_PROTOS),
+        vol.Optional("port"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))),
+        vol.Optional("ports"): vol.Any(None, str),
+        vol.Optional("icmp_code"): vol.Any(None, str, int),
+        vol.Optional("source"): vol.Any(None, str),
+        vol.Optional("destination"): vol.Any(None, str),
+        vol.Optional("interface"): vol.Any(None, str),
+        vol.Optional("log"): bool,
+        vol.Optional("comment"): vol.Any(None, str),
+        vol.Optional("family"): vol.In(FIREWALL_RULE_FAMILIES),
+    }
+)
+
+
+def _known_capabilities(reported: dict[str, bool] | None) -> dict[str, bool] | None:
+    if reported is None:
+        return None
+    return {key: bool(reported[key]) for key in FIREWALL_CAPABILITIES if key in reported}
+
+
 INGEST_SERVICE_SCHEMA = vol.Schema(
     {
         # Optional: the firewall poller calls this service too and never sends a port list.
         vol.Optional("open_ports"): [_PORT_SCHEMA],
         vol.Optional("scanner_version"): vol.Any(None, str),
-        vol.Optional("firewall_known_rules"): vol.Any(None, [RULE_SCHEMA]),
+        vol.Optional("firewall_known_rules"): vol.Any(None, [KNOWN_RULE_SCHEMA]),
         vol.Optional("firewall_resolved_test_id"): vol.Any(None, str),
         vol.Optional("firewall_resolved_status"): vol.Any(None, str),
         # Add-on-supplied text that is stored and rendered, so length-bounded.
@@ -68,6 +95,10 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
             None, vol.All(str, vol.Length(max=FIREWALL_REPORT_REASON_MAX))
         ),
         vol.Optional("firewall_ipv6_supported"): vol.Any(None, bool),
+        # Which optional netfilter extensions the add-on found; keys outside the known set are dropped.
+        vol.Optional("firewall_capabilities"): vol.Any(None, {str: bool}),
+        # Host interface names from the scanner, so the rule builder can offer them all.
+        vol.Optional("interfaces"): vol.Any(None, [vol.All(str, vol.Length(min=1, max=15))]),
         vol.Optional("resource_limit_state"): vol.Any(None, {str: dict}),
         vol.Optional("snmp_status"): vol.Any(
             None,
@@ -252,6 +283,7 @@ def async_register_probe_service(
             store.async_set_host_probe_result(
                 {
                     "open_ports": call.data["open_ports"],
+                    "interfaces": call.data.get("interfaces"),
                     "scanner_version": call.data.get("scanner_version"),
                     "reported_at": dt_util.utcnow().isoformat(),
                 }
@@ -264,6 +296,7 @@ def async_register_probe_service(
             resolved_status=call.data.get("firewall_resolved_status"),
             resolved_reason=call.data.get("firewall_resolved_reason"),
             ipv6_supported=call.data.get("firewall_ipv6_supported"),
+            capabilities=_known_capabilities(call.data.get("firewall_capabilities")),
         )
         if call.data.get("resource_limit_state") is not None:
             from .resource_watchdog import async_store_limit_report

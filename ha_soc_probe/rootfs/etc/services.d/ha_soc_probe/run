@@ -147,6 +147,13 @@ PORTS
     echo "${json}"
 }
 
+# Every host interface name except loopback, so the firewall rule builder can offer them all.
+build_interfaces_json() {
+    command -v ip >/dev/null 2>&1 || { echo "[]"; return 0; }
+    ip -o link show 2>/dev/null | awk -F': ' '{split($2, name, "@"); if (name[1] != "lo") print name[1]}' \
+        | grep -E '^[A-Za-z0-9_.:-]{1,15}$' | jq -R -s -c 'split("\n") | map(select(length > 0))'
+}
+
 bashio::log.info "HA SOC Probe starting, scanning every ${SCAN_INTERVAL_HOURS}h as $(id -un)."
 
 retry_seconds="${RETRY_INTERVAL_SECONDS}"
@@ -157,11 +164,13 @@ while true; do
     port_count=$(echo "${open_ports_json}" | jq 'length')
     bashio::log.info "Found ${port_count} listening TCP port(s) on the host."
 
+    interfaces_json=$(build_interfaces_json)
     payload=$(jq -n \
         --argjson open_ports "${open_ports_json}" \
+        --argjson interfaces "${interfaces_json}" \
         --arg version "${SCANNER_VERSION}" \
         --arg probe_secret "${PROBE_SECRET}" \
-        '{open_ports: $open_ports, scanner_version: $version, probe_secret: $probe_secret}')
+        '{open_ports: $open_ports, interfaces: $interfaces, scanner_version: $version, probe_secret: $probe_secret}')
 
     http_code=$(curl -sS -o /tmp/ha_soc_probe_response.json -w '%{http_code}' \
         -X POST \

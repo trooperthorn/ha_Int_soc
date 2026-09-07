@@ -96,7 +96,7 @@ Dated decisions with the alternative rejected and why. Entries marked "recorded"
 - 2026-09-03 (recorded). `_fetch_firewall_policies` does not probe candidate paths because the endpoint is confirmed real, so a failure is a real problem. No undocumented Protect calls are made for events; the core unifiprotect bootstrap is the events source.
 - 2026-09-03 (recorded). ACL Rules and Firewall Policies are treated as two separate resources, confirmed against a live controller whose ACL endpoint returned zero rules while its real configuration lived under Firewall Policies. Rejected: treating them as two names for one feature.
 - 2026-09-03 (recorded). unifi_core.py never imports `aiounifi`, `uiprotect`, or the core unifi components. Rejected: importing the core constants, which would import those libraries transitively and crash installs without them. Snapshots whitelist fields rather than copying `.raw` and redacting.
-- 2026-09-03 (recorded). Network-security findings have no dismiss or resolve lifecycle. Rejected: a persisted status like the CVE and hygiene findings, because these concern live network and DNS configuration that changes between refreshes, so recomputing fresh is more honest than a status that could go stale; add it later if real false-positive noise argues for it. Every finding is advisory; the project does not edit UniFi rules, toggle Pi-hole blocking, or reassign clients.
+- 2026-09-03 (recorded; superseded 2026-09-06). Network-security findings had no dismiss or resolve lifecycle and the project did not edit UniFi rules. Superseded by the suggestion decisions and the gated write-back above: findings are still recomputed fresh on every refresh, and a stored decision is attached at read time so it can never go stale on its own.
 - 2026-09-03 (recorded). Pi-hole is queried directly. Rejected: core's `pi_hole` integration, which exposes no query log, group, or client-scoping surface. An unrecognized response shape degrades to None, as in unifi.py.
 - 2026-09-03 (recorded). `SERVICE_POLL_SNMP_CONFIG` is a separate poll endpoint. Rejected: sharing the firewall poll, so SNMP configuration is never confused with the `current_test_id` protocol.
 
@@ -121,6 +121,17 @@ Dated decisions with the alternative rejected and why. Entries marked "recorded"
 - 2026-09-03 (recorded; D-21). The verified host runs the nf_tables backend for both families and ip6tables works; the design still probes ip6tables per cycle rather than assuming it.
 - 2026-09-03 (recorded). `ha_soc_verify_supervisor.sh` discovers the container by name and falls back to `addon_<slug>`. Rejected: assuming the conventional name, after the first live run failed with "No such container" during an auto-update recreate.
 
+## Firewall grammar and UniFi write-back
+
+- 2026-09-06. The ports spec is a string grammar (`443`, `8000:8100`, `80,443`) with the legacy integer `port` still accepted and normalized. Rejected: a list-of-ranges structure, because the add-on's shell validator and iptables both speak the string form, and one grammar on both sides is what keeps the two validators provably the same.
+- 2026-09-06. ICMP types cross the wire as numbers per family. Rejected: names in the add-on, because iptables `-S` prints numbers and the add-on would need a name table that could drift from Core's.
+- 2026-09-06. A logged rule is a rate-limited `LOG` line plus the action line, folded back into one rule on read. Rejected: a `LOG` without `-m limit`, because a matching flood would fill the kernel log; also rejected: NFLOG or reading the log into HA SOC, because the add-on has no journal access and the feature's promise is only that the host records the match.
+- 2026-09-06. Optional extensions are probed and reported, and a rule that needs an absent one is refused at propose time and again by the add-on. Rejected: letting the apply fail and revert, because a failed apply inside the window reads as a firewall fault rather than a missing module.
+- 2026-09-06. OUTPUT and FORWARD chains stay out of scope. Rejected: egress rules, because a deny there can cut the add-on's own reporting channel and the revert design was built around INPUT; FORWARD is Docker's.
+- 2026-09-06. UniFi write-back is gated behind an owner-only toggle with its own write-scoped key (the "both, gated" option). Rejected: always-on writes with the existing key, which would break the read-only key assumption for every path; also rejected: plan-and-track only, which the owner judged too little.
+- 2026-09-06. The only automatic remediations are disabling a broad policy or ACL rule, by full-object `PUT`. Rejected: scoping a policy automatically, because the intended scope is a judgment HA SOC cannot make; also rejected: `PATCH`, because the 10.4.57 schema patches only `loggingEnabled`.
+- 2026-09-06. Ignored suggestions leave the Suggestions card but stay on the Suggested changes tab. Rejected: hiding them everywhere, because an ignore with no way back is a silent policy change.
+
 ## Frontend
 
 - 2026-09-03 (recorded; original date unknown). The Customize editor reorders a compact chrome list. Rejected: live-dragging full card content, because cards can be large tables and re-rendering on every dragover would be slow for no benefit. Native HTML5 drag alone was rejected as the only path because it is not keyboard-usable; Up/Down buttons are primary and drag is a progressive enhancement.
@@ -135,6 +146,14 @@ Dated decisions with the alternative rejected and why. Entries marked "recorded"
 - 2026-09-03 (recorded). permissions-view stores the server's message on a failed load and treats `fetchDashboardConfig`'s `not_found` as an empty view list. Rejected: falling through to the "no views" empty state, which read as a working page with nothing to manage, and letting `not_found` bubble as an unhandled rejection, which read as "broken until you reselect" even though reselecting cannot fix an unconfigured dashboard.
 - 2026-09-03 (recorded). Settings controls apply immediately. Rejected: a Save button, because a staged change did not survive the remount on tab switch and read as "my selection didn't take".
 - 2026-09-03 (recorded; work plan item 4.12). Every view keeps a distinct `_error` rendering a could-not-load state with the server's message. Rejected: rendering a failure as an empty result, a stuck "Loading..." page, or an unrelated backend state.
+
+## Unused installs
+
+- 2026-09-06. Unused-install checks are informational and never mirrored to Repairs. Rejected: LOW severity, because an unused card or integration is a maintenance signal, not a broken control, and a Repairs issue would read as urgency the finding does not carry.
+- 2026-09-06. The YAML dashboard scan is a Settings toggle, default off, rather than always on. Rejected: always on, because reading configuration-directory files through a loader that resolves `!secret` is a wider trust boundary than the registry-only checks and should be the owner's choice. Also rejected: a private loader that refuses `!secret`, because it would fail on every dashboard that uses one, and the detection needs only `type` values, which the walker copies out without touching anything else.
+- 2026-09-06. With the scan off and a YAML dashboard present, the unused-resource check reports could_not_evaluate rather than evaluating the storage dashboards alone. Rejected: a partial evaluation, because a card used only on a YAML dashboard would then be reported as unused, which is exactly the false positive that gets a working card deleted.
+- 2026-09-06. Element names come from a static regex over the bundle, and a bundle that yields none is listed as undeterminable. Rejected: mapping a resource to its card by filename, which is a guess. Also rejected: executing the bundle to observe registrations, which runs untrusted code inside the integration.
+- 2026-09-06. Entries in a failed or retrying state are excluded from the "no entities or devices" check. Rejected: including them, because a failed entry with no entities is already surfaced by the integration overview as failing, and reporting it twice under a tidiness heading invites the wrong fix.
 
 ## CI and release
 

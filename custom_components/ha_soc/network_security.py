@@ -2,19 +2,37 @@
 UniFi Firewall Policies, the HA server's own open ports, and Pi-hole's
 DNS-level IoT visibility.
 
-This module never mutates anything and never talks to the network itself;
-``build_findings`` is a pure function over the UniFi and Pi-hole snapshots
-(design and scope decisions: docs/design.md, docs/decisions.md).
+``build_findings`` is a pure function over the UniFi and Pi-hole snapshots.
+The owner's decisions on each suggestion (planned, ignored, applied) live in
+the store, and the one mutating path, ``async_apply_suggestion``, runs only
+through the write-scoped connection when write-back is enabled (design,
+scope, and trust boundary: docs/design.md, docs/decisions.md,
+docs/security.md).
 """
 from __future__ import annotations
 
+import logging
 from typing import Any
 
+import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
 
-from .const import SEVERITY_HIGH, SEVERITY_INFO, SEVERITY_MEDIUM
+from .const import (
+    CONF_UNIFI_NETWORK_WRITE_ENABLED,
+    DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
+    REMEDIATION_DISABLE_ACL_RULE,
+    REMEDIATION_DISABLE_FIREWALL_POLICY,
+    SEVERITY_HIGH,
+    SEVERITY_INFO,
+    SEVERITY_MEDIUM,
+    SUGGESTION_STATUS_APPLIED,
+    SUGGESTION_STATUS_IGNORED,
+    SUGGESTION_STATUS_PLANNED,
+)
 from .secrets_store import HaSocSecretStore
 from .store import HaSocData
+
+_LOGGER = logging.getLogger(__name__)
 
 _ALLOW_WORDS = ("allow", "accept", "permit")
 _DENY_WORDS = ("deny", "drop", "block", "reject")
@@ -31,13 +49,18 @@ def _finding(
     category: str,
     title: str,
     detail: str,
+    remediation: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """One suggestion. ``remediation`` names a change HA SOC can carry out
+    itself (kind, target id, label); None means the fix is manual and the
+    detail text says what to do."""
     return {
         "id": finding_id,
         "severity": severity,
         "category": category,
         "title": title,
         "detail": detail,
+        "remediation": remediation,
     }
 
 
@@ -73,6 +96,16 @@ def _acl_findings(acl: dict[str, Any]) -> list[dict[str, Any]]:
                 "restriction and no destination IP/subnet/network/port "
                 "restriction — it matches from anywhere to anywhere. Review "
                 "whether it should be scoped to specific networks or ports.",
+                remediation=(
+                    {
+                        "kind": REMEDIATION_DISABLE_ACL_RULE,
+                        "target_id": r["id"],
+                        "label": f'Disable ACL rule "{name}"',
+                        "reversible": "Re-enable the rule in UniFi Network under Settings, then Network, then ACL Rules.",
+                    }
+                    if r.get("id")
+                    else None
+                ),
             )
         )
     return findings
@@ -109,6 +142,16 @@ def _firewall_policy_findings(fw: dict[str, Any]) -> list[dict[str, Any]]:
                 "narrowing within that zone pair. Review whether it should be "
                 "scoped more tightly, especially if either zone includes your "
                 "IoT network.",
+                remediation=(
+                    {
+                        "kind": REMEDIATION_DISABLE_FIREWALL_POLICY,
+                        "target_id": r["id"],
+                        "label": f'Disable policy "{name}"',
+                        "reversible": "Re-enable the policy in UniFi Network under Settings, then Security, then Policy Table.",
+                    }
+                    if r.get("id")
+                    else None
+                ),
             )
         )
     return findings
@@ -247,6 +290,85 @@ def build_findings(
     return findings
 
 
+def decorate_findings(
+    findings: list[dict[str, Any]], decisions: dict[str, dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Copies of the findings with the owner's stored decision attached as
+    ``decision`` ({status, at, by, detail}) or None. A finding that no longer
+    fires drops out of the list on its own; its stale decision is harmless."""
+    out = []
+    for finding in findings:
+        copy = dict(finding)
+        copy["decision"] = decisions.get(finding["id"])
+        out.append(copy)
+    return out
+
+
+def async_set_suggestion_decision(
+    store: HaSocData, finding_id: str, status: str | None, *, by_user_id: str | None
+) -> None:
+    """Record plan or ignore (or clear with None). ``applied`` is written only
+    by async_apply_suggestion after the controller confirmed the change."""
+    if status not in (None, SUGGESTION_STATUS_PLANNED, SUGGESTION_STATUS_IGNORED):
+        raise ValueError(f"status {status!r} cannot be set by hand")
+    store.async_set_suggestion_decision(
+        finding_id, status, by_user_id=by_user_id, at=dt_util.utcnow().isoformat()
+    )
+
+
+async def async_apply_suggestion(
+    hass: HomeAssistant,
+    store: HaSocData,
+    secrets: HaSocSecretStore,
+    finding_id: str,
+    *,
+    by_user_id: str,
+) -> tuple[bool, str | None, dict[str, Any] | None]:
+    """Carry out a suggestion's remediation on the controller. Returns
+    (ok, reason, result). The finding is re-derived from a fresh snapshot so
+    a stale panel can never act on a policy that has since changed."""
+    from .unifi import (
+        UniFiError,
+        async_disable_acl_rule,
+        async_disable_firewall_policy,
+        async_network_overview,
+    )
+
+    if not store.settings.get(CONF_UNIFI_NETWORK_WRITE_ENABLED, DEFAULT_UNIFI_NETWORK_WRITE_ENABLED):
+        return False, "write_disabled", None
+    unifi_overview = await async_network_overview(hass, store, secrets)
+    from .pihole import async_pihole_overview
+
+    pihole_overview = await async_pihole_overview(hass, store, secrets)
+    finding = next((f for f in build_findings(unifi_overview, pihole_overview) if f["id"] == finding_id), None)
+    if finding is None:
+        return False, "finding_not_current", None
+    remediation = finding.get("remediation")
+    if not remediation:
+        return False, "no_automatic_remediation", None
+    kind = remediation["kind"]
+    try:
+        if kind == REMEDIATION_DISABLE_FIREWALL_POLICY:
+            result = await async_disable_firewall_policy(hass, store, secrets, remediation["target_id"])
+        elif kind == REMEDIATION_DISABLE_ACL_RULE:
+            result = await async_disable_acl_rule(hass, store, secrets, remediation["target_id"])
+        else:
+            return False, "unknown_remediation", None
+    except UniFiError as err:
+        return False, str(err), None
+    except Exception as err:  # noqa: BLE001 - the panel gets a reason, never a trace
+        _LOGGER.exception("UniFi write-back failed for %s", finding_id)
+        return False, f"Unexpected error: {err}", None
+    store.async_set_suggestion_decision(
+        finding_id,
+        SUGGESTION_STATUS_APPLIED,
+        by_user_id=by_user_id,
+        at=dt_util.utcnow().isoformat(),
+        detail={"kind": kind, **result},
+    )
+    return True, None, result
+
+
 def _client_summaries(clients: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """A lightweight projection of the Network tab's client rows: just enough
     to match a rule's source/destination against a real device."""
@@ -278,6 +400,9 @@ async def async_network_security_overview(
 
     pihole_overview = await async_pihole_overview(hass, store, secrets)
 
+    write_enabled = bool(
+        store.settings.get(CONF_UNIFI_NETWORK_WRITE_ENABLED, DEFAULT_UNIFI_NETWORK_WRITE_ENABLED)
+    )
     return {
         "acl": unifi_overview["acl"],
         "firewall_policies": unifi_overview["firewall_policies"],
@@ -286,6 +411,11 @@ async def async_network_security_overview(
         "unifi_reachable": unifi_overview["reachable"],
         "unifi_error": unifi_overview["error"],
         "pihole": pihole_overview,
-        "findings": build_findings(unifi_overview, pihole_overview),
+        "findings": decorate_findings(
+            build_findings(unifi_overview, pihole_overview),
+            store.data.get("network_suggestions") or {},
+        ),
+        # True only when the owner enabled write-back; the write key's presence is not disclosed here.
+        "write_enabled": write_enabled,
         "generated_at": unifi_overview["generated_at"],
     }

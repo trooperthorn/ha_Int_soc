@@ -124,6 +124,7 @@ export class HaSocSettingsView extends LitElement {
       | "nvd_api_key"
       | "github_token"
       | "unifi_network_api_key"
+      | "unifi_network_write_api_key"
       | "unifi_protect_api_key"
       | "pihole_api_key"
       | "snmp_auth_passphrase"
@@ -393,8 +394,9 @@ export class HaSocSettingsView extends LitElement {
           Connects directly to a UniFi console over your LAN with a
           <strong>local API key</strong> (UniFi OS → Settings → Control Plane →
           Integrations) to populate the <strong>Network</strong> tab — status, WAN
-          throughput, clients, and network devices. Read-only; nothing is ever changed
-          on the controller, and no data leaves your network.
+          throughput, clients, and network devices. Read-only with this key; nothing is
+          changed on the controller unless write-back below is enabled with its own key, and
+          no data leaves your network.
         </p>
         <label class="settings-row">
           <span>Controller host or IP</span>
@@ -409,6 +411,28 @@ export class HaSocSettingsView extends LitElement {
           />
         </label>
         ${this._renderSecretField("Local API key", "unifi_network_api_key", !!s.unifi_network_api_key_set)}
+        <label class="settings-row">
+          <span>
+            <span class="tag enforced">enforced</span> Allow suggestion write-back
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Lets the owner apply a Network Security suggestion (disable a broad ACL rule or
+              Firewall Policy) from the panel. Uses the separate write key below, never the
+              read key; each apply is audited and read back from the controller. Off by
+              default.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.unifi_network_write_enabled}
+            @change=${(e: Event) =>
+              this._update("unifi_network_write_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+        ${this._renderSecretField(
+          "Write-scoped API key (write-back only)",
+          "unifi_network_write_api_key",
+          !!s.unifi_network_write_api_key_set
+        )}
         <label class="settings-row">
           <span>
             Verify TLS certificate
@@ -544,6 +568,33 @@ export class HaSocSettingsView extends LitElement {
             .checked=${s.scanner_network_checks_enabled}
             @change=${(e: Event) =>
               this._update("scanner_network_checks_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>Unused Installs</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Informational hygiene checks for code that is present but that nothing uses:
+          custom integrations with no config entry, entries with no entities, HACS
+          downloads that never load, and dashboard resources no dashboard references.
+        </p>
+        <label class="settings-row">
+          <span>
+            Scan YAML-mode dashboard files
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Reads each YAML dashboard through Home Assistant's own loader so cards in
+              included files count as used. Only card types are read; nothing is written.
+              Off by default because it reads files from the configuration directory. With
+              it off, the unused-resource check cannot evaluate while any YAML dashboard
+              exists.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.hygiene_scan_yaml_dashboards}
+            @change=${(e: Event) =>
+              this._update("hygiene_scan_yaml_dashboards", (e.target as HTMLInputElement).checked)}
           />
         </label>
       </div>

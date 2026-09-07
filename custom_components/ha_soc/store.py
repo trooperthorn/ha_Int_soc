@@ -21,7 +21,9 @@ from .const import (
     DEFAULT_MFA_GRACE_PERIOD_DAYS,
     DEFAULT_MFA_POLICY,
     DEFAULT_SCANNER_ENABLED,
+    DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
+    DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
     DEFAULT_SNMP_ENABLED,
     DEFAULT_SNMP_PORT,
     DEFAULT_PIHOLE_VERIFY_SSL,
@@ -63,6 +65,8 @@ class SettingsData(TypedDict):
     evidence_retention_days: int
     scanner_enabled: bool
     scanner_network_checks_enabled: bool
+    # Off by default: reading YAML dashboards is a wider trust boundary; see docs/security.md.
+    hygiene_scan_yaml_dashboards: bool
     nvd_lookups_enabled: bool
     # Sparse rule id -> {parameter: value}; read effective values via detections.thresholds().
     detection_thresholds: dict[str, dict[str, Any]]
@@ -73,6 +77,8 @@ class SettingsData(TypedDict):
     security_sources_enabled: dict[str, bool]
     # Empty host means "not configured"; API keys live in the secret store.
     unifi_network_host: str | None
+    # Suggestion write-back; the write key lives in the secret store.
+    unifi_network_write_enabled: bool
     unifi_network_verify_ssl: bool
     unifi_protect_host: str | None
     unifi_protect_verify_ssl: bool
@@ -117,6 +123,8 @@ class StoreData(TypedDict):
     host_probe: dict[str, Any] | None
     # vid:pid:serial_number -> {ignored_at, ignored_by, raw_name} (see peripherals.py)
     peripheral_ignored: dict[str, dict[str, Any]]
+    # finding_id -> {status, at, by, detail} for Network Security suggestions (see network_security.py)
+    network_suggestions: dict[str, dict[str, Any]]
     # See firewall.py's module docstring for the state machine.
     firewall: dict[str, Any]
     # "github": per-repo provenance cache keyed "owner/repo"; "refreshed_at": last refresh
@@ -146,6 +154,7 @@ def default_store_data() -> StoreData:
             evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
+            hygiene_scan_yaml_dashboards=DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
             nvd_lookups_enabled=DEFAULT_NVD_LOOKUPS_ENABLED,
             detection_thresholds={},
             access_level=DEFAULT_ACCESS_LEVEL,
@@ -153,6 +162,7 @@ def default_store_data() -> StoreData:
             mfa_grace_period_days=DEFAULT_MFA_GRACE_PERIOD_DAYS,
             security_sources_enabled=dict(DEFAULT_SECURITY_SOURCES_ENABLED),
             unifi_network_host=None,
+            unifi_network_write_enabled=DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
             unifi_network_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
             unifi_protect_host=None,
             unifi_protect_verify_ssl=DEFAULT_UNIFI_VERIFY_SSL,
@@ -178,6 +188,7 @@ def default_store_data() -> StoreData:
         mfa_grace_started={},
         host_probe=None,
         peripheral_ignored={},
+        network_suggestions={},
         firewall={
             "known_rules": None,
             "known_rules_reported_at": None,
@@ -486,6 +497,16 @@ class HaSocData:
         history.append(snapshot)
         if len(history) > max_days:
             del history[: len(history) - max_days]
+        self.async_schedule_save()
+
+    def async_set_suggestion_decision(
+        self, finding_id: str, status: str | None, *, by_user_id: str | None, at: str, detail: Any = None
+    ) -> None:
+        decisions = self.data.setdefault("network_suggestions", {})  # type: ignore[misc]
+        if status is None:
+            decisions.pop(finding_id, None)
+        else:
+            decisions[finding_id] = {"status": status, "at": at, "by": by_user_id, "detail": detail}
         self.async_schedule_save()
 
     def async_set_host_probe_result(self, result: dict[str, Any]) -> None:

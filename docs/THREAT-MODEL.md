@@ -46,6 +46,10 @@ code must pass all four rules with zero open findings (SEC-4/SEC-5), and
 nothing in the rules special-cases the `ha_soc` domain string: the rules'
 precise definitions are what its legitimate reads pass through.
 
+### Unused-install checks as a data source
+
+The unused-install checks (unused_installs.py) add three local reads: directory names under custom_components/, the first 8 MB of each dashboard resource file under www/ (regex only, realpath-anchored), and, only when the owner enables the YAML dashboard scan, YAML-mode dashboard files through core's loader. The last read resolves secrets in memory; the walker keeps only `type` string values. Nothing is written and nothing leaves the instance. Boundary reasoning is in security.md under boundary-widening checks.
+
 ### Where the rest of the mechanism reasoning lives
 
 The full reasoning behind every row of the threat table (gating tiers, secret handling, redaction rules, audit chain integrity, the add-on's treatment of Core as hostile, scanner rule evasion notes) is in `security.md`; the two notes here are kept because other documents cite them by this location.
@@ -64,6 +68,26 @@ The entire feature is owner-only, status included, regardless of
 is therefore a takeover primitive, and even the read-only status maps the
 attack surface. The panel hides the card from non-owner admins for the same
 reason; the server-side gate is what actually enforces it.
+
+### UniFi write-back gating
+
+`ws_network_security_suggestion_apply` writes controller configuration
+(disables one Firewall Policy or ACL rule) through a separate write-scoped
+API key that exists only when the owner enabled write-back. It is owner-only
+regardless of `access_level`, audit-logged on success and failure, re-derives
+the finding from a fresh snapshot before acting, and proves the change with a
+read-back. The read key is never used for a write. Plan and ignore decisions
+are bookkeeping in HA SOC's own store and change nothing on the controller.
+Boundary reasoning is in security.md.
+
+### Firewall rule grammar
+
+Every new rule field (ports spec, ICMP type, destination, interface, log,
+comment, reject) is allowlisted twice: in Core's schema and again in the
+add-on before any iptables argument is built, with the add-on refusing a rule
+that needs an extension the host lacks. Comments and log prefixes are single
+tokens so the unquoted `-S` replay on revert stays exact. Logging goes to the
+host kernel log only, rate-limited, and never leaves the host through HA SOC.
 
 ## Assumptions
 

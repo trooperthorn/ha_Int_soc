@@ -39,14 +39,52 @@ valid_slug() {
 
 # Every delivered field is revalidated here because a compromised Core is inside the threat model.
 
-valid_action() { [ "$1" = "allow" ] || [ "$1" = "deny" ]; }
-valid_proto() { [ "$1" = "tcp" ] || [ "$1" = "udp" ]; }
+valid_action() { [ "$1" = "allow" ] || [ "$1" = "deny" ] || [ "$1" = "reject" ]; }
+valid_proto() { [ "$1" = "tcp" ] || [ "$1" = "udp" ] || [ "$1" = "icmp" ]; }
 valid_family() { [ "$1" = "4" ] || [ "$1" = "6" ] || [ "$1" = "both" ]; }
 
 valid_port() {
     printf '%s' "$1" | grep -Eq '^[0-9]{1,5}$' || return 1
     [ "$1" -ge 1 ] && [ "$1" -le 65535 ]
 }
+
+# "443", "8000:8100", or up to MAX_PORT_ENTRIES comma-separated entries; ranges run low:high.
+MAX_PORT_ENTRIES=15
+valid_ports() {
+    local spec="$1" entry low high count=0
+    printf '%s' "${spec}" | grep -Eq '^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$' || return 1
+    while IFS= read -r entry; do
+        count=$(( count + 1 ))
+        [ "${count}" -le "${MAX_PORT_ENTRIES}" ] || return 1
+        low="${entry%%:*}"
+        high="${entry#*:}"
+        valid_port "${low}" || return 1
+        valid_port "${high}" || return 1
+        if [ "${entry}" != "${low}" ]; then
+            [ "${high}" -gt "${low}" ] || return 1
+        fi
+    done < <(printf '%s' "${spec}" | tr ',' '\n')
+    return 0
+}
+
+# Numeric ICMP type as Core sends it; "any" means no type match.
+valid_icmp_code() {
+    [ "$1" = "any" ] && return 0
+    printf '%s' "$1" | grep -Eq '^[0-9]{1,3}$' || return 1
+    [ "$1" -le 255 ]
+}
+
+# Linux interface names are at most 15 characters and never contain whitespace.
+valid_interface() {
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.:@-]{1,15}$'
+}
+
+# One token so an iptables -S line replays without quoting; bound matches Core's FIREWALL_COMMENT_PATTERN.
+valid_comment() {
+    printf '%s' "$1" | grep -Eq '^[A-Za-z0-9_.-]{1,22}$'
+}
+
+valid_bool() { [ "$1" = "true" ] || [ "$1" = "false" ]; }
 
 valid_window() {
     printf '%s' "$1" | grep -Eq '^[0-9]{1,5}$' || return 1
@@ -85,6 +123,29 @@ ensure_probe_secret() {
     # found it at 0644 (see the scanner service's twin comment).
     chmod 600 "${SECRET_FILE}" 2>/dev/null || true
     PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
+
+# Optional netfilter extensions, probed by asking the userspace binary for the extension's help text.
+# Kernel support is confirmed by the first apply, which sits inside the test window.
+CAP_MULTIPORT=false
+CAP_COMMENT=false
+CAP_LOG=false
+CAP_LIMIT=false
+CAP_REJECT=false
+CAP_ICMP=false
+probe_capabilities() {
+    CAP_MULTIPORT=false; CAP_COMMENT=false; CAP_LOG=false; CAP_LIMIT=false; CAP_REJECT=false; CAP_ICMP=false
+    iptables -m multiport -h >/dev/null 2>&1 && CAP_MULTIPORT=true
+    iptables -m comment -h >/dev/null 2>&1 && CAP_COMMENT=true
+    iptables -j LOG -h >/dev/null 2>&1 && CAP_LOG=true
+    iptables -m limit -h >/dev/null 2>&1 && CAP_LIMIT=true
+    iptables -j REJECT -h >/dev/null 2>&1 && CAP_REJECT=true
+    iptables -p icmp -h >/dev/null 2>&1 && CAP_ICMP=true
+}
+
+capabilities_json() {
+    printf '{"multiport":%s,"comment":%s,"log":%s,"limit":%s,"reject":%s,"icmp":%s}' \
+        "${CAP_MULTIPORT}" "${CAP_COMMENT}" "${CAP_LOG}" "${CAP_LIMIT}" "${CAP_REJECT}" "${CAP_ICMP}"
 }
 
 # Family "both" never reaches this; callers expand it into one call per family.
@@ -126,16 +187,60 @@ flush_chain() {
     fi
 }
 
-# Returns the iptables binary's exit status so a silently failed rule is detectable.
-apply_rule() {
-    local family="$1" action="$2" proto="$3" port="$4" source="$5" target="ACCEPT" bin
-    bin=$(ipt_bin_for "${family}")
-    [ "${action}" = "deny" ] && target="DROP"
-    if [ -n "${source}" ] && [ "${source}" != "null" ]; then
-        "${bin}" -A "${CHAIN}" -s "${source}" -p "${proto}" --dport "${port}" -j "${target}"
-    else
-        "${bin}" -A "${CHAIN}" -p "${proto}" --dport "${port}" -j "${target}"
+# Builds the match arguments shared by a rule's LOG line and its action line, into MATCH_ARGS.
+# Every value was allowlisted by validate_ruleset, so the array holds one token per argument.
+MATCH_ARGS=()
+build_match_args() {
+    local family="$1" proto="$2" ports="$3" icmp_code="$4" source="$5" destination="$6" interface="$7" comment="$8"
+    MATCH_ARGS=()
+    if [ -n "${interface}" ] && [ "${interface}" != "null" ]; then
+        MATCH_ARGS+=(-i "${interface}")
     fi
+    if [ -n "${source}" ] && [ "${source}" != "null" ]; then
+        MATCH_ARGS+=(-s "${source}")
+    fi
+    if [ -n "${destination}" ] && [ "${destination}" != "null" ]; then
+        MATCH_ARGS+=(-d "${destination}")
+    fi
+    if [ "${proto}" = "icmp" ]; then
+        if [ "${family}" = "6" ]; then
+            MATCH_ARGS+=(-p ipv6-icmp)
+            [ "${icmp_code}" != "any" ] && MATCH_ARGS+=(-m icmp6 --icmpv6-type "${icmp_code}")
+        else
+            MATCH_ARGS+=(-p icmp)
+            [ "${icmp_code}" != "any" ] && MATCH_ARGS+=(-m icmp --icmp-type "${icmp_code}")
+        fi
+    else
+        MATCH_ARGS+=(-p "${proto}")
+        case "${ports}" in
+            *,*) MATCH_ARGS+=(-m multiport --dports "${ports}") ;;
+            *)   MATCH_ARGS+=(--dport "${ports}") ;;
+        esac
+    fi
+    if [ -n "${comment}" ] && [ "${comment}" != "null" ]; then
+        MATCH_ARGS+=(-m comment --comment "${comment}")
+    fi
+}
+
+# Returns the iptables binary's exit status so a silently failed rule is detectable.
+# A logged rule is two chain lines: a rate-limited LOG with the same match, then the action.
+apply_rule() {
+    local family="$1" action="$2" proto="$3" ports="$4" icmp_code="$5" source="$6" destination="$7" interface="$8" log="$9" comment="${10}"
+    local target="ACCEPT" bin prefix
+    bin=$(ipt_bin_for "${family}")
+    case "${action}" in
+        deny) target="DROP" ;;
+        reject) target="REJECT" ;;
+    esac
+    build_match_args "${family}" "${proto}" "${ports}" "${icmp_code}" "${source}" "${destination}" "${interface}" "${comment}"
+    if [ "${log}" = "true" ]; then
+        prefix="HA_SOC:"
+        if [ -n "${comment}" ] && [ "${comment}" != "null" ]; then
+            prefix="HA_SOC:${comment}:"
+        fi
+        "${bin}" -A "${CHAIN}" "${MATCH_ARGS[@]}" -m limit --limit 5/min -j LOG --log-prefix "${prefix}" || return 1
+    fi
+    "${bin}" -A "${CHAIN}" "${MATCH_ARGS[@]}" -j "${target}"
 }
 
 # Runs before anything touches either chain; sets RULES_REJECT_REASON on failure.
@@ -148,21 +253,63 @@ validate_ruleset() {
         RULES_REJECT_REASON="rejected by add-on: rule count out of bounds"
         return 1
     fi
+    local ports icmp_code destination interface log comment
     for (( i = 0; i < count; i++ )); do
         rule=$(echo "${rules_json}" | jq -c ".[${i}]")
         action=$(echo "${rule}" | jq -r '.action // ""')
         proto=$(echo "${rule}" | jq -r '.proto // ""')
-        port=$(echo "${rule}" | jq -r '.port // ""')
+        # Legacy records carry an integer port; every new record carries the ports spec.
+        ports=$(echo "${rule}" | jq -r '.ports // (.port // "") | tostring')
+        icmp_code=$(echo "${rule}" | jq -r '.icmp_code // "any" | tostring')
         source=$(echo "${rule}" | jq -r '.source // "null"')
+        destination=$(echo "${rule}" | jq -r '.destination // "null"')
+        interface=$(echo "${rule}" | jq -r '.interface // "null"')
+        log=$(echo "${rule}" | jq -r '.log // false | tostring')
+        comment=$(echo "${rule}" | jq -r '.comment // "null"')
         family=$(echo "${rule}" | jq -r '.family // "both"')
-        if ! valid_action "${action}" || ! valid_proto "${proto}" \
-            || ! valid_port "${port}" || ! valid_family "${family}"; then
+        if ! valid_action "${action}" || ! valid_proto "${proto}" || ! valid_family "${family}"; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid action, proto, port, or family"
+            return 1
+        fi
+        if [ "${proto}" = "icmp" ]; then
+            if ! valid_icmp_code "${icmp_code}" || [ -n "${ports}" ]; then
+                RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid icmp type"
+                return 1
+            fi
+        elif ! valid_ports "${ports}"; then
             RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid action, proto, port, or family"
             return 1
         fi
         if [ "${source}" != "null" ] && ! valid_source_for_family "${source}" "${family}"; then
             RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid source for family ${family}"
             return 1
+        fi
+        if [ "${destination}" != "null" ] && ! valid_source_for_family "${destination}" "${family}"; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid destination for family ${family}"
+            return 1
+        fi
+        if [ "${interface}" != "null" ] && ! valid_interface "${interface}"; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid interface"
+            return 1
+        fi
+        if [ "${comment}" != "null" ] && ! valid_comment "${comment}"; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid comment"
+            return 1
+        fi
+        if ! valid_bool "${log}"; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} has an invalid log flag"
+            return 1
+        fi
+        # Refuse up front what the host cannot express; iptables would fail mid-apply otherwise.
+        case "${ports}" in *,*) [ "${CAP_MULTIPORT}" = "true" ] || { RULES_REJECT_REASON="rejected by add-on: rule ${i} needs multiport, which this host lacks"; return 1; } ;; esac
+        if [ "${comment}" != "null" ] && [ "${CAP_COMMENT}" != "true" ]; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} needs the comment extension, which this host lacks"; return 1
+        fi
+        if [ "${log}" = "true" ] && { [ "${CAP_LOG}" != "true" ] || [ "${CAP_LIMIT}" != "true" ]; }; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} needs LOG and limit, which this host lacks"; return 1
+        fi
+        if [ "${action}" = "reject" ] && [ "${CAP_REJECT}" != "true" ]; then
+            RULES_REJECT_REASON="rejected by add-on: rule ${i} needs REJECT, which this host lacks"; return 1
         fi
     done
     return 0
@@ -171,7 +318,7 @@ validate_ruleset() {
 # Flush-then-apply of the FULL desired state; any failure in either table returns non-zero so the caller rolls back both.
 APPLY_FAIL_REASON=""
 apply_ruleset() {
-    local rules_json="$1" count i rule action proto port source family fam
+    local rules_json="$1" count i rule action proto ports icmp_code source destination interface log comment family fam
     APPLY_FAIL_REASON=""
     flush_chain
     count=$(echo "${rules_json}" | jq 'length')
@@ -179,8 +326,12 @@ apply_ruleset() {
         rule=$(echo "${rules_json}" | jq -c ".[${i}]")
         action=$(echo "${rule}" | jq -r '.action')
         proto=$(echo "${rule}" | jq -r '.proto')
-        port=$(echo "${rule}" | jq -r '.port')
+        ports=$(echo "${rule}" | jq -r '.ports // (.port // "") | tostring')
         source=$(echo "${rule}" | jq -r '.source // "null"')
+        destination=$(echo "${rule}" | jq -r '.destination // "null"')
+        interface=$(echo "${rule}" | jq -r '.interface // "null"')
+        log=$(echo "${rule}" | jq -r '.log // false | tostring')
+        comment=$(echo "${rule}" | jq -r '.comment // "null"')
         family=$(echo "${rule}" | jq -r '.family // "both"')
         for fam in 4 6; do
             case "${family}" in
@@ -191,8 +342,13 @@ apply_ruleset() {
             if [ "${fam}" = "6" ] && [ "${IPV6_SUPPORTED}" -ne 1 ]; then
                 continue
             fi
-            if ! apply_rule "${fam}" "${action}" "${proto}" "${port}" "${source}"; then
-                APPLY_FAIL_REASON="rule ${i} (${action} ${proto}/${port} family ${fam}) failed to apply in $(ipt_bin_for "${fam}")"
+            # Core sends the per-family numeric ICMP type; a type absent in one family skips that half.
+            icmp_code=$(echo "${rule}" | jq -r --arg fam "${fam}" '(.icmp_codes[$fam] // "any") | tostring')
+            if [ "${proto}" = "icmp" ] && [ "${icmp_code}" = "null" ]; then
+                continue
+            fi
+            if ! apply_rule "${fam}" "${action}" "${proto}" "${ports}" "${icmp_code}" "${source}" "${destination}" "${interface}" "${log}" "${comment}"; then
+                APPLY_FAIL_REASON="rule ${i} (${action} ${proto}/${ports:-${icmp_code}} family ${fam}) failed to apply in $(ipt_bin_for "${fam}")"
                 bashio::log.error "Firewall: ${APPLY_FAIL_REASON}."
                 return 1
             fi
@@ -205,18 +361,26 @@ apply_ruleset() {
 chain_rules_lines() {
     local family="$1" bin
     bin=$(ipt_bin_for "${family}")
+    # A LOG line carries the same match as the action line that follows it; it is folded into that rule's log flag.
     "${bin}" -S "${CHAIN}" 2>/dev/null | awk -v chain="${CHAIN}" -v family="${family}" '
+        function jstr(v) { return (v == "") ? "null" : "\"" v "\"" }
         $1 == "-A" && $2 == chain {
-            proto = ""; port = ""; source = ""; target = "ACCEPT"
+            proto = ""; ports = ""; icmp = "any"; source = ""; dest = ""; iface = ""; comment = ""; target = "ACCEPT"
             for (i = 3; i <= NF; i++) {
                 if ($i == "-p") { proto = $(i + 1) }
                 else if ($i == "-s") { source = $(i + 1) }
-                else if ($i == "--dport") { port = $(i + 1) }
+                else if ($i == "-d") { dest = $(i + 1) }
+                else if ($i == "-i") { iface = $(i + 1) }
+                else if ($i == "--dport" || $i == "--dports") { ports = $(i + 1) }
+                else if ($i == "--icmp-type" || $i == "--icmpv6-type") { icmp = $(i + 1) }
+                else if ($i == "--comment") { comment = $(i + 1); gsub(/"/, "", comment) }
                 else if ($i == "-j") { target = $(i + 1) }
             }
-            action = (target == "ACCEPT") ? "allow" : "deny"
-            src_json = (source == "") ? "null" : "\"" source "\""
-            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"port\":%s,\"source\":%s,\"family\":\"%s\"}\n", action, proto, port, src_json, family
+            if (target == "LOG") { pending_log = 1; next }
+            action = (target == "ACCEPT") ? "allow" : (target == "REJECT") ? "reject" : "deny"
+            if (proto == "ipv6-icmp") { proto = "icmp" }
+            log = pending_log ? "true" : "false"; pending_log = 0
+            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"ports\":%s,\"icmp_code\":%s,\"source\":%s,\"destination\":%s,\"interface\":%s,\"log\":%s,\"comment\":%s,\"family\":\"%s\"}\n", action, proto, jstr(ports), (proto == "icmp") ? "\"" icmp "\"" : "null", jstr(source), jstr(dest), jstr(iface), log, jstr(comment), family
         }
     '
 }
@@ -321,6 +485,27 @@ apply_resource_limits() {
     fi
 }
 
+# Known rules plus extension availability, without a resolution; sent on a slow heartbeat so the
+# rule builder can grey out what this host cannot express before anyone proposes a test.
+STATUS_REPORT_EVERY=60  # x POLL_INTERVAL_SECONDS = ~5 min
+report_status() {
+    local payload
+    probe_ipv6_supported
+    probe_capabilities
+    payload=$(jq -n \
+        --argjson known_rules "$(known_rules_json)" \
+        --argjson ipv6_supported "$(ipv6_supported_json)" \
+        --argjson capabilities "$(capabilities_json)" \
+        --arg probe_secret "${PROBE_SECRET}" \
+        '{firewall_known_rules: $known_rules, firewall_ipv6_supported: $ipv6_supported, firewall_capabilities: $capabilities, probe_secret: $probe_secret}')
+    curl -sS -o /dev/null \
+        -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" \
+        "${INGEST_URL}" 2>/dev/null || true
+}
+
 # Reason is truncated to REASON_MAX_CHARS so Core's schema does not reject the report.
 report_resolution() {
     local test_id="$1" status="$2" reason="${3:-}" payload
@@ -329,11 +514,12 @@ report_resolution() {
     payload=$(jq -n \
         --argjson known_rules "$(known_rules_json)" \
         --argjson ipv6_supported "$(ipv6_supported_json)" \
+        --argjson capabilities "$(capabilities_json)" \
         --arg test_id "${test_id}" \
         --arg status "${status}" \
         --arg reason "${reason}" \
         --arg probe_secret "${PROBE_SECRET}" \
-        '{firewall_known_rules: $known_rules, firewall_ipv6_supported: $ipv6_supported, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status, firewall_resolved_reason: (if $reason == "" then null else $reason end), probe_secret: $probe_secret}')
+        '{firewall_known_rules: $known_rules, firewall_ipv6_supported: $ipv6_supported, firewall_capabilities: $capabilities, firewall_resolved_test_id: $test_id, firewall_resolved_status: $status, firewall_resolved_reason: (if $reason == "" then null else $reason end), probe_secret: $probe_secret}')
     curl -sS -o /dev/null -w '%{http_code}\n' \
         -X POST \
         -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
@@ -351,6 +537,7 @@ replay_chain_backup() {
     while IFS= read -r line; do
         case "${line}" in
             "-A ${CHAIN} "*)
+                line="${line//\"/}"
                 # Unquoted on purpose: the line is iptables' own -S output for a rule this script wrote; no argument contains whitespace.
                 # shellcheck disable=SC2086
                 if ! "${bin}" ${line}; then
@@ -440,7 +627,9 @@ exit_if_stop_requested() {
 mkdir -p "${STATE_DIR}"
 ensure_probe_secret
 probe_ipv6_supported
+probe_capabilities
 ensure_chain
+bashio::log.info "Firewall extensions available: $(capabilities_json)"
 if [ "${IPV6_SUPPORTED}" -ne 1 ]; then
     bashio::log.warning "ip6tables is not functional on this host; IPv6 halves of firewall rules will be skipped and reported as such (firewall_ipv6_supported=false)."
 fi
@@ -584,6 +773,9 @@ while true; do
     if [ $(( poll_counter % LIMIT_APPLY_EVERY )) -eq 0 ] \
         && [ -s "${LIMITS_FILE}" ] && [ "$(cat "${LIMITS_FILE}")" != "{}" ]; then
         apply_resource_limits
+    fi
+    if [ $(( poll_counter % STATUS_REPORT_EVERY )) -eq 1 ]; then
+        report_status
     fi
 
     exit_if_stop_requested

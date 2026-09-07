@@ -155,6 +155,8 @@ export interface OpenPort {
 
 export interface HostProbeResult {
   open_ports: OpenPort[];
+  // Every host interface except loopback, from the scanner; absent on reports from older add-on builds.
+  interfaces?: string[] | null;
   scanner_version: string | null;
   reported_at: string;
 }
@@ -169,16 +171,41 @@ export interface ProbeOverview {
 }
 
 // Mirrors firewall.py's RULE_SCHEMA / pending-test state machine; the add-on's report (known_rules) is the final word.
-export type FirewallRuleAction = "allow" | "deny";
-export type FirewallRuleProto = "tcp" | "udp";
-// Address family a rule targets; the server derives it from the source address and rejects a contradiction.
+export type FirewallRuleAction = "allow" | "deny" | "reject";
+// "icmp" is written as icmp into iptables and ipv6-icmp into ip6tables.
+export type FirewallRuleProto = "tcp" | "udp" | "icmp";
+// Address family a rule targets; the server derives it from the source or destination address and rejects a contradiction.
 export type FirewallRuleFamily = "4" | "6" | "both";
+// Mirrors const.py's FIREWALL_ICMP_TYPES: [name, v4 code, v6 code]; null means the type does not exist in that family.
+export const FIREWALL_ICMP_TYPES: [string, number | null, number | null][] = [
+  ["any", null, null],
+  ["echo-request", 8, 128],
+  ["echo-reply", 0, 129],
+  ["destination-unreachable", 3, 1],
+  ["time-exceeded", 11, 3],
+  ["parameter-problem", 12, 4],
+  ["packet-too-big", null, 2],
+  ["router-solicitation", null, 133],
+  ["router-advertisement", null, 134],
+  ["neighbour-solicitation", null, 135],
+  ["neighbour-advertisement", null, 136],
+];
+// Optional netfilter extensions the add-on reports; a missing report (null) refuses nothing client-side.
+export type FirewallCapability = "multiport" | "comment" | "log" | "limit" | "reject" | "icmp";
 
 export interface FirewallRule {
   action: FirewallRuleAction;
   proto: FirewallRuleProto;
-  port: number;
+  // "443", "8000:8100", or "80,443,8000:8100" (at most 15 entries); null for icmp rules.
+  ports?: string | null;
+  // Legacy single port on records persisted before the ports grammar; the server normalizes it into ports.
+  port?: number | null;
+  icmp_type?: string | null;
   source?: string | null;
+  destination?: string | null;
+  interface?: string | null;
+  log?: boolean;
+  comment?: string | null;
   // Optional: records persisted before the dual-stack change carry no family; absent means "both".
   family?: FirewallRuleFamily;
   // Set by the server at read time on every "6"/"both" rule while the add-on reports ipv6_supported=false.
@@ -216,6 +243,8 @@ export interface FirewallStatus {
   known_rules_reported_at: string | null;
   // Whether ip6tables works on the host per the add-on's last report (`ip6tables -S`); null until a report carried it.
   ipv6_supported?: boolean | null;
+  // Which optional extensions the add-on found on the host; null until an add-on that probes them has reported.
+  capabilities?: Partial<Record<FirewallCapability, boolean>> | null;
   pending: FirewallPendingTest | null;
   history: FirewallPendingTest[];
 }
@@ -277,6 +306,8 @@ export interface HaSocSettings {
   evidence_retention_days: number;
   scanner_enabled: boolean;
   scanner_network_checks_enabled: boolean;
+  // Reads YAML-mode dashboard files for the unused-resource check; off by default.
+  hygiene_scan_yaml_dashboards: boolean;
   // Device manufacturer and model strings go to NIST's NVD only while this is on.
   nvd_lookups_enabled: boolean;
   // Secrets come back masked ("[redacted]" or ""); send a new value to change one, nothing or the placeholder to leave it.
@@ -284,6 +315,10 @@ export interface HaSocSettings {
   nvd_api_key_set?: boolean;
   github_token?: string | null;
   github_token_set?: boolean;
+  // UniFi suggestion write-back: off by default, and only with its own write-scoped key.
+  unifi_network_write_enabled: boolean;
+  unifi_network_write_api_key?: string | null;
+  unifi_network_write_api_key_set?: boolean;
   // Sparse per-rule threshold overrides: send only the changed fields, the server merges per field.
   detection_thresholds: Record<string, Record<string, number | boolean>>;
   access_level: AccessLevel;
@@ -711,13 +746,33 @@ export interface PiHoleOverview {
   generated_at: string;
 }
 
-// Mirrors network_security.py's build_findings().
+// Mirrors network_security.py's build_findings() plus decorate_findings().
+export type SuggestionStatus = "planned" | "ignored" | "applied";
+export type RemediationKind = "disable_firewall_policy" | "disable_acl_rule";
+
+// A change HA SOC can carry out itself when write-back is on; null means the fix is manual.
+export interface SuggestionRemediation {
+  kind: RemediationKind;
+  target_id: string;
+  label: string;
+  reversible: string;
+}
+
+export interface SuggestionDecision {
+  status: SuggestionStatus;
+  at: string;
+  by: string | null;
+  detail: Record<string, unknown> | null;
+}
+
 export interface NetworkSecurityFinding {
   id: string;
   severity: string;
   category: string;
   title: string;
   detail: string;
+  remediation: SuggestionRemediation | null;
+  decision: SuggestionDecision | null;
 }
 
 // Mirrors network_security.py's _client_summaries(): a lightweight projection of the Network tab's client rows.
@@ -739,6 +794,8 @@ export interface NetworkSecurityOverview {
   unifi_error: string | null;
   pihole: PiHoleOverview;
   findings: NetworkSecurityFinding[];
+  // True only when the owner enabled write-back in Settings; Apply is offered only then.
+  write_enabled: boolean;
   generated_at: string;
 }
 
@@ -1199,6 +1256,17 @@ export const fetchNetworkOverview = (hass: HomeAssistant) =>
 
 export const fetchNetworkSecurityOverview = (hass: HomeAssistant) =>
   ws<NetworkSecurityOverview>(hass, { type: "ha_soc/network_security/overview" });
+
+// planned, ignored, or null to clear; "applied" is written only by the apply path.
+export const setSuggestionDecision = (hass: HomeAssistant, findingId: string, status: "planned" | "ignored" | null) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/network_security/suggestion_set", finding_id: findingId, status });
+
+// Owner-only; the server re-derives the finding from a fresh controller snapshot before acting.
+export const applySuggestion = (hass: HomeAssistant, findingId: string) =>
+  ws<{ ok: boolean; result: Record<string, unknown> }>(hass, {
+    type: "ha_soc/network_security/suggestion_apply",
+    finding_id: findingId,
+  });
 
 // The calling user's own "Customize" layout for one view, never another user's.
 export const fetchLayout = (hass: HomeAssistant, viewId: string) =>

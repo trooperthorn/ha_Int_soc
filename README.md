@@ -143,9 +143,12 @@ imply otherwise.
   top blocked domains), and an **advisory findings list** derived from all
   four, e.g. a rule/policy with no source/destination scoping at all, a
   server port nothing names, or an IoT subnet falling through to Pi-hole's
-  global Default group. Entirely read-only and advisory: nothing here ever
+  global Default group. Read-only and advisory by default: nothing here
   edits a UniFi rule or policy, toggles Pi-hole, or reassigns a Pi-hole
-  client. See below.
+  client unless the owner enables suggestion write-back in Settings with a
+  separate write-scoped key, and then the only actions are disabling a
+  broad ACL rule or Firewall Policy from the Suggested changes tab, each
+  confirmed, audited, and read back. See below.
 - **Host Probe (optional add-on)**: real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
@@ -574,11 +577,20 @@ all configuration is owner-only and audit-logged. See
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a
-host security control. The Firewall Rules card, on the Scanner tab, is
-the one deliberate exception, reading, and optionally writing, the host's
-iptables rules through the HA SOC Probe add-on. It needs the add-on to
-declare a real `CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its
-`config.yaml`).
+security control unless the owner opens a gate for it (the only other
+gate is UniFi suggestion write-back, above). The Firewall Rules card, on
+the Scanner tab, reads, and optionally writes, the host's iptables rules
+through the HA SOC Probe add-on. It needs the add-on to declare a real
+`CAP_NET_ADMIN` (`privileged: [NET_ADMIN]` in its `config.yaml`).
+
+A rule matches inbound traffic to the host by protocol (tcp, udp, or
+icmp), a port, a range, or a list of ports (or an ICMP type), and
+optionally a source, a destination, and one interface; it accepts,
+drops, or rejects, can log matches to the host kernel log (rate-limited),
+and can carry a short comment that shows in `iptables -S`. The builder
+offers the ports the Probe sees listening (with process and bind) and the
+interfaces it reports, and it disables any option whose iptables extension
+the host lacks. Rules never touch OUTPUT or FORWARD.
 
 **The add-on's Supervisor security rating is 1, the lowest, and that is a
 deliberate choice.** The Supervisor's rating algorithm sets the rating to
