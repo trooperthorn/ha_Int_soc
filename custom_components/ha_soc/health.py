@@ -35,6 +35,8 @@ import homeassistant.util.dt as dt
 from .audit import BAN_LOGGER_NAME
 from .config_hygiene import HYGIENE_COULD_NOT_EVALUATE, HygieneResult
 from .const import (
+    CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
+    DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DOMAIN,
     PROBE_ADDON_NAME,
     SEVERITY_CRITICAL,
@@ -602,6 +604,10 @@ class IntegrationHealth:
             self._check_lovelace_missing_resources,
             self._check_empty_areas_and_floors,
             self._check_unused_labels_and_blueprints,
+            self._check_integrations_without_entry,
+            self._check_entries_without_entities_or_devices,
+            self._check_hacs_not_loaded,
+            self._check_unused_dashboard_resources,
             self._check_unknown_customize_entities,
             self._check_orphaned_statistics,
             self._check_energy_unknown_references,
@@ -1703,6 +1709,78 @@ class IntegrationHealth:
             "Labels or blueprints that aren't attached to or used by anything",
             f"{len(items)} label(s)/blueprint(s) aren't attached to or used by anything — "
             "organizational tidiness only, no functional impact.",
+            items,
+        )
+
+    async def _check_integrations_without_entry(self) -> list[dict]:
+        """check="integrations_without_entry"; informational, unused-install family."""
+        from .unused_installs import async_integrations_without_entry
+
+        items = await async_integrations_without_entry(self.hass)
+        return self._async_hygiene_finding(
+            "integrations_without_entry", SEVERITY_INFO,
+            "Custom integrations on disk that nothing sets up",
+            f"{len(items)} custom integration(s) exist under custom_components/ with no config "
+            "entry, no YAML block, and no loaded integration depending on them. Code that never "
+            "runs still ships in backups and still counts as attack surface.",
+            items,
+        )
+
+    async def _check_entries_without_entities_or_devices(self) -> list[dict]:
+        """check="entries_without_entities_or_devices"; informational, unused-install family."""
+        from .unused_installs import async_entries_without_entities_or_devices
+
+        items = await async_entries_without_entities_or_devices(self.hass)
+        return self._async_hygiene_finding(
+            "entries_without_entities_or_devices", SEVERITY_INFO,
+            "Config entries that own no entity and no device",
+            f"{len(items)} loaded config entry/entries own nothing in the entity or device "
+            "registry. System, hardware, service, and virtual integrations are excluded because "
+            "they legitimately own none.",
+            items,
+        )
+
+    async def _check_hacs_not_loaded(self) -> list[dict]:
+        """check="hacs_not_loaded"; informational, unused-install family."""
+        from .unused_installs import async_hacs_not_loaded
+
+        items = await async_hacs_not_loaded(self.hass)
+        return self._async_hygiene_finding(
+            "hacs_not_loaded", SEVERITY_INFO,
+            "HACS downloads that Home Assistant never loads",
+            f"{len(items)} HACS-managed download(s) are installed but inert: an integration "
+            "with no set-up domain, or a dashboard element with no resource entry.",
+            items,
+        )
+
+    async def _check_unused_dashboard_resources(self) -> list[dict]:
+        """check="unused_dashboard_resources"; informational, unused-install family.
+
+        YAML-mode dashboards are read only when the owner turned the scan on;
+        otherwise the check reports could_not_evaluate and touches nothing.
+        """
+        from .unused_installs import async_unused_dashboard_resources
+
+        scan_yaml = bool(
+            self._store.settings.get(
+                CONF_HYGIENE_SCAN_YAML_DASHBOARDS, DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS
+            )
+        )
+        items = await async_unused_dashboard_resources(self.hass, scan_yaml=scan_yaml)
+        skipped = getattr(items, "yaml_dashboards_skipped", 0)
+        if skipped:
+            _LOGGER.debug(
+                "HA SOC: %d YAML dashboard(s) not scanned; enable the YAML dashboard "
+                "scan in Settings to evaluate unused dashboard resources",
+                skipped,
+            )
+        undeterminable = len(getattr(items, "undeterminable", ()))
+        return self._async_hygiene_finding(
+            "unused_dashboard_resources", SEVERITY_INFO,
+            "Dashboard resources no dashboard references",
+            f"{len(items)} dashboard resource(s) register custom elements that no dashboard "
+            f"uses. {undeterminable} resource(s) could not be read statically and are not "
+            "counted either way.",
             items,
         )
 

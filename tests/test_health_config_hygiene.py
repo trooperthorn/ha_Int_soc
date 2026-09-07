@@ -137,3 +137,37 @@ async def test_notify_coverage_gap_severities_split_per_d11(
     registry = ir.async_get(hass)
     issue_ids = {i.issue_id for i in registry.issues.values() if i.domain == DOMAIN}
     assert set(by_id) <= issue_ids
+
+
+async def test_integrations_without_entry_check_is_info_and_not_mirrored(
+    hass: HomeAssistant, health: IntegrationHealth, tmp_path
+) -> None:
+    hass.config.config_dir = str(tmp_path)
+    manifest = tmp_path / "custom_components" / "orphan_thing" / "manifest.json"
+    manifest.parent.mkdir(parents=True)
+    manifest.write_text('{"domain": "orphan_thing", "name": "X", "version": "1.0.0"}', encoding="utf-8")
+
+    findings = await health._check_integrations_without_entry()
+
+    assert len(findings) == 1
+    assert findings[0]["check"] == "integrations_without_entry"
+    assert findings[0]["severity"] == "info"
+    assert findings[0]["detail"]["items"][0]["domain"] == "orphan_thing"
+    registry = ir.async_get(hass)
+    assert not any(i.domain == DOMAIN for i in registry.issues.values())
+
+
+async def test_unused_dashboard_resources_check_reads_the_yaml_scan_setting(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from custom_components.ha_soc.config_hygiene import HygieneResult
+
+    health._store.async_update_settings(hygiene_scan_yaml_dashboards=True)
+    fake = AsyncMock(return_value=HygieneResult())
+    with patch("custom_components.ha_soc.unused_installs.async_unused_dashboard_resources", fake):
+        findings = await health._check_unused_dashboard_resources()
+
+    assert findings == []
+    assert fake.await_args.kwargs == {"scan_yaml": True}

@@ -31,7 +31,18 @@ RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": None}]
 # The same rules after RULE_SCHEMA settles the family: no source means the
 # dual-stack default "both" (work item 2.4); stored and returned records
 # carry this normalized shape.
-RULES_NORMALIZED = [{**RULES[0], "family": "both"}]
+RULES_NORMALIZED = [{
+    "action": "allow",
+    "proto": "tcp",
+    "ports": "8123",
+    "icmp_type": None,
+    "source": None,
+    "destination": None,
+    "interface": None,
+    "log": False,
+    "comment": None,
+    "family": "both",
+}]
 
 
 def _connection(*, owner: bool = True) -> MagicMock:

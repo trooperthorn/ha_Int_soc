@@ -46,6 +46,8 @@ CONF_AUDIT_RETENTION_DAYS = "audit_retention_days"
 CONF_AUDIT_MAX_BYTES = "audit_max_bytes"
 CONF_SCANNER_ENABLED = "scanner_enabled"
 CONF_SCANNER_NETWORK_CHECKS_ENABLED = "scanner_network_checks_enabled"
+CONF_HYGIENE_SCAN_YAML_DASHBOARDS = "hygiene_scan_yaml_dashboards"
+DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS = False
 CONF_NVD_API_KEY = "nvd_api_key"
 CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
@@ -92,6 +94,19 @@ DEFAULT_SNMP_PORT = 161
 CONF_UNIFI_NETWORK_HOST = "unifi_network_host"
 CONF_UNIFI_NETWORK_API_KEY = "unifi_network_api_key"
 CONF_UNIFI_NETWORK_VERIFY_SSL = "unifi_network_verify_ssl"
+# Suggestion write-back to the controller: off by default, and only ever with its own write-scoped key.
+CONF_UNIFI_NETWORK_WRITE_ENABLED = "unifi_network_write_enabled"
+CONF_UNIFI_NETWORK_WRITE_API_KEY = "unifi_network_write_api_key"
+DEFAULT_UNIFI_NETWORK_WRITE_ENABLED = False
+
+# Owner decisions on Network Security suggestions (HaSocData.data["network_suggestions"]).
+SUGGESTION_STATUS_PLANNED = "planned"
+SUGGESTION_STATUS_IGNORED = "ignored"
+SUGGESTION_STATUS_APPLIED = "applied"
+SUGGESTION_STATUSES = [SUGGESTION_STATUS_PLANNED, SUGGESTION_STATUS_IGNORED, SUGGESTION_STATUS_APPLIED]
+# Remediations HA SOC can carry out itself when the write path is on; everything else is manual.
+REMEDIATION_DISABLE_FIREWALL_POLICY = "disable_firewall_policy"
+REMEDIATION_DISABLE_ACL_RULE = "disable_acl_rule"
 CONF_UNIFI_PROTECT_HOST = "unifi_protect_host"
 CONF_UNIFI_PROTECT_API_KEY = "unifi_protect_api_key"
 CONF_UNIFI_PROTECT_VERIFY_SSL = "unifi_protect_verify_ssl"
@@ -116,6 +131,7 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
         CONF_NVD_API_KEY,
         CONF_GITHUB_TOKEN,
         CONF_UNIFI_NETWORK_API_KEY,
+        CONF_UNIFI_NETWORK_WRITE_API_KEY,
         CONF_UNIFI_PROTECT_API_KEY,
         CONF_PIHOLE_API_KEY,
         CONF_SNMP_AUTH_PASSPHRASE,
@@ -195,8 +211,49 @@ SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
 # Separate from poll_firewall_command on purpose; see docs/design.md.
 SERVICE_POLL_SNMP_CONFIG = "poll_snmp_config"
 
-FIREWALL_RULE_ACTIONS = ["allow", "deny"]
-FIREWALL_RULE_PROTOS = ["tcp", "udp"]
+FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
+# "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.
+FIREWALL_RULE_PROTOS = ["tcp", "udp", "icmp"]
+
+# ICMP types by name; the numeric v4 and v6 codes are what the add-on writes and reads back.
+FIREWALL_ICMP_TYPES: dict[str, tuple[int | None, int | None]] = {
+    "any": (None, None),
+    "echo-request": (8, 128),
+    "echo-reply": (0, 129),
+    "destination-unreachable": (3, 1),
+    "time-exceeded": (11, 3),
+    "parameter-problem": (12, 4),
+    "packet-too-big": (None, 2),
+    "router-solicitation": (None, 133),
+    "router-advertisement": (None, 134),
+    "neighbour-solicitation": (None, 135),
+    "neighbour-advertisement": (None, 136),
+}
+
+# Port spec grammar shared with the add-on: "443", "8000:8100", "80,443,8000:8100"; at most 15 entries (multiport limit).
+FIREWALL_PORTS_MAX_ENTRIES = 15
+# Linux IFNAMSIZ is 16 with the terminator; no whitespace so an iptables -S line stays one token per argument.
+FIREWALL_INTERFACE_PATTERN = r"^[A-Za-z0-9_.:@-]{1,15}$"
+# Comments and log prefixes are single tokens for the same reason; 29 is the kernel's log-prefix limit minus the "HA_SOC:" head.
+FIREWALL_COMMENT_PATTERN = r"^[A-Za-z0-9_.-]{1,22}$"
+FIREWALL_LOG_PREFIX_HEAD = "HA_SOC:"
+FIREWALL_LOG_RATE = "5/min"
+
+# Optional netfilter extensions the add-on probes for; a rule needing one is refused while the add-on reports it absent.
+FIREWALL_CAPABILITY_MULTIPORT = "multiport"
+FIREWALL_CAPABILITY_COMMENT = "comment"
+FIREWALL_CAPABILITY_LOG = "log"
+FIREWALL_CAPABILITY_LIMIT = "limit"
+FIREWALL_CAPABILITY_REJECT = "reject"
+FIREWALL_CAPABILITY_ICMP = "icmp"
+FIREWALL_CAPABILITIES = [
+    FIREWALL_CAPABILITY_MULTIPORT,
+    FIREWALL_CAPABILITY_COMMENT,
+    FIREWALL_CAPABILITY_LOG,
+    FIREWALL_CAPABILITY_LIMIT,
+    FIREWALL_CAPABILITY_REJECT,
+    FIREWALL_CAPABILITY_ICMP,
+]
 
 # A sourced rule is pinned to its address family; a rule with no source defaults to "both".
 FIREWALL_RULE_FAMILY_V4 = "4"

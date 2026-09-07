@@ -59,6 +59,17 @@ Supervisor the services do not exist at all.
 
 ## Firewall rules (read and write)
 
+Rules can match a single port, a port range, or a list of ports, an ICMP
+or ICMPv6 type, a source and a destination address, and one interface;
+they can drop, reject, or accept, optionally log matches to the host
+kernel log (rate-limited, prefixed `HA_SOC:`), and carry a short comment
+that shows in `iptables -S`. The add-on checks which optional iptables
+extensions the host has (multiport, comment, LOG, limit, REJECT, icmp)
+and reports them so the panel disables what cannot be expressed; a rule
+that still needs a missing extension is refused before any chain is
+touched. Every field is validated by the add-on itself before it becomes
+an iptables argument.
+
 Starting with `2026.08.23.3` this add-on can also read and, if you choose
 to propose a change from the HA SOC panel, write the host's firewall
 rules. This is opt-in per change, not an always-on background behavior:

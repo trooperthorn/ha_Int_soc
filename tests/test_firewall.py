@@ -27,7 +27,20 @@ RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": "192.168.10
 # What RULES looks like after RULE_SCHEMA settles the family: an IPv4
 # source pins family "4" (work item 2.4). Proposed rules are stored and
 # handed to the add-on in this normalized shape.
-RULES_NORMALIZED = [{**RULES[0], "family": "4"}]
+RULES_NORMALIZED = [
+    {
+        "action": "allow",
+        "proto": "tcp",
+        "ports": "8123",
+        "icmp_type": None,
+        "source": "192.168.10.0/24",
+        "destination": None,
+        "interface": None,
+        "log": False,
+        "comment": None,
+        "family": "4",
+    }
+]
 
 
 @pytest.fixture
@@ -52,7 +65,7 @@ async def test_propose_without_backup_ack_fails(hass: HomeAssistant, entry: Mock
 
 async def test_propose_with_invalid_rules_fails(hass: HomeAssistant, entry: MockConfigEntry) -> None:
     store = entry.runtime_data.store
-    bad_rules = [{"action": "allow", "proto": "icmp", "port": 8123}]
+    bad_rules = [{"action": "allow", "proto": "gre", "port": 8123}]
     ok, reason, pending = await firewall.async_propose_test(
         hass, store, rules=bad_rules, backup_acknowledged=True, user_id="u1"
     )
@@ -242,7 +255,7 @@ async def test_report_from_addon_archives_and_clears_pending(
 
     fw = store.data["firewall"]
     assert fw["pending"] is None
-    assert fw["known_rules"] == RULES
+    assert fw["known_rules"] == RULES_NORMALIZED
     assert fw["known_rules_reported_at"] is not None
     assert len(fw["history"]) == 1
     assert fw["history"][0]["test_id"] == test_id
@@ -303,7 +316,7 @@ async def test_report_from_addon_ignores_mismatched_test_id(
     fw = store.data["firewall"]
     assert fw["pending"]["test_id"] == test_id
     assert fw["pending"]["status"] == FIREWALL_TEST_TESTING
-    assert fw["known_rules"] == RULES  # known_rules still updates unconditionally
+    assert fw["known_rules"] == RULES_NORMALIZED  # known_rules still updates unconditionally
     assert fw["history"] == []
 
 
@@ -419,3 +432,106 @@ async def test_partial_ipv6_is_visible(hass: HomeAssistant, entry: MockConfigEnt
     assert status["ipv6_supported"] is True
     assert all("partially_applied" not in r for r in status["pending"]["proposed_rules"])
     assert all("partially_applied" not in r for r in status["known_rules"])
+
+
+def _rule(**overrides):
+    base = {"action": "allow", "proto": "tcp", "ports": "443"}
+    base.update(overrides)
+    return firewall.RULE_SCHEMA(base)
+
+
+def test_ports_grammar_single_range_and_list() -> None:
+    assert _rule(ports="443")["ports"] == "443"
+    assert _rule(ports="8000:8100")["ports"] == "8000:8100"
+    assert _rule(ports="80,443,8000:8100")["ports"] == "80,443,8000:8100"
+    # The legacy integer port is still accepted and normalized.
+    assert _rule(ports=None, port=8123)["ports"] == "8123"
+    for bad in ("0", "65536", "8100:8000", "80:80", "a", "80;443", ",".join(["1"] * 16)):
+        with pytest.raises(vol.Invalid):
+            _rule(ports=bad)
+    with pytest.raises(vol.Invalid):
+        _rule(ports=None)
+
+
+def test_icmp_rules_take_a_type_not_ports() -> None:
+    rule = _rule(proto="icmp", ports=None)
+    assert rule["icmp_type"] == "any" and rule["ports"] is None and rule["family"] == "both"
+    assert _rule(proto="icmp", ports=None, icmp_type="echo-request")["family"] == "both"
+    # A type that exists in one family only pins the rule to that family.
+    assert _rule(proto="icmp", ports=None, icmp_type="neighbour-solicitation")["family"] == "6"
+    with pytest.raises(vol.Invalid):
+        _rule(proto="icmp", ports=None, icmp_type="neighbour-solicitation", family="4")
+    with pytest.raises(vol.Invalid):
+        _rule(proto="icmp", ports="443")
+    with pytest.raises(vol.Invalid):
+        _rule(proto="tcp", icmp_type="echo-request")
+    with pytest.raises(vol.Invalid):
+        _rule(proto="icmp", ports=None, icmp_type="made-up")
+
+
+def test_destination_interface_comment_log_and_reject() -> None:
+    rule = _rule(
+        action="reject",
+        destination="192.168.10.5",
+        interface="eth0.10",
+        comment="ha_web",
+        log=True,
+    )
+    assert rule["action"] == "reject" and rule["family"] == "4"
+    assert rule["destination"] == "192.168.10.5" and rule["interface"] == "eth0.10"
+    assert rule["comment"] == "ha_web" and rule["log"] is True
+    with pytest.raises(vol.Invalid):
+        _rule(source="192.168.10.0/24", destination="fd00::1")
+    for bad_iface in ("eth 0", "a" * 16, "eth0;"):
+        with pytest.raises(vol.Invalid):
+            _rule(interface=bad_iface)
+    for bad_comment in ("has space", "a" * 23, 'quote"'):
+        with pytest.raises(vol.Invalid):
+            _rule(comment=bad_comment)
+
+
+def test_required_capabilities_and_addon_wire_shape() -> None:
+    plain = _rule()
+    assert firewall.rule_required_capabilities(plain) == set()
+    fancy = _rule(action="reject", ports="80,443", comment="x", log=True)
+    assert firewall.rule_required_capabilities(fancy) == {"multiport", "comment", "log", "limit", "reject"}
+    icmp = _rule(proto="icmp", ports=None, icmp_type="echo-request")
+    assert firewall.rule_required_capabilities(icmp) == {"icmp"}
+    assert firewall.rule_for_addon(icmp)["icmp_codes"] == {"4": 8, "6": 128}
+    assert firewall.rule_for_addon(_rule(proto="icmp", ports=None))["icmp_codes"] == {"4": "any", "6": "any"}
+    v6_only = _rule(proto="icmp", ports=None, icmp_type="packet-too-big")
+    assert firewall.rule_for_addon(v6_only)["icmp_codes"] == {"4": None, "6": 2}
+    assert "icmp_codes" not in firewall.rule_for_addon(plain)
+
+
+def test_normalize_known_rule_maps_codes_back_to_names() -> None:
+    read_back = {"action": "deny", "proto": "icmp", "ports": None, "icmp_code": "128", "family": "6"}
+    assert firewall.normalize_known_rule(read_back)["icmp_type"] == "echo-request"
+    unknown = {"action": "deny", "proto": "icmp", "icmp_code": "200", "family": "4"}
+    assert firewall.normalize_known_rule(unknown)["icmp_type"] == "200"
+    legacy = {"action": "allow", "proto": "tcp", "port": 22, "source": None}
+    normalized = firewall.normalize_known_rule(legacy)
+    assert normalized["ports"] == "22" and normalized["family"] == "both" and normalized["log"] is False
+
+
+async def test_propose_refuses_capabilities_the_addon_lacks(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    store = entry.runtime_data.store
+    needs_multiport = [{"action": "allow", "proto": "tcp", "ports": "80,443"}]
+    # No report yet: nothing is refused on capability grounds.
+    ok, _, _ = await firewall.async_propose_test(
+        hass, store, rules=needs_multiport, backup_acknowledged=True, user_id="u1"
+    )
+    assert ok is True
+    store.data["firewall"]["pending"] = None
+
+    await firewall.async_report_from_addon(
+        hass, store, known_rules=[], capabilities={"multiport": False, "comment": True}
+    )
+    ok, reason, _ = await firewall.async_propose_test(
+        hass, store, rules=needs_multiport, backup_acknowledged=True, user_id="u1"
+    )
+    assert ok is False and reason == "unsupported_capabilities: multiport"
+    status = await firewall.async_get_status(hass, store)
+    assert status["capabilities"] == {"multiport": False, "comment": True}

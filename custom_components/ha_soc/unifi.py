@@ -12,25 +12,29 @@ import asyncio
 import ipaddress
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import aiohttp
-
+import homeassistant.util.dt as dt_util
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-import homeassistant.util.dt as dt_util
 
 from . import unifi_core
 from .const import (
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
+    CONF_UNIFI_NETWORK_WRITE_API_KEY,
+    CONF_UNIFI_NETWORK_WRITE_ENABLED,
     CONF_UNIFI_PROTECT_API_KEY,
     CONF_UNIFI_PROTECT_HOST,
     CONF_UNIFI_PROTECT_VERIFY_SSL,
+    DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
     DEFAULT_UNIFI_VERIFY_SSL,
     UNIFI_NETWORK_API_PATH,
     UNIFI_PROTECT_API_PATH,
@@ -167,6 +171,109 @@ async def _network_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | 
     )
 
 
+async def _network_write_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
+    """The write-scoped Network connection, or None unless the owner enabled
+    write-back and stored a separate write key. The read key is never used
+    for a write, so a read-only key stays read-only."""
+    s = store.settings
+    if not s.get(CONF_UNIFI_NETWORK_WRITE_ENABLED, DEFAULT_UNIFI_NETWORK_WRITE_ENABLED):
+        return None
+    host = (s.get(CONF_UNIFI_NETWORK_HOST) or "").strip()
+    key = (await secrets.async_get(CONF_UNIFI_NETWORK_WRITE_API_KEY) or "").strip()
+    if not host or not key:
+        return None
+    _validate_host(host)
+    return _Conn(
+        host=host,
+        api_key=key,
+        verify_ssl=bool(s.get(CONF_UNIFI_NETWORK_VERIFY_SSL, DEFAULT_UNIFI_VERIFY_SSL)),
+        base_path=UNIFI_NETWORK_API_PATH,
+    )
+
+
+def validate_write_config(settings: dict[str, Any], secrets: dict[str, str | None]) -> None:
+    """Reject enabling write-back without a host and a separate write key."""
+    if not settings.get(CONF_UNIFI_NETWORK_WRITE_ENABLED, False):
+        return
+    if not (settings.get(CONF_UNIFI_NETWORK_HOST) or "").strip():
+        raise vol.Invalid("UniFi write-back needs the controller host configured first")
+    if not (secrets.get(CONF_UNIFI_NETWORK_WRITE_API_KEY) or "").strip():
+        raise vol.Invalid("UniFi write-back needs its own write-scoped API key")
+
+
+# Fields the controller assigns; a PUT body must not carry them (the OpenAPI update schemas omit them).
+_SERVER_ASSIGNED_KEYS = ("id", "index", "metadata")
+
+
+def _update_body(raw: dict[str, Any], **changes: Any) -> dict[str, Any]:
+    body = {k: v for k, v in raw.items() if k not in _SERVER_ASSIGNED_KEYS}
+    body.update(changes)
+    return body
+
+
+async def async_disable_firewall_policy(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore, policy_id: str
+) -> dict[str, Any]:
+    """Disable one Firewall Policy by full-object PUT (the PATCH body carries
+    only the logging flag) and read it back to prove the change landed.
+    Raises UniFiError; returns {policy_id, name, enabled_before, enabled_after}."""
+    conn = await _network_write_conn(store, secrets)
+    if conn is None:
+        raise UniFiError("UniFi write-back is not enabled or has no write key.")
+    _validate_id(policy_id)
+    site_id = await _resolve_site_id(hass, conn)
+    path = f"/sites/{site_id}/firewall/policies/{policy_id}"
+    raw = await _get(hass, conn, path)
+    if not isinstance(raw, dict) or "enabled" not in raw:
+        raise UniFiError("The console returned an unexpected policy shape.")
+    await _request(hass, conn, "PUT", path, _update_body(raw, enabled=False))
+    after = await _get(hass, conn, path)
+    enabled_after = after.get("enabled") if isinstance(after, dict) else None
+    if enabled_after is not False:
+        raise UniFiError("The console accepted the update but still reports the policy enabled.")
+    return {
+        "policy_id": policy_id,
+        "name": raw.get("name"),
+        "enabled_before": raw.get("enabled"),
+        "enabled_after": enabled_after,
+    }
+
+
+async def async_disable_acl_rule(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore, rule_id: str
+) -> dict[str, Any]:
+    """Disable one ACL rule by full-object PUT and read it back."""
+    conn = await _network_write_conn(store, secrets)
+    if conn is None:
+        raise UniFiError("UniFi write-back is not enabled or has no write key.")
+    _validate_id(rule_id)
+    site_id = await _resolve_site_id(hass, conn)
+    path = f"/sites/{site_id}/acl-rules/{rule_id}"
+    raw = await _get(hass, conn, path)
+    if not isinstance(raw, dict) or "enabled" not in raw:
+        raise UniFiError("The console returned an unexpected ACL rule shape.")
+    await _request(hass, conn, "PUT", path, _update_body(raw, enabled=False))
+    after = await _get(hass, conn, path)
+    enabled_after = after.get("enabled") if isinstance(after, dict) else None
+    if enabled_after is not False:
+        raise UniFiError("The console accepted the update but still reports the rule enabled.")
+    return {
+        "rule_id": rule_id,
+        "name": raw.get("name"),
+        "enabled_before": raw.get("enabled"),
+        "enabled_after": enabled_after,
+    }
+
+
+_ID_RE = re.compile(r"^[A-Za-z0-9-]{1,64}$")
+
+
+def _validate_id(value: str) -> None:
+    # The id is interpolated into a URL path; only UUID-shaped tokens pass.
+    if not _ID_RE.match(value or ""):
+        raise UniFiError("Refusing to act on an id that is not a plain token.")
+
+
 async def _protect_conn(store: HaSocData, secrets: HaSocSecretStore) -> _Conn | None:
     """Build a short-lived Protect connection, fetching the API key from the
     private secret store at use time. None when unconfigured; raises
@@ -190,12 +297,25 @@ async def _get(hass: HomeAssistant, conn: _Conn, path: str) -> Any:
     transport/HTTP/decode failure - the caller turns that into reachable=False.
 
     Redirects are never followed and the body is bounded to _MAX_BODY_BYTES."""
+    return await _request(hass, conn, "GET", path)
+
+
+async def _request(
+    hass: HomeAssistant, conn: _Conn, method: str, path: str, body: Any = None
+) -> Any:
+    """One authenticated request; the write methods exist only for the
+    suggestion write-back and are reached solely through a write connection."""
     session = async_get_clientsession(hass, verify_ssl=conn.verify_ssl)
     url = f"{conn.base_url}{path}"
     headers = {"X-API-KEY": conn.api_key, "Accept": "application/json"}
     try:
         async with asyncio.timeout(_TIMEOUT_SECONDS):
-            async with session.get(url, headers=headers, allow_redirects=False) as resp:
+            # Dispatch on the verb-named method so GET stays the plain session.get every reader expects.
+            call = getattr(session, method.lower())
+            kwargs: dict[str, Any] = {"headers": headers, "allow_redirects": False}
+            if body is not None:
+                kwargs["json"] = body
+            async with call(url, **kwargs) as resp:
                 if 300 <= resp.status < 400:
                     raise UniFiError(
                         "The console returned an unexpected redirect; refusing to follow it."

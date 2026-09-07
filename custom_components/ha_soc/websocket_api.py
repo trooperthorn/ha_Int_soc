@@ -34,6 +34,7 @@ from .const import (
     CONF_PIHOLE_IOT_CIDR,
     CONF_PIHOLE_VERIFY_SSL,
     CONF_SCANNER_ENABLED,
+    CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
     CONF_SNMP_AUTH_PASSPHRASE,
@@ -51,6 +52,10 @@ from .const import (
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
+    SUGGESTION_STATUS_PLANNED,
+    SUGGESTION_STATUS_IGNORED,
+    CONF_UNIFI_NETWORK_WRITE_ENABLED,
+    CONF_UNIFI_NETWORK_WRITE_API_KEY,
     CONF_UNIFI_PROTECT_API_KEY,
     CONF_UNIFI_PROTECT_HOST,
     CONF_UNIFI_PROTECT_VERIFY_SSL,
@@ -273,6 +278,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_watchdog_set,
         ws_network_overview,
         ws_network_security_overview,
+        ws_network_security_suggestion_set,
+        ws_network_security_suggestion_apply,
         ws_layout_get,
         ws_layout_set,
         ws_settings_get,
@@ -1585,6 +1592,60 @@ async def ws_network_security_overview(hass: HomeAssistant, connection, msg: dic
     connection.send_result(msg["id"], overview)
 
 
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/network_security/suggestion_set",
+        vol.Required("finding_id"): str,
+        # planned, ignored, or None to clear; "applied" is only ever written by the apply path.
+        vol.Required("status"): vol.Any(None, vol.In([SUGGESTION_STATUS_PLANNED, SUGGESTION_STATUS_IGNORED])),
+    }
+)
+@websocket_api.async_response
+async def ws_network_security_suggestion_set(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .network_security import async_set_suggestion_decision
+
+    runtime = _runtime(hass)
+    async_set_suggestion_decision(
+        runtime.store, msg["finding_id"], msg["status"], by_user_id=connection.user.id
+    )
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "network_suggestion_decision", "finding_id": msg["finding_id"], "status": msg["status"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+# Owner-only: this is the one command that changes controller configuration.
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/network_security/suggestion_apply", vol.Required("finding_id"): str}
+)
+@websocket_api.async_response
+async def ws_network_security_suggestion_apply(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .network_security import async_apply_suggestion
+
+    runtime = _runtime(hass)
+    ok, reason, result = await async_apply_suggestion(
+        hass, runtime.store, runtime.secrets, msg["finding_id"], by_user_id=connection.user.id
+    )
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={
+            "action": "network_suggestion_applied" if ok else "network_suggestion_apply_failed",
+            "finding_id": msg["finding_id"],
+            "reason": reason,
+            "result": result,
+        },
+    )
+    if not ok:
+        connection.send_error(msg["id"], "suggestion_apply_rejected", reason)
+        return
+    connection.send_result(msg["id"], {"ok": True, "result": result})
+
+
 # Layout commands touch only the calling user's own layout and are not audited.
 @require_soc_access
 @websocket_api.websocket_command(
@@ -1662,6 +1723,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional("evidence_retention_days"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3650)),
         vol.Optional(CONF_SCANNER_ENABLED): bool,
         vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
+        vol.Optional(CONF_HYGIENE_SCAN_YAML_DASHBOARDS): bool,
         # Off switch for NVD lookups (consumed by vulns.py).
         vol.Optional("nvd_lookups_enabled"): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
@@ -1675,6 +1737,8 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_UNIFI_NETWORK_HOST): vol.Any(str, None),
         vol.Optional(CONF_UNIFI_NETWORK_API_KEY): str,
         vol.Optional(CONF_UNIFI_NETWORK_VERIFY_SSL): bool,
+        vol.Optional(CONF_UNIFI_NETWORK_WRITE_ENABLED): bool,
+        vol.Optional(CONF_UNIFI_NETWORK_WRITE_API_KEY): str,
         vol.Optional(CONF_UNIFI_PROTECT_HOST): vol.Any(str, None),
         vol.Optional(CONF_UNIFI_PROTECT_API_KEY): str,
         vol.Optional(CONF_UNIFI_PROTECT_VERIFY_SSL): bool,
@@ -1727,6 +1791,22 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
         }
         # Validate the full prospective config before writing either store.
         validate_enabled_config(prospective_settings, prospective_secrets)
+
+    # Same shape for UniFi write-back: enabling it needs the host and a separate write key.
+    write_keys = {CONF_UNIFI_NETWORK_WRITE_ENABLED, CONF_UNIFI_NETWORK_HOST, CONF_UNIFI_NETWORK_WRITE_API_KEY}
+    if write_keys.intersection(changes) or write_keys.intersection(secret_changes):
+        from .unifi import validate_write_config
+
+        prospective_settings = dict(runtime.store.settings)
+        prospective_settings.update(changes)
+        prospective_write_secrets = {
+            CONF_UNIFI_NETWORK_WRITE_API_KEY: (
+                secret_changes[CONF_UNIFI_NETWORK_WRITE_API_KEY]
+                if CONF_UNIFI_NETWORK_WRITE_API_KEY in secret_changes
+                else await runtime.secrets.async_get(CONF_UNIFI_NETWORK_WRITE_API_KEY)
+            )
+        }
+        validate_write_config(prospective_settings, prospective_write_secrets)
 
     for key, value in secret_changes.items():
         await runtime.secrets.async_set(key, value)

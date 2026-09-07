@@ -34,18 +34,26 @@ ipv6_supported_json() {
 chain_rules_lines() {
     local family="$1" bin
     bin=$(ipt_bin_for "${family}")
+    # A LOG line carries the same match as the action line that follows it; it is folded into that rule's log flag.
     "${bin}" -S "${CHAIN}" 2>/dev/null | awk -v chain="${CHAIN}" -v family="${family}" '
+        function jstr(v) { return (v == "") ? "null" : "\"" v "\"" }
         $1 == "-A" && $2 == chain {
-            proto = ""; port = ""; source = ""; target = "ACCEPT"
+            proto = ""; ports = ""; icmp = "any"; source = ""; dest = ""; iface = ""; comment = ""; target = "ACCEPT"
             for (i = 3; i <= NF; i++) {
                 if ($i == "-p") { proto = $(i + 1) }
                 else if ($i == "-s") { source = $(i + 1) }
-                else if ($i == "--dport") { port = $(i + 1) }
+                else if ($i == "-d") { dest = $(i + 1) }
+                else if ($i == "-i") { iface = $(i + 1) }
+                else if ($i == "--dport" || $i == "--dports") { ports = $(i + 1) }
+                else if ($i == "--icmp-type" || $i == "--icmpv6-type") { icmp = $(i + 1) }
+                else if ($i == "--comment") { comment = $(i + 1); gsub(/"/, "", comment) }
                 else if ($i == "-j") { target = $(i + 1) }
             }
-            action = (target == "ACCEPT") ? "allow" : "deny"
-            src_json = (source == "") ? "null" : "\"" source "\""
-            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"port\":%s,\"source\":%s,\"family\":\"%s\"}\n", action, proto, port, src_json, family
+            if (target == "LOG") { pending_log = 1; next }
+            action = (target == "ACCEPT") ? "allow" : (target == "REJECT") ? "reject" : "deny"
+            if (proto == "ipv6-icmp") { proto = "icmp" }
+            log = pending_log ? "true" : "false"; pending_log = 0
+            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"ports\":%s,\"icmp_code\":%s,\"source\":%s,\"destination\":%s,\"interface\":%s,\"log\":%s,\"comment\":%s,\"family\":\"%s\"}\n", action, proto, jstr(ports), (proto == "icmp") ? "\"" icmp "\"" : "null", jstr(source), jstr(dest), jstr(iface), log, jstr(comment), family
         }
     '
 }
@@ -92,6 +100,7 @@ replay_chain_backup() {
     while IFS= read -r line; do
         case "${line}" in
             "-A ${CHAIN} "*)
+                line="${line//\"/}"
                 # Unquoted on purpose: the line is iptables' own -S output for a rule this add-on wrote; no argument contains whitespace.
                 # shellcheck disable=SC2086
                 if ! "${bin}" ${line}; then

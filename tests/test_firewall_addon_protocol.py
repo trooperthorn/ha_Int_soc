@@ -35,6 +35,9 @@ import voluptuous as vol
 from custom_components.ha_soc import firewall
 from custom_components.ha_soc.const import (
     DOMAIN,
+    FIREWALL_COMMENT_PATTERN,
+    FIREWALL_INTERFACE_PATTERN,
+    FIREWALL_PORTS_MAX_ENTRIES,
     FIREWALL_REPORT_REASON_MAX,
     FIREWALL_TEST_EXPIRED_UNREPORTED,
 )
@@ -55,7 +58,18 @@ RULES = [{"action": "allow", "proto": "tcp", "port": 8123, "source": None}]
 # The same rules after the schema settles the family: no source means the
 # dual-stack default "both" (work item 2.4). Everything the service layer
 # stores or hands to the add-on is in this normalized shape.
-RULES_NORMALIZED = [{**RULES[0], "family": "both"}]
+RULES_NORMALIZED = [{
+    "action": "allow",
+    "proto": "tcp",
+    "ports": "8123",
+    "icmp_type": None,
+    "source": None,
+    "destination": None,
+    "interface": None,
+    "log": False,
+    "comment": None,
+    "family": "both",
+}]
 PROBE_SECRET = "unit-test-probe-secret"
 
 
@@ -120,7 +134,7 @@ async def test_poll_firewall_command_returns_apply_for_new_test(
     response = await _poll(hass, supervisor_context)
     assert response["action"] == "apply"
     assert response["test_id"] == pending["test_id"]
-    assert response["rules"] == RULES_NORMALIZED
+    assert response["rules"] == [firewall.rule_for_addon(r) for r in RULES_NORMALIZED]
 
 
 async def test_poll_firewall_command_returns_confirm_after_ws_confirm(
@@ -529,11 +543,27 @@ def test_addon_validates_delivered_rule_fields() -> None:
     code = "\n".join(_code_lines(run))
     # The allowlists mirror const.py's FIREWALL_RULE_ACTIONS /
     # FIREWALL_RULE_PROTOS / FIREWALL_RULE_FAMILIES vocabularies.
-    assert 'valid_action() { [ "$1" = "allow" ] || [ "$1" = "deny" ]; }' in code
-    assert 'valid_proto() { [ "$1" = "tcp" ] || [ "$1" = "udp" ]; }' in code
+    assert 'valid_action() { [ "$1" = "allow" ] || [ "$1" = "deny" ] || [ "$1" = "reject" ]; }' in code
+    assert 'valid_proto() { [ "$1" = "tcp" ] || [ "$1" = "udp" ] || [ "$1" = "icmp" ]; }' in code
     assert 'valid_family() { [ "$1" = "4" ] || [ "$1" = "6" ] || [ "$1" = "both" ]; }' in code
-    for fn in ("valid_port", "valid_window", "valid_source_for_family"):
+    for fn in (
+        "valid_port",
+        "valid_ports",
+        "valid_icmp_code",
+        "valid_interface",
+        "valid_comment",
+        "valid_bool",
+        "valid_window",
+        "valid_source_for_family",
+    ):
         assert f"{fn}()" in code, fn
+    # The interface and comment allowlists are the integration's patterns verbatim.
+    assert f"grep -Eq '{FIREWALL_INTERFACE_PATTERN}'" in code
+    assert f"grep -Eq '{FIREWALL_COMMENT_PATTERN}'" in code
+    assert f"MAX_PORT_ENTRIES={FIREWALL_PORTS_MAX_ENTRIES}" in code
+    # A rule needing an extension the host lacks is refused before any chain is touched.
+    for cap in ("CAP_MULTIPORT", "CAP_COMMENT", "CAP_LOG", "CAP_LIMIT", "CAP_REJECT"):
+        assert f'"${{{cap}}}"' in code, cap
     # The whole ruleset is validated before the chain is touched, and both
     # a bounds failure and a field failure refuse with a reported reason.
     assert "validate_ruleset" in code

@@ -112,8 +112,8 @@ async def test_firewall_secret_pin_and_reject(hass: HomeAssistant) -> None:
 def test_firewall_source_validation() -> None:
     from custom_components.ha_soc.firewall import RULE_SCHEMA
 
-    # Valid: omitted (no source key), empty (normalized to None), single IP, CIDR.
-    assert "source" not in RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22})
+    # Valid: omitted and empty both normalize to None (any source), single IP, CIDR.
+    assert RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22})["source"] is None
     assert RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22, "source": ""})["source"] is None
     RULE_SCHEMA({"action": "allow", "proto": "tcp", "port": 22, "source": "192.168.1.5"})
     RULE_SCHEMA({"action": "deny", "proto": "udp", "port": 53, "source": "10.0.0.0/8"})

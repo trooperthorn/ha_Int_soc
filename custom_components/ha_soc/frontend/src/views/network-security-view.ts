@@ -15,6 +15,8 @@ import {
   PiHoleOverview,
   ServerPortsReport,
   fetchNetworkSecurityOverview,
+  setSuggestionDecision,
+  applySuggestion,
 } from "../data/ha-soc-ws";
 import { matchClientsForEntries } from "../device-match";
 import { buildZoneMatrix } from "../firewall-matrix";
@@ -274,9 +276,12 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   @state() private _aclSort: SortState | null = null;
   @state() private _firewallPolicySort: SortState | null = null;
   @state() private _portSort: SortState | null = null;
-  // Firewall Policies card: Table vs Matrix; a matrix cell filters the table to one zone pair (null clears).
-  @state() private _fwViewMode: "table" | "matrix" = "table";
+  // Firewall Policies card: the policy table or the suggested-changes tab; the Zone Matrix is its own section
+  // and a matrix cell filters the table to one zone pair (null clears).
+  @state() private _fwViewMode: "table" | "suggestions" = "table";
   @state() private _fwZonePairFilter: { src: string; dst: string } | null = null;
+  @state() private _suggestionBusy: string | null = null;
+  @state() private _suggestionError: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -309,8 +314,9 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       {
         id: "firewall_policies",
         title: "Firewall Policies",
-        render: () => this._renderFirewallPolicies(o.firewall_policies),
+        render: () => this._renderFirewallPolicies(o.firewall_policies, o.findings, o.write_enabled),
       },
+      { id: "zone_matrix", title: "Zone Matrix", render: () => this._renderZoneMatrixCard(o.firewall_policies) },
       { id: "acl", title: "ACL Rules", render: () => this._renderAcl(o.acl) },
       { id: "server_ports", title: "Home Assistant Server Ports", render: () => this._renderServerPorts(o.server_ports) },
       { id: "pihole", title: "Pi-hole DNS", render: () => this._renderPihole(o.pihole) },
@@ -319,7 +325,9 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       <div class="toolbar" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
         <button class="ha-btn" @click=${() => this._load()}>Refresh</button>
         <span class="muted" style="font-size:12px;">
-          Advisory only — nothing on this tab changes UniFi or Pi-hole configuration.
+          ${o.write_enabled
+            ? "Advisory, except Apply on the Suggested changes tab, which disables the named rule or policy on the controller through the write-scoped key."
+            : "Advisory only — nothing on this tab changes UniFi or Pi-hole configuration."}
         </span>
       </div>
       ${this._renderSections(sections)}
@@ -328,16 +336,27 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
 
 
   private _renderFindings(findings: NetworkSecurityFinding[]) {
+    const visible = findings.filter((f) => f.decision?.status !== "ignored");
+    const ignored = findings.length - visible.length;
     return html`
       <div class="card">
-        <h3>Suggestions</h3>
-        ${findings.length
-          ? html`${findings.map(
+        <h3>
+          Suggestions
+          ${ignored
+            ? html`<span class="muted" style="font-weight:400;font-size:12px;"
+                >— ${ignored} ignored (see Suggested changes under Firewall Policies)</span
+              >`
+            : nothing}
+        </h3>
+        ${visible.length
+          ? html`${visible.map(
               (f) => html`
                 <div class="finding">
                   <div class="sev ${f.severity}" title=${f.severity}></div>
                   <div>
-                    <div class="finding-title">${f.title}</div>
+                    <div class="finding-title">
+                      ${f.title}${this._renderDecisionBadge(f)}
+                    </div>
                     <div class="finding-detail">${f.detail}</div>
                   </div>
                 </div>
@@ -345,6 +364,119 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
             )}`
           : html`<div class="empty">Nothing stood out — no advisory findings right now.</div>`}
       </div>
+    `;
+  }
+
+  private _renderDecisionBadge(f: NetworkSecurityFinding) {
+    const status = f.decision?.status;
+    if (!status) return nothing;
+    const label = status === "applied" ? "applied" : status === "planned" ? "planned" : "ignored";
+    return html`<span class="badge-custom" style="margin-left:6px;">${label}</span>`;
+  }
+
+  private async _onSuggestionDecision(f: NetworkSecurityFinding, status: "planned" | "ignored" | null) {
+    this._suggestionError = null;
+    this._suggestionBusy = f.id;
+    try {
+      await setSuggestionDecision(this.hass, f.id, status);
+      await this._load();
+    } catch (e) {
+      this._suggestionError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this._suggestionBusy = null;
+    }
+  }
+
+  private async _onSuggestionApply(f: NetworkSecurityFinding) {
+    if (!f.remediation) return;
+    const ok = window.confirm(
+      `${f.remediation.label} on the UniFi controller now?\n\n` +
+        `This is a real configuration change made with the write-scoped key. ` +
+        `To undo: ${f.remediation.reversible}`
+    );
+    if (!ok) return;
+    this._suggestionError = null;
+    this._suggestionBusy = f.id;
+    try {
+      await applySuggestion(this.hass, f.id);
+      await this._load();
+    } catch (e) {
+      this._suggestionError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this._suggestionBusy = null;
+    }
+  }
+
+  // The Suggested changes tab: every suggestion as a row the owner can plan, ignore, or (write-back on) apply.
+  private _renderSuggestedChanges(findings: NetworkSecurityFinding[], writeEnabled: boolean) {
+    if (!findings.length) {
+      return html`<div class="empty">No suggested changes right now.</div>`;
+    }
+    return html`
+      <p class="muted" style="font-size:12px;margin:0 0 8px;">
+        Plan marks a change you intend to make by hand; Ignore hides it from the Suggestions card until
+        you clear it. ${writeEnabled
+          ? "Apply performs the named change on the controller with the write-scoped key and reads it back."
+          : "Apply becomes available when suggestion write-back is enabled in Settings with a write-scoped key."}
+      </p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Severity</th>
+              <th>Suggestion</th>
+              <th>Change</th>
+              <th>Status</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${findings.map((f) => {
+              const status = f.decision?.status ?? null;
+              const busy = this._suggestionBusy === f.id;
+              return html`
+                <tr>
+                  <td><span class="match ${f.severity === "high" ? "failing" : f.severity === "medium" ? "other" : "healthy"}">${f.severity}</span></td>
+                  <td style="font-weight:600;">
+                    ${f.title}<span class="sub">${f.detail}</span>
+                  </td>
+                  <td>
+                    ${f.remediation
+                      ? html`${f.remediation.label}<span class="sub">Undo: ${f.remediation.reversible}</span>`
+                      : html`<span class="muted">manual — see the suggestion text</span>`}
+                  </td>
+                  <td>
+                    ${status
+                      ? html`${status}${f.decision?.at ? html`<span class="sub">${new Date(f.decision.at).toLocaleString()}</span>` : nothing}`
+                      : html`<span class="muted">open</span>`}
+                  </td>
+                  <td style="white-space:nowrap;">
+                    ${status === "applied"
+                      ? nothing
+                      : html`
+                          ${status !== "planned"
+                            ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._onSuggestionDecision(f, "planned")}>Plan</button>`
+                            : nothing}
+                          ${status !== "ignored"
+                            ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._onSuggestionDecision(f, "ignored")}>Ignore</button>`
+                            : nothing}
+                          ${status
+                            ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._onSuggestionDecision(f, null)}>Clear</button>`
+                            : nothing}
+                          ${f.remediation && writeEnabled
+                            ? html`<button class="ha-btn danger" ?disabled=${busy} @click=${() => this._onSuggestionApply(f)}>Apply</button>`
+                            : nothing}
+                        `}
+                  </td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+      </div>
+      ${this._suggestionError
+        ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:8px;">${this._suggestionError}</p>`
+        : nothing}
     `;
   }
 
@@ -393,7 +525,11 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     return "other";
   }
 
-  private _renderFirewallPolicies(fw: FirewallPoliciesReport) {
+  private _renderFirewallPolicies(
+    fw: FirewallPoliciesReport,
+    findings: NetworkSecurityFinding[],
+    writeEnabled: boolean
+  ) {
     const rows = this._fwZonePairFilter
       ? fw.rules.filter(
           (r) =>
@@ -410,35 +546,52 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
             to bottom${this._customCountLabel(fw.rules)}</span
           >
         </h3>
-        ${!fw.available
-          ? html`
-              <div class="note" style="font-size:13px;">
-                Couldn't read Firewall Policies from this controller.${
-                  fw.error ? html` ${fw.error}` : ""
-                }
-              </div>
-            `
-          : !fw.rules.length
-            ? html`<div class="empty">No Firewall Policies configured.</div>`
-            : html`
-                <div class="view-toggle">
-                  <button
-                    class=${this._fwViewMode === "table" ? "active" : ""}
-                    @click=${() => (this._fwViewMode = "table")}
-                  >
-                    Table
-                  </button>
-                  <button
-                    class=${this._fwViewMode === "matrix" ? "active" : ""}
-                    @click=${() => (this._fwViewMode = "matrix")}
-                  >
-                    Zone Matrix
-                  </button>
+        <div class="view-toggle">
+          <button
+            class=${this._fwViewMode === "table" ? "active" : ""}
+            @click=${() => (this._fwViewMode = "table")}
+          >
+            Table
+          </button>
+          <button
+            class=${this._fwViewMode === "suggestions" ? "active" : ""}
+            @click=${() => (this._fwViewMode = "suggestions")}
+          >
+            Suggested changes${findings.length ? ` (${findings.length})` : ""}
+          </button>
+        </div>
+        ${this._fwViewMode === "suggestions"
+          ? this._renderSuggestedChanges(findings, writeEnabled)
+          : !fw.available
+            ? html`
+                <div class="note" style="font-size:13px;">
+                  Couldn't read Firewall Policies from this controller.${
+                    fw.error ? html` ${fw.error}` : ""
+                  }
                 </div>
-                ${this._fwViewMode === "matrix"
-                  ? this._renderZoneMatrix(fw)
-                  : this._renderFirewallPolicyTable(rows)}
-              `}
+              `
+            : !fw.rules.length
+              ? html`<div class="empty">No Firewall Policies configured.</div>`
+              : this._renderFirewallPolicyTable(rows)}
+      </div>
+    `;
+  }
+
+  // The Zone Matrix as its own section; a cell click filters the policy table in the Firewall Policies section.
+  private _renderZoneMatrixCard(fw: FirewallPoliciesReport) {
+    return html`
+      <div class="card">
+        <h3>
+          Zone Matrix
+          <span class="muted" style="font-weight:400;font-size:12px;"
+            >— dominant policy per source and destination zone; click a cell to filter the policy table</span
+          >
+        </h3>
+        ${!fw.available
+          ? html`<div class="note" style="font-size:13px;">Couldn't read Firewall Policies from this controller.</div>`
+          : !fw.zones.length
+            ? html`<div class="empty">No zones reported by this controller.</div>`
+            : this._renderZoneMatrix(fw)}
       </div>
     `;
   }

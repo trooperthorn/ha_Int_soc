@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Firewall rules gained port ranges and lists, destination addresses,
+  interface matches, ICMP and ICMPv6 types, REJECT, rate-limited kernel
+  logging, and single-token comments. The add-on probes the optional
+  iptables extensions at start and on a five-minute status heartbeat,
+  reports them as `firewall_capabilities`, and refuses a rule that needs
+  one the host lacks. The scanner now reports every host interface so the
+  rule builder can offer them.
+
 - Fixed the AppArmor startup loop on the s6-overlay base image. `/init` is a
   shell script, so its policy now grants read plus inherited execution (`rix`)
   instead of inherited execution alone (`ix`). A regression test protects the

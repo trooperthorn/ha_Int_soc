@@ -9,20 +9,30 @@ docs/protocol.md, and docs/security.md.
 """
 from __future__ import annotations
 
-from datetime import timedelta
 import hmac
 import ipaddress
 import logging
+import re
+from datetime import timedelta
 from typing import Any
 from uuid import uuid4
 
-import voluptuous as vol
-
-from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
+import voluptuous as vol
+from homeassistant.core import HomeAssistant
 
 from .const import (
     DEFAULT_FIREWALL_TEST_WINDOW_SECONDS,
+    FIREWALL_CAPABILITY_COMMENT,
+    FIREWALL_CAPABILITY_ICMP,
+    FIREWALL_CAPABILITY_LIMIT,
+    FIREWALL_CAPABILITY_LOG,
+    FIREWALL_CAPABILITY_MULTIPORT,
+    FIREWALL_CAPABILITY_REJECT,
+    FIREWALL_COMMENT_PATTERN,
+    FIREWALL_ICMP_TYPES,
+    FIREWALL_INTERFACE_PATTERN,
+    FIREWALL_PORTS_MAX_ENTRIES,
     FIREWALL_RULE_ACTIONS,
     FIREWALL_RULE_FAMILIES,
     FIREWALL_RULE_FAMILY_BOTH,
@@ -42,6 +52,10 @@ _LOGGER = logging.getLogger(__name__)
 
 _MAX_HISTORY = 50
 
+_PORTS_RE = re.compile(r"^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$")
+_INTERFACE_RE = re.compile(FIREWALL_INTERFACE_PATTERN)
+_COMMENT_RE = re.compile(FIREWALL_COMMENT_PATTERN)
+
 def _valid_source(value: Any) -> Any:
     """None/empty = any source; otherwise a real IP address or CIDR network,
     validated here so a malformed value never reaches iptables."""
@@ -58,26 +72,114 @@ def _valid_source(value: Any) -> Any:
 
 
 def _derive_rule_family(rule: dict[str, Any]) -> dict[str, Any]:
-    """Settle a validated rule's address family: derived from the source when
+    """Settle a validated rule's address family: derived from the source or
+    destination when
     present, "both" when there is no source; a contradicting explicit value
     is rejected. Runs after field validation, so ``source`` is already valid.
     """
-    source = rule.get("source")
-    if source is not None:
-        derived = (
-            FIREWALL_RULE_FAMILY_V6
-            if ipaddress.ip_network(source, strict=False).version == 6
-            else FIREWALL_RULE_FAMILY_V4
-        )
+    derived: str | None = None
+    for field in ("source", "destination"):
+        address = rule.get(field)
+        if address is None:
+            continue
+        version = ipaddress.ip_network(address, strict=False).version
+        this = FIREWALL_RULE_FAMILY_V6 if version == 6 else FIREWALL_RULE_FAMILY_V4
+        if derived is not None and derived != this:
+            raise vol.Invalid("source and destination must be the same address family")
+        derived = this
         explicit = rule.get("family")
         if explicit is not None and explicit != derived:
             raise vol.Invalid(
-                f"family {explicit!r} contradicts the source's address "
-                f"family (source {source!r} is IPv{derived})"
+                f"family {explicit!r} contradicts the {field}'s address "
+                f"family ({field} {address!r} is IPv{derived})"
             )
+    if derived is not None:
         rule["family"] = derived
     else:
         rule.setdefault("family", FIREWALL_RULE_FAMILY_BOTH)
+    # A v6-only or v4-only ICMP type pins the family too.
+    icmp_type = rule.get("icmp_type")
+    if rule.get("proto") == "icmp" and icmp_type and icmp_type != "any":
+        v4_code, v6_code = FIREWALL_ICMP_TYPES[icmp_type]
+        if v4_code is None and rule["family"] != FIREWALL_RULE_FAMILY_V6:
+            if rule["family"] == FIREWALL_RULE_FAMILY_V4:
+                raise vol.Invalid(f"icmp type {icmp_type} exists only in ICMPv6")
+            rule["family"] = FIREWALL_RULE_FAMILY_V6
+        if v6_code is None and rule["family"] != FIREWALL_RULE_FAMILY_V4:
+            if rule["family"] == FIREWALL_RULE_FAMILY_V6:
+                raise vol.Invalid(f"icmp type {icmp_type} exists only in ICMPv4")
+            rule["family"] = FIREWALL_RULE_FAMILY_V4
+    return rule
+
+
+def _valid_ports(value: Any) -> str | None:
+    """Port spec grammar: entries separated by commas, each "N" or "A:B" with
+    A < B, all within 1..65535, at most FIREWALL_PORTS_MAX_ENTRIES entries."""
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not _PORTS_RE.match(text):
+        raise vol.Invalid(f"ports {text!r} must look like 443, 8000:8100, or 80,443")
+    entries = text.split(",")
+    if len(entries) > FIREWALL_PORTS_MAX_ENTRIES:
+        raise vol.Invalid(f"at most {FIREWALL_PORTS_MAX_ENTRIES} port entries per rule")
+    for entry in entries:
+        low, _, high = entry.partition(":")
+        low_n = int(low)
+        high_n = int(high) if high else low_n
+        if not 1 <= low_n <= 65535 or not 1 <= high_n <= 65535:
+            raise vol.Invalid(f"port {entry!r} is outside 1-65535")
+        if high and high_n <= low_n:
+            raise vol.Invalid(f"port range {entry!r} must run low:high")
+    return text
+
+
+def _valid_interface(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not _INTERFACE_RE.match(text):
+        raise vol.Invalid(f"interface {text!r} is not a valid Linux interface name")
+    return text
+
+
+def _valid_comment(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip()
+    if not _COMMENT_RE.match(text):
+        raise vol.Invalid(
+            "comment must be 1-22 characters of letters, digits, dot, dash, or underscore"
+        )
+    return text
+
+
+def _normalize_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    """Settle the port and protocol shape: the legacy integer ``port`` becomes
+    ``ports``; ICMP rules carry ``icmp_type`` and never ports; TCP and UDP
+    rules must carry ports."""
+    rule = dict(rule)
+    legacy_port = rule.pop("port", None)
+    if rule.get("ports") is None and legacy_port is not None:
+        rule["ports"] = str(legacy_port)
+    if rule["proto"] == "icmp":
+        if rule.get("ports"):
+            raise vol.Invalid("an icmp rule takes an icmp_type, not ports")
+        rule["ports"] = None
+        rule.setdefault("icmp_type", "any")
+        if rule["icmp_type"] is None:
+            rule["icmp_type"] = "any"
+    else:
+        if not rule.get("ports"):
+            raise vol.Invalid(f"a {rule['proto']} rule needs ports")
+        if rule.get("icmp_type") not in (None, "any"):
+            raise vol.Invalid("icmp_type applies only to icmp rules")
+        rule["icmp_type"] = None
+    rule.setdefault("source", None)
+    rule.setdefault("destination", None)
+    rule.setdefault("interface", None)
+    rule.setdefault("log", False)
+    rule.setdefault("comment", None)
     return rule
 
 
@@ -86,15 +188,119 @@ RULE_SCHEMA = vol.All(
         {
             vol.Required("action"): vol.In(FIREWALL_RULE_ACTIONS),
             vol.Required("proto"): vol.In(FIREWALL_RULE_PROTOS),
-            vol.Required("port"): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
+            # Legacy single port, still accepted from old clients and old stored records.
+            vol.Optional("port"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))),
+            vol.Optional("ports"): _valid_ports,
+            vol.Optional("icmp_type"): vol.Any(None, vol.In(list(FIREWALL_ICMP_TYPES))),
             # None = any source; validated as a real IP/CIDR by _valid_source.
             vol.Optional("source"): _valid_source,
+            vol.Optional("destination"): _valid_source,
+            vol.Optional("interface"): _valid_interface,
+            vol.Optional("log"): bool,
+            vol.Optional("comment"): _valid_comment,
             # "4" iptables, "6" ip6tables, "both" mirrored into both; settled by _derive_rule_family.
             vol.Optional("family"): vol.In(FIREWALL_RULE_FAMILIES),
         }
     ),
+    _normalize_rule,
     _derive_rule_family,
 )
+
+
+def rule_for_addon(rule: dict[str, Any]) -> dict[str, Any]:
+    """The wire shape the add-on applies: the normalized rule plus
+    ``icmp_codes`` ({"4": code, "6": code}, None where the type does not
+    exist in that family, "any" for no type match)."""
+    out = dict(rule)
+    if rule.get("proto") == "icmp":
+        v4, v6 = FIREWALL_ICMP_TYPES.get(rule.get("icmp_type") or "any", (None, None))
+        if (rule.get("icmp_type") or "any") == "any":
+            out["icmp_codes"] = {"4": "any", "6": "any"}
+        else:
+            out["icmp_codes"] = {"4": v4, "6": v6}
+    return out
+
+
+_ICMP_NAME_BY_CODE: dict[tuple[str, int], str] = {}
+for _name, (_v4, _v6) in FIREWALL_ICMP_TYPES.items():
+    if _v4 is not None:
+        _ICMP_NAME_BY_CODE[(FIREWALL_RULE_FAMILY_V4, _v4)] = _name
+    if _v6 is not None:
+        _ICMP_NAME_BY_CODE[(FIREWALL_RULE_FAMILY_V6, _v6)] = _name
+
+
+def normalize_known_rule(rule: dict[str, Any]) -> dict[str, Any]:
+    """A rule as the add-on read it back from iptables, in Core's shape:
+    numeric ``icmp_code`` becomes the type name (or the bare number for a
+    type this project does not name), and a legacy integer ``port`` becomes
+    ``ports``."""
+    out = dict(rule)
+    legacy_port = out.pop("port", None)
+    if out.get("ports") is None and legacy_port is not None:
+        out["ports"] = str(legacy_port)
+    code = out.pop("icmp_code", None)
+    if out.get("proto") == "icmp":
+        if code in (None, "any"):
+            out["icmp_type"] = "any"
+        else:
+            try:
+                number = int(code)
+            except (TypeError, ValueError):
+                number = None
+            family = out.get("family", FIREWALL_RULE_FAMILY_V4)
+            out["icmp_type"] = (
+                _ICMP_NAME_BY_CODE.get((family, number), str(code)) if number is not None else str(code)
+            )
+    else:
+        out["icmp_type"] = None
+    for key in ("source", "destination", "interface", "comment"):
+        out.setdefault(key, None)
+    out["log"] = bool(out.get("log", False))
+    # A pre-dual-stack report carries no family: an address pins it, otherwise it reads as "both".
+    if out.get("family") is None:
+        out["family"] = FIREWALL_RULE_FAMILY_BOTH
+        for field in ("source", "destination"):
+            address = out.get(field)
+            if address:
+                try:
+                    version = ipaddress.ip_network(address, strict=False).version
+                except ValueError:
+                    continue
+                out["family"] = FIREWALL_RULE_FAMILY_V6 if version == 6 else FIREWALL_RULE_FAMILY_V4
+                break
+    return out
+
+
+def rule_required_capabilities(rule: dict[str, Any]) -> set[str]:
+    """The optional netfilter extensions one normalized rule needs."""
+    needed: set[str] = set()
+    ports = rule.get("ports") or ""
+    if "," in ports:
+        needed.add(FIREWALL_CAPABILITY_MULTIPORT)
+    if rule.get("comment"):
+        needed.add(FIREWALL_CAPABILITY_COMMENT)
+    if rule.get("log"):
+        needed.add(FIREWALL_CAPABILITY_LOG)
+        needed.add(FIREWALL_CAPABILITY_LIMIT)
+    if rule.get("action") == "reject":
+        needed.add(FIREWALL_CAPABILITY_REJECT)
+    if rule.get("proto") == "icmp":
+        needed.add(FIREWALL_CAPABILITY_ICMP)
+    return needed
+
+
+def _unsupported_capabilities(
+    rules: list[dict[str, Any]], capabilities: dict[str, bool] | None
+) -> set[str]:
+    """Capabilities the rules need that the add-on has reported absent. An
+    unknown capability set (no report yet) refuses nothing; the add-on's
+    own revalidation is the final gate."""
+    if not capabilities:
+        return set()
+    needed: set[str] = set()
+    for rule in rules:
+        needed |= rule_required_capabilities(rule)
+    return {cap for cap in needed if capabilities.get(cap) is False}
 
 RULES_SCHEMA = vol.All([RULE_SCHEMA], vol.Length(max=200))
 
@@ -181,6 +387,8 @@ async def async_get_status(hass: HomeAssistant, store: HaSocData) -> dict[str, A
         "known_rules": known_rules,
         "known_rules_reported_at": fw.get("known_rules_reported_at"),
         "ipv6_supported": ipv6_supported,
+        # None until an add-on that probes its extensions has reported.
+        "capabilities": fw.get("capabilities"),
         "pending": pending,
         "history": list(fw.get("history") or [])[-10:],
     }
@@ -222,6 +430,9 @@ async def async_propose_test(
         return False, f"invalid_rules: {err}", None
 
     fw = store.data["firewall"]
+    unsupported = _unsupported_capabilities(rules, fw.get("capabilities"))
+    if unsupported:
+        return False, f"unsupported_capabilities: {', '.join(sorted(unsupported))}", None
     if fw.get("pending") is not None:
         # One test at a time, whatever its status, until the add-on's report or the owner's discard archives it.
         return False, "test_pending_unreported", None
@@ -325,7 +536,7 @@ async def async_next_addon_command(
         return {
             "action": "apply",
             "test_id": test_id,
-            "rules": pending["proposed_rules"],
+            "rules": [rule_for_addon(r) for r in pending["proposed_rules"]],
             "window_seconds": window_seconds,
         }
 
@@ -350,6 +561,7 @@ async def async_report_from_addon(
     resolved_status: str | None = None,
     resolved_reason: str | None = None,
     ipv6_supported: bool | None = None,
+    capabilities: dict[str, bool] | None = None,
     addon_reports_no_current_test: bool = False,
 ) -> None:
     """The add-on's report is always the final word on what is actually active.
@@ -359,10 +571,12 @@ async def async_report_from_addon(
     """
     fw = store.data["firewall"]
     if known_rules is not None:
-        fw["known_rules"] = known_rules
+        fw["known_rules"] = [normalize_known_rule(r) for r in known_rules]
         fw["known_rules_reported_at"] = _iso_now()
     if ipv6_supported is not None:
         fw["ipv6_supported"] = ipv6_supported
+    if capabilities is not None:
+        fw["capabilities"] = {k: bool(v) for k, v in capabilities.items()}
 
     archived = False
     pending = fw.get("pending")

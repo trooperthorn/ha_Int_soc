@@ -1,4 +1,4 @@
-import { html, nothing } from "lit";
+import { css, html, nothing } from "lit";
 import { customElement, state } from "lit/decorators.js";
 import { sharedStyles } from "../styles";
 import { HaSocCustomizableView } from "../customizable-view";
@@ -12,6 +12,8 @@ import {
   FirewallRuleAction,
   FirewallRuleProto,
   FirewallRuleFamily,
+  FirewallCapability,
+  FIREWALL_ICMP_TYPES,
   FirewallStatus,
   FirewallPendingTest,
   ScannerDomainCoverage,
@@ -57,6 +59,79 @@ function familyLabel(family?: FirewallRuleFamily): string {
 }
 
 // Mirrors the server's derivation: a colon means IPv6, otherwise IPv4; null means no source, no pin.
+// Mirrors firewall.py's ports grammar: "443", "8000:8100", "80,443,8000:8100".
+const PORTS_RE = /^[0-9]{1,5}(:[0-9]{1,5})?(,[0-9]{1,5}(:[0-9]{1,5})?)*$/;
+const INTERFACE_RE = /^[A-Za-z0-9_.:@-]{1,15}$/;
+const COMMENT_RE = /^[A-Za-z0-9_.-]{1,22}$/;
+const MAX_PORT_ENTRIES = 15;
+
+// Ports a listener is likely to need a rule for when the probe has not observed them; labels only, never auto-selected.
+const WELL_KNOWN_PORTS: [number, string][] = [
+  [8123, "Home Assistant"],
+  [443, "HTTPS"],
+  [80, "HTTP"],
+  [22, "SSH add-on"],
+  [1883, "MQTT"],
+  [5353, "mDNS (udp)"],
+  [21064, "HomeKit"],
+  [445, "Samba"],
+  [8443, "HTTPS alternate"],
+];
+
+function portsSpecValid(spec: string): boolean {
+  if (!PORTS_RE.test(spec)) return false;
+  const entries = spec.split(",");
+  if (entries.length > MAX_PORT_ENTRIES) return false;
+  return entries.every((entry) => {
+    const [low, high] = entry.split(":");
+    const lo = Number(low);
+    const hi = high === undefined ? lo : Number(high);
+    if (lo < 1 || lo > 65535 || hi < 1 || hi > 65535) return false;
+    return high === undefined || hi > lo;
+  });
+}
+
+// Whether a rule's ports spec (or legacy port) covers one port number.
+function portsInclude(rule: FirewallRule, port: number): boolean {
+  const spec = rule.ports ?? (rule.port ? String(rule.port) : "");
+  if (!spec) return false;
+  return spec.split(",").some((entry) => {
+    const [low, high] = entry.split(":");
+    const lo = Number(low);
+    const hi = high === undefined ? lo : Number(high);
+    return port >= lo && port <= hi;
+  });
+}
+
+function ruleMatchLabel(r: FirewallRule): string {
+  if (r.proto === "icmp") return `icmp ${r.icmp_type && r.icmp_type !== "any" ? r.icmp_type : "any type"}`;
+  return `${r.proto}/${r.ports ?? r.port ?? "?"}`;
+}
+
+function ruleOptionsLabel(r: FirewallRule): string {
+  const bits: string[] = [];
+  if (r.log) bits.push("log");
+  if (r.comment) bits.push(`#${r.comment}`);
+  return bits.join(" · ");
+}
+
+function actionPillClass(action: FirewallRuleAction): string {
+  return action === "allow" ? "good" : "critical";
+}
+
+// The family an address pins a rule to, from whichever of source/destination is set; null when neither is.
+function familyForAddresses(source: string, destination: string): FirewallRuleFamily | null {
+  return familyForSource(source) ?? familyForSource(destination);
+}
+
+function icmpTypeFamily(icmpType: string | null | undefined): FirewallRuleFamily | null {
+  const row = FIREWALL_ICMP_TYPES.find(([name]) => name === (icmpType ?? "any"));
+  if (!row) return null;
+  if (row[1] === null && row[2] !== null) return "6";
+  if (row[2] === null && row[1] !== null) return "4";
+  return null;
+}
+
 function familyForSource(source: string): FirewallRuleFamily | null {
   if (!source) return null;
   return source.includes(":") ? "6" : "4";
@@ -93,7 +168,18 @@ export class HaSocScannerView extends HaSocCustomizableView {
     return "scanner";
   }
 
-  static styles = sharedStyles;
+  static styles = [
+    sharedStyles,
+    css`
+      .table-wrap {
+        overflow-x: auto;
+      }
+      .mono {
+        font-family: var(--code-font-family, monospace);
+        font-size: 12px;
+      }
+    `,
+  ];
 
   @state() private _scannerFindings: Finding[] = [];
   // Per-domain coverage; null means an older backend sent no map. A domain without a record renders "not scanned".
@@ -109,9 +195,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
   @state() private _exportNotice: string | null = null;
 
   @state() private _firewall: FirewallStatus | null = null;
-  @state() private _fwDraftRules: FirewallRule[] = [
-    { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
-  ];
+  @state() private _fwDraftRules: FirewallRule[] = [HaSocScannerView._emptyDraftRule()];
   @state() private _fwBackupAck = false;
   @state() private _fwSubmitting = false;
   @state() private _fwError: string | null = null;
@@ -174,13 +258,30 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private static readonly FW_RULE_SORT: Record<string, (r: FirewallRule) => unknown> = {
     action: (r) => r.action,
-    proto: (r) => r.proto,
-    port: (r) => r.port,
+    match: (r) => ruleMatchLabel(r),
     // null source displays as "any" and sorts as that word, since "any" is a definite value.
     source: (r) => r.source ?? "any",
+    destination: (r) => r.destination ?? "any",
+    interface: (r) => r.interface ?? "any",
+    options: (r) => ruleOptionsLabel(r),
     // Sorted by display label so IPv4 < IPv4+IPv6 < IPv6; an absent family sorts as dual-stack.
     family: (r) => familyLabel(r.family),
   };
+
+  private static _emptyDraftRule(): FirewallRule {
+    return {
+      action: "allow",
+      proto: "tcp",
+      ports: "",
+      icmp_type: "any",
+      source: "",
+      destination: "",
+      interface: "",
+      log: false,
+      comment: "",
+      family: "both",
+    };
+  }
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -253,14 +354,28 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private _fwRuleValid(r: FirewallRule): boolean {
     const family = r.family ?? "both";
-    // A sourced rule's family must match its source pin; this only catches a state bug, matching the server.
-    const pinned = familyForSource(r.source ?? "");
+    // An address pins the family; this only catches a state bug, matching the server.
+    const pinned = familyForAddresses(r.source ?? "", r.destination ?? "");
+    const srcFam = familyForSource(r.source ?? "");
+    const dstFam = familyForSource(r.destination ?? "");
+    if (srcFam && dstFam && srcFam !== dstFam) return false;
+    if ((r.source && !srcFam) || (r.destination && !dstFam)) return false;
+    if (r.proto === "icmp") {
+      if (!FIREWALL_ICMP_TYPES.some(([name]) => name === (r.icmp_type ?? "any"))) return false;
+      const typeFam = icmpTypeFamily(r.icmp_type);
+      if (typeFam && pinned && typeFam !== pinned) return false;
+      if (!this._fwCapable("icmp")) return false;
+    } else {
+      if (!portsSpecValid(r.ports ?? "")) return false;
+      if ((r.ports ?? "").includes(",") && !this._fwCapable("multiport")) return false;
+    }
+    if (r.interface && !INTERFACE_RE.test(r.interface)) return false;
+    if (r.comment && (!COMMENT_RE.test(r.comment) || !this._fwCapable("comment"))) return false;
+    if (r.log && !(this._fwCapable("log") && this._fwCapable("limit"))) return false;
+    if (r.action === "reject" && !this._fwCapable("reject")) return false;
     return (
-      Number.isInteger(r.port) &&
-      r.port >= 1 &&
-      r.port <= 65535 &&
-      (r.action === "allow" || r.action === "deny") &&
-      (r.proto === "tcp" || r.proto === "udp") &&
+      (r.action === "allow" || r.action === "deny" || r.action === "reject") &&
+      (r.proto === "tcp" || r.proto === "udp" || r.proto === "icmp") &&
       (family === "4" || family === "6" || family === "both") &&
       (pinned === null || pinned === family)
     );
@@ -271,10 +386,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
   }
 
   private _fwAddRule() {
-    this._fwDraftRules = [
-      ...this._fwDraftRules,
-      { action: "allow", proto: "tcp", port: 0, source: "", family: "both" },
-    ];
+    this._fwDraftRules = [...this._fwDraftRules, HaSocScannerView._emptyDraftRule()];
   }
 
   private _fwRemoveRule(index: number) {
@@ -288,9 +400,14 @@ export class HaSocScannerView extends HaSocCustomizableView {
       const rules = this._fwDraftRules.map((r) => ({
         action: r.action,
         proto: r.proto,
-        port: r.port,
+        ports: r.proto === "icmp" ? null : r.ports || null,
+        icmp_type: r.proto === "icmp" ? r.icmp_type || "any" : null,
         source: r.source ? r.source : null,
-        // The server re-derives a sourced rule's family; sending the builder's value keeps the payload explicit.
+        destination: r.destination ? r.destination : null,
+        interface: r.interface ? r.interface : null,
+        log: !!r.log,
+        comment: r.comment ? r.comment : null,
+        // The server re-derives an addressed rule's family; sending the builder's value keeps the payload explicit.
         family: r.family ?? "both",
       }));
       await proposeFirewallTest(this.hass, rules, this._fwBackupAck);
@@ -812,7 +929,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     const rowFamily: FirewallRuleFamily = p.address ? "4" : "6";
     const matches = rules.filter((r) => {
       const fam = r.family ?? "both";
-      return r.port === p.port && r.proto === p.proto && (fam === "both" || fam === rowFamily);
+      return r.proto === p.proto && portsInclude(r, p.port) && (fam === "both" || fam === rowFamily);
     });
     if (!matches.length) return null;
     // Deny beats allow; among equals an any-source rule beats a source-scoped one.
@@ -836,8 +953,8 @@ export class HaSocScannerView extends HaSocCustomizableView {
     return html`
       <td>
         <span
-          class="pill ${rule.action === "allow" ? "good" : "critical"}"
-          title=${`Covered by the ${rule.action} ${rule.proto}/${rule.port} rule (${familyLabel(rule.family)}, ${scope}).` +
+          class="pill ${actionPillClass(rule.action)}"
+          title=${`Covered by the ${rule.action} ${ruleMatchLabel(rule)} rule (${familyLabel(rule.family)}, ${scope}).` +
           (rule.source ? " Source-scoped: traffic from other sources is not affected by it." : "") +
           ipv6Caveat}
           ><span class="dot"></span>${rule.action}${!p.address ? " (by port)" : ""}</span
@@ -914,6 +1031,63 @@ export class HaSocScannerView extends HaSocCustomizableView {
         })}
       </table>
     `;
+  }
+
+  // One rule's cells, shared by the active and proposed tables.
+  private _renderRuleCells(r: FirewallRule) {
+    const options = ruleOptionsLabel(r);
+    return html`
+      <td>
+        <span class="pill ${actionPillClass(r.action)}"><span class="dot"></span>${r.action}</span>
+      </td>
+      <td class="mono">${ruleMatchLabel(r)}</td>
+      <td class="muted">${r.source ?? "any"}</td>
+      <td class="muted">${r.destination ?? "any"}</td>
+      <td class="muted">${r.interface ?? "any"}</td>
+      <td class="muted">${options || "—"}</td>
+      ${this._renderFamilyCell(r)}
+    `;
+  }
+
+  // false only when the add-on has reported the extension absent; an unknown report refuses nothing here.
+  private _fwCapable(cap: FirewallCapability): boolean {
+    return this._firewall?.capabilities?.[cap] !== false;
+  }
+
+  private _fwMissingCapabilities(): FirewallCapability[] {
+    const caps = this._firewall?.capabilities;
+    if (!caps) return [];
+    return (Object.keys(caps) as FirewallCapability[]).filter((k) => caps[k] === false);
+  }
+
+  // Interfaces the picker offers: the scanner's full list plus anything a listener was resolved to.
+  private _fwInterfaceChoices(): string[] {
+    const out = new Set<string>(this._probe?.result?.interfaces ?? []);
+    for (const p of this._probe?.result?.open_ports ?? []) {
+      if (p.interface && p.interface !== "(all interfaces)" && p.interface !== "unresolved") out.add(p.interface);
+    }
+    return Array.from(out).sort();
+  }
+
+  // Ports the picker offers: observed listeners first (with process and bind), then the well-known set.
+  private _fwPortChoices(): { value: string; label: string }[] {
+    const seen = new Map<string, string>();
+    const observed = (this._probe?.result?.open_ports ?? []).slice().sort((a, b) => {
+      const wa = a.address === "0.0.0.0" ? 0 : 1;
+      const wb = b.address === "0.0.0.0" ? 0 : 1;
+      return wa - wb || a.port - b.port;
+    });
+    for (const p of observed) {
+      const key = String(p.port);
+      if (seen.has(key)) continue;
+      const bits = [p.proto, p.process ?? undefined, p.interface === "(all interfaces)" ? "all interfaces" : p.interface ?? undefined];
+      seen.set(key, `${p.port} — listening: ${bits.filter(Boolean).join(", ")}`);
+    }
+    for (const [port, name] of WELL_KNOWN_PORTS) {
+      const key = String(port);
+      if (!seen.has(key)) seen.set(key, `${port} — ${name} (not listening)`);
+    }
+    return Array.from(seen.entries()).map(([value, label]) => ({ value, label }));
   }
 
   // Family cell shared by the active and proposed tables, with the server's partial marker.
@@ -996,27 +1170,17 @@ export class HaSocScannerView extends HaSocCustomizableView {
                 <thead>
                   <tr>
                     ${sortableTh("Action", "action", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
-                    ${sortableTh("Protocol", "proto", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
-                    ${sortableTh("Port", "port", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Match", "match", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Source", "source", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Destination", "destination", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Interface", "interface", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
+                    ${sortableTh("Options", "options", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                     ${sortableTh("Family", "family", this._fwRulesSort, (n) => (this._fwRulesSort = n))}
                   </tr>
                 </thead>
                 <tbody>
                   ${sortRows(fw.known_rules, this._fwRulesSort, HaSocScannerView.FW_RULE_SORT).map(
-                    (r) => html`
-                      <tr>
-                        <td>
-                          <span class="pill ${r.action === "allow" ? "good" : "critical"}"
-                            ><span class="dot"></span>${r.action}</span
-                          >
-                        </td>
-                        <td>${r.proto}</td>
-                        <td>${r.port}</td>
-                        <td class="muted">${r.source ?? "any"}</td>
-                        ${this._renderFamilyCell(r)}
-                      </tr>
-                    `
+                    (r) => html`<tr>${this._renderRuleCells(r)}</tr>`
                   )}
                 </tbody>
               </table>
@@ -1062,28 +1226,16 @@ export class HaSocScannerView extends HaSocCustomizableView {
         <thead>
           <tr>
             <th>Action</th>
-            <th>Protocol</th>
-            <th>Port</th>
+            <th>Match</th>
             <th>Source</th>
+            <th>Destination</th>
+            <th>Interface</th>
+            <th>Options</th>
             <th>Family</th>
           </tr>
         </thead>
         <tbody>
-          ${pending.proposed_rules.map(
-            (r) => html`
-              <tr>
-                <td>
-                  <span class="pill ${r.action === "allow" ? "good" : "critical"}"
-                    ><span class="dot"></span>${r.action}</span
-                  >
-                </td>
-                <td>${r.proto}</td>
-                <td>${r.port}</td>
-                <td class="muted">${r.source ?? "any"}</td>
-                ${this._renderFamilyCell(r)}
-              </tr>
-            `
-          )}
+          ${pending.proposed_rules.map((r) => html`<tr>${this._renderRuleCells(r)}</tr>`)}
         </tbody>
       </table>
       <div class="toolbar" style="margin-top:12px;">
@@ -1124,97 +1276,191 @@ export class HaSocScannerView extends HaSocCustomizableView {
       this._fwBackupAck &&
       this._fwDraftRules.length > 0 &&
       this._fwDraftRules.every((r) => this._fwRuleValid(r));
+    const portChoices = this._fwPortChoices();
+    const interfaceChoices = this._fwInterfaceChoices();
+    const missing = this._fwMissingCapabilities();
 
     return html`
       <h4 class="fw-subhead">Propose a change</h4>
-      <table>
-        <thead>
-          <tr>
-            <th>Action</th>
-            <th>Protocol</th>
-            <th>Port</th>
-            <th>Source (optional)</th>
-            <th>Family</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody>
-          ${this._fwDraftRules.map((r, i) => {
-            // A source address pins the family (the server derives and
-            // enforces exactly this), so the selector locks to the
-            // derived value while a source is present and is free
-            // (default both) otherwise.
-            const pinned = familyForSource(r.source ?? "");
-            const family = pinned ?? r.family ?? "both";
-            return html`
-              <tr>
-                <td>
-                  <select
-                    @change=${(e: Event) =>
-                      this._fwUpdateRule(i, { action: (e.target as HTMLSelectElement).value as FirewallRuleAction })}
-                  >
-                    <option value="allow" ?selected=${r.action === "allow"}>allow</option>
-                    <option value="deny" ?selected=${r.action === "deny"}>deny</option>
-                  </select>
-                </td>
-                <td>
-                  <select
-                    @change=${(e: Event) =>
-                      this._fwUpdateRule(i, { proto: (e.target as HTMLSelectElement).value as FirewallRuleProto })}
-                  >
-                    <option value="tcp" ?selected=${r.proto === "tcp"}>tcp</option>
-                    <option value="udp" ?selected=${r.proto === "udp"}>udp</option>
-                  </select>
-                </td>
-                <td>
-                  <input
-                    type="number"
-                    min="1"
-                    max="65535"
-                    .value=${r.port ? String(r.port) : ""}
-                    style="width:90px;"
-                    @input=${(e: Event) =>
-                      this._fwUpdateRule(i, { port: parseInt((e.target as HTMLInputElement).value, 10) || 0 })}
-                  />
-                </td>
-                <td>
-                  <input
-                    type="text"
-                    placeholder="e.g. 192.168.10.0/24 or fd00::/8"
-                    .value=${r.source ?? ""}
-                    style="width:170px;"
-                    @input=${(e: Event) => {
-                      const source = (e.target as HTMLInputElement).value;
-                      const derived = familyForSource(source);
-                      // Entering a source pins the family to it; clearing
-                      // the source returns to the dual-stack default
-                      // rather than silently keeping the pin.
-                      this._fwUpdateRule(i, { source, family: derived ?? "both" });
-                    }}
-                  />
-                </td>
-                <td>
-                  <select
-                    ?disabled=${pinned !== null}
-                    title=${pinned !== null
-                      ? "Locked: the source address pins this rule to its own address family."
-                      : "IPv4+IPv6 writes the rule into both tables; pick one family to scope it."}
-                    @change=${(e: Event) =>
-                      this._fwUpdateRule(i, {
-                        family: (e.target as HTMLSelectElement).value as FirewallRuleFamily,
-                      })}
-                  >
-                    <option value="both" ?selected=${family === "both"}>IPv4+IPv6</option>
-                    <option value="4" ?selected=${family === "4"}>IPv4</option>
-                    <option value="6" ?selected=${family === "6"}>IPv6</option>
-                  </select>
-                </td>
-                <td><button class="ha-btn danger" @click=${() => this._fwRemoveRule(i)}>Remove</button></td>
-              </tr>
-            `;
-          })}
-        </tbody>
-      </table>
+      <p class="muted" style="font-size:12px;margin:0 0 8px;">
+        Ports take one number, a range (<code>8000:8100</code>), or a comma list (<code>80,443</code>).
+        Rules match inbound traffic to this host only. An address pins the family; a rule with no
+        address is dual-stack.
+        ${missing.length
+          ? html`<span style="display:block;margin-top:4px;color:var(--warning-color,#ffa600);"
+              >This host's iptables lacks: ${missing.join(", ")}. Options needing them are disabled.</span
+            >`
+          : nothing}
+      </p>
+      <datalist id="fw-port-choices">
+        ${portChoices.map((c) => html`<option value=${c.value}>${c.label}</option>`)}
+      </datalist>
+      <datalist id="fw-interface-choices">
+        ${interfaceChoices.map((name) => html`<option value=${name}></option>`)}
+      </datalist>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Action</th>
+              <th>Protocol</th>
+              <th>Ports / ICMP type</th>
+              <th>Source</th>
+              <th>Destination</th>
+              <th>Interface</th>
+              <th>Log</th>
+              <th>Comment</th>
+              <th>Family</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${this._fwDraftRules.map((r, i) => {
+              // An address or a family-specific ICMP type pins the family (the server derives and
+              // enforces exactly this), so the selector locks while a pin is present.
+              const pinned = familyForAddresses(r.source ?? "", r.destination ?? "") ?? (r.proto === "icmp" ? icmpTypeFamily(r.icmp_type) : null);
+              const family = pinned ?? r.family ?? "both";
+              const onAddress = (field: "source" | "destination") => (e: Event) => {
+                const value = (e.target as HTMLInputElement).value.trim();
+                const next = { ...r, [field]: value };
+                const derived = familyForAddresses(next.source ?? "", next.destination ?? "");
+                // Entering an address pins the family; clearing the last one returns to the dual-stack default.
+                this._fwUpdateRule(i, { [field]: value, family: derived ?? "both" } as Partial<FirewallRule>);
+              };
+              return html`
+                <tr>
+                  <td>
+                    <select
+                      @change=${(e: Event) =>
+                        this._fwUpdateRule(i, { action: (e.target as HTMLSelectElement).value as FirewallRuleAction })}
+                    >
+                      <option value="allow" ?selected=${r.action === "allow"}>allow</option>
+                      <option value="deny" ?selected=${r.action === "deny"}>deny (drop)</option>
+                      <option value="reject" ?selected=${r.action === "reject"} ?disabled=${!this._fwCapable("reject")}>
+                        reject
+                      </option>
+                    </select>
+                  </td>
+                  <td>
+                    <select
+                      @change=${(e: Event) => {
+                        const proto = (e.target as HTMLSelectElement).value as FirewallRuleProto;
+                        this._fwUpdateRule(i, proto === "icmp" ? { proto, ports: "", icmp_type: "any" } : { proto, icmp_type: "any" });
+                      }}
+                    >
+                      <option value="tcp" ?selected=${r.proto === "tcp"}>tcp</option>
+                      <option value="udp" ?selected=${r.proto === "udp"}>udp</option>
+                      <option value="icmp" ?selected=${r.proto === "icmp"} ?disabled=${!this._fwCapable("icmp")}>icmp</option>
+                    </select>
+                  </td>
+                  <td>
+                    ${r.proto === "icmp"
+                      ? html`
+                          <select
+                            @change=${(e: Event) => {
+                              const icmp_type = (e.target as HTMLSelectElement).value;
+                              const typeFam = icmpTypeFamily(icmp_type);
+                              this._fwUpdateRule(i, { icmp_type, family: typeFam ?? familyForAddresses(r.source ?? "", r.destination ?? "") ?? "both" });
+                            }}
+                          >
+                            ${FIREWALL_ICMP_TYPES.map(
+                              ([name, v4, v6]) => html`
+                                <option value=${name} ?selected=${(r.icmp_type ?? "any") === name}>
+                                  ${name}${v4 === null ? " (v6 only)" : v6 === null ? " (v4 only)" : ""}
+                                </option>
+                              `
+                            )}
+                          </select>
+                        `
+                      : html`
+                          <input
+                            type="text"
+                            list="fw-port-choices"
+                            placeholder="443 or 8000:8100 or 80,443"
+                            .value=${r.ports ?? ""}
+                            style="width:150px;"
+                            title=${this._fwCapable("multiport") ? "Pick an observed listener or type a number, range, or list." : "Comma lists are disabled: this host lacks the multiport extension."}
+                            @input=${(e: Event) =>
+                              this._fwUpdateRule(i, { ports: (e.target as HTMLInputElement).value.trim() })}
+                          />
+                        `}
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      placeholder="any, e.g. 192.168.10.0/24"
+                      .value=${r.source ?? ""}
+                      style="width:160px;"
+                      @input=${onAddress("source")}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      placeholder="any, e.g. 192.168.10.5"
+                      .value=${r.destination ?? ""}
+                      style="width:150px;"
+                      title="This host's own address the traffic arrives at; useful on a multi-homed host."
+                      @input=${onAddress("destination")}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      list="fw-interface-choices"
+                      placeholder="any"
+                      .value=${r.interface ?? ""}
+                      style="width:110px;"
+                      title=${interfaceChoices.length ? "Interfaces reported by the Probe; type another name if it is missing." : "The Probe has not reported interfaces yet; type a name."}
+                      @input=${(e: Event) =>
+                        this._fwUpdateRule(i, { interface: (e.target as HTMLInputElement).value.trim() })}
+                    />
+                  </td>
+                  <td style="text-align:center;">
+                    <input
+                      type="checkbox"
+                      .checked=${!!r.log}
+                      ?disabled=${!(this._fwCapable("log") && this._fwCapable("limit"))}
+                      title="Also log matching packets to the host kernel log, rate-limited to 5 per minute, prefixed HA_SOC:<comment>:"
+                      @change=${(e: Event) => this._fwUpdateRule(i, { log: (e.target as HTMLInputElement).checked })}
+                    />
+                  </td>
+                  <td>
+                    <input
+                      type="text"
+                      placeholder="optional"
+                      maxlength="22"
+                      .value=${r.comment ?? ""}
+                      style="width:110px;"
+                      ?disabled=${!this._fwCapable("comment")}
+                      title="Letters, digits, dot, dash, underscore; shows in iptables -S and in the log prefix."
+                      @input=${(e: Event) =>
+                        this._fwUpdateRule(i, { comment: (e.target as HTMLInputElement).value.trim() })}
+                    />
+                  </td>
+                  <td>
+                    <select
+                      ?disabled=${pinned !== null}
+                      title=${pinned !== null
+                        ? "Locked: an address or ICMP type pins this rule to its own address family."
+                        : "IPv4+IPv6 writes the rule into both tables; pick one family to scope it."}
+                      @change=${(e: Event) =>
+                        this._fwUpdateRule(i, {
+                          family: (e.target as HTMLSelectElement).value as FirewallRuleFamily,
+                        })}
+                    >
+                      <option value="both" ?selected=${family === "both"}>IPv4+IPv6</option>
+                      <option value="4" ?selected=${family === "4"}>IPv4</option>
+                      <option value="6" ?selected=${family === "6"}>IPv6</option>
+                    </select>
+                  </td>
+                  <td><button class="ha-btn danger" @click=${() => this._fwRemoveRule(i)}>Remove</button></td>
+                </tr>
+              `;
+            })}
+          </tbody>
+        </table>
+      </div>
       <div class="toolbar" style="margin-top:8px;">
         <button class="ha-btn" @click=${this._fwAddRule}>+ Add rule</button>
       </div>
