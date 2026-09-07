@@ -246,7 +246,7 @@ apply_rule() {
 # Runs before anything touches either chain; sets RULES_REJECT_REASON on failure.
 RULES_REJECT_REASON=""
 validate_ruleset() {
-    local rules_json="$1" count i rule action proto port source family
+    local rules_json="$1" count i rule action proto source family
     RULES_REJECT_REASON=""
     count=$(echo "${rules_json}" | jq 'length' 2>/dev/null || echo "-1")
     if ! printf '%s' "${count}" | grep -Eq '^[0-9]+$' || [ "${count}" -lt 1 ] || [ "${count}" -gt "${MAX_RULES}" ]; then
