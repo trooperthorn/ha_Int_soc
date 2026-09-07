@@ -20,12 +20,20 @@
   },
   "entity": {
     "sensor": {
-      "posture_score": { "name": "Security posture score" },
-      "open_detections": { "name": "Open detections" },
-      "users_at_risk": { "name": "Users at risk" }
+      "posture_score": {
+        "name": "Security posture score"
+      },
+      "open_detections": {
+        "name": "Open detections"
+      },
+      "users_at_risk": {
+        "name": "Users at risk"
+      }
     },
     "binary_sensor": {
-      "suspicious_activity": { "name": "Suspicious activity" }
+      "suspicious_activity": {
+        "name": "Suspicious activity"
+      }
     }
   },
   "issues": {
@@ -64,6 +72,26 @@
     "stale_access_token": {
       "title": "Long-lived access token unused for a long time",
       "description": "The token \"{token_name}\" belonging to \"{user_name}\" hasn't been used since {last_used}. A long-lived access token never expires on its own — an old, forgotten one is standing attack surface if it ever leaked. Revoke it from the HA SOC Users & Access tab if it's no longer needed."
+    }
+  },
+  "services": {
+    "ingest_audit": {
+      "name": "Ingest external audit records",
+      "description": "Accept hash-chained audit records from a tool on this host after verifying the caller is the Supervisor and the per-source secret matches.",
+      "fields": {
+        "source": {
+          "name": "Source",
+          "description": "The tool's slug."
+        },
+        "secret": {
+          "name": "Secret",
+          "description": "The source's pairing secret, pinned on its first accepted call."
+        },
+        "records": {
+          "name": "Records",
+          "description": "Up to 200 records in sequence order."
+        }
+      }
     }
   }
 }

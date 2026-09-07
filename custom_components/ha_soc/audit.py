@@ -148,6 +148,9 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
         "probe_auth_rejected",
         "audit_chain_reset",
         "privileged_read",
+        "external_audit_chain_break",
+        "external_audit_rejected",
+        "programming_session",
     }
 )
 IMMEDIATE_FLUSH_PREFIXES = ("firewall_",)
@@ -356,6 +359,16 @@ class AuditLog:
         self._unsubs.append(
             async_dispatcher_connect(
                 self.hass, SIGNAL_CONFIG_ENTRY_CHANGED, self._handle_config_entry_changed
+            )
+        )
+        self._unsubs.append(
+            self.hass.bus.async_listen(
+                "elkm1.programming_started", partial(self._handle_programming_session, "started")
+            )
+        )
+        self._unsubs.append(
+            self.hass.bus.async_listen(
+                "elkm1.programming_ended", partial(self._handle_programming_session, "ended")
             )
         )
         self._unsubs.append(
@@ -584,6 +597,31 @@ class AuditLog:
         return user.name if user is not None else None
 
     @callback
+    @callback
+    def _handle_programming_session(self, phase: str, event: Event) -> None:
+        """A panel programming session the elkm1 integration reported.
+
+        The event carries the tool's claim (source, user, purpose) and whether
+        the panel's own status matched it; an unattributed session is the
+        one worth reading.
+        """
+        data = dict(event.data)
+        user = data.get("user") or None
+        self.async_log(
+            "programming_session",
+            user_id=user,
+            context_id=event.context.id,
+            detail={
+                "phase": phase,
+                "source": data.get("source"),
+                "purpose": data.get("purpose"),
+                "attributed": bool(data.get("attributed")),
+                "rp_seen": bool(data.get("rp_seen")),
+                "started": data.get("started"),
+                "ended": data.get("ended"),
+            },
+        )
+
     def _handle_lovelace_updated(self, event: Event) -> None:
         # No Context on lovelace_updated; the actor is recovered ambiently.
         user_id, source = self._resolve_actor(event)

@@ -41,6 +41,7 @@ RULE_MASS_ENTITY_BURST = "mass_entity_burst"
 RULE_TOKEN_MINTING_ANOMALY = "token_minting_anomaly"
 RULE_DISABLED_USER_ACTIVITY = "disabled_user_activity"
 RULE_PROBE_AUTH_REJECTED = "probe_auth_rejected"
+RULE_EXTERNAL_AUDIT_CHAIN_BREAK = "external_audit_chain_break"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -227,6 +228,7 @@ class DetectionEngine:
             self._rule_token_minting_anomaly,
             self._rule_disabled_user_activity,
             self._rule_probe_auth_rejected,
+            self._rule_external_audit_chain_break,
         ):
             try:
                 touched.extend(await rule(now, users, users_by_id))
@@ -988,6 +990,47 @@ class DetectionEngine:
                     user_id=caller_user_id,
                     ip=None,
                     detail=detail,
+                    now=now,
+                    event_ts=ts,
+                )
+            )
+        return results
+
+    async def _rule_external_audit_chain_break(self, now, users, users_by_id):
+        """A tool's hash-chained audit log arrived broken or rewritten: HIGH, one per (source, hour)."""
+        since = now - timedelta(hours=PROBE_AUTH_REJECTED_LOOKBACK_HOURS)
+        events = await self.audit.async_query(
+            since=since,
+            category="external_audit_chain_break",
+            limit=PROBE_AUTH_REJECTED_QUERY_LIMIT,
+        )
+        emitted: set[tuple[str, str]] = set()
+        results = []
+        for ev in events:
+            detail_in = ev.get("detail") or {}
+            source = str(detail_in.get("source") or "unknown")
+            ts = dt_util.parse_datetime(ev["ts"]) if ev.get("ts") else None
+            if ts is None:
+                continue
+            bucket = _hour_bucket(ts)
+            if (source, bucket) in emitted:
+                continue
+            emitted.add((source, bucket))
+            results.append(
+                self._upsert_detection(
+                    rule_id=RULE_EXTERNAL_AUDIT_CHAIN_BREAK,
+                    subject=source,
+                    bucket=bucket,
+                    severity=SEVERITY_HIGH,
+                    title=f"External audit chain from {source} broken",
+                    user_id=ev.get("user_id"),
+                    ip=None,
+                    detail={
+                        "source": source,
+                        "reason": detail_in.get("reason"),
+                        "accepted_before_break": detail_in.get("accepted_before_break"),
+                        "head_seq": detail_in.get("head_seq"),
+                    },
                     now=now,
                     event_ts=ts,
                 )

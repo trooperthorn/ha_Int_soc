@@ -161,6 +161,24 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
     }
 
 
+async def async_supervisor_call_rejection(
+    hass: HomeAssistant, store: HaSocData, call: ServiceCall
+) -> str | None:
+    """None when the call carries the Supervisor user's context, else the reason.
+
+    The Supervisor user id is cached on the store after the first resolution.
+    A None Supervisor id means the user does not exist; nothing may pass.
+    """
+    supervisor_id = store.supervisor_user_id
+    if supervisor_id is None:
+        supervisor_id = await _async_supervisor_user_id(hass)
+        store.supervisor_user_id = supervisor_id
+    caller = call.context.user_id
+    if caller is None or supervisor_id is None or caller != supervisor_id:
+        return "not_supervisor"
+    return None
+
+
 def async_register_probe_service(
     hass: HomeAssistant, store: HaSocData, audit: "AuditLog", secrets: HaSocSecretStore
 ) -> None:

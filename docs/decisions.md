@@ -1,5 +1,18 @@
 # Decisions
 
+## 2026-09-06, external audit ingest verifies chains but does not import files
+
+The Elk Programmer app keeps a hash-chained audit log under its own `/data`. HA SOC
+could have read that file through a share mount, but a file the source can rewrite
+is not evidence. Instead the source pushes records through `ha_soc.ingest_audit`
+and HA SOC keeps the last accepted head per source, so any later edit of the
+source's file cannot change what HA SOC already holds. A gap is treated as a break
+rather than a warning because the link to a record HA SOC never saw cannot be
+verified; the response tells the source where to resume. Rejected: a shared
+secret for every source (one leak would let any tool speak for any other) and
+reusing the Probe's pairing secret (the Probe's secret authorizes firewall changes;
+audit ingest must not inherit that).
+
 Dated decisions with the alternative rejected and why. Entries marked "recorded" were captured on 2026-09-03 from code comments and docstrings during the comment-to-docs pass; the original decision predates that date and, where a work item or decision number is known, it is given. Decision numbers (D-nn) and work items refer to `HA-SOC-Security-Work-Plan.md`.
 
 ## Access control and users

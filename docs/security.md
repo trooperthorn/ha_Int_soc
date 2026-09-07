@@ -43,6 +43,20 @@ The Supervisor system-user context is the primary gate on every inbound Probe se
 
 `async_verify_or_pin_secret`: the add-on generates a random secret once, persists it in `/data`, and sends it on every call. Core pins the first non-empty secret it sees on a call that already passed the context check, then requires an exact match, so the first-caller-pins race the old trust-on-first-use design had is closed to anything that cannot call through the proxy. A missing secret is always a rejection; the old branch that accepted "nothing pinned and nothing presented" is gone because it let any local caller through until the real add-on's first report. An add-on too old to send a secret is rejected until updated, and the owner-only pairing reset is the recovery. The comparison uses `hmac.compare_digest` so a forger cannot learn the pin byte by byte through timing. The pin lives in the private secret store under `PROBE_PAIRING_SECRET_KEY`, fetched at use time (SEC-1).
 
+### External audit ingest
+
+`ha_soc.ingest_audit` reuses the Probe's two gates: the Supervisor user's context
+on the call, and a per-source secret pinned on first use. Both are enforced. What
+the chain check adds is integrity of the delivered history, not authenticity of
+its content: a source that lies consistently from its first record produces a
+valid chain. What it defeats is editing, truncating, or reordering a source's
+log after the fact, because HA SOC holds the head it last accepted and every
+break, gap, or rewrite is recorded in HA SOC's own chain and raised as a HIGH
+detection. Trust-on-first-use means the first caller for a source name owns
+that name until the secret store entry is cleared; the source slug is
+validated, and the record schema caps sizes so a hostile caller cannot fill
+the audit directory faster than the retention sweep.
+
 ### The add-on treats Core as hostile
 
 The integration validates every firewall field at its WebSocket layer, but the add-on revalidates every field before any iptables argument is built, because the threat model for a NET_ADMIN process includes the case where Core itself is compromised. Each check (`valid_action`, `valid_proto`, `valid_family`, `valid_port`, `valid_window`, `valid_source_for_family`, `validate_ruleset`) is a strict allowlist; a failure refuses the whole test before the chain is touched. The window bounds exist so a compromised Core cannot park unconfirmed rules on the host for a day. The source check is a shape allowlist (only the characters an address plus prefix length can contain, bounded in length, with the family consistency Core's schema also derives), keeping shell and iptables metacharacters out; iptables is the final judge of the address, and a rule it rejects fails loudly (work item 2.5). Core-side, `_valid_source` validates a real IP or CIDR so a typo cannot sail through to the add-on, where a malformed `-s` argument would silently fail and leave the operator believing a restrictive rule is live.

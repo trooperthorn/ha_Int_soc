@@ -16,6 +16,7 @@ NVD/GitHub; and HA to the SIEM.
 | Non-owner admin changes an owner/admin target | privilege loss/takeover | server-side target classification; owner-only gates; owner deactivation refusal | retain regression tests and owner MFA |
 | API key exfiltration by redirect/log/error | controller compromise | secret store, redaction, masked representation, redirects disabled, bounded errors | verified TLS and key rotation |
 | Undocumented/private UniFi calls drift | false data or unexpected mutation | versioned read-only Local API contract tests | re-verify on controller upgrade |
+| A tool's forwarded audit history is edited, truncated, or forged | evidence loss for a panel programming session | Supervisor-context caller, per-source pinned secret, per-source chain head, break/gap/rewrite recorded in HA SOC's chain and raised as a HIGH detection | review the source's own log against HA SOC's copy; rotate the source secret |
 | Malicious probe resource JSON reaches shell/Docker | command/option injection or host DoS | strict jq schema/slug/ranges, last-known-good state, canonical Docker JSON | isolate add-on, review Docker privilege |
 | Audit deletion, rollback, queue exhaustion, or SIEM outage | evidence loss | hash chain, mirrored head, Repairs issue, local-first flush, bounded queue, retry/status/gap detection | SIEM alerts, retention, evidence export, capacity test |
 | HTTP/plaintext Syslog or unverified certificates | interception/tampering | visible findings/warnings; no forced migration | complete certificate plan and segmentation |

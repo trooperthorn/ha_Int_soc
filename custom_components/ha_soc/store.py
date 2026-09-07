@@ -127,6 +127,8 @@ class StoreData(TypedDict):
     panel_layout: dict[str, dict[str, dict[str, Any]]]
     # last bounded, non-secret runtime report from the Probe's snmpd supervisor
     snmp_status: dict[str, Any] | None
+    # source slug -> {"seq", "hash", "at"}: the last external audit record accepted per source
+    external_audit_heads: dict[str, dict[str, Any]]
 
 
 def default_store_data() -> StoreData:
@@ -199,6 +201,7 @@ def default_store_data() -> StoreData:
         },
         panel_layout={},
         snmp_status=None,
+        external_audit_heads={},
     )
 
 
@@ -282,6 +285,20 @@ class HaSocData:
 
     def async_update_settings(self, **changes: Any) -> None:
         self.data["settings"].update(changes)  # type: ignore[typeddict-item]
+        self.async_schedule_save()
+
+    def external_audit_head(self, source: str) -> dict[str, Any] | None:
+        heads = self.data.setdefault("external_audit_heads", {})  # type: ignore[misc]
+        head = heads.get(source)
+        return dict(head) if isinstance(head, dict) else None
+
+    def async_set_external_audit_head(self, source: str, head: dict[str, Any]) -> None:
+        """The head only advances; a regressing call is a replay and is dropped."""
+        heads = self.data.setdefault("external_audit_heads", {})  # type: ignore[misc]
+        current = heads.get(source)
+        if isinstance(current, dict) and int(current.get("seq", 0)) >= int(head["seq"]):
+            return
+        heads[source] = head
         self.async_schedule_save()
 
     def async_set_audit_head(self, head: dict[str, Any]) -> None:
