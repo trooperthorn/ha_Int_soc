@@ -17,6 +17,45 @@ of what looks like finer-grained control (view visibility, per-user sidebar
 hiding) is cosmetic. HA SOC is built to say so, everywhere, rather than
 imply otherwise.
 
+## Screenshots
+
+Every value in these images is invented for the screenshot. They are the real
+panel rendered against example data, not a capture of a live deployment, so no
+posture score, device, address, key, or fingerprint below describes a real
+system.
+
+### Security overview
+
+The console's landing view: posture with its grade, what is open right now,
+and operational health kept on a separate axis from risk.
+
+![The HA SOC security overview: posture score, open detections, asset availability, finding severity, posture trend, priority queue, entity reliability, identity protection, and the device and integration triage queues](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/security-overview.png)
+
+### UniFi configuration baseline
+
+Drift against the baseline the owner accepted, per section, down to the
+changed field. Rule evaluation order is part of the comparison, because
+reordering changes which rule wins without changing any rule.
+
+![The Configuration Baseline card showing three changes since the accepted baseline, a per-section drift table, the changed fields for a firewall policy and a device, and the recorded change history](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-configuration-baseline.png)
+
+### Device SSH
+
+The read-only collector. Commands come from a fixed allowlist in the
+integration, so no command text crosses the wire; four of them are badged
+`unverified` until their output has been seen on real hardware.
+
+![The Device SSH card showing the public key to paste into the UniFi controller, the allowlisted commands with unverified badges, and the pinned host key table](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-device-ssh.png)
+
+### Device SSH, after a run
+
+The four-state model in practice. `mca-cli-op info` exited 127 because the
+tool is absent on that model, so it reports `unknown` rather than `fail`, and
+the management config comes back with `mgmt.authkey` redacted while the inform
+URL a parser actually needs stays visible.
+
+![A completed Device SSH run: two commands reporting pass, one reporting unknown with exit 127, and management config output with the authkey redacted and the inform URL intact](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-device-ssh-run.png)
+
 ## What it does
 
 - **Users & Access**: every user, their real last-login (from refresh-token
