@@ -8,6 +8,11 @@ configuration that decides whether a join is permitted at all, and that is
 what this module reads: the SSID's own state, the radios it uses, the MAC
 filter, and the set of access points allowed to broadcast it.
 
+The one place a refused join IS recorded is the access point itself, in
+hostapd's log. That is not an API and is not read here; the `wstalist`,
+`mca_dump` and `syslog_tail` entries in ssh_devices.py reach it over the
+read-only device SSH path instead.
+
 Nothing here says a client failed. Each finding says a condition exists that
 would refuse or hide the network from some class of device, and each carries
 its own certainty, because "this SSID is disabled" and "this SSID may be off
