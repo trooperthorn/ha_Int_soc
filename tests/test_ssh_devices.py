@@ -444,3 +444,35 @@ async def test_a_host_key_mismatch_is_audited_under_its_own_category(
     records = await runtime.audit.async_query(category=sd.AUDIT_CATEGORY_HOST_KEY, limit=10)
     assert records
     assert records[0]["detail"]["refusal"] == sd.ERR_HOST_KEY_CHANGED
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ('{"x_authkey": "ba9876543210"}', '{"x_authkey": "[redacted]"}'),
+        ('"wpa_psk" : "hunter2"', '"wpa_psk" : "[redacted]"'),
+        ('{"X_Password":"s3cret"}', '{"X_Password":"[redacted]"}'),
+        # An escaped quote inside the value must not end the match early.
+        ('{"psk": "a\\"b", "mac": "aa:bb"}', '{"psk": "[redacted]", "mac": "aa:bb"}'),
+        # Fields a parser needs are untouched.
+        ('{"essid": "wifiot", "signal": -71}', '{"essid": "wifiot", "signal": -71}'),
+    ],
+)
+def test_json_output_is_redacted_too(text: str, expected: str) -> None:
+    """mca-dump and wstalist answer with JSON, which the key=value rule misses."""
+    assert sd.redact_output(text) == expected
+
+
+def test_the_association_commands_are_present_and_unverified() -> None:
+    """The only record of a refused wireless join lives on the access point.
+
+    No UniFi API endpoint carries an association attempt or an authentication
+    failure, so these three exist to reach the device's own view. They ship
+    unverified until their output has been seen on this estate.
+    """
+    by_id = {c.id: c for c in sd.COMMANDS}
+    assert by_id["wstalist"].argv == "wstalist"
+    assert by_id["mca_dump"].argv == "mca-dump"
+    assert by_id["syslog_tail"].argv == "tail -n 200 /var/log/messages"
+    for command_id in ("wstalist", "mca_dump", "syslog_tail"):
+        assert by_id[command_id].verified is False

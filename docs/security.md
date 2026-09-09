@@ -29,7 +29,7 @@ The private key lives in the private secret store, is listed in `SECRET_SETTING_
 
 Host-key pinning is trust on first use with a hard refusal on change. A changed key is audited under its own category (`ssh_host_key_changed`, CEF severity 7) and the connection is abandoned; nothing re-pins automatically. Without that rule, key authentication would still prevent credential capture but not prevent something on the management network answering for a device and feeding the collector false configuration, which is the failure this feature would otherwise introduce.
 
-Output never enters durable storage. It is redacted for credential-shaped assignments, capped, returned to the calling owner session, and dropped. `ssh_device_command` records the host, account, host-key fingerprint and the per-command outcome map only.
+Output never enters durable storage. It is redacted for credential-shaped assignments in both shapes the devices produce, `key=value` configuration lines and JSON `"key": "value"` pairs (the JSON rule was added with the association commands, whose output is JSON: without it a wireless passphrase in `mca-dump` would have reached the panel unmasked), capped, returned to the calling owner session, and dropped. `ssh_device_command` records the host, account, host-key fingerprint and the per-command outcome map only.
 
 What this does not do: it does not configure, restart, adopt, or power-cycle anything, and it holds no capability to. The two device actions the Network API defines (`RESTART`, port `POWER_CYCLE`) are not wired to anything in this release.
 

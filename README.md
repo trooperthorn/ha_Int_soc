@@ -192,8 +192,13 @@ URL a parser actually needs stays visible.
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
 - **Device SSH (read-only)**: reads the facts UniFi's API does not expose at any
-  endpoint, such as per-port VLAN handling and the inform URL a device actually
-  holds. Authentication is an Ed25519 keypair HA SOC generates and the UniFi
+  endpoint, such as per-port VLAN handling, the inform URL a device actually
+  holds, and, on an access point, the association and authentication record
+  (`wstalist`, `mca-dump`, and the syslog tail carrying hostapd's reason codes)
+  that no controller endpoint carries at all. That last set is the only source
+  for why a wireless client was refused, and the companion to
+  [Wi-Fi Join Diagnostics](#network-tab), which can read configuration but
+  never a failure. Authentication is an Ed25519 keypair HA SOC generates and the UniFi
   controller distributes to every adopted device, so no per-device password is
   ever stored. Owner-only, off by default, commands come from a fixed allowlist
   (no command text crosses the wire), host keys are pinned on first use and a
