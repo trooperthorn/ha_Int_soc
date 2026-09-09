@@ -152,6 +152,13 @@ imply otherwise.
 - **Host Probe (optional add-on)**: real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
+- **Device SSH (read-only)**: reads the facts UniFi's API does not expose at any
+  endpoint, such as per-port VLAN handling and the inform URL a device actually
+  holds. Authentication is an Ed25519 keypair HA SOC generates and the UniFi
+  controller distributes to every adopted device, so no per-device password is
+  ever stored. Owner-only, off by default, commands come from a fixed allowlist
+  (no command text crosses the wire), host keys are pinned on first use and a
+  mismatch is refused, and output is redacted and stored nowhere.
 - **UniFi configuration baseline**: an owner-accepted snapshot of the
   controller's networks, firewall zones, firewall policies, ACL rules and
   devices, with per-section drift against it (NIST 800-53 CM-6). Rule
@@ -352,6 +359,7 @@ custom_components/ha_soc/
 ├── entity_remap.py  - find/fix broken entity_id references (Entity ReMap tab)
 ├── dashboard_files.py  - read/overwrite YAML under <config>/dashboards (Dashboard Files tab)
 ├── config_ledger.py  - UniFi configuration baseline + drift (Network Security tab)
+├── ssh_devices.py  - read-only SSH collection from UniFi devices (Device SSH card)
 ├── config_hygiene.py  - Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py  - lock/siren/valve entities + curated integration health (Dashboard)

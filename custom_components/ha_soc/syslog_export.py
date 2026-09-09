@@ -57,6 +57,9 @@ _CEF_EVENT_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 _CEF_EVENT_NAMES = {
     "dashboard_file_write": "Dashboard File Written",
     "unifi_config_drift": "UniFi Configuration Drift",
+    "ssh_device_command": "Device SSH Command Run",
+    "ssh_key_change": "Device SSH Key Changed",
+    "ssh_host_key_changed": "Device SSH Host Key Mismatch",
     "unifi_baseline_accepted": "UniFi Baseline Accepted",
     "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
@@ -95,6 +98,7 @@ _CEF_VERY_HIGH_10 = {"audit_chain_reset"}
 _CEF_VERY_HIGH_9 = {"probe_auth_rejected", "external_audit_chain_break", "external_audit_rejected"}
 _CEF_HIGH_7 = {
     "dashboard_file_denied",
+    "ssh_host_key_changed",
     "firewall_pending_discarded",
     "login_fail",
     "user_deactivated",
@@ -102,6 +106,8 @@ _CEF_HIGH_7 = {
 }
 _CEF_MEDIUM_5 = {
     "dashboard_file_write",
+    "ssh_device_command",
+    "ssh_key_change",
     "unifi_config_drift",
     "unifi_baseline_accepted",
     "detection_status_changed",

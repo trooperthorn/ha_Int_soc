@@ -19,7 +19,7 @@ from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from . import config_ledger, dashboard_files
+from . import config_ledger, dashboard_files, ssh_devices
 from .const import (
     ACCESS_LEVEL_OWNER_AND_ADMINS,
     ACCESS_LEVEL_OWNER_ONLY,
@@ -35,6 +35,8 @@ from .const import (
     CONF_PIHOLE_IOT_CIDR,
     CONF_PIHOLE_VERIFY_SSL,
     CONF_SCANNER_ENABLED,
+    CONF_SSH_COLLECTION_ENABLED,
+    CONF_SSH_USERNAME,
     CONF_DASHBOARD_EDIT_ENABLED,
     CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
@@ -63,6 +65,7 @@ from .const import (
     CONF_UNIFI_PROTECT_VERIFY_SSL,
     DEFAULT_ACCESS_LEVEL,
     DEFAULT_DASHBOARD_EDIT_ENABLED,
+    DEFAULT_SSH_COLLECTION_ENABLED,
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
     MFA_POLICY_AUTO_DEACTIVATE,
@@ -263,6 +266,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_logs_targets,
         ws_logs_container,
         ws_misconfig_set_status,
+        ws_ssh_status,
+        ws_ssh_generate_key,
+        ws_ssh_clear_key,
+        ws_ssh_forget_host_key,
+        ws_ssh_run,
         ws_unifi_ledger_get,
         ws_unifi_ledger_accept,
         ws_unifi_network_references,
@@ -1741,6 +1749,10 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_HYGIENE_SCAN_YAML_DASHBOARDS): bool,
         # Owner opt-in for the Dashboard Files editor; see docs/security.md.
         vol.Optional(CONF_DASHBOARD_EDIT_ENABLED): bool,
+        # Owner opt-in for device SSH collection, and the site-wide account
+        # the UniFi controller pushes. The private key is generated, never sent.
+        vol.Optional(CONF_SSH_COLLECTION_ENABLED): bool,
+        vol.Optional(CONF_SSH_USERNAME): vol.Any(None, vol.All(cv.string, vol.Length(max=64))),
         # Off switch for NVD lookups (consumed by vulns.py).
         vol.Optional("nvd_lookups_enabled"): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
@@ -2123,4 +2135,168 @@ async def ws_unifi_network_references(hass: HomeAssistant, connection, msg: dict
     except UniFiError as err:
         connection.send_error(msg["id"], "invalid_network_id", str(err))
         return
+    connection.send_result(msg["id"], result)
+
+
+def _ssh_enabled(hass: HomeAssistant) -> bool:
+    """The owner's opt-in switch. Fails closed when the runtime is not up."""
+    try:
+        return bool(
+            _runtime(hass).store.settings.get(
+                CONF_SSH_COLLECTION_ENABLED, DEFAULT_SSH_COLLECTION_ENABLED
+            )
+        )
+    except RuntimeError:
+        return False
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/ssh/status"})
+@websocket_api.async_response
+async def ws_ssh_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Whether collection is on, whether a keypair exists, and the allowlist.
+
+    Returns the public key so the owner can paste it into the controller's
+    SSH Keys panel; the private half never leaves the secret store.
+    """
+    runtime = _runtime(hass)
+    public_key = await ssh_devices.async_public_key(hass, runtime.secrets)
+    connection.send_result(
+        msg["id"],
+        {
+            "enabled": _ssh_enabled(hass),
+            "username": runtime.store.settings.get(CONF_SSH_USERNAME),
+            "public_key": public_key,
+            "has_keypair": public_key is not None,
+            "commands": ssh_devices.command_catalog(),
+            "host_keys": ssh_devices.pinned_host_keys(runtime.store),
+        },
+    )
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/ssh/generate_key"})
+@websocket_api.async_response
+async def ws_ssh_generate_key(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Create a new keypair, replacing any existing one.
+
+    Replacing the pair locks HA SOC out of every device until the new public
+    key is pasted into the controller and the devices re-provision, so the
+    change is audited with that consequence in mind.
+    """
+    runtime = _runtime(hass)
+    had_key = await ssh_devices.async_public_key(hass, runtime.secrets) is not None
+    public_key = await ssh_devices.async_generate_keypair(hass, runtime.secrets)
+    runtime.audit.async_log(
+        ssh_devices.AUDIT_CATEGORY_KEY,
+        user_id=connection.user.id,
+        detail={"action": "generated", "replaced_existing": had_key},
+        flush=True,
+    )
+    connection.send_result(msg["id"], {"public_key": public_key})
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/ssh/clear_key"})
+@websocket_api.async_response
+async def ws_ssh_clear_key(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Delete the stored private key. Pinned host keys are left alone."""
+    runtime = _runtime(hass)
+    await ssh_devices.async_clear_keypair(runtime.secrets)
+    runtime.audit.async_log(
+        ssh_devices.AUDIT_CATEGORY_KEY,
+        user_id=connection.user.id,
+        detail={"action": "cleared"},
+        flush=True,
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/ssh/forget_host_key",
+        vol.Required("host"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_ssh_forget_host_key(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Unpin one device's host key so the next connection pins afresh."""
+    runtime = _runtime(hass)
+    forgotten = ssh_devices.forget_host_key(runtime.store, msg["host"])
+    if forgotten:
+        runtime.audit.async_log(
+            ssh_devices.AUDIT_CATEGORY_HOST_KEY,
+            user_id=connection.user.id,
+            detail={"action": "forgotten", "host": msg["host"]},
+            flush=True,
+        )
+    connection.send_result(msg["id"], {"forgotten": forgotten})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/ssh/run",
+        vol.Required("host"): cv.string,
+        vol.Required("command_ids"): vol.All(
+            cv.ensure_list, vol.Length(min=1, max=len(ssh_devices.COMMANDS)), [cv.string]
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_ssh_run(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Run allowlisted read-only commands on one device.
+
+    Output is returned to the caller and nowhere else: it is not persisted and
+    the audit record carries the command ids and their outcomes, never the
+    text, because a configuration dump is exactly the thing an audit log
+    should not accumulate.
+    """
+    runtime = _runtime(hass)
+    if not _ssh_enabled(hass):
+        connection.send_error(
+            msg["id"], ssh_devices.ERR_DISABLED, "Device SSH collection is turned off"
+        )
+        return
+    username = runtime.store.settings.get(CONF_SSH_USERNAME)
+    try:
+        result = await ssh_devices.async_run_commands(
+            hass,
+            runtime.store,
+            runtime.secrets,
+            msg["host"],
+            msg["command_ids"],
+            username=username or "",
+        )
+    except ssh_devices.SshDeviceError as err:
+        runtime.audit.async_log(
+            ssh_devices.AUDIT_CATEGORY_HOST_KEY
+            if err.code == ssh_devices.ERR_HOST_KEY_CHANGED
+            else ssh_devices.AUDIT_CATEGORY_RUN,
+            user_id=connection.user.id,
+            detail={
+                "host": msg.get("host"),
+                "command_ids": msg.get("command_ids"),
+                "refusal": err.code,
+                "reason": err.message,
+            },
+            flush=True,
+        )
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+
+    runtime.audit.async_log(
+        ssh_devices.AUDIT_CATEGORY_RUN,
+        user_id=connection.user.id,
+        detail={
+            "host": result["host"],
+            "username": result["username"],
+            "host_key_fingerprint": result["host_key_fingerprint"],
+            "host_key_pinned_now": result["host_key_pinned_now"],
+            # Outcomes, never output.
+            "outcomes": {r["command_id"]: r["state"] for r in result["results"]},
+        },
+        flush=True,
+    )
     connection.send_result(msg["id"], result)

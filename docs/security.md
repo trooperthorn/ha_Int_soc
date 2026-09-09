@@ -21,6 +21,18 @@ The second tier is conditional, applied inside the handlers via `_async_target_i
 
 Home Assistant's native Configure dialog is a weaker door than the panel: core gates it with a generic admin check and never tells the flow which user is driving it, so it cannot enforce the owner-only rule. Editing the access level or credentials through it was a real authorization bypass, which is why the options flow now edits nothing. Older builds also mirrored every settings save, secrets included, into `entry.options`, which lands in `.storage/core.config_entries`, a world-readable file; nothing reads that mirror any more, setup scrubs a legacy copy to `{}` once (logging key names only), and `HaSocOptionsFlow` always creates the entry with `data={}` so a save through the dialog can never repopulate it (SEC-2).
 
+### Device SSH collection
+
+This is the widest capability in the integration, so it is fenced at four independent points. It is `@require_owner` throughout, a tier above every other UniFi command. It requires `ssh_collection_enabled`, which is off by default and owner-only to change. It requires a keypair the owner generated and installed by hand. And it can only run commands from a compile-time allowlist, reached by id: the websocket schema accepts no command text at all, so there is no injection surface to escape from.
+
+The private key lives in the private secret store, is listed in `SECRET_SETTING_KEYS` so every settings representation masks it, and has no setter: `ha_soc/settings/set`'s schema is strict and declares no field for it, so the only way it can be written is by generating a new pair. Replacing or clearing it locks HA SOC out of every device until the controller re-pushes, which is the correct failure direction and is stated in the panel.
+
+Host-key pinning is trust on first use with a hard refusal on change. A changed key is audited under its own category (`ssh_host_key_changed`, CEF severity 7) and the connection is abandoned; nothing re-pins automatically. Without that rule, key authentication would still prevent credential capture but not prevent something on the management network answering for a device and feeding the collector false configuration, which is the failure this feature would otherwise introduce.
+
+Output never enters durable storage. It is redacted for credential-shaped assignments, capped, returned to the calling owner session, and dropped. `ssh_device_command` records the host, account, host-key fingerprint and the per-command outcome map only.
+
+What this does not do: it does not configure, restart, adopt, or power-cycle anything, and it holds no capability to. The two device actions the Network API defines (`RESTART`, port `POWER_CYCLE`) are not wired to anything in this release.
+
 ### UniFi configuration ledger
 
 Read-only against the controller: the ledger fetches, projects and compares, and the only thing it writes is HA SOC's own store. Accepting a baseline is `@require_owner`, in the same tier as the firewall commands, because the baseline is what every later drift report is measured against and an admin who can silently re-accept it can make a change disappear.

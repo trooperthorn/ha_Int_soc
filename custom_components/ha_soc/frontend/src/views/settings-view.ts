@@ -627,6 +627,47 @@ export class HaSocSettingsView extends LitElement {
       </div>
 
       <div class="card">
+        <h3>Device SSH Collection</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Lets HA SOC open read-only SSH sessions to UniFi devices using a keypair the
+          controller distributes to every adopted device. Commands come from a fixed
+          allowlist in the integration; nothing configures or restarts a device. Used for
+          the facts the UniFi API does not expose at any endpoint, such as per-port VLAN
+          handling and the inform URL a device actually holds.
+        </p>
+        <label class="settings-row">
+          <span>
+            Allow read-only SSH to devices
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default. While it is off the server refuses every run. Generate the
+              keypair and paste the public key into the controller under Device
+              Authentication, SSH Keys, then wait for the devices to re-provision.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.ssh_collection_enabled}
+            @change=${(e: Event) =>
+              this._update("ssh_collection_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+        <label class="settings-row">
+          <span>
+            Device SSH username
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >The site-wide account set in the controller's Device Authentication panel.</span
+            >
+          </span>
+          <input
+            type="text"
+            .value=${s.ssh_username || ""}
+            @change=${(e: Event) =>
+              this._update("ssh_username", (e.target as HTMLInputElement).value || null)}
+          />
+        </label>
+      </div>
+
+      <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           <span class="tag enforced">enforced</span> Hash-chained JSONL, rotated on

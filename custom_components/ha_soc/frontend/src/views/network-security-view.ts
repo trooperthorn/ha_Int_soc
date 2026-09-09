@@ -13,6 +13,13 @@ import {
   NetworkSecurityFinding,
   LedgerDrift,
   NetworkSecurityOverview,
+  SshRunResult,
+  SshStatus,
+  clearSshKey,
+  fetchSshStatus,
+  forgetSshHostKey,
+  generateSshKey,
+  runSshCommands,
   PiHoleOverview,
   ServerPortsReport,
   UnifiLedgerState,
@@ -45,6 +52,34 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   static styles = [
     sharedStyles,
     css`
+      .ssh-key,
+      .ssh-out {
+        background: rgba(127, 127, 127, 0.1);
+        border: 1px solid var(--divider-color, #444);
+        border-radius: 4px;
+        padding: 8px;
+        font-size: 11.5px;
+        line-height: 1.5;
+        white-space: pre-wrap;
+        word-break: break-all;
+        overflow-x: auto;
+        max-height: 320px;
+      }
+      .ssh-out.ssh-err {
+        border-color: var(--error-color, #db4437);
+      }
+      .pill-pass {
+        background: var(--success-color, #43a047);
+        color: #fff;
+      }
+      .pill-fail {
+        background: var(--error-color, #db4437);
+        color: #fff;
+      }
+      .pill-unknown {
+        background: var(--warning-color, #ffa600);
+        color: #000;
+      }
       .table-wrap {
         overflow-x: auto;
       }
@@ -301,6 +336,12 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   @state() private _ledgerError: string | null = null;
   // Cosmetic: the Accept command is owner-gated on the server regardless.
   @state() private _isOwner = false;
+  @state() private _ssh: SshStatus | null = null;
+  @state() private _sshHost = "";
+  @state() private _sshSelected: string[] = ["whoami"];
+  @state() private _sshRun: SshRunResult | null = null;
+  @state() private _sshBusy = false;
+  @state() private _sshError: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -324,6 +365,13 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       this._isOwner = !!(await fetchAccessInfo(this.hass)).is_owner;
     } catch {
       this._isOwner = false;
+    }
+    if (this._isOwner) {
+      try {
+        this._ssh = await fetchSshStatus(this.hass);
+      } catch {
+        this._ssh = null;
+      }
     }
     try {
       this._ledger = await fetchUnifiLedger(this.hass);
@@ -362,6 +410,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
         title: "Configuration Baseline",
         render: () => this._renderConfigLedger(),
       },
+      { id: "device_ssh", title: "Device SSH", render: () => this._renderDeviceSsh() },
       { id: "server_ports", title: "Home Assistant Server Ports", render: () => this._renderServerPorts(o.server_ports) },
       { id: "pihole", title: "Pi-hole DNS", render: () => this._renderPihole(o.pihole) },
     ];
@@ -379,6 +428,209 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   }
 
 
+
+
+  private _renderDeviceSsh() {
+    const status = this._ssh;
+    if (!this._isOwner) {
+      return html`
+        <div class="card">
+          <h3>Device SSH</h3>
+          <p class="muted">Owner only. Every ha_soc/ssh command is refused for other accounts.</p>
+        </div>
+      `;
+    }
+    if (!status) {
+      return html`<div class="card"><h3>Device SSH</h3><p class="muted">Loading…</p></div>`;
+    }
+
+    return html`
+      <div class="card">
+        <h3>Device SSH</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Read-only. Commands come from a fixed allowlist in the integration, so there is no
+          way to send an arbitrary string to a device. Output is shown here and nowhere else:
+          it is not stored, and the audit record keeps the outcomes, not the text.
+        </p>
+
+        ${!status.enabled
+          ? html`<p class="muted">
+              Collection is off. Turn it on under Settings, Device SSH Collection.
+            </p>`
+          : nothing}
+
+        <h4 style="margin:14px 0 6px;font-size:13px;">Key</h4>
+        ${status.has_keypair
+          ? html`
+              <p class="muted" style="font-size:12px;">
+                Paste this into the controller under Device Authentication, SSH Keys, then wait
+                for the devices to re-provision. The private half stays in the secret store.
+              </p>
+              <pre class="ssh-key">${status.public_key}</pre>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="ha-btn" ?disabled=${this._sshBusy} @click=${() => this._sshKey("generate")}>
+                  Replace keypair
+                </button>
+                <button class="ha-btn" ?disabled=${this._sshBusy} @click=${() => this._sshKey("clear")}>
+                  Delete keypair
+                </button>
+              </div>
+              <p class="muted" style="font-size:11.5px;">
+                Replacing or deleting locks HA SOC out of every device until the controller
+                pushes the new key.
+              </p>
+            `
+          : html`
+              <p class="muted" style="font-size:12px;">No keypair yet.</p>
+              <button class="ha-btn" ?disabled=${this._sshBusy} @click=${() => this._sshKey("generate")}>
+                Generate keypair
+              </button>
+            `}
+
+        <h4 style="margin:16px 0 6px;font-size:13px;">Run</h4>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px;">
+          <input
+            type="text"
+            placeholder="Device address"
+            .value=${this._sshHost}
+            @input=${(e: Event) => (this._sshHost = (e.target as HTMLInputElement).value)}
+            style="padding:6px 8px;min-width:180px;"
+          />
+          <button
+            class="ha-btn"
+            ?disabled=${!status.enabled ||
+            !status.has_keypair ||
+            !this._sshHost.trim() ||
+            !this._sshSelected.length ||
+            this._sshBusy}
+            @click=${() => this._runSsh()}
+          >
+            ${this._sshBusy ? "Running…" : "Run selected"}
+          </button>
+          ${this._sshError
+            ? html`<span class="alert" style="font-size:12px;">${this._sshError}</span>`
+            : nothing}
+        </div>
+
+        <div style="display:grid;gap:4px;margin-bottom:10px;">
+          ${status.commands.map(
+            (c) => html`
+              <label style="display:flex;gap:8px;align-items:flex-start;font-size:12.5px;">
+                <input
+                  type="checkbox"
+                  .checked=${this._sshSelected.includes(c.id)}
+                  @change=${(e: Event) =>
+                    this._toggleSshCommand(c.id, (e.target as HTMLInputElement).checked)}
+                />
+                <span>
+                  <code>${c.argv}</code>
+                  ${c.verified
+                    ? nothing
+                    : html`<span class="pill" style="margin-left:6px;">unverified</span>`}
+                  <span class="muted" style="display:block;font-size:11.5px;">${c.description}</span>
+                </span>
+              </label>
+            `
+          )}
+        </div>
+
+        ${this._sshRun ? this._renderSshRun(this._sshRun) : nothing}
+        ${Object.keys(status.host_keys).length
+          ? html`
+              <h4 style="margin:16px 0 6px;font-size:13px;">Pinned host keys</h4>
+              <table class="tbl">
+                <thead><tr><th>Device</th><th>Fingerprint</th><th>Pinned</th><th></th></tr></thead>
+                <tbody>
+                  ${Object.entries(status.host_keys).map(
+                    ([host, entry]) => html`
+                      <tr>
+                        <td>${host}</td>
+                        <td style="font-family:monospace;font-size:11.5px;">${entry.fingerprint}</td>
+                        <td>${new Date(entry.pinned_at).toLocaleString()}</td>
+                        <td>
+                          <button class="ha-btn" @click=${() => this._forgetHostKey(host)}>Forget</button>
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  private _renderSshRun(run: SshRunResult) {
+    return html`
+      <p class="muted" style="font-size:12px;">
+        ${run.host} as ${run.username} &middot; host key ${run.host_key_fingerprint}
+        ${run.host_key_pinned_now ? " (pinned on this connection)" : ""}
+      </p>
+      ${run.results.map(
+        (r) => html`
+          <div style="margin-bottom:10px;">
+            <div style="display:flex;gap:8px;align-items:center;">
+              <span class="pill pill-${r.state}">${r.state}</span>
+              <code>${r.argv}</code>
+              ${r.exit_status !== null
+                ? html`<span class="muted" style="font-size:11.5px;">exit ${r.exit_status}</span>`
+                : nothing}
+            </div>
+            ${r.stdout ? html`<pre class="ssh-out">${r.stdout}</pre>` : nothing}
+            ${r.stderr ? html`<pre class="ssh-out ssh-err">${r.stderr}</pre>` : nothing}
+          </div>
+        `
+      )}
+    `;
+  }
+
+  private _toggleSshCommand(id: string, on: boolean) {
+    this._sshSelected = on
+      ? [...this._sshSelected, id]
+      : this._sshSelected.filter((c) => c !== id);
+  }
+
+  private async _sshKey(action: "generate" | "clear") {
+    this._sshBusy = true;
+    this._sshError = null;
+    try {
+      if (action === "generate") {
+        await generateSshKey(this.hass);
+      } else {
+        await clearSshKey(this.hass);
+      }
+      this._ssh = await fetchSshStatus(this.hass);
+    } catch (e) {
+      this._sshError = (e as { message?: string }).message || String(e);
+    } finally {
+      this._sshBusy = false;
+    }
+  }
+
+  private async _forgetHostKey(host: string) {
+    try {
+      await forgetSshHostKey(this.hass, host);
+      this._ssh = await fetchSshStatus(this.hass);
+    } catch (e) {
+      this._sshError = (e as { message?: string }).message || String(e);
+    }
+  }
+
+  private async _runSsh() {
+    this._sshBusy = true;
+    this._sshError = null;
+    this._sshRun = null;
+    try {
+      this._sshRun = await runSshCommands(this.hass, this._sshHost.trim(), this._sshSelected);
+      this._ssh = await fetchSshStatus(this.hass);
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      this._sshError = err.message || String(e);
+    } finally {
+      this._sshBusy = false;
+    }
+  }
 
   private _renderConfigLedger() {
     const state = this._ledger;

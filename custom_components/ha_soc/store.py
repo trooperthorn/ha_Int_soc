@@ -22,6 +22,7 @@ from .const import (
     DEFAULT_MFA_POLICY,
     DEFAULT_SCANNER_ENABLED,
     DEFAULT_DASHBOARD_EDIT_ENABLED,
+    DEFAULT_SSH_COLLECTION_ENABLED,
     DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
     DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
@@ -70,6 +71,10 @@ class SettingsData(TypedDict):
     hygiene_scan_yaml_dashboards: bool
     # Off by default: the owner opts in before any admin can rewrite a dashboard file.
     dashboard_edit_enabled: bool
+    # Off by default: the owner opts in before HA SOC opens an SSH session to a device.
+    ssh_collection_enabled: bool
+    # The device SSH account the UniFi controller pushes site-wide.
+    ssh_username: str | None
     nvd_lookups_enabled: bool
     # Sparse rule id -> {parameter: value}; read effective values via detections.thresholds().
     detection_thresholds: dict[str, dict[str, Any]]
@@ -143,6 +148,9 @@ class StoreData(TypedDict):
     # UniFi configuration baseline (CM-6) and the drift transitions since it:
     # {"baseline": {accepted_at, accepted_by, digest, snapshot} | None, "history": [...]}
     unifi_ledger: dict[str, Any]
+    # {"host_keys": {host: {"fingerprint", "pinned_at"}}}: trust on first
+    # use, and a later mismatch is refused rather than re-pinned.
+    unifi_ssh: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -162,6 +170,8 @@ def default_store_data() -> StoreData:
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
             hygiene_scan_yaml_dashboards=DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
             dashboard_edit_enabled=DEFAULT_DASHBOARD_EDIT_ENABLED,
+            ssh_collection_enabled=DEFAULT_SSH_COLLECTION_ENABLED,
+            ssh_username=None,
             nvd_lookups_enabled=DEFAULT_NVD_LOOKUPS_ENABLED,
             detection_thresholds={},
             access_level=DEFAULT_ACCESS_LEVEL,
@@ -204,6 +214,7 @@ def default_store_data() -> StoreData:
         },
         integration_security={"github": {}, "refreshed_at": None},
         unifi_ledger={"baseline": None, "history": []},
+        unifi_ssh={"host_keys": {}},
         resource_watchdog={
             "enabled": False,
             "default_cpu_percent": 85,
@@ -515,6 +526,11 @@ class HaSocData:
             decisions.pop(finding_id, None)
         else:
             decisions[finding_id] = {"status": status, "at": at, "by": by_user_id, "detail": detail}
+        self.async_schedule_save()
+
+    def async_set_unifi_ssh(self, value: dict[str, Any]) -> None:
+        """Replace the SSH host-key pin table wholesale."""
+        self.data["unifi_ssh"] = value
         self.async_schedule_save()
 
     def async_set_unifi_ledger(self, ledger: dict[str, Any]) -> None:
