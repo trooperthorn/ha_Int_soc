@@ -8,6 +8,7 @@ those two.
 """
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 from unittest.mock import MagicMock
@@ -82,6 +83,29 @@ def dashboards(hass: HomeAssistant, isolated_config_dir: str) -> str:
     _write(hass, "shared/rooms/kitchen.yaml", "type: entities\nentities: []\n")
     _write(hass, "notes.txt", "not yaml")
     return os.path.join(hass.config.config_dir, "dashboards")
+
+
+
+async def _call(hass: HomeAssistant, handler, connection: MagicMock, msg: dict) -> MagicMock:
+    """Run one command wrapper and wait for its single reply.
+
+    These handlers are @async_response, so calling the wrapper only schedules
+    the coroutine, and one async_block_till_done is not enough for a command
+    that makes several executor round trips: it can return between them on a
+    slower runner. Waiting on the reply itself is what the caller means, and
+    it keeps the test from passing or failing on machine speed.
+    """
+    connection.reset_mock()
+    handler(hass, connection, msg)
+    for _ in range(200):
+        await hass.async_block_till_done()
+        if connection.send_result.called or connection.send_error.called:
+            # The reply is sent after the audit append but before the flush
+            # task it scheduled has run, so settle once more before returning.
+            await hass.async_block_till_done()
+            return connection
+        await asyncio.sleep(0.01)
+    raise AssertionError(f"no reply to {msg['type']}")
 
 
 # --- path containment ------------------------------------------------------
@@ -288,10 +312,9 @@ async def test_commands_require_admin(hass: HomeAssistant, enabled: MockConfigEn
 async def test_list_reports_disabled_without_leaking_the_folder(
     hass: HomeAssistant, entry: MockConfigEntry, dashboards: str
 ) -> None:
-    connection = _connection()
-    ws_dashboards_list(hass, connection, {"id": 1, "type": "ha_soc/dashboards/list"})
-    await hass.async_block_till_done()
-
+    connection = await _call(
+        hass, ws_dashboards_list, _connection(), {"id": 1, "type": "ha_soc/dashboards/list"}
+    )
     result = connection.send_result.call_args[0][1]
     assert result["enabled"] is False
     assert result["files"] == []
@@ -300,12 +323,12 @@ async def test_list_reports_disabled_without_leaking_the_folder(
 async def test_read_is_refused_while_editing_is_off(
     hass: HomeAssistant, entry: MockConfigEntry, dashboards: str
 ) -> None:
-    connection = _connection()
-    ws_dashboards_read(
-        hass, connection, {"id": 1, "type": "ha_soc/dashboards/read", "path": "overview.yaml"}
+    connection = await _call(
+        hass,
+        ws_dashboards_read,
+        _connection(),
+        {"id": 1, "type": "ha_soc/dashboards/read", "path": "overview.yaml"},
     )
-    await hass.async_block_till_done()
-
     assert connection.send_error.call_args[0][1] == df.ERR_DISABLED
     connection.send_result.assert_not_called()
 
@@ -316,20 +339,22 @@ async def test_admin_round_trip_when_enabled(
     admin = _connection(is_owner=False, is_admin=True)
     enabled.runtime_data.store.async_update_settings(access_level="owner_and_admins")
 
-    ws_dashboards_list(hass, admin, {"id": 1, "type": "ha_soc/dashboards/list"})
-    await hass.async_block_till_done()
+    await _call(hass, ws_dashboards_list, admin, {"id": 1, "type": "ha_soc/dashboards/list"})
     listing = admin.send_result.call_args[0][1]
     assert listing["enabled"] is True
     assert "overview.yaml" in {item["path"] for item in listing["files"]}
 
-    ws_dashboards_read(
-        hass, admin, {"id": 2, "type": "ha_soc/dashboards/read", "path": "overview.yaml"}
+    await _call(
+        hass,
+        ws_dashboards_read,
+        admin,
+        {"id": 2, "type": "ha_soc/dashboards/read", "path": "overview.yaml"},
     )
-    await hass.async_block_till_done()
     loaded = admin.send_result.call_args[0][1]
 
-    ws_dashboards_write(
+    await _call(
         hass,
+        ws_dashboards_write,
         admin,
         {
             "id": 3,
@@ -340,7 +365,6 @@ async def test_admin_round_trip_when_enabled(
             "reason": "rename the dashboard",
         },
     )
-    await hass.async_block_till_done()
     written = admin.send_result.call_args[0][1]
     assert written["sha256"] == _sha("title: Renamed\n")
 
@@ -348,10 +372,10 @@ async def test_admin_round_trip_when_enabled(
 async def test_write_is_audited_with_the_reason(
     hass: HomeAssistant, enabled: MockConfigEntry, dashboards: str
 ) -> None:
-    connection = _connection()
-    ws_dashboards_write(
+    await _call(
         hass,
-        connection,
+        ws_dashboards_write,
+        _connection(),
         {
             "id": 1,
             "type": "ha_soc/dashboards/write",
@@ -361,7 +385,6 @@ async def test_write_is_audited_with_the_reason(
             "reason": "tidy the header",
         },
     )
-    await hass.async_block_till_done()
 
     records = await enabled.runtime_data.audit.async_query(
         category=df.AUDIT_CATEGORY_WRITE, limit=10
@@ -376,33 +399,29 @@ async def test_write_is_audited_with_the_reason(
 async def test_a_refused_path_is_audited(
     hass: HomeAssistant, enabled: MockConfigEntry, dashboards: str
 ) -> None:
-    connection = _connection()
-    ws_dashboards_read(
+    connection = await _call(
         hass,
-        connection,
+        ws_dashboards_read,
+        _connection(),
         {"id": 1, "type": "ha_soc/dashboards/read", "path": "../configuration.yaml"},
     )
-    await hass.async_block_till_done()
-
     assert connection.send_error.call_args[0][1] == df.ERR_NOT_ALLOWED
+    # "refusal", not "code": the audit redactor masks a key named "code".
     records = await enabled.runtime_data.audit.async_query(
         category=df.AUDIT_CATEGORY_DENIED, limit=10
     )
     assert records
-    # "refusal", not "code": the audit redactor masks a key named "code".
     assert records[0]["detail"]["refusal"] == df.ERR_NOT_ALLOWED
 
 
 async def test_validate_command_returns_the_server_verdict(
     hass: HomeAssistant, enabled: MockConfigEntry
 ) -> None:
-    connection = _connection()
-    ws_dashboards_validate(
+    connection = await _call(
         hass,
-        connection,
+        ws_dashboards_validate,
+        _connection(),
         {"id": 1, "type": "ha_soc/dashboards/validate", "content": "a:\n b: 1\n  c: 2\n"},
     )
-    await hass.async_block_till_done()
-
     result = connection.send_result.call_args[0][1]
     assert result["valid"] is False
