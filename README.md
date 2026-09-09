@@ -786,6 +786,25 @@ two tables:
   applicable to infrastructure). Each device is enriched from the documented
   `/devices/{id}` detail and `/devices/{id}/statistics/latest` endpoints.
 
+**Wi-Fi Join Diagnostics** is a separate section for the case the Clients
+table structurally cannot cover: a wireless client that cannot join at all
+never appears in it, because the controller's client collection is connected
+clients only. No UniFi source records an association attempt or an
+authentication failure, so this section never claims a client failed. It
+shows, per SSID, whether the network is enabled, which radios carry it, the
+network and VLAN it lands on, whether a MAC filter or a hidden name or a
+blackout schedule would refuse a device, **which access points are permitted
+to broadcast it** as against which are carrying clients right now, and, from
+the core `unifi` integration's all-clients collection, the wireless clients
+the controller knows but is not carrying. The view opens on the IoT
+network when it can find one, meaning a broadcast the controller typed as
+IoT-optimised or an SSID whose name contains "iot" (which catches both `IoT`
+and `wifiot`); every SSID stays selectable. Each finding is labelled blocking,
+possible, or unknown, and a condition the API cannot resolve (a
+broadcast restricted by device tag, or whether a blackout window is in force
+this minute) says so rather than guessing. The Clients table's columns are
+unchanged.
+
 **Firewall Policies**, **ACL Rules, Security Audit**, the HA server's own
 port coverage, and the Pi-hole DNS section live on their own tab, see
 [Network Security tab](#network-security-tab) below.

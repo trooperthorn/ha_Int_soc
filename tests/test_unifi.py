@@ -1099,3 +1099,139 @@ def test_unifi_conn_repr_masks_key() -> None:
         assert "[redacted]" in rendered
     # The useful debugging fields are still there.
     assert "10.0.0.1" in repr(conn)
+
+
+def _dispatch_get_with_wifi(clients, devices, broadcasts, details=None):
+    """Like _dispatch_get, plus the wifi broadcast collection and detail
+    routes. A broadcast id missing from ``details`` answers UniFiError, which
+    is the console-cannot-describe-this-SSID case."""
+    details = details or {}
+
+    async def _side_effect(hass, conn, path):
+        if path == "/sites":
+            return {"data": [{"id": "default", "name": "Default"}]}
+        if path.startswith("/sites/default/clients"):
+            return {"data": clients}
+        if path.startswith("/sites/default/wifi/broadcasts/"):
+            bid = path.rsplit("/", 1)[-1]
+            if bid in details:
+                return details[bid]
+            raise UniFiError(f"Endpoint not found ({path}).")
+        if path.startswith("/sites/default/wifi/broadcasts"):
+            return {"data": broadcasts}
+        if path.startswith("/sites/default/devices"):
+            return {"data": devices}
+        raise UniFiError(f"Endpoint not found ({path}).")
+
+    return _side_effect
+
+
+async def test_wifi_join_reports_ssid_readiness_and_names_the_ap(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    """The join view answers which AP a client is on and which APs may carry
+    the SSID at all, from the two identifiers the API actually provides."""
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    clients = [
+        {
+            "name": "sensor",
+            "ipAddress": "10.0.0.20",
+            "macAddress": "aa:bb:cc:00:00:10",
+            "type": "WIRELESS",
+            "ssid": "IoT",
+            "uplinkDeviceId": "ap-garage",
+        },
+        # No uplinkDeviceId and no ap_mac: the AP stays unnamed rather than guessed.
+        {"name": "tablet", "ipAddress": "10.0.0.21", "type": "WIRELESS", "ssid": "IoT"},
+    ]
+    devices = [
+        {"id": "udm", "name": "UDM", "model": "UDM-Pro", "ipAddress": "10.0.0.1", "state": "ONLINE"},
+        {"id": "ap-garage", "name": "Garage AP", "ipAddress": "10.0.0.5", "state": "ONLINE"},
+        {"id": "ap-attic", "name": "Attic AP", "ipAddress": "10.0.0.6", "state": "ONLINE"},
+    ]
+    broadcasts = [
+        {
+            "id": "b1",
+            "name": "IoT",
+            "enabled": True,
+            "type": "STANDARD",
+            "broadcastingFrequenciesGHz": [2.4],
+            "securityConfiguration": {"type": "WPA2_PERSONAL"},
+            "broadcastingDeviceFilter": {"type": "DEVICES", "deviceIds": ["ap-garage"]},
+        }
+    ]
+    # Only the detail response carries the MAC filter.
+    details = {
+        "b1": {
+            "id": "b1",
+            "hideName": False,
+            "clientFilteringPolicy": {"action": "ALLOW", "macAddressFilter": ["aa:bb:cc:00:00:10"]},
+        }
+    }
+
+    with patch.object(
+        unifi,
+        "_get",
+        new=AsyncMock(side_effect=_dispatch_get_with_wifi(clients, devices, broadcasts, details)),
+    ):
+        o = await async_network_overview(hass, store, secrets)
+
+    by_ip = {c["ipv4"]: c for c in o["clients"]}
+    assert by_ip["10.0.0.20"]["ap"] == "Garage AP"
+    assert by_ip["10.0.0.21"]["ap"] is None
+
+    assert o["wifi_join"]["available"] is True
+    (ssid,) = o["wifi_join"]["ssids"]
+    assert ssid["ssid"] == "IoT"
+    assert ssid["ap_scope"]["device_names"] == ["Garage AP"]
+    codes = {f["code"] for f in ssid["findings"]}
+    # The AP restriction comes from the collection response, the MAC allow
+    # list only from the detail response: both routes are merged.
+    assert "ap_restricted" in codes
+    assert "mac_allow_list" in codes
+
+
+async def test_wifi_join_is_unavailable_when_the_console_has_no_broadcasts(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    """An SSID list that could not be read reports unavailable, never an
+    empty list that would read as "no SSID refuses anything"."""
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_get([], []))):
+        o = await async_network_overview(hass, store, secrets)
+
+    assert o["wifi_join"]["available"] is False
+    assert o["wifi_join"]["ssids"] == []
+    # Likewise for the absent-client list without the core integration loaded.
+    assert o["wifi_join"]["absent_available"] is False
+
+
+async def test_wifi_join_detail_failure_costs_only_that_ssids_findings(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+
+    broadcasts = [
+        {"id": "b1", "name": "IoT", "enabled": True},
+        {"id": "b2", "name": "Guest", "enabled": False},
+    ]
+    # b1's detail 404s; b2's answers.
+    details = {"b2": {"id": "b2", "hideName": True}}
+
+    with patch.object(
+        unifi,
+        "_get",
+        new=AsyncMock(side_effect=_dispatch_get_with_wifi([], [], broadcasts, details)),
+    ):
+        o = await async_network_overview(hass, store, secrets)
+
+    by_ssid = {s["ssid"]: s for s in o["wifi_join"]["ssids"]}
+    assert set(by_ssid) == {"Guest", "IoT"}
+    assert by_ssid["IoT"]["findings"] == []
+    guest_codes = {f["code"] for f in by_ssid["Guest"]["findings"]}
+    assert guest_codes == {"ssid_disabled", "hidden_ssid"}
