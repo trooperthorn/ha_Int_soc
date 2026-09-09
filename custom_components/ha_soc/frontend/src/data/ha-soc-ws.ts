@@ -310,6 +310,13 @@ export interface HaSocSettings {
   hygiene_scan_yaml_dashboards: boolean;
   // Owner opt-in for the Dashboard Files editor; off by default.
   dashboard_edit_enabled: boolean;
+  // Owner opt-in for device SSH collection; off by default.
+  ssh_collection_enabled: boolean;
+  // The site-wide device account the UniFi controller pushes.
+  ssh_username: string | null;
+  // The generated private key, always masked; there is no way to set it.
+  ssh_private_key?: string | null;
+  ssh_private_key_set?: boolean;
   // Device manufacturer and model strings go to NIST's NVD only while this is on.
   nvd_lookups_enabled: boolean;
   // Secrets come back masked ("[redacted]" or ""); send a new value to change one, nothing or the placeholder to leave it.
@@ -1456,3 +1463,64 @@ export const fetchNetworkReferences = (hass: HomeAssistant, networkId: string) =
     hass,
     { type: "ha_soc/unifi/network_references", network_id: networkId }
   );
+
+
+// --- Device SSH collection -------------------------------------------------
+
+export interface SshCommand {
+  id: string;
+  argv: string;
+  description: string;
+  // False until the command's output has been seen on real hardware here; an
+  // unverified command that fails reports "unknown", never "fail".
+  verified: boolean;
+}
+
+export interface SshCommandResult extends SshCommand {
+  state: "pass" | "fail" | "unknown";
+  exit_status: number | null;
+  stdout: string;
+  stderr: string;
+  bytes: number;
+}
+
+export interface SshPinnedHostKey {
+  fingerprint: string;
+  pinned_at: string;
+}
+
+export interface SshStatus {
+  enabled: boolean;
+  username: string | null;
+  // The half to paste into the controller's SSH Keys panel. The private half
+  // never leaves the secret store.
+  public_key: string | null;
+  has_keypair: boolean;
+  commands: SshCommand[];
+  host_keys: Record<string, SshPinnedHostKey>;
+}
+
+export interface SshRunResult {
+  host: string;
+  username: string;
+  host_key_fingerprint: string | null;
+  host_key_pinned_now: boolean;
+  results: SshCommandResult[];
+  ran_at: string;
+}
+
+export const fetchSshStatus = (hass: HomeAssistant) =>
+  ws<SshStatus>(hass, { type: "ha_soc/ssh/status" });
+
+export const generateSshKey = (hass: HomeAssistant) =>
+  ws<{ public_key: string }>(hass, { type: "ha_soc/ssh/generate_key" });
+
+export const clearSshKey = (hass: HomeAssistant) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/ssh/clear_key" });
+
+export const forgetSshHostKey = (hass: HomeAssistant, host: string) =>
+  ws<{ forgotten: boolean }>(hass, { type: "ha_soc/ssh/forget_host_key", host });
+
+// command_ids must come from the catalog; the server refuses anything else.
+export const runSshCommands = (hass: HomeAssistant, host: string, commandIds: string[]) =>
+  ws<SshRunResult>(hass, { type: "ha_soc/ssh/run", host, command_ids: commandIds });

@@ -50,6 +50,10 @@ CONF_HYGIENE_SCAN_YAML_DASHBOARDS = "hygiene_scan_yaml_dashboards"
 DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS = False
 CONF_DASHBOARD_EDIT_ENABLED = "dashboard_edit_enabled"
 DEFAULT_DASHBOARD_EDIT_ENABLED = False
+CONF_SSH_COLLECTION_ENABLED = "ssh_collection_enabled"
+DEFAULT_SSH_COLLECTION_ENABLED = False
+# The site-wide account the controller pushes to every adopted device.
+CONF_SSH_USERNAME = "ssh_username"
 CONF_NVD_API_KEY = "nvd_api_key"
 CONF_GITHUB_TOKEN = "github_token"
 CONF_RISK_LEARNING_PERIOD_DAYS = "risk_learning_period_days"
@@ -138,6 +142,9 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
         CONF_PIHOLE_API_KEY,
         CONF_SNMP_AUTH_PASSPHRASE,
         CONF_SNMP_PRIV_PASSPHRASE,
+        # Generated, never accepted from the client; listed here so it is
+        # masked in every settings representation like any other secret.
+        "ssh_private_key",
     }
 )
 REDACTED_PLACEHOLDER = "[redacted]"

@@ -145,6 +145,15 @@ Skipped scanner files (over 500 KB or beyond the 400-file cap) are logged at war
 `UNIFI_LEDGER_INTERVAL` is six hours. The ledger records transitions rather than samples, so a slow cadence loses nothing: a change that persists is caught on the next pass, and one that is made and reverted between passes leaves the configuration where the baseline says it should be. State lives under the store's `unifi_ledger` key as `{"baseline": {accepted_at, accepted_by, digest, snapshot} | None, "history": [...]}`; `MAX_HISTORY` is 50 entries and `MAX_REPORTED_CHANGES` caps each section's added, removed and changed lists at 200 so one bulk edit cannot produce an unbounded payload. Accepting a new baseline clears the history, because entries measured against the previous baseline compare to something no longer in force. The panel's Accept control is owner-only and disabled for anyone else; the server enforces it regardless.
 
 
+## Device SSH collection
+
+`CONNECT_TIMEOUT_SECONDS` is 10 and `COMMAND_TIMEOUT_SECONDS` 15 per command, with the whole run bounded by connect plus per-command budget. `MAX_OUTPUT_BYTES` is 256 KiB per command, truncated with a visible marker. The dependency is `asyncssh==2.24.0`, pinned exactly because asyncssh is not itself in core's `package_constraints.txt`; the exact-pin hazard applies only to packages core constrains. Its own dependency `cryptography` is constrained (`cryptography==48.0.1` in 2026.9.1) and asyncssh 2.24.0 requires `cryptography>=48.0.1`, which that pin satisfies. Verified by installing asyncssh under core's own constraints file in a clean venv and confirming cryptography stayed at 48.0.1. Never pin `cryptography` or `bcrypt` here, and re-check that floor before raising the asyncssh pin.
+
+Setup: turn on Device SSH Collection and set the device SSH username under Settings, generate the keypair in the Network Security tab's Device SSH card, paste the public key into the controller under Device Authentication, SSH Keys, and wait for the devices to show CONNECTED again after provisioning. The first run against a device pins its host key; a later mismatch refuses the connection until the pin is forgotten from the same card.
+
+Commands marked `unverified` in the catalog have not had their output seen on this estate. They are safe to run (every entry is a read), and a non-zero exit from one reports `unknown` rather than `fail`. Once output is captured and a parser written, flip the flag in `ssh_devices.COMMANDS`.
+
+
 ## Logs
 
 `_MAX_READ_BYTES` is 64 KiB for the fault log; `_MAX_CONTAINER_LOG_BYTES` is 128 KiB and `_LOG_FETCH_TIMEOUT` 30 s. Both views mark `truncated: True` when the tail was cut. The target selector lists core, supervisor, host (full journal), and every installed add-on sorted by name; `ws_logs_targets` lists them and the Logs tab does not offer the selector off Supervisor. `ws_health_list` sorts findings most severe first using `SEVERITY_ORDER`; an unknown severity sorts last rather than raising.
