@@ -731,6 +731,10 @@ export interface WifiSsidReadiness {
   client_filter: { action: "ALLOW" | "BLOCK"; count: number } | null;
   blackout_days: number | null;
   ap_scope: WifiApScope;
+  // Whether this looks like the IoT network (broadcast type IOT_OPTIMIZED, or
+  // "iot" anywhere in the name). Chooses the SSID the view opens on; every
+  // SSID stays selectable.
+  likely_iot: boolean;
   findings: WifiFinding[];
 }
 

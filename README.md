@@ -796,7 +796,10 @@ network and VLAN it lands on, whether a MAC filter or a hidden name or a
 blackout schedule would refuse a device, **which access points are permitted
 to broadcast it** as against which are carrying clients right now, and, from
 the core `unifi` integration's all-clients collection, the wireless clients
-the controller knows but is not carrying. Each finding is labelled blocking,
+the controller knows but is not carrying. The view opens on the IoT
+network when it can find one, meaning a broadcast the controller typed as
+IoT-optimised or an SSID whose name contains "iot" (which catches both `IoT`
+and `wifiot`); every SSID stays selectable. Each finding is labelled blocking,
 possible, or unknown, and a condition the API cannot resolve (a
 broadcast restricted by device tag, or whether a blackout window is in force
 this minute) says so rather than guessing. The Clients table's columns are

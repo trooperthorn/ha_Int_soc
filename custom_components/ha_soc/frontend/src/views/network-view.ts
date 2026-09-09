@@ -314,7 +314,9 @@ export class HaSocNetworkView extends HaSocCustomizableView {
   @state() private _clientVlanFilter = "";
   @state() private _clientSsidFilter = "";
   @state() private _clientSort: SortState | null = null;
-  @state() private _wifiSsidFilter = "";
+  // null means "not yet chosen": the view opens on the IoT SSID when it can
+  // find one. Choosing "All SSIDs" sets "", which is a choice and sticks.
+  @state() private _wifiSsidFilter: string | null = null;
   @state() private _deviceSearch = "";
   @state() private _devicePage = 0;
   @state() private _devicePageSize: number | "all" = 25;
@@ -632,9 +634,9 @@ export class HaSocNetworkView extends HaSocCustomizableView {
 
   private _renderWifiJoin(o: NetworkOverview) {
     const w = o.wifi_join;
-    const ssids = this._wifiSsidFilter
-      ? w.ssids.filter((s) => s.ssid === this._wifiSsidFilter)
-      : w.ssids;
+    const selected =
+      this._wifiSsidFilter ?? (w.ssids.find((s) => s.likely_iot)?.ssid || "");
+    const ssids = selected ? w.ssids.filter((s) => s.ssid === selected) : w.ssids;
     return html`
       <div class="card" id="wifi-join-card">
         <h3>Wi-Fi Join Diagnostics</h3>
@@ -649,7 +651,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
               <div class="wifi-filter">
                 <label class="muted">SSID</label>
                 <select
-                  .value=${this._wifiSsidFilter}
+                  .value=${selected}
                   @change=${(e: Event) => {
                     this._wifiSsidFilter = (e.target as HTMLSelectElement).value;
                   }}

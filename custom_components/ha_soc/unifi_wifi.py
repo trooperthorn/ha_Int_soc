@@ -125,6 +125,17 @@ def _network_label(raw: dict[str, Any], network_names: dict[str, str]) -> str | 
     return network_names.get(str(network_id)) or str(network_id)
 
 
+def _likely_iot(ssid: str, kind: str | None) -> bool:
+    """Whether this broadcast is the IoT network, for the default selection.
+
+    Two signals, both from the API: the broadcast type the controller itself
+    assigns, and the name. "iot" as a case-insensitive substring catches the
+    common spellings, "IoT" and "wifiot" among them. It only chooses which
+    SSID the view opens on; every SSID stays selectable.
+    """
+    return kind == "IOT_OPTIMIZED" or "iot" in ssid.lower()
+
+
 def _findings(entry: dict[str, Any]) -> list[dict[str, str]]:
     """Plain statements about what this SSID's configuration refuses."""
     out: list[dict[str, str]] = []
@@ -266,6 +277,7 @@ def build_ssid_readiness(
             "blackout_days": _blackout_days(raw),
             "ap_scope": _ap_scope(raw, device_names, ap_count),
         }
+        entry["likely_iot"] = _likely_iot(entry["ssid"], entry["kind"])
         entry["findings"] = _findings(entry)
         out.append(entry)
     return sorted(out, key=lambda e: e["ssid"].lower())

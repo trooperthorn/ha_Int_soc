@@ -209,3 +209,24 @@ def test_clients_table_columns_are_unchanged() -> None:
         "Last Seen",
         "Integration",
     ]
+
+
+def test_the_iot_network_is_identified_for_the_default_selection() -> None:
+    """"iot" as a case-insensitive substring, or the controller's own type."""
+    rows = [
+        {"name": "wifiot", "enabled": True},
+        {"name": "IoT", "enabled": True},
+        {"name": "Sensors", "enabled": True, "type": "IOT_OPTIMIZED"},
+        {"name": "HomeWiFi", "enabled": True},
+        {"name": "Guest", "enabled": True},
+    ]
+    flags = {
+        e["ssid"]: e["likely_iot"] for e in unifi_wifi.build_ssid_readiness(rows, {}, {})
+    }
+    assert flags == {
+        "wifiot": True,
+        "IoT": True,
+        "Sensors": True,
+        "HomeWiFi": False,
+        "Guest": False,
+    }
