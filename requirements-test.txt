@@ -4,4 +4,4 @@ aiousbwatcher==1.1.2
 # Matches the manifest pin; the suite needs it to generate and import keys.
 # asyncssh is not core-constrained, so an exact pin is correct in both places.
 asyncssh==2.24.0
-serialx==1.9.0
+serialx==1.10.0
