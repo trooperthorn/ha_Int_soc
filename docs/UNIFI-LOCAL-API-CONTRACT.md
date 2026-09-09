@@ -33,7 +33,11 @@ Primary sources: [Network getting started](https://developer.ui.com/network/v10.
 Network collection calls use `/sites`, then the documented site routes:
 `clients`, `devices`, `devices/{id}`, `devices/{id}/statistics/latest`,
 `wifi/broadcasts`, `networks`, `acl-rules`, `firewall/zones`, and
-`firewall/policies`. The implementation no longer probes undocumented legacy
+`firewall/policies`, plus, since 2026-09-08, the read-only
+`acl-rules/ordering`, `firewall/policies/ordering`, and
+`networks/{networkId}/references` site routes and the site-independent
+`GET /info`. Ten of the specification's 44 paths were called before that
+change; thirteen are now. The implementation no longer probes undocumented legacy
 ACL or `network-confs` paths.
 
 Protect camera inventory uses an unpaginated `GET /cameras`. Protect 7.2.105

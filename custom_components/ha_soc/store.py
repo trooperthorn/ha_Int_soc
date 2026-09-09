@@ -140,6 +140,9 @@ class StoreData(TypedDict):
     snmp_status: dict[str, Any] | None
     # source slug -> {"seq", "hash", "at"}: the last external audit record accepted per source
     external_audit_heads: dict[str, dict[str, Any]]
+    # UniFi configuration baseline (CM-6) and the drift transitions since it:
+    # {"baseline": {accepted_at, accepted_by, digest, snapshot} | None, "history": [...]}
+    unifi_ledger: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -200,6 +203,7 @@ def default_store_data() -> StoreData:
             "history": [],
         },
         integration_security={"github": {}, "refreshed_at": None},
+        unifi_ledger={"baseline": None, "history": []},
         resource_watchdog={
             "enabled": False,
             "default_cpu_percent": 85,
@@ -511,6 +515,16 @@ class HaSocData:
             decisions.pop(finding_id, None)
         else:
             decisions[finding_id] = {"status": status, "at": at, "by": by_user_id, "detail": detail}
+        self.async_schedule_save()
+
+    def async_set_unifi_ledger(self, ledger: dict[str, Any]) -> None:
+        """Replace the UniFi baseline and drift history wholesale.
+
+        config_ledger.py owns the shape and always reads-modifies-writes the
+        whole structure, so a partial setter would only invite two writers
+        with different ideas of what is in it.
+        """
+        self.data["unifi_ledger"] = ledger
         self.async_schedule_save()
 
     def async_set_host_probe_result(self, result: dict[str, Any]) -> None:

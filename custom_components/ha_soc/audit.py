@@ -145,6 +145,8 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
         "user_removed",
         "soc_config_change",
         "dashboard_file_write",
+        "unifi_config_drift",
+        "unifi_baseline_accepted",
         "dashboard_file_denied",
         "detection_status_changed",
         "probe_auth_rejected",

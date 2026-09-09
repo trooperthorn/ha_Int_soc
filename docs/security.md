@@ -21,6 +21,14 @@ The second tier is conditional, applied inside the handlers via `_async_target_i
 
 Home Assistant's native Configure dialog is a weaker door than the panel: core gates it with a generic admin check and never tells the flow which user is driving it, so it cannot enforce the owner-only rule. Editing the access level or credentials through it was a real authorization bypass, which is why the options flow now edits nothing. Older builds also mirrored every settings save, secrets included, into `entry.options`, which lands in `.storage/core.config_entries`, a world-readable file; nothing reads that mirror any more, setup scrubs a legacy copy to `{}` once (logging key names only), and `HaSocOptionsFlow` always creates the entry with `data={}` so a save through the dialog can never repopulate it (SEC-2).
 
+### UniFi configuration ledger
+
+Read-only against the controller: the ledger fetches, projects and compares, and the only thing it writes is HA SOC's own store. Accepting a baseline is `@require_owner`, in the same tier as the firewall commands, because the baseline is what every later drift report is measured against and an admin who can silently re-accept it can make a change disappear.
+
+The refusal to compare a partial fetch is a security property, not a robustness one. A drift report that turned a failed ACL fetch into "every rule deleted" would either be dismissed as noise or acted on, and both outcomes are worse than reporting that the configuration could not be read.
+
+Snapshots are stored in HA SOC's own store and go through the same `_NEVER_STORE` key filter, so a future projection that reached a credential-shaped field would drop it rather than persist it. Both audit categories, `unifi_config_drift` and `unifi_baseline_accepted`, flush immediately and carry digests rather than configuration bodies.
+
 ### Dashboard file editing
 
 `dashboard_files.py` is the only part of HA SOC that writes a file the operator names, so it is fenced three ways. The allowlist is one directory, `<config>/dashboards`; the operations are read and overwrite, never create, rename, or delete; and the feature is off until the owner sets `dashboard_edit_enabled`. With it off the server refuses every read and write whatever the access level, so the panel hiding the tab is a convenience and not the control. With it on, the access level decides as usual: owner only, or owner and administrators.

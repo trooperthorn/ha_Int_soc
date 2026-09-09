@@ -1373,3 +1373,86 @@ export const writeDashboardFile = (
     expected_sha256: expectedSha256,
     reason,
   });
+
+
+// --- UniFi configuration ledger (CM-6) -------------------------------------
+
+export interface LedgerRow {
+  // Stable within its section: a policy or network id, a device MAC.
+  id: string;
+  name?: string | null;
+  [key: string]: unknown;
+}
+
+export interface LedgerFieldChange {
+  field: string;
+  from: unknown;
+  to: unknown;
+}
+
+export interface LedgerSectionDrift {
+  added: LedgerRow[];
+  removed: LedgerRow[];
+  changed: { id: string; name: string | null; changes: LedgerFieldChange[] }[];
+  // A reorder changes which rule wins with no row changing at all.
+  ordering_changed: boolean;
+  count: number;
+}
+
+export interface LedgerDrift {
+  total: number;
+  sections: Record<string, LedgerSectionDrift>;
+  baseline_digest: string | null;
+  current_digest: string | null;
+}
+
+export interface LedgerSnapshot {
+  taken_at: string;
+  application_version: string | null;
+  site_id: string | null;
+  digest: string;
+  section_digests: Record<string, string>;
+  sections: Record<string, LedgerRow[]>;
+}
+
+export interface LedgerBaseline {
+  accepted_at: string;
+  accepted_by: string;
+  digest: string;
+  snapshot: LedgerSnapshot;
+}
+
+export interface LedgerHistoryEntry {
+  at: string;
+  digest: string;
+  baseline_digest: string | null;
+  total: number;
+  sections: Record<string, number>;
+}
+
+export interface UnifiLedgerState {
+  // False when the controller could not be read completely; no drift is
+  // claimed either way, because a failed fetch looks like a mass deletion.
+  available: boolean;
+  error: string | null;
+  application_version: string | null;
+  baseline: LedgerBaseline | null;
+  current: LedgerSnapshot | null;
+  drift: LedgerDrift | null;
+  history: LedgerHistoryEntry[];
+  findings?: NetworkSecurityFinding[];
+}
+
+export const fetchUnifiLedger = (hass: HomeAssistant) =>
+  ws<UnifiLedgerState>(hass, { type: "ha_soc/unifi_ledger/get" });
+
+// Owner-only. The digest must be the one the panel displayed, so a change
+// made between the render and the click is refused rather than blessed.
+export const acceptUnifiBaseline = (hass: HomeAssistant, digest: string) =>
+  ws<{ baseline: LedgerBaseline }>(hass, { type: "ha_soc/unifi_ledger/accept", digest });
+
+export const fetchNetworkReferences = (hass: HomeAssistant, networkId: string) =>
+  ws<{ available: boolean; error: string | null; network_id: string; references: unknown[] }>(
+    hass,
+    { type: "ha_soc/unifi/network_references", network_id: networkId }
+  );

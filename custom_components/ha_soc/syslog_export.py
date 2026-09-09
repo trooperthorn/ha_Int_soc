@@ -56,6 +56,8 @@ _CEF_EVENT_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 
 _CEF_EVENT_NAMES = {
     "dashboard_file_write": "Dashboard File Written",
+    "unifi_config_drift": "UniFi Configuration Drift",
+    "unifi_baseline_accepted": "UniFi Baseline Accepted",
     "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
     "audit_chain_reset": "Audit Chain Reset",
@@ -100,6 +102,8 @@ _CEF_HIGH_7 = {
 }
 _CEF_MEDIUM_5 = {
     "dashboard_file_write",
+    "unifi_config_drift",
+    "unifi_baseline_accepted",
     "detection_status_changed",
     "external_audit",
     "programming_session",

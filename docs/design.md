@@ -153,6 +153,7 @@ Command notes:
 - `ws_firewall_discard_pending`: the archive and the immediately flushed `firewall_pending_discarded` record are written by `firewall.async_discard_pending` so the state machine stays the single owner of the pending slot (D-5).
 - `ws_integration_security_refresh` discovers the repo URLs from the current local overview before calling `async_refresh_github_signals`.
 - `ws_dashboards_list`, `ws_dashboards_read`, `ws_dashboards_validate`, and `ws_dashboards_write` are the Dashboard Files surface; they sit at `require_soc_access` and are additionally gated by the owner-only `dashboard_edit_enabled` setting, checked with the same fail-closed shape as `require_soc_access` itself, so an unreachable runtime reads as off. A `conflict` from `ws_dashboards_write` is sent as a plain error and is not recorded as a denial, because a concurrent edit is not an authorization event.
+- `ws_unifi_ledger_get` is read-only and records nothing; `ws_unifi_ledger_accept` is owner-only and refuses a digest that no longer describes the controller. `ws_unifi_network_references` answers "what else uses this network" before a segmentation change, and is the one new read that exists to be asked before a change rather than after one.
 - `ws_subscribe` pushes a lightweight refresh ping; the frontend re-fetches the relevant command on receipt. The ping says only that something changed, keeping payloads small and the module decoupled from every consumer's exact shape.
 
 ### Permissions matrix
@@ -305,6 +306,22 @@ peripherals.py reuses core's own USB discovery data instead of adding host-level
 ### Resource watchdog
 
 The Supervisor exposes no API to cap an add-on's CPU or memory, so by default any add-on can eat the host until the kernel OOM-kills something, often the wrong container. `RESOURCE-WATCHDOG.md` holds the two-layer summary; the mechanics: `ResourceWatchdog` samples per-container stats on an interval and tracks consecutive-breach counts per container against its threshold, so only a sustained breach trips it. On a trip it always records a detection, a notification, and an audit entry, then takes the configured action. Guard rails that are not configurable: Core and the Supervisor are clamped to alert-only (an automated response killing the thing that hosts the automation is a footgun), and after `WATCHDOG_MAX_ACTIONS_PER_HOUR` actions a container is downgraded to alert-only for the rest of the hour, because re-breaching right after every restart is a restart loop. After a trip the counter resets; a stopped add-on's counter is cleared. Hard caps are stored here and applied by the Probe over the firewall poll channel (`async_resource_limits_for_probe`); the module stores intent and result and never touches Docker. Runtime state (`_breach_counts`, `_history`, `_action_times`, `_last_outcome`) is memory-only. `async_installed_addon_slugs` reuses logs.py's cache-backed lookup (work item 2.2).
+
+## UniFi configuration ledger
+
+`config_ledger.py` is the CM-6 baseline: a canonical projection of the controller's security-relevant configuration, compared against the one the owner accepted. It is read-only, and it never talks to the controller itself; it reads `async_network_overview`, which is already the single fetch path.
+
+The projection is narrow on purpose. Networks, firewall zones, firewall policies, ACL rules, and devices, and within each only the fields whose change is a configuration decision. Uptime, signal, bandwidth, client counts and IP leases are excluded, because a baseline that drifts on its own teaches the reader to clear the card without reading it, which is worse than not having one.
+
+Three properties make the comparison trustworthy rather than merely present.
+
+Rows are matched on a stable id, so a renamed policy is a change rather than a delete plus an add. Devices key on MAC rather than the controller's record id: a device that is unadopted and re-adopted keeps its MAC, and whether it keeps its `id` is not established, so keying on the id risks reading one device as a removal and an addition. Every container is sorted before hashing, because the API promises no order and a digest that followed the returned order would report drift on every poll.
+
+Ordering is carried alongside the rules and diffed separately. Reordering changes which rule wins with no rule changing at all, so a snapshot that dropped it would call two behaviorally different configurations identical. The Firewall Policy ordering route returns two lists, before and after the system-defined set, and both are kept.
+
+A partial fetch is never compared. `snapshot_is_complete` refuses when the console is unconfigured, when the overview carries an error, or when either the policies or the ACL collection failed to load. An ACL fetch that failed looks exactly like every ACL rule having been deleted, and reporting that would be the same class of error the whole feature exists to catch: a confident answer where the honest one is "unknown".
+
+Only the periodic pass (`UNIFI_LEDGER_INTERVAL`, six hours) writes history and audits, and it writes at most one entry per distinct snapshot digest. Reading the ledger from the panel writes nothing, so a record says when the change was observed rather than when someone happened to look, and a polled check cannot fill the history with the same unchanged state. Accepting a baseline is owner-only and is a compare-and-swap: the digest the panel displayed must still describe the controller, or the accept is refused as `stale_snapshot`.
 
 ## Dashboard file editing
 
