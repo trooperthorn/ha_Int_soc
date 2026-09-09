@@ -47,8 +47,10 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   capability net_bind_service,
   capability setuid,
   capability setgid,
-  # The Net-SNMP persistent directory is handed to the unprivileged
-  # daemon account after its root-only initialization file is created.
+  # The Net-SNMP persistent directory and its createUser file stay
+  # root-owned and carry the ha_soc_snmp group, so the daemon account can
+  # rewrite the localized key database while this profile still needs no
+  # dac_override or fowner. Setting that group is the one chown.
   capability chown,
 
   # s6 sends the services TERM on stop; the run scripts' timers signal
