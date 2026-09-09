@@ -47,6 +47,9 @@ ANALYSIS_INTERVAL = timedelta(minutes=5)
 VULN_SCAN_INTERVAL = timedelta(hours=24)
 SCANNER_SWEEP_INTERVAL = timedelta(days=7)
 CONFIG_CHECK_INTERVAL = timedelta(hours=6)
+# The ledger records transitions, not samples, so a slow cadence loses
+# nothing: a change that persists is still caught on the next pass.
+UNIFI_LEDGER_INTERVAL = timedelta(hours=6)
 
 
 @dataclass
@@ -207,8 +210,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     entry.async_on_unload(
         async_track_time_interval(hass, _async_scanner_sweep, SCANNER_SWEEP_INTERVAL)
     )
+    async def _async_unifi_ledger_check(_now=None) -> None:
+        """Record a UniFi configuration drift transition, if there is one.
+
+        Only the periodic pass writes history and audits; reading the ledger
+        from the panel never does, so the record says when the change was
+        observed rather than when someone happened to look.
+        """
+        try:
+            from . import config_ledger
+
+            state = await config_ledger.async_ledger_state(hass, store, secrets)
+            if config_ledger.record_drift(store, audit, state):
+                async_dispatcher_send(hass, f"{SIGNAL_UPDATE}_network_security")
+        except Exception:  # noqa: BLE001
+            _LOGGER.exception("HA SOC UniFi configuration ledger check failed")
+
     entry.async_on_unload(
         async_track_time_interval(hass, _async_config_check, CONFIG_CHECK_INTERVAL)
+    )
+    entry.async_on_unload(
+        async_track_time_interval(
+            hass, _async_unifi_ledger_check, UNIFI_LEDGER_INTERVAL
+        )
     )
 
     # First pass right after startup so a fresh install's dashboard is not empty.

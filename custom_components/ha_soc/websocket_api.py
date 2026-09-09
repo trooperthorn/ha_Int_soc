@@ -19,7 +19,7 @@ from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from . import dashboard_files
+from . import config_ledger, dashboard_files
 from .const import (
     ACCESS_LEVEL_OWNER_AND_ADMINS,
     ACCESS_LEVEL_OWNER_ONLY,
@@ -263,6 +263,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_logs_targets,
         ws_logs_container,
         ws_misconfig_set_status,
+        ws_unifi_ledger_get,
+        ws_unifi_ledger_accept,
+        ws_unifi_network_references,
         ws_dashboards_list,
         ws_dashboards_read,
         ws_dashboards_validate,
@@ -2047,4 +2050,77 @@ async def ws_dashboards_write(hass: HomeAssistant, connection, msg: dict) -> Non
         },
         flush=True,
     )
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/unifi_ledger/get"})
+@websocket_api.async_response
+async def ws_unifi_ledger_get(hass: HomeAssistant, connection, msg: dict) -> None:
+    """The UniFi configuration baseline, current snapshot, drift, and history.
+
+    Read-only. Drift transitions are recorded by the periodic pass, not here,
+    so looking at the panel never writes history.
+    """
+    runtime = _runtime(hass)
+    connection.send_result(
+        msg["id"],
+        await config_ledger.async_ledger_state(hass, runtime.store, runtime.secrets),
+    )
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/unifi_ledger/accept",
+        vol.Required("digest"): vol.All(cv.string, vol.Match(r"^[0-9a-f]{64}$")),
+    }
+)
+@websocket_api.async_response
+async def ws_unifi_ledger_accept(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Accept the current configuration as the baseline.
+
+    The digest the panel displayed must still describe the controller, so a
+    change made between the render and the click is refused rather than
+    silently blessed.
+    """
+    runtime = _runtime(hass)
+    state = await config_ledger.async_ledger_state(hass, runtime.store, runtime.secrets)
+    if not state["available"]:
+        connection.send_error(msg["id"], "not_available", state["error"] or "Configuration could not be read")
+        return
+    current = state["current"] or {}
+    if current.get("digest") != msg["digest"]:
+        connection.send_error(
+            msg["id"],
+            "stale_snapshot",
+            "The configuration changed since it was displayed; reload before accepting it",
+        )
+        return
+    baseline = config_ledger.accept_baseline(
+        runtime.store, runtime.audit, current, user_id=connection.user.id
+    )
+    connection.send_result(msg["id"], {"baseline": baseline})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/unifi/network_references",
+        vol.Required("network_id"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_unifi_network_references(hass: HomeAssistant, connection, msg: dict) -> None:
+    """What else on the site refers to one network."""
+    runtime = _runtime(hass)
+    from .unifi import UniFiError, async_network_references
+
+    try:
+        result = await async_network_references(
+            hass, runtime.store, runtime.secrets, msg["network_id"]
+        )
+    except UniFiError as err:
+        connection.send_error(msg["id"], "invalid_network_id", str(err))
+        return
     connection.send_result(msg["id"], result)

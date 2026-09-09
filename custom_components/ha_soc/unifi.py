@@ -639,10 +639,20 @@ def _normalize_device(
         "last_seen": last_seen,
         "model": str(model) if model else None,
         "state": state,
+        # Configuration provenance, carried for the config ledger. The pair
+        # says the running configuration is behind the intended one; neither
+        # field says how the two differ, and nothing here pretends otherwise.
+        "configuration_id": _str_or_none(_first(raw, "configurationId")),
+        "provisioned_at": _str_or_none(_first(raw, "provisionedAt")),
+        "adopted_at": _str_or_none(_first(raw, "adoptedAt")),
         "integration_match": _match_endpoint(
             endpoints, str(ipv4) if ipv4 else None, ipv6
         ),
     }
+
+
+def _str_or_none(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
 
 
 _GATEWAY_TOKENS = (
@@ -1005,6 +1015,9 @@ async def _fetch_acl_rules(
         "endpoint": None,
         "endpoints_tried": list(_ACL_ENDPOINT_SUFFIXES),
         "rules": [],
+        # None means the ordering route did not answer; an empty list means it
+        # answered with no user-defined rules. Not the same thing.
+        "ordering": None,
     }
     last_err: str | None = None
     for suffix in _ACL_ENDPOINT_SUFFIXES:
@@ -1021,6 +1034,7 @@ async def _fetch_acl_rules(
         rules = [_normalize_acl_rule(r, i, network_map) for i, r in enumerate(rows)]
         rules.sort(key=lambda r: r["order"])
         result["rules"] = rules
+        result["ordering"] = await _fetch_acl_ordering(hass, conn, site_id)
         return result
     result["error"] = last_err or "No known ACL/firewall endpoint responded."
     return result
@@ -1208,6 +1222,136 @@ def _normalize_firewall_policy(
     }
 
 
+async def _fetch_app_info(hass: HomeAssistant, conn: _Conn) -> dict[str, Any]:
+    """The controller's own version: {version, error}.
+
+    ``GET /info`` is the one route that is not site-scoped. The API is
+    versioned in the URL path rather than negotiated, so every capability
+    claim this integration makes is really a claim about one application
+    version; recording which one answered is what lets a later mismatch be
+    seen instead of guessed at.
+    """
+    try:
+        payload = await _get(hass, conn, "/info")
+    except UniFiError as err:
+        return {"version": None, "error": str(err)}
+    except Exception as err:  # noqa: BLE001 - the panel gets a reason, never a trace
+        _LOGGER.exception("Unexpected UniFi application-info error")
+        return {"version": None, "error": f"Unexpected error: {err}"}
+    version = payload.get("applicationVersion") if isinstance(payload, dict) else None
+    return {"version": str(version) if version else None, "error": None}
+
+
+async def _fetch_policy_ordering(
+    hass: HomeAssistant, conn: _Conn, site_id: str
+) -> dict[str, list[str]] | None:
+    """User-defined Firewall Policy evaluation order, or None when unreadable.
+
+    The controller splits user policies into those evaluated before the
+    system-defined set and those after, so this is two lists, not one. Order
+    decides which rule wins, so a snapshot without it cannot answer that
+    question even with every rule in hand.
+    """
+    try:
+        payload = await _get(hass, conn, f"/sites/{site_id}/firewall/policies/ordering")
+    except UniFiError:
+        return None
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Unexpected UniFi policy-ordering error")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    ordered = payload.get("orderedFirewallPolicyIds")
+    if not isinstance(ordered, dict):
+        return None
+    return {
+        "before_system_defined": _id_list(ordered.get("beforeSystemDefined")),
+        "after_system_defined": _id_list(ordered.get("afterSystemDefined")),
+    }
+
+
+async def _fetch_acl_ordering(
+    hass: HomeAssistant, conn: _Conn, site_id: str
+) -> list[str] | None:
+    """User-defined ACL rule evaluation order, or None when unreadable."""
+    try:
+        payload = await _get(hass, conn, f"/sites/{site_id}/acl-rules/ordering")
+    except UniFiError:
+        return None
+    except Exception:  # noqa: BLE001
+        _LOGGER.exception("Unexpected UniFi ACL-ordering error")
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return _id_list(payload.get("orderedAclRuleIds"))
+
+
+def _id_list(value: Any) -> list[str]:
+    """A list of non-empty id strings from an untrusted payload field."""
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if isinstance(item, (str, int)) and str(item)]
+
+
+async def async_network_references(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore, network_id: str
+) -> dict[str, Any]:
+    """What else on the site refers to one network.
+
+    Answers "what breaks if this network changes" before anything is changed,
+    which is the question a segmentation edit should have to answer. Read-only
+    and never raises: an unreachable console comes back as available=False.
+    """
+    _validate_id(network_id)
+    result: dict[str, Any] = {"available": False, "error": None, "network_id": network_id, "references": []}
+    try:
+        conn = await _network_conn(store, secrets)
+    except UniFiError as err:
+        result["error"] = str(err)
+        return result
+    if conn is None:
+        result["error"] = "UniFi Network is not configured"
+        return result
+    try:
+        site_id = await _resolve_site_id(hass, conn)
+        payload = await _get(hass, conn, f"/sites/{site_id}/networks/{network_id}/references")
+    except UniFiError as err:
+        result["error"] = str(err)
+        return result
+    except Exception as err:  # noqa: BLE001
+        _LOGGER.exception("Unexpected UniFi network-references error")
+        result["error"] = f"Unexpected error: {err}"
+        return result
+
+    rows = payload.get("referenceResources") if isinstance(payload, dict) else None
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        details = row.get("references")
+        result["references"].append(
+            {
+                "resource_type": str(row.get("resourceType") or "") or None,
+                "count": _to_int_or_none(row.get("referenceCount")),
+                # Present only for resource types the API models; a count with no
+                # ids is normal and is not an error.
+                "ids": [
+                    str(d.get("referenceId"))
+                    for d in (details if isinstance(details, list) else [])
+                    if isinstance(d, dict) and d.get("referenceId")
+                ],
+            }
+        )
+    result["available"] = True
+    return result
+
+
+def _to_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 async def _fetch_firewall_zones(
     hass: HomeAssistant, conn: _Conn, site_id: str, network_map: dict[str, str]
 ) -> list[dict[str, Any]]:
@@ -1239,9 +1383,18 @@ async def _fetch_firewall_policies(
 ) -> dict[str, Any]:
     """Firewall Policies, a resource separate from ACL Rules. Never probes
     candidate paths: the endpoint is confirmed, so a failure here is real."""
-    result: dict[str, Any] = {"available": False, "error": None, "rules": [], "zones": []}
+    result: dict[str, Any] = {
+        "available": False,
+        "error": None,
+        "rules": [],
+        "zones": [],
+        # None means the ordering route did not answer, which is not the same
+        # as an empty ordering; the panel must not read one as the other.
+        "ordering": None,
+    }
     zones = await _fetch_firewall_zones(hass, conn, site_id, network_map)
     result["zones"] = zones
+    result["ordering"] = await _fetch_policy_ordering(hass, conn, site_id)
     zone_name_map = {z["id"]: z["name"] for z in zones}
     try:
         rows = await _get_paginated(hass, conn, f"/sites/{site_id}/firewall/policies")
@@ -1383,8 +1536,24 @@ async def async_network_overview(
         "clients_per_ssid": [],
         "clients": [],
         "devices": [],
-        "acl": {"available": False, "error": None, "endpoint": None, "endpoints_tried": [], "rules": []},
-        "firewall_policies": {"available": False, "error": None, "rules": [], "zones": []},
+        "acl": {
+            "available": False,
+            "error": None,
+            "endpoint": None,
+            "endpoints_tried": [],
+            "rules": [],
+            "ordering": None,
+        },
+        "firewall_policies": {
+            "available": False,
+            "error": None,
+            "rules": [],
+            "zones": [],
+            "ordering": None,
+        },
+        # The controller version that answered this snapshot; None when the
+        # console did not answer or is not configured.
+        "application_version": None,
         "server_ports": {"available": False, "server_ips": [], "ports": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
@@ -1460,6 +1629,8 @@ async def _fill_network_from_api(
     network_map = await _fetch_network_map(hass, conn, site_id)
     if not network_map and core_snap is not None:
         network_map = unifi_core.network_name_map(core_snap["networks"])
+    app_info = await _fetch_app_info(hass, conn)
+    result["application_version"] = app_info["version"]
     result["acl"] = await _fetch_acl_rules(hass, conn, site_id, network_map)
     result["firewall_policies"] = await _fetch_firewall_policies(hass, conn, site_id, network_map)
 

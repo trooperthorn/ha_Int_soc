@@ -152,6 +152,14 @@ imply otherwise.
 - **Host Probe (optional add-on)**: real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
+- **UniFi configuration baseline**: an owner-accepted snapshot of the
+  controller's networks, firewall zones, firewall policies, ACL rules and
+  devices, with per-section drift against it (NIST 800-53 CM-6). Rule
+  evaluation order is part of the snapshot, because reordering changes which
+  rule wins without changing any rule. Read-only against UniFi; a controller
+  that cannot be read completely reports that rather than reporting a
+  configuration wiped. Accepting a baseline is owner-only and refuses a
+  snapshot that no longer matches the controller.
 - **Dashboard Files**: lets an administrator edit the YAML files under the
   configuration directory's `dashboards` folder, which is where YAML-mode
   dashboards live and which Home Assistant's raw editor cannot touch. One
@@ -343,6 +351,7 @@ custom_components/ha_soc/
 ├── peripherals.py  - USB/serial device visibility (Local Peripherals tab)
 ├── entity_remap.py  - find/fix broken entity_id references (Entity ReMap tab)
 ├── dashboard_files.py  - read/overwrite YAML under <config>/dashboards (Dashboard Files tab)
+├── config_ledger.py  - UniFi configuration baseline + drift (Network Security tab)
 ├── config_hygiene.py  - Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py  - lock/siren/valve entities + curated integration health (Dashboard)

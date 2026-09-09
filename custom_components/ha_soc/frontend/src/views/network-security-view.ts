@@ -11,13 +11,27 @@ import {
   FirewallPoliciesReport,
   FirewallPolicy,
   NetworkSecurityFinding,
+  LedgerDrift,
   NetworkSecurityOverview,
   PiHoleOverview,
   ServerPortsReport,
+  UnifiLedgerState,
+  acceptUnifiBaseline,
+  fetchAccessInfo,
   fetchNetworkSecurityOverview,
+  fetchUnifiLedger,
   setSuggestionDecision,
   applySuggestion,
 } from "../data/ha-soc-ws";
+
+// Section ids are the ledger's own; the labels are the panel's.
+const LEDGER_SECTION_LABELS: Record<string, string> = {
+  networks: "Networks",
+  zones: "Firewall zones",
+  firewall_policies: "Firewall policies",
+  acl_rules: "ACL rules",
+  devices: "Devices",
+};
 import { matchClientsForEntries } from "../device-match";
 import { buildZoneMatrix } from "../firewall-matrix";
 
@@ -282,6 +296,11 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
   @state() private _fwZonePairFilter: { src: string; dst: string } | null = null;
   @state() private _suggestionBusy: string | null = null;
   @state() private _suggestionError: string | null = null;
+  @state() private _ledger: UnifiLedgerState | null = null;
+  @state() private _ledgerBusy = false;
+  @state() private _ledgerError: string | null = null;
+  // Cosmetic: the Accept command is owner-gated on the server regardless.
+  @state() private _isOwner = false;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -298,6 +317,26 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       this._overview = null;
     } finally {
       this._loading = false;
+    }
+    // The ledger and the owner check load independently: either failing must
+    // not take the rest of the tab down with it.
+    try {
+      this._isOwner = !!(await fetchAccessInfo(this.hass)).is_owner;
+    } catch {
+      this._isOwner = false;
+    }
+    try {
+      this._ledger = await fetchUnifiLedger(this.hass);
+    } catch (e) {
+      this._ledger = {
+        available: false,
+        error: e instanceof Error ? e.message : String(e),
+        application_version: null,
+        baseline: null,
+        current: null,
+        drift: null,
+        history: [],
+      };
     }
   }
 
@@ -318,6 +357,11 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       },
       { id: "zone_matrix", title: "Zone Matrix", render: () => this._renderZoneMatrixCard(o.firewall_policies) },
       { id: "acl", title: "ACL Rules", render: () => this._renderAcl(o.acl) },
+      {
+        id: "config_ledger",
+        title: "Configuration Baseline",
+        render: () => this._renderConfigLedger(),
+      },
       { id: "server_ports", title: "Home Assistant Server Ports", render: () => this._renderServerPorts(o.server_ports) },
       { id: "pihole", title: "Pi-hole DNS", render: () => this._renderPihole(o.pihole) },
     ];
@@ -334,6 +378,165 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
+
+
+  private _renderConfigLedger() {
+    const state = this._ledger;
+    if (!state) {
+      return html`<div class="card"><h3>Configuration Baseline</h3><p class="muted">Loading…</p></div>`;
+    }
+    if (!state.available) {
+      return html`
+        <div class="card">
+          <h3>Configuration Baseline</h3>
+          <p class="muted">
+            ${state.error ||
+            "The controller configuration could not be read completely, so no comparison is made."}
+            A partial read is not compared: rules that failed to load would look deleted.
+          </p>
+        </div>
+      `;
+    }
+
+    const drift = state.drift;
+    const changed = drift && drift.total > 0;
+
+    return html`
+      <div class="card">
+        <h3>
+          Configuration Baseline
+          ${state.application_version
+            ? html`<span class="muted" style="font-weight:400;font-size:12px;">
+                &nbsp;UniFi Network ${state.application_version}</span>`
+            : nothing}
+        </h3>
+
+        ${!state.baseline
+          ? html`
+              <p class="muted">
+                No baseline accepted yet. Review the networks, zones, policies, and ACL rules
+                below, then accept them; every later change is compared against that record.
+              </p>
+            `
+          : html`
+              <p class="muted">
+                Baseline accepted ${new Date(state.baseline.accepted_at).toLocaleString()}.
+                ${changed
+                  ? html`<strong>${drift!.total}</strong> change${drift!.total === 1 ? "" : "s"} since.`
+                  : "The controller matches it."}
+              </p>
+            `}
+
+        ${changed ? this._renderDriftTable(drift!) : nothing}
+
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;">
+          <button
+            class="ha-btn"
+            ?disabled=${!this._isOwner || this._ledgerBusy || !state.current}
+            @click=${() => this._acceptBaseline()}
+          >
+            ${state.baseline ? "Accept current as new baseline" : "Accept current as baseline"}
+          </button>
+          ${!this._isOwner
+            ? html`<span class="muted" style="font-size:12px;">Owner only.</span>`
+            : nothing}
+          ${this._ledgerError
+            ? html`<span class="alert" style="font-size:12px;">${this._ledgerError}</span>`
+            : nothing}
+        </div>
+
+        ${state.history.length
+          ? html`
+              <h4 style="margin:16px 0 6px;font-size:13px;">Recorded changes</h4>
+              <table class="tbl">
+                <thead>
+                  <tr><th>Observed</th><th>Changes</th><th>Sections</th></tr>
+                </thead>
+                <tbody>
+                  ${state.history.map(
+                    (h) => html`
+                      <tr>
+                        <td>${new Date(h.at).toLocaleString()}</td>
+                        <td>${h.total}</td>
+                        <td class="muted">
+                          ${Object.entries(h.sections)
+                            .map(([name, n]) => `${LEDGER_SECTION_LABELS[name] || name} (${n})`)
+                            .join(", ")}
+                        </td>
+                      </tr>
+                    `
+                  )}
+                </tbody>
+              </table>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  private _renderDriftTable(drift: LedgerDrift) {
+    const rows = Object.entries(drift.sections).filter(([, s]) => s.count > 0);
+    return html`
+      <table class="tbl">
+        <thead>
+          <tr><th>Section</th><th>Added</th><th>Removed</th><th>Changed</th><th>Order</th></tr>
+        </thead>
+        <tbody>
+          ${rows.map(
+            ([name, s]) => html`
+              <tr>
+                <td>${LEDGER_SECTION_LABELS[name] || name}</td>
+                <td>${s.added.length || ""}</td>
+                <td>${s.removed.length || ""}</td>
+                <td>${s.changed.length || ""}</td>
+                <td>${s.ordering_changed ? "changed" : ""}</td>
+              </tr>
+            `
+          )}
+        </tbody>
+      </table>
+      ${rows.map(([name, s]) =>
+        s.changed.length
+          ? html`
+              <div style="margin-top:10px;">
+                <div class="muted" style="font-size:12px;font-weight:600;">
+                  ${LEDGER_SECTION_LABELS[name] || name}
+                </div>
+                ${s.changed.map(
+                  (row) => html`
+                    <div style="font-size:12.5px;margin-top:4px;">
+                      ${row.name || row.id}:
+                      ${row.changes
+                        .map((c) => `${c.field} ${JSON.stringify(c.from)} → ${JSON.stringify(c.to)}`)
+                        .join("; ")}
+                    </div>
+                  `
+                )}
+              </div>
+            `
+          : nothing
+      )}
+    `;
+  }
+
+  private async _acceptBaseline() {
+    const current = this._ledger?.current;
+    if (!current) return;
+    this._ledgerBusy = true;
+    this._ledgerError = null;
+    try {
+      await acceptUnifiBaseline(this.hass, current.digest);
+      this._ledger = await fetchUnifiLedger(this.hass);
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      this._ledgerError =
+        err.code === "stale_snapshot"
+          ? "The configuration changed while this page was open. Refresh, review the change, then accept."
+          : err.message || String(e);
+    } finally {
+      this._ledgerBusy = false;
+    }
+  }
 
   private _renderFindings(findings: NetworkSecurityFinding[]) {
     const visible = findings.filter((f) => f.decision?.status !== "ignored");

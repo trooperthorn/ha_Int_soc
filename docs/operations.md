@@ -140,6 +140,11 @@ Skipped scanner files (over 500 KB or beyond the 400-file cap) are logged at war
 
 `BACKUP_DIR` is `.storage/ha_soc_dashboards`. The pre-write text of every edited file is copied there as `<flattened relative path>-<UTC timestamp>.bak`, mode 0600 in a 0700 directory, and copies older than 30 days are pruned after each successful write, so the directory is bounded by use without a timer. The backup path comes back in the write result and in the `dashboard_file_write` audit record. `MAX_FILE_BYTES` is 1 MiB: a larger file is listed with `too_large: true` and refused on read, so the panel shows it without offering to edit it. `MAX_LISTED_FILES` is 500, and a listing that hits the cap sets `truncated`. A save does not reload the dashboard; use the three-dot menu, Refresh, on that dashboard, exactly as after editing the file on the host.
 
+## UniFi configuration ledger
+
+`UNIFI_LEDGER_INTERVAL` is six hours. The ledger records transitions rather than samples, so a slow cadence loses nothing: a change that persists is caught on the next pass, and one that is made and reverted between passes leaves the configuration where the baseline says it should be. State lives under the store's `unifi_ledger` key as `{"baseline": {accepted_at, accepted_by, digest, snapshot} | None, "history": [...]}`; `MAX_HISTORY` is 50 entries and `MAX_REPORTED_CHANGES` caps each section's added, removed and changed lists at 200 so one bulk edit cannot produce an unbounded payload. Accepting a new baseline clears the history, because entries measured against the previous baseline compare to something no longer in force. The panel's Accept control is owner-only and disabled for anyone else; the server enforces it regardless.
+
+
 ## Logs
 
 `_MAX_READ_BYTES` is 64 KiB for the fault log; `_MAX_CONTAINER_LOG_BYTES` is 128 KiB and `_LOG_FETCH_TIMEOUT` 30 s. Both views mark `truncated: True` when the tail was cut. The target selector lists core, supervisor, host (full journal), and every installed add-on sorted by name; `ws_logs_targets` lists them and the Logs tab does not offer the selector off Supervisor. `ws_health_list` sorts findings most severe first using `SEVERITY_ORDER`; an unknown severity sorts last rather than raising.
