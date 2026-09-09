@@ -8,6 +8,8 @@ import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   NetworkOverview,
   NetworkClientRow,
+  WifiSsidReadiness,
+  WifiFinding,
   NetworkDeviceRow,
   ProtectCamera,
   ProtectEvent,
@@ -37,6 +39,66 @@ export class HaSocNetworkView extends HaSocCustomizableView {
   static styles = [
     sharedStyles,
     css`
+      .wifi-ssid {
+        border: 1px solid var(--divider-color, #e0e0e0);
+        border-radius: 8px;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+      }
+      .wifi-head {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        margin-bottom: 6px;
+      }
+      .wifi-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+        gap: 4px 16px;
+        font-size: 13px;
+      }
+      .wifi-grid .muted {
+        display: block;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.04em;
+      }
+      .wifi-filter {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+      ul.findings {
+        margin: 8px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      .finding {
+        display: flex;
+        gap: 8px;
+        align-items: baseline;
+        font-size: 13px;
+        padding: 3px 0;
+      }
+      .finding .sev {
+        flex: 0 0 auto;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        border-radius: 4px;
+        padding: 1px 6px;
+        background: var(--secondary-background-color, #f0f0f0);
+      }
+      .finding.blocking .sev {
+        background: var(--error-color, #db4437);
+        color: #fff;
+      }
+      .finding.possible .sev {
+        background: var(--warning-color, #ffa600);
+        color: #000;
+      }
       .stat-row {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -252,6 +314,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
   @state() private _clientVlanFilter = "";
   @state() private _clientSsidFilter = "";
   @state() private _clientSort: SortState | null = null;
+  @state() private _wifiSsidFilter = "";
   @state() private _deviceSearch = "";
   @state() private _devicePage = 0;
   @state() private _devicePageSize: number | "all" = 25;
@@ -422,6 +485,11 @@ export class HaSocNetworkView extends HaSocCustomizableView {
       },
       { id: "clients", title: "Clients", render: () => this._renderClientsTable(o) },
       { id: "devices", title: "Network Devices", render: () => this._renderDevicesTable(o) },
+      {
+        id: "wifi-join",
+        title: "Wi-Fi Join Diagnostics",
+        render: () => this._renderWifiJoin(o),
+      },
       { id: "protect", title: "UniFi Protect", render: () => this._renderProtectCard(o) },
     ];
     return html`
@@ -506,6 +574,133 @@ export class HaSocNetworkView extends HaSocCustomizableView {
         this.renderRoot?.querySelector("#clients-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     }
+  }
+
+  private _renderFinding(f: WifiFinding) {
+    return html`
+      <li class="finding ${f.severity}">
+        <span class="sev">${f.severity}</span>
+        <span>${f.message}</span>
+      </li>
+    `;
+  }
+
+  private _apScopeText(s: WifiSsidReadiness): string {
+    const scope = s.ap_scope;
+    if (scope.type === "ALL") return "Every access point";
+    if (scope.type === "DEVICE_TAGS") return `${scope.tag_count} device tags (not resolvable)`;
+    const named = scope.device_names.join(", ");
+    const unresolved = scope.unresolved ? ` + ${scope.unresolved} unlisted` : "";
+    return named ? `${named}${unresolved}` : `${scope.unresolved} unlisted access points`;
+  }
+
+  private _renderSsidReadiness(o: NetworkOverview, s: WifiSsidReadiness) {
+    // Which APs actually carry the SSID right now, as against which are permitted to.
+    const carrying = new Set(
+      o.clients.filter((c) => !c.wired && c.ssid === s.ssid && c.ap).map((c) => c.ap as string)
+    );
+    const bands = s.frequencies.length ? s.frequencies.map((f) => `${f} GHz`).join(", ") : "—";
+    return html`
+      <div class="wifi-ssid">
+        <div class="wifi-head">
+          <strong>${s.ssid}</strong>
+          <span class="pill ${s.enabled === false ? "bad" : "ok"}">
+            ${s.enabled === false ? "disabled" : "enabled"}
+          </span>
+          ${s.kind === "IOT_OPTIMIZED" ? html`<span class="pill">IoT optimised</span>` : nothing}
+          ${s.security ? html`<span class="pill">${s.security}</span>` : nothing}
+        </div>
+        <div class="wifi-grid">
+          <div><span class="muted">Network</span> ${s.network ?? "—"}</div>
+          <div><span class="muted">Radios</span> ${bands}</div>
+          <div><span class="muted">Permitted APs</span> ${this._apScopeText(s)}</div>
+          <div>
+            <span class="muted">Carrying clients now</span>
+            ${carrying.size ? [...carrying].sort().join(", ") : "none"}
+          </div>
+        </div>
+        ${s.findings.length
+          ? html`<ul class="findings">
+              ${s.findings.map((f) => this._renderFinding(f))}
+            </ul>`
+          : html`<p class="muted" style="margin:6px 0 0;">
+              Nothing in this SSID's configuration refuses a client.
+            </p>`}
+      </div>
+    `;
+  }
+
+  private _renderWifiJoin(o: NetworkOverview) {
+    const w = o.wifi_join;
+    const ssids = this._wifiSsidFilter
+      ? w.ssids.filter((s) => s.ssid === this._wifiSsidFilter)
+      : w.ssids;
+    return html`
+      <div class="card" id="wifi-join-card">
+        <h3>Wi-Fi Join Diagnostics</h3>
+        <p class="muted" style="margin-top:0;">
+          No UniFi source records an association attempt or an authentication failure, so nothing
+          here says a client failed. What it shows is the configuration that decides whether a join
+          is permitted, which access points carry each SSID, and the wireless clients the
+          controller knows but is not carrying now.
+        </p>
+        ${w.available
+          ? html`
+              <div class="wifi-filter">
+                <label class="muted">SSID</label>
+                <select
+                  .value=${this._wifiSsidFilter}
+                  @change=${(e: Event) => {
+                    this._wifiSsidFilter = (e.target as HTMLSelectElement).value;
+                  }}
+                >
+                  <option value="">All SSIDs</option>
+                  ${w.ssids.map((s) => html`<option value=${s.ssid}>${s.ssid}</option>`)}
+                </select>
+              </div>
+              ${ssids.map((s) => this._renderSsidReadiness(o, s))}
+            `
+          : html`<div class="alert">
+              The console did not return its Wi-Fi broadcasts, so no SSID configuration can be
+              read. The list below still applies.
+            </div>`}
+        <h4>Known but not connected</h4>
+        ${w.absent_available
+          ? w.absent_clients.length
+            ? html`
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Client</th>
+                      <th>MAC</th>
+                      <th>Last SSID</th>
+                      <th>Last seen</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${w.absent_clients.map(
+                      (c) => html`
+                        <tr>
+                          <td>${c.name}</td>
+                          <td class="mono">${c.mac}</td>
+                          <td>${c.ssid ?? "—"}</td>
+                          <td>${this._fmtLastSeen(c.last_seen)}</td>
+                        </tr>
+                      `
+                    )}
+                  </tbody>
+                </table>
+              `
+            : html`<p class="muted">
+                Every wireless client the controller knows is connected right now.
+              </p>`
+          : html`<p class="muted">
+              This list comes from the core UniFi integration's all-clients collection, which is not
+              loaded. A client that has never associated appears in no collection at all, so its
+              absence here is not evidence that it is fine.
+            </p>`}
+      </div>
+    `;
   }
 
   private _renderSsid(o: NetworkOverview) {

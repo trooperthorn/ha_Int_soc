@@ -532,6 +532,12 @@ export interface NetworkClientRow {
   bandwidth: UniFiBandwidth | null;
   last_seen: number | null; // epoch seconds
   integration_match: UniFiIntegrationMatch | null;
+  // AP attribution. Not a Clients-table column; the Wi-Fi join section reads
+  // it. "ap" is the resolved display name, null when neither identifier
+  // named a device this snapshot listed.
+  ap: string | null;
+  ap_id: string | null;
+  ap_mac: string | null;
 }
 
 export interface NetworkDeviceRow extends NetworkClientRow {
@@ -694,6 +700,56 @@ export interface ProtectStatus {
   events_error: string | null;
 }
 
+// Mirrors unifi_wifi.py. A finding states what the SSID's configuration
+// refuses, never that a client failed: no UniFi source reports an
+// association failure at all.
+export type WifiFindingSeverity = "blocking" | "possible" | "unknown";
+
+export interface WifiFinding {
+  code: string;
+  severity: WifiFindingSeverity;
+  message: string;
+}
+
+export interface WifiApScope {
+  type: "ALL" | "DEVICES" | "DEVICE_TAGS";
+  device_names: string[];
+  unresolved: number;
+  tag_count: number;
+  total_aps?: number | null;
+}
+
+export interface WifiSsidReadiness {
+  id: string | null;
+  ssid: string;
+  enabled: boolean | null;
+  kind: string | null;
+  security: string | null;
+  frequencies: number[];
+  network: string | null;
+  hide_name: boolean | null;
+  client_filter: { action: "ALLOW" | "BLOCK"; count: number } | null;
+  blackout_days: number | null;
+  ap_scope: WifiApScope;
+  findings: WifiFinding[];
+}
+
+export interface WifiAbsentClient {
+  mac: string;
+  name: string;
+  ssid: string | null;
+  first_seen: number | null;
+  last_seen: number | null;
+  absent_seconds: number | null;
+}
+
+export interface WifiJoinReport {
+  available: boolean;
+  ssids: WifiSsidReadiness[];
+  absent_clients: WifiAbsentClient[];
+  absent_available: boolean;
+}
+
 export interface NetworkOverview {
   configured: boolean;
   reachable: boolean;
@@ -711,6 +767,7 @@ export interface NetworkOverview {
   acl: AclReport;
   firewall_policies: FirewallPoliciesReport;
   server_ports: ServerPortsReport;
+  wifi_join: WifiJoinReport;
   failing_endpoint_count: number;
   generated_at: string;
   protect: ProtectStatus;
