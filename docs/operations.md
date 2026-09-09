@@ -21,6 +21,7 @@ Every setting is edited from the panel's Settings tab; Home Assistant's Configur
 | `nvd_api_key` | unset (secret) | Raises the NVD rate limit from about 5 to about 50 requests per 30 s. |
 | `github_token` | unset (secret) | Enables GitHub provenance lookups; without it `ha_soc/integration_security/refresh` returns a clear no-op reason and every GitHub signal stays "not collected". Raises GitHub's limit from 60 to 5,000 per hour. |
 | `detection_thresholds` | empty | Sparse per-rule overrides `{rule: {param: value}}`, merged per field; effective values are always read through `detections.thresholds()`, so a missing key means secure default, never off. `risk_learning_period_days` (formerly 14) is no longer part of the schema; it was replaced by the two per-rule `learning_days` parameters and a stored value is migrated into both once (work item 3.0, D-9). |
+| `dashboard_edit_enabled` | false | Whether the Dashboard Files tab may read and overwrite YAML under `<config>/dashboards`. Off means the four `ha_soc/dashboards/*` commands refuse (`list` answers `enabled: false` with no file names so the panel can explain itself). On means the usual access level applies: owner only, or owner and administrators. Nothing outside that one folder is reachable, and files can only be modified, never created, renamed, or deleted. |
 | `scanner_enabled` | true | Governs every scan path: the weekly sweep and the on-install scan. |
 | `scanner_network_checks_enabled` | false | Reserved for future network checks; nothing is implemented behind it. |
 | `security_sources_enabled` | all enabled | Domain (integration or entity platform) to included in Security Integrations Health; a domain missing from the map is treated as enabled (opt-out, not opt-in), so a future addition to the known set does not silently start dark. |
@@ -134,6 +135,10 @@ Skipped scanner files (over 500 KB or beyond the 400-file cap) are logged at war
 ## Entity ReMap backups
 
 `REMAP_BACKUP_DIR` is `.storage/ha_soc_remap`. JSON snapshots of storage dashboards and helper entries land there before each rewrite, files 0o600 in a 0o700 directory, and backups older than 30 days are pruned at the start of every apply, so the directory is bounded by use without a timer. YAML files are copied aside as `<file>.ha_soc-<timestamp>.bak` with a millisecond timestamp so two applies in one second cannot collide (work plan item 4.14). All backup paths come back in the result's `backups` list. `YAML_TAINT_REASON` ("contains !include or !secret; manual edit required") is the one reason a refused file reports. Comment, anchor, and key-order loss in rewritten YAML is accepted and stated up front, exactly as core's own editor behaves (work plan item 1.9).
+
+## Dashboard file backups
+
+`BACKUP_DIR` is `.storage/ha_soc_dashboards`. The pre-write text of every edited file is copied there as `<flattened relative path>-<UTC timestamp>.bak`, mode 0600 in a 0700 directory, and copies older than 30 days are pruned after each successful write, so the directory is bounded by use without a timer. The backup path comes back in the write result and in the `dashboard_file_write` audit record. `MAX_FILE_BYTES` is 1 MiB: a larger file is listed with `too_large: true` and refused on read, so the panel shows it without offering to edit it. `MAX_LISTED_FILES` is 500, and a listing that hits the cap sets `truncated`. A save does not reload the dashboard; use the three-dot menu, Refresh, on that dashboard, exactly as after editing the file on the host.
 
 ## Logs
 

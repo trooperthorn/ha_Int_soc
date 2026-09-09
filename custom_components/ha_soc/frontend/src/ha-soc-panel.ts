@@ -19,6 +19,7 @@ import "./views/network-security-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
 import "./views/entity-remap-view";
+import "./views/dashboard-files-view";
 import "./views/integration-security-view";
 import "./views/settings-view";
 
@@ -474,6 +475,8 @@ export class HaSocPanel extends LitElement {
         ></ha-soc-network-security-view>`;
       case "entity_remap":
         return html`<ha-soc-entity-remap-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-entity-remap-view>`;
+      case "dashboard_files":
+        return html`<ha-soc-dashboard-files-view .hass=${this.hass}></ha-soc-dashboard-files-view>`;
       case "integration_security":
         return html`<ha-soc-integration-security-view
           .hass=${this.hass}

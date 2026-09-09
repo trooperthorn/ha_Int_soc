@@ -37,6 +37,8 @@ const CATEGORIES: [string, string][] = [
   ["core_config_change", "Core config"],
   ["watchdog_triggered", "Watchdog triggered"],
   ["soc_config_change", "SOC config change"],
+  ["dashboard_file_write", "Dashboard file written"],
+  ["dashboard_file_denied", "Dashboard file refused"],
 ];
 
 @customElement("ha-soc-audit-view")

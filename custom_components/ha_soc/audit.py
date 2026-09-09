@@ -144,6 +144,8 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
         "user_updated",
         "user_removed",
         "soc_config_change",
+        "dashboard_file_write",
+        "dashboard_file_denied",
         "detection_status_changed",
         "probe_auth_rejected",
         "audit_chain_reset",
