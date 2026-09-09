@@ -55,6 +55,8 @@ _HEADER_SAFE = re.compile(r"[^\x21-\x7e]")
 _CEF_EVENT_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_.:-]")
 
 _CEF_EVENT_NAMES = {
+    "dashboard_file_write": "Dashboard File Written",
+    "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
     "audit_chain_reset": "Audit Chain Reset",
     "category_registry_change": "Category Registry Change",
@@ -90,12 +92,14 @@ _CEF_EVENT_NAMES = {
 _CEF_VERY_HIGH_10 = {"audit_chain_reset"}
 _CEF_VERY_HIGH_9 = {"probe_auth_rejected", "external_audit_chain_break", "external_audit_rejected"}
 _CEF_HIGH_7 = {
+    "dashboard_file_denied",
     "firewall_pending_discarded",
     "login_fail",
     "user_deactivated",
     "user_removed",
 }
 _CEF_MEDIUM_5 = {
+    "dashboard_file_write",
     "detection_status_changed",
     "external_audit",
     "programming_session",

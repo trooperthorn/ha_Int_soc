@@ -308,6 +308,8 @@ export interface HaSocSettings {
   scanner_network_checks_enabled: boolean;
   // Reads YAML-mode dashboard files for the unused-resource check; off by default.
   hygiene_scan_yaml_dashboards: boolean;
+  // Owner opt-in for the Dashboard Files editor; off by default.
+  dashboard_edit_enabled: boolean;
   // Device manufacturer and model strings go to NIST's NVD only while this is on.
   nvd_lookups_enabled: boolean;
   // Secrets come back masked ("[redacted]" or ""); send a new value to change one, nothing or the placeholder to leave it.
@@ -1294,4 +1296,80 @@ export const subscribeTopic = (
   hass.connection.subscribeMessage<Record<string, unknown>>(() => callback(), {
     type: "ha_soc/subscribe",
     topic,
+  });
+
+// --- Dashboard Files -------------------------------------------------------
+
+export interface DashboardFile {
+  // Relative to <config>/dashboards, always posix-separated.
+  path: string;
+  size: number;
+  modified: number;
+  too_large: boolean;
+}
+
+export interface DashboardFileListing {
+  // False when the owner has not turned the editor on; files is then empty.
+  enabled: boolean;
+  root: string;
+  root_exists: boolean;
+  truncated: boolean;
+  max_bytes: number;
+  files: DashboardFile[];
+}
+
+export interface DashboardFileContent {
+  path: string;
+  content: string;
+  // The digest a later write must present back; never recompute it from the draft.
+  sha256: string;
+}
+
+export interface YamlDiagnostic {
+  message: string;
+  line: number | null;
+  column: number | null;
+}
+
+export interface YamlVerdict {
+  valid: boolean;
+  errors: YamlDiagnostic[];
+  warnings: YamlDiagnostic[];
+  // Set by the client only: true while the rendered verdict came from the browser parse.
+  stale?: boolean;
+}
+
+export interface DashboardWriteResult {
+  path: string;
+  sha256: string;
+  previous_sha256: string;
+  backup: string;
+  warnings: YamlDiagnostic[];
+  bytes: number;
+}
+
+export const listDashboardFiles = (hass: HomeAssistant) =>
+  ws<DashboardFileListing>(hass, { type: "ha_soc/dashboards/list" });
+
+export const readDashboardFile = (hass: HomeAssistant, path: string) =>
+  ws<DashboardFileContent>(hass, { type: "ha_soc/dashboards/read", path });
+
+export const validateDashboardFile = (hass: HomeAssistant, content: string, path?: string) =>
+  ws<YamlVerdict>(hass, { type: "ha_soc/dashboards/validate", content, path });
+
+// expectedSha256 must be the digest that came back from the read, so a file
+// changed by anything else since then is refused instead of overwritten.
+export const writeDashboardFile = (
+  hass: HomeAssistant,
+  path: string,
+  content: string,
+  expectedSha256: string,
+  reason: string
+) =>
+  ws<DashboardWriteResult>(hass, {
+    type: "ha_soc/dashboards/write",
+    path,
+    content,
+    expected_sha256: expectedSha256,
+    reason,
   });

@@ -152,6 +152,15 @@ imply otherwise.
 - **Host Probe (optional add-on)**: real listening-port visibility on the
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
+- **Dashboard Files**: lets an administrator edit the YAML files under the
+  configuration directory's `dashboards` folder, which is where YAML-mode
+  dashboards live and which Home Assistant's raw editor cannot touch. One
+  folder, existing files only, no create/rename/delete, and nothing outside
+  it is reachable by any spelling of a path. Off until the owner turns it on
+  under Settings; then the usual access level decides who may edit. A save
+  refuses if the file changed since it was loaded, refuses YAML that does not
+  parse, keeps a 30-day backup of the previous text, and is audited with the
+  reason the operator typed. See below.
 - **Entity ReMap**: finds and fixes broken/stale entity_id references
   across automations, scripts, scenes, Lovelace dashboards, and
   config-entry-backed helpers. Neither Home Assistant core nor
@@ -333,6 +342,7 @@ custom_components/ha_soc/
 ├── probe.py  - optional HA SOC Probe add-on detection + result ingestion
 ├── peripherals.py  - USB/serial device visibility (Local Peripherals tab)
 ├── entity_remap.py  - find/fix broken entity_id references (Entity ReMap tab)
+├── dashboard_files.py  - read/overwrite YAML under <config>/dashboards (Dashboard Files tab)
 ├── config_hygiene.py  - Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py  - lock/siren/valve entities + curated integration health (Dashboard)

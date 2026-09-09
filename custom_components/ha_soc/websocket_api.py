@@ -19,6 +19,7 @@ from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from . import dashboard_files
 from .const import (
     ACCESS_LEVEL_OWNER_AND_ADMINS,
     ACCESS_LEVEL_OWNER_ONLY,
@@ -34,6 +35,7 @@ from .const import (
     CONF_PIHOLE_IOT_CIDR,
     CONF_PIHOLE_VERIFY_SSL,
     CONF_SCANNER_ENABLED,
+    CONF_DASHBOARD_EDIT_ENABLED,
     CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
@@ -60,6 +62,7 @@ from .const import (
     CONF_UNIFI_PROTECT_HOST,
     CONF_UNIFI_PROTECT_VERIFY_SSL,
     DEFAULT_ACCESS_LEVEL,
+    DEFAULT_DASHBOARD_EDIT_ENABLED,
     DOMAIN,
     MFA_POLICY_AUDIT_ONLY,
     MFA_POLICY_AUTO_DEACTIVATE,
@@ -70,6 +73,11 @@ from .const import (
     SYSLOG_TRANSPORTS,
     SYSLOG_FORMATS,
     WATCHDOG_ACTIONS,
+)
+from .dashboard_files import (
+    AUDIT_CATEGORY_DENIED as DASHBOARD_AUDIT_DENIED,
+    AUDIT_CATEGORY_WRITE as DASHBOARD_AUDIT_WRITE,
+    DashboardFileError,
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
 from .resource_watchdog import ADDON_SLUG_PATTERN
@@ -255,6 +263,10 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_logs_targets,
         ws_logs_container,
         ws_misconfig_set_status,
+        ws_dashboards_list,
+        ws_dashboards_read,
+        ws_dashboards_validate,
+        ws_dashboards_write,
         ws_dashboard_summary,
         ws_dashboard_devices,
         ws_dashboard_integrations,
@@ -1724,6 +1736,8 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SCANNER_ENABLED): bool,
         vol.Optional(CONF_SCANNER_NETWORK_CHECKS_ENABLED): bool,
         vol.Optional(CONF_HYGIENE_SCAN_YAML_DASHBOARDS): bool,
+        # Owner opt-in for the Dashboard Files editor; see docs/security.md.
+        vol.Optional(CONF_DASHBOARD_EDIT_ENABLED): bool,
         # Off switch for NVD lookups (consumed by vulns.py).
         vol.Optional("nvd_lookups_enabled"): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
@@ -1885,3 +1899,152 @@ def ws_subscribe(hass: HomeAssistant, connection, msg: dict) -> None:
     unsub = async_dispatcher_connect(hass, f"{SIGNAL_UPDATE}_{msg['topic']}", _forward)
     connection.subscriptions[msg["id"]] = unsub
     connection.send_result(msg["id"])
+
+
+def _dashboard_edit_enabled(hass: HomeAssistant) -> bool:
+    """The owner's opt-in switch. Fails closed when the runtime is not up."""
+    try:
+        return bool(
+            _runtime(hass).store.settings.get(
+                CONF_DASHBOARD_EDIT_ENABLED, DEFAULT_DASHBOARD_EDIT_ENABLED
+            )
+        )
+    except RuntimeError:
+        return False
+
+
+def _send_dashboard_error(
+    hass: HomeAssistant, connection, msg: dict, err: DashboardFileError
+) -> None:
+    """Send the coded refusal and record the attempt.
+
+    Every refusal is audited, not just the write ones: a rejected path is the
+    signal worth keeping, and it is cheap.
+    """
+    try:
+        _runtime(hass).audit.async_log(
+            DASHBOARD_AUDIT_DENIED,
+            user_id=connection.user.id,
+            detail={
+                "command": msg.get("type"),
+                "path": msg.get("path"),
+                # Not "code": the audit redactor masks that key (alarm codes).
+                "refusal": err.code,
+                "reason": err.message,
+            },
+        )
+    except RuntimeError:
+        pass
+    connection.send_error(msg["id"], err.code, err.message)
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/dashboards/list"})
+@websocket_api.async_response
+async def ws_dashboards_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Editable YAML files under <config>/dashboards, and whether editing is on."""
+    if not _dashboard_edit_enabled(hass):
+        connection.send_result(
+            msg["id"],
+            {
+                "enabled": False,
+                "root": dashboard_files.DASHBOARDS_DIRNAME,
+                "root_exists": False,
+                "truncated": False,
+                "max_bytes": dashboard_files.MAX_FILE_BYTES,
+                "files": [],
+            },
+        )
+        return
+    payload = await dashboard_files.async_list_files(hass)
+    payload["enabled"] = True
+    connection.send_result(msg["id"], payload)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/dashboards/read", vol.Required("path"): cv.string}
+)
+@websocket_api.async_response
+async def ws_dashboards_read(hass: HomeAssistant, connection, msg: dict) -> None:
+    """One file's text plus the digest its write must present back."""
+    if not _dashboard_edit_enabled(hass):
+        connection.send_error(
+            msg["id"], dashboard_files.ERR_DISABLED, "Dashboard file editing is turned off"
+        )
+        return
+    try:
+        result = await dashboard_files.async_read_file(hass, msg["path"])
+    except DashboardFileError as err:
+        _send_dashboard_error(hass, connection, msg, err)
+        return
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/dashboards/validate",
+        vol.Required("content"): cv.string,
+        vol.Optional("path"): cv.string,
+    }
+)
+@websocket_api.async_response
+async def ws_dashboards_validate(hass: HomeAssistant, connection, msg: dict) -> None:
+    """The authoritative verdict on a draft; the panel's own parse is advisory."""
+    if not _dashboard_edit_enabled(hass):
+        connection.send_error(
+            msg["id"], dashboard_files.ERR_DISABLED, "Dashboard file editing is turned off"
+        )
+        return
+    try:
+        result = await dashboard_files.async_validate(hass, msg["content"], msg.get("path"))
+    except DashboardFileError as err:
+        _send_dashboard_error(hass, connection, msg, err)
+        return
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/dashboards/write",
+        vol.Required("path"): cv.string,
+        vol.Required("content"): cv.string,
+        vol.Required("expected_sha256"): vol.All(cv.string, vol.Match(r"^[0-9a-f]{64}$")),
+        vol.Required("reason"): vol.All(cv.string, vol.Length(min=1, max=500)),
+    }
+)
+@websocket_api.async_response
+async def ws_dashboards_write(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Overwrite one dashboard file. Refuses a stale digest or invalid YAML."""
+    if not _dashboard_edit_enabled(hass):
+        connection.send_error(
+            msg["id"], dashboard_files.ERR_DISABLED, "Dashboard file editing is turned off"
+        )
+        return
+    try:
+        result = await dashboard_files.async_write_file(
+            hass, msg["path"], msg["content"], msg["expected_sha256"]
+        )
+    except DashboardFileError as err:
+        if err.code == dashboard_files.ERR_CONFLICT:
+            # A conflict is not a denial: the panel reloads and the draft is kept.
+            connection.send_error(msg["id"], err.code, err.message)
+            return
+        _send_dashboard_error(hass, connection, msg, err)
+        return
+    _runtime(hass).audit.async_log(
+        DASHBOARD_AUDIT_WRITE,
+        user_id=connection.user.id,
+        detail={
+            "path": result["path"],
+            "reason": msg["reason"],
+            "bytes": result["bytes"],
+            "sha256_before": result["previous_sha256"],
+            "sha256_after": result["sha256"],
+            "backup": result["backup"],
+        },
+        flush=True,
+    )
+    connection.send_result(msg["id"], result)

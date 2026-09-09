@@ -21,6 +21,7 @@ from .const import (
     DEFAULT_MFA_GRACE_PERIOD_DAYS,
     DEFAULT_MFA_POLICY,
     DEFAULT_SCANNER_ENABLED,
+    DEFAULT_DASHBOARD_EDIT_ENABLED,
     DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
     DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
@@ -67,6 +68,8 @@ class SettingsData(TypedDict):
     scanner_network_checks_enabled: bool
     # Off by default: reading YAML dashboards is a wider trust boundary; see docs/security.md.
     hygiene_scan_yaml_dashboards: bool
+    # Off by default: the owner opts in before any admin can rewrite a dashboard file.
+    dashboard_edit_enabled: bool
     nvd_lookups_enabled: bool
     # Sparse rule id -> {parameter: value}; read effective values via detections.thresholds().
     detection_thresholds: dict[str, dict[str, Any]]
@@ -155,6 +158,7 @@ def default_store_data() -> StoreData:
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
             hygiene_scan_yaml_dashboards=DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
+            dashboard_edit_enabled=DEFAULT_DASHBOARD_EDIT_ENABLED,
             nvd_lookups_enabled=DEFAULT_NVD_LOOKUPS_ENABLED,
             detection_thresholds={},
             access_level=DEFAULT_ACCESS_LEVEL,

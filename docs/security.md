@@ -21,6 +21,18 @@ The second tier is conditional, applied inside the handlers via `_async_target_i
 
 Home Assistant's native Configure dialog is a weaker door than the panel: core gates it with a generic admin check and never tells the flow which user is driving it, so it cannot enforce the owner-only rule. Editing the access level or credentials through it was a real authorization bypass, which is why the options flow now edits nothing. Older builds also mirrored every settings save, secrets included, into `entry.options`, which lands in `.storage/core.config_entries`, a world-readable file; nothing reads that mirror any more, setup scrubs a legacy copy to `{}` once (logging key names only), and `HaSocOptionsFlow` always creates the entry with `data={}` so a save through the dialog can never repopulate it (SEC-2).
 
+### Dashboard file editing
+
+`dashboard_files.py` is the only part of HA SOC that writes a file the operator names, so it is fenced three ways. The allowlist is one directory, `<config>/dashboards`; the operations are read and overwrite, never create, rename, or delete; and the feature is off until the owner sets `dashboard_edit_enabled`. With it off the server refuses every read and write whatever the access level, so the panel hiding the tab is a convenience and not the control. With it on, the access level decides as usual: owner only, or owner and administrators.
+
+Containment does not rest on string checks. `_check_relative` rejects the obvious spellings and gives a readable reason, but the decisive test is that `os.path.realpath` of the resolved candidate still sits under `os.path.realpath` of the root, which a symlink pointing out of the folder cannot pass. The listing applies the same test and omits what fails it, so the list never names a file the other commands would refuse. A file larger than 1 MiB is refused rather than read.
+
+The write is a compare-and-swap against the content digest returned by the read, recomputed server-side from the file as it now stands, so a change made by anyone else between the read and the write is a `conflict` rather than a silent overwrite. The previous text is copied under `.storage/ha_soc_dashboards/` (kept 30 days, mode 0600) before the replacement, which lands atomically with the original file mode preserved.
+
+Both outcomes are audited and flushed immediately: `dashboard_file_write` carries the path, the operator's reason, both digests, the byte count, and the backup path; `dashboard_file_denied` carries the command, the path exactly as sent, and the refusal code. The refusal code is stored as `refusal` because `code` is one of the redacted key names.
+
+What this does not do: it validates YAML syntax, not dashboard semantics, and it never resolves `!include` or `!secret`. A file can therefore be saved that parses and still does not render, which is the same failure a text editor on the host allows and is why the write is backed up rather than blocked.
+
 ### Cosmetic controls
 
 Everything in permissions.py is cosmetic. Setting a view's `visible` list, flipping `require_admin` / `show_in_sidebar`, or pushing `hiddenPanels` only changes what a user's own frontend renders. None of it is enforced by the backend: any authenticated user can call `lovelace/config` for any dashboard `url_path` and get its full configuration; there is no permission check on that command in core, and nothing in the module changes that. The only real enforcement lever for "should this user reach X" is the admin / non-admin split on the account, handled in users.py. `permissions/sidebar/push` is still an admin acting on another user, so it is audited with the target and the full hidden set. `require_admin=True` on the panel hides it from non-admin sidebars; it never protects data.

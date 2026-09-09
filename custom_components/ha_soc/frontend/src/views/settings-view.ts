@@ -600,6 +600,33 @@ export class HaSocSettingsView extends LitElement {
       </div>
 
       <div class="card">
+        <h3>Dashboard Files</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Lets administrators edit the YAML files under the configuration directory's
+          <code>dashboards</code> folder from the Assets workspace. No other directory is
+          reachable, files can only be modified (never created, renamed, or deleted), and
+          every write is backed up and audited with the reason the operator gave.
+        </p>
+        <label class="settings-row">
+          <span>
+            Allow editing dashboard YAML files
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default. While it is off the panel shows nothing and the server
+              refuses every read and write, whichever access level is set. While it is on,
+              who may edit still follows the SOC access level: owner only, or owner and
+              administrators.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.dashboard_edit_enabled}
+            @change=${(e: Event) =>
+              this._update("dashboard_edit_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+      </div>
+
+      <div class="card">
         <h3>Audit Log</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           <span class="tag enforced">enforced</span> Hash-chained JSONL, rotated on
