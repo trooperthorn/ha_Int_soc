@@ -463,19 +463,18 @@ def test_json_output_is_redacted_too(text: str, expected: str) -> None:
     assert sd.redact_output(text) == expected
 
 
-def test_the_association_commands_are_present_and_unverified() -> None:
+def test_the_association_commands_are_present() -> None:
     """The only record of a refused wireless join lives on the access point.
 
     No UniFi API endpoint carries an association attempt or an authentication
-    failure, so these three exist to reach the device's own view. They ship
-    unverified until their output has been seen on this estate.
+    failure, so these exist to reach the device's own view. Which of them is
+    verified is asserted once, in
+    test_the_ap_tool_set_covers_both_device_generations.
     """
     by_id = {c.id: c for c in sd.COMMANDS}
     assert by_id["wstalist"].argv == "wstalist"
     assert by_id["mca_dump"].argv == "mca-dump"
     assert by_id["syslog_tail"].argv == "tail -n 200 /var/log/messages"
-    for command_id in ("wstalist", "mca_dump", "syslog_tail"):
-        assert by_id[command_id].verified is False
 
 
 # --- what the allowlist may read -------------------------------------------
@@ -536,7 +535,9 @@ def test_the_ap_tool_set_covers_both_device_generations() -> None:
     assert by_id["wifi_list"].argv == "wifi_list"
     assert by_id["stainfo"].argv == "stainfo"
     assert by_id["wstalist"].argv == "wstalist"
-    # wifi_list output has been captured from this estate; the rest have not.
+    # Output captured from this estate; the rest have not been seen.
     assert by_id["wifi_list"].verified is True
-    for command_id in ("stainfo", "wstalist", "mca_dump", "syslog_tail"):
+    # /var/log/messages and tail both exist on the U7 Pro and the UDB Pro.
+    assert by_id["syslog_tail"].verified is True
+    for command_id in ("stainfo", "wstalist", "mca_dump"):
         assert by_id[command_id].verified is False
