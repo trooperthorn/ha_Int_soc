@@ -1,4 +1,4 @@
-pytest-homeassistant-custom-component==0.13.362
+pytest-homeassistant-custom-component==0.13.363
 home-assistant-frontend==20260826.4
 aiousbwatcher==1.1.2
 # Matches the manifest pin; the suite needs it to generate and import keys.
