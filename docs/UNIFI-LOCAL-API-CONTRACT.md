@@ -139,3 +139,42 @@ Facts moved out of `unifi.py` and `unifi_core.py`. "Verified" means checked agai
 ### Client hardening
 
 Redirects are never followed (a 3xx is an error, so `X-API-KEY` can never be carried to a redirect target; aiohttp strips only Authorization-family headers on cross-origin redirects), bodies are capped at 8 MB by both declared Content-Length and actual read, the whole Network overview runs under one 60-second budget (`_OVERVIEW_TIMEOUT_SECONDS`), and the configured host must be plain http or https with no userinfo (`_validate_host`) (work plan item 4.11). The Probe add-on's decoding of `/proc/net/tcp[6]` is the source of the HA server's own LAN IPs used by `_server_ip_addresses`.
+
+## Threat Management on the gateway (verified 2026-09-10 over SSH)
+
+The Integration API has no threat, IPS, IDS, alarm, event, or detection route:
+all 44 paths of the Network 10.4.57 OpenAPI and every schema were searched for
+those terms and none appears. Home Assistant core's `unifi` component reads
+nothing IPS-related either. So the perimeter signal cannot come from the API
+HA SOC already uses; it comes from the gateway itself, over the read-only
+Device SSH path. Every fact below was read from one gateway: a UCG-Fiber on
+UniFi OS 5.1.33 running Network 10.4.57, Suricata 8.
+
+### Engine and configuration
+
+| Fact | Verified |
+| --- | --- |
+| Suricata runs as `ips_8` from `/usr/share/ubios-udapi-server/ips_8/config/suricata_ubios_high.yaml`, includes `/run/ips/config/homenet.yaml`, `rules.yaml` and `iface.yaml`, and loads `/run/ips/rules/suricata.ui_rules` (36 MB, 37,218 signatures at the last reload) plus an empty `suricata.rules`. BusyBox `ps -C` prints nothing for it; `ps w` is the form that lists it. | Verified |
+| The rule file uses no `classtype:` field, and Ubiquiti's curated set does not carry the ET `ATTACK_RESPONSE` category or the `testmyids.com` signature 2100498, so that classic test produces no alert. | Verified |
+| `/run/ips/config/config.json` holds `alert.category`, `alert.signature_id`, `drop.category`, `drop.signature_id`, `whitelist`. `daemon_config.json` holds `block_category`, `block_sid`, `block_time` (seconds), `device_id`, `is_ssl_inspection_enabled`, `logging_threat_event`, `suricata_version`, and a `token` that must be redacted. A non-empty `block_category` is Prevent mode; categories only under `alert` is Detect; both empty is off. | Verified |
+| `ip_reputation.json` holds `src_whitelist` and `dst_whitelist` (CIDR lists), and `threshold.config` repeats them as two `suppress gen_id 0, sig_id 0, track by_src|by_dst, ip [...]` lines. An address in those lists is never alerted on in either direction: the exemption is total, not per signature. On the verified gateway the Home Assistant server's own address was in both lists. | Verified |
+| `homenet.yaml` defines `HOME_NET` as a bracketed comma list of IPv4 and IPv6 prefixes with `EXTERNAL_NET: "!$HOME_NET"`; `iface.yaml` lists the `pcap` interfaces (`br0`, `br10`, `br30`, `br50` here, one thread each, `bpf-filter: "not net 169.254.254.0/24"`). Traffic the gateway itself originates leaves on the WAN interface and is never inspected. | Verified |
+| `/run/ips/rules/` also carries `tor.list` and `alien.list.gz` reputation lists with `.ts` refresh stamps, refreshed nightly. | Verified |
+
+### Where alerts go, and where they do not
+
+| Fact | Verified |
+| --- | --- |
+| The only enabled alert output is an `eve-log` of `filetype: ubnt-idsips-daemon` with `daemon-filename: /run/ips/eve_alert.json`, `types` alert (payload off, tagged-packets on), http and tls extended, and drop (`alerts: yes`, `flows: start`). `/run/ips/eve_alert.json` and `/run/ips/ubnt_idsips_daemon.sock` are Unix sockets, not files. There is no `eve.json` or `fast.log` to tail; `/var/log/suricata/suricata_8.log` is the engine log only. | Verified |
+| Mongo on `127.0.0.1:27117` (`unifi-mongodb.service`) has `ace` and `ace_stat`. `ace.ipsalert` exists and holds zero rows; `ace.alarm` and `ace_stat.event`, where older controllers kept IPS detail, do not exist. `ace.alert` is the notification collection and is where threat and firewall blocks land. | Verified |
+| `ace.alert` keys seen: `THREAT_BLOCKED_V3`, `THREAT_BLOCKED_KNOWN_SOURCE_CLIENT`, `THREAT_BLOCKED_KNOWN_SOURCE_AND_DESTINATION_CLIENTS` (Suricata blocks; the suffix says which endpoints resolved to known clients), and `TRAFFIC_BLOCKED_KNOWN_SOURCE_DEVICE` (a firewall policy hit; `parameters.TRIGGER.name` is the policy name). Also present and useful elsewhere: `ADMIN_ACCESS` (controller admin logins). | Verified |
+| An alert row is `{_id, site_id, key, time (epoch ms, NumberLong), status, severity?, parameters, metadata}`. `parameters` carries `DEVICE` (the gateway), `SRC_IP` or `SRC_CLIENT` (`target_id` is an IP, or a MAC with `hostname` and `name`), `SRC_DEVICE` for an adopted device, `DST_IP`, `TRIGGER` for policy hits, and `INITIATOR_ID`. `severity` (`VERY_HIGH` seen) is present on threat rows. | Verified |
+| `INITIATOR_ID.target_id` resolves to no document in any Mongo database or Postgres database on the gateway (`ace`, `ace_stat`, `ulp-go-syslog`, `unifi-core` and the rest were searched by id). The Suricata signature id, category and rule name are not persisted anywhere readable on this release; the UI renders them from the daemon. This is a limit, not a gap in the search. | Verified |
+| Postgres 14 on `127.0.0.1:5432` holds `ulp-go-syslog` (`json_systemlog`: UniFi OS user sessions, API key add and remove, SSO binding) and `unifi-core` (`syslog_sender_settings`, `notifications`, `integration_keys`). Neither holds threat rows. | Verified |
+| A Suricata alert for the workstation at 192.168.30.27 on a watched interface, not exempted, fetching a URL matched by no shipped signature produced no `ace.alert` row, as expected; a real `THREAT_BLOCKED_KNOWN_SOURCE_CLIENT` for the same client to an IPv6 destination was already present. | Verified |
+
+### What HA SOC reads
+
+- `ips_config` (allowlisted, verified): the six files under `/run/ips/config`, parsed by `unifi_ips.parse_ips_config` into mode, categories, exemptions, home networks and interfaces. The derived posture is kept under the store's `unifi_ssh.ips_posture` so the Network Security findings can use it between runs; the raw text is not.
+- `ips_block_log` (allowlisted, unverified until its projected output has been seen): the newest 200 `*_BLOCKED*` rows of `ace.alert` via the gateway's own `mongo` shell, projected to `{id, key, time, severity, parameters}` as one JSON object per line.
+- Not read: `ace.ipsalert` (empty on this release), the `daemon_config.json` token, anything under `/data`.

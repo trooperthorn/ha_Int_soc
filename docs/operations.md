@@ -153,6 +153,8 @@ Setup: turn on Device SSH Collection and set the device SSH username under Setti
 
 Commands marked `unverified` in the catalog have not had their output seen on this estate. They are safe to run (every entry is a read), and a non-zero exit from one reports `unknown` rather than `fail`. Once output is captured and a parser written, flip the flag in `ssh_devices.COMMANDS`.
 
+Threat Management: run `ips_config` against the gateway (the device that runs the Network application, 192.168.254.254 on the verified estate) from the Device SSH card. A pass stores the parsed posture and the IDS coverage findings appear under Suggestions on the next refresh of the tab; run it again after changing Threat Management, the allowlist, or the networks, because the findings say when the posture was read and do not refresh themselves. On an access point or switch the command reports `unknown` (no `/run/ips`). `ips_block_log` needs the gateway's `mongo` shell and is unverified; it shows the newest 200 blocks and stores nothing.
+
 
 ## Logs
 

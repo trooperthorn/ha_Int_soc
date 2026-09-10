@@ -7,6 +7,11 @@ import { navigate } from "../nav";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
   ApLogAnalysis,
+  IpsBlockLog,
+  IpsBlockRow,
+  IpsPosture,
+  SshAnalysis,
+  StoredIpsPosture,
   AclReport,
   AclRule,
   FirewallPoliciesReport,
@@ -451,8 +456,11 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Read-only. Commands come from a fixed allowlist in the integration, so there is no
           way to send an arbitrary string to a device. Output is shown here and nowhere else:
-          it is not stored, and the audit record keeps the outcomes, not the text.
+          it is not stored, and the audit record keeps the outcomes, not the text. The one
+          exception is the parsed Threat Management posture from ips_config, which is kept
+          so the Suggestions above can use it between runs.
         </p>
+        ${this._renderStoredIpsPosture()}
 
         ${!status.enabled
           ? html`<p class="muted">
@@ -623,6 +631,147 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
+  private _renderStoredIpsPosture() {
+    const stored: StoredIpsPosture | null | undefined = this._overview?.ips_posture;
+    if (!stored) {
+      return html`<p class="muted" style="font-size:12px;">
+        Threat Management has not been read yet. Run ips_config against the gateway to add
+        the IDS coverage checks to Suggestions.
+      </p>`;
+    }
+    return html`<p class="muted" style="font-size:12px;">
+      Threat Management posture last read from <span class="mono">${stored.host}</span> at
+      <span class="mono">${stored.collected_at.replace("T", " ").slice(0, 19)}</span>:
+      ${stored.posture.mode}${stored.posture.exempt_networks.length
+        ? `, ${stored.posture.exempt_networks.length} network(s) never alerted on`
+        : ""}. Run ips_config again after changing the gateway.
+    </p>`;
+  }
+
+  // Every analysis carries `kind`; the access point log predates the field
+  // and is the default.
+  private _renderAnalysis(a: SshAnalysis) {
+    if (a.kind === "ips_config") return this._renderIpsPosture(a);
+    if (a.kind === "ips_block_log") return this._renderIpsBlockLog(a);
+    return this._renderApLogAnalysis(a as ApLogAnalysis);
+  }
+
+  // The gateway's Threat Management posture. The findings that follow from
+  // it (the server exempted, HOME_NET not covering it, Detect-only, off)
+  // are computed server-side and appear under Suggestions after the next
+  // refresh; this is the evidence they rest on.
+  private _renderIpsPosture(p: IpsPosture) {
+    const missing = Object.entries(p.parsed)
+      .filter(([, ok]) => !ok)
+      .map(([name]) => name);
+    const modeClass =
+      p.mode === "prevent" ? "good" : p.mode === "detect" ? "medium" : p.mode === "off" ? "high" : "info";
+    const yesNo = (v: boolean | null) => (v === null ? "unknown" : v ? "yes" : "no");
+    return html`
+      ${missing.length
+        ? html`<div class="alert" style="margin:6px 0;">
+            ${missing.length} of 6 files did not come back (${missing.join(", ")}). The lists
+            below that depend on them are unknown, not empty.
+          </div>`
+        : nothing}
+      <table style="margin:6px 0;">
+        <tbody>
+          <tr>
+            <th>Mode</th>
+            <td>
+              <span class="pill ${modeClass}"><span class="dot"></span>${p.mode}</span>
+              ${p.mode === "prevent"
+                ? html`<span class="muted"> ${p.drop_categories.length} categories block${
+                    p.block_time_seconds !== null ? `, ${p.block_time_seconds} s per block` : ""
+                  }</span>`
+                : p.mode === "detect"
+                  ? html`<span class="muted"> ${p.alert_categories.length} categories alert, none block</span>`
+                  : nothing}
+            </td>
+          </tr>
+          <tr>
+            <th>Threat logging</th>
+            <td>${yesNo(p.logging_threat_event)}</td>
+          </tr>
+          <tr>
+            <th>SSL inspection</th>
+            <td>${yesNo(p.ssl_inspection)}${p.suricata_version !== null ? html`<span class="muted"> · Suricata ${p.suricata_version}</span>` : nothing}</td>
+          </tr>
+          <tr>
+            <th>Never alerted on</th>
+            <td>
+              ${p.parsed.reputation || p.parsed.threshold
+                ? p.exempt_networks.length || p.suppressed_networks.length
+                  ? html`<span class="mono">${[...new Set([...p.exempt_networks, ...p.suppressed_networks])].join(", ")}</span>
+                      <span class="muted"> (allowlisted in both directions for every signature)</span>`
+                  : "none"
+                : "unknown"}
+            </td>
+          </tr>
+          <tr>
+            <th>HOME_NET</th>
+            <td>${p.parsed.homenet ? html`<span class="mono">${p.home_networks.join(", ")}</span>` : "unknown"}</td>
+          </tr>
+          <tr>
+            <th>Inspected interfaces</th>
+            <td>${p.parsed.interfaces ? html`<span class="mono">${p.interfaces.map((i) => i.interface).join(", ")}</span>` : "unknown"}</td>
+          </tr>
+        </tbody>
+      </table>
+    `;
+  }
+
+  // The controller's own record of what it blocked. No signature column: the
+  // gateway does not persist one, and a column of dashes would imply it might.
+  private _renderIpsBlockLog(b: IpsBlockLog) {
+    if (!b.rows.length) {
+      return html`<p class="muted" style="margin:6px 0;font-size:12px;">
+        No threat or firewall-policy blocks in the controller's alert collection${
+          b.unparsed ? ` (${b.unparsed} line(s) could not be read)` : ""
+        }.
+      </p>`;
+    }
+    const endpoint = (e: IpsBlockRow["source"]) =>
+      e.name
+        ? html`${e.name}<span class="muted"> ${e.address ?? e.mac ?? ""}</span>`
+        : html`<span class="mono">${e.address ?? e.mac ?? "—"}</span>`;
+    return html`
+      <p class="muted" style="margin:6px 0;font-size:12px;">
+        Last 24 h: ${b.threat_blocks_24h} threat block(s), ${b.firewall_blocks_24h} policy block(s),
+        ${b.sources_24h.length} distinct source(s). Showing the newest ${b.rows.length}.
+        ${b.unparsed ? `${b.unparsed} line(s) could not be read.` : ""}
+      </p>
+      <div class="table-wrap">
+        <table style="margin:6px 0;">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>What</th>
+              <th>Severity</th>
+              <th>Source</th>
+              <th>Destination</th>
+              <th>Policy</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${b.rows.map(
+              (r) => html`
+                <tr>
+                  <td class="mono">${r.time ? r.time.replace("T", " ").slice(0, 19) : "—"}</td>
+                  <td>${r.kind === "threat" ? "Threat" : r.kind === "firewall" ? "Policy" : r.key}</td>
+                  <td>${r.severity ? html`<span class="pill ${r.severity === "VERY_HIGH" || r.severity === "HIGH" ? "high" : "medium"}"><span class="dot"></span>${r.severity.toLowerCase().replace("_", " ")}</span>` : "—"}</td>
+                  <td>${endpoint(r.source)}</td>
+                  <td>${endpoint(r.destination)}</td>
+                  <td>${r.policy ?? "—"}</td>
+                </tr>
+              `
+            )}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
   private _renderSshRun(run: SshRunResult) {
     return html`
       <p class="muted" style="font-size:12px;">
@@ -639,7 +788,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
                 ? html`<span class="muted" style="font-size:11.5px;">exit ${r.exit_status}</span>`
                 : nothing}
             </div>
-            ${r.analysis ? this._renderApLogAnalysis(r.analysis) : nothing}
+            ${r.analysis ? this._renderAnalysis(r.analysis) : nothing}
             ${r.stdout ? html`<pre class="ssh-out">${r.stdout}</pre>` : nothing}
             ${r.stderr ? html`<pre class="ssh-out ssh-err">${r.stderr}</pre>` : nothing}
           </div>
