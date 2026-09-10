@@ -30,7 +30,7 @@ import homeassistant.util.dt as dt_util
 
 from homeassistant.core import HomeAssistant
 
-from . import unifi_ap_log
+from . import unifi_ap_log, unifi_ips
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -108,7 +108,34 @@ READABLE_PATHS = frozenset(
         "/tmp/system.cfg",
         "/etc/persistent/cfg/mgmt",
         "/var/log/messages",
+        # The gateway's Threat Management runtime configuration. Read together
+        # by ips_config; the layout is recorded in docs/UNIFI-LOCAL-API-CONTRACT.md.
+        # daemon_config.json carries a daemon token, which redact_output masks.
+        "/run/ips/config/config.json",
+        "/run/ips/config/daemon_config.json",
+        "/run/ips/config/ip_reputation.json",
+        "/run/ips/config/homenet.yaml",
+        "/run/ips/config/iface.yaml",
+        "/run/ips/config/threshold.config",
     }
+)
+
+# The two gateway reads that feed unifi_ips.py. Kept apart from the device
+# entries below because they are meaningful only on the gateway that runs the
+# Network application; on an access point or switch they report unknown.
+IPS_CONFIG_ARGV = (
+    "cat /run/ips/config/config.json /run/ips/config/daemon_config.json "
+    "/run/ips/config/ip_reputation.json /run/ips/config/homenet.yaml "
+    "/run/ips/config/iface.yaml /run/ips/config/threshold.config"
+)
+# The controller's own mongo shell, local to the gateway. Only *_BLOCKED* rows,
+# newest 200, projected to five fields as one JSON object per line so the
+# output is machine-readable rather than the shell's printjson dialect.
+IPS_BLOCK_LOG_ARGV = (
+    "mongo --port 27117 ace --quiet --eval "
+    "'db.alert.find({key:{$regex:\"_BLOCKED\"}}).sort({time:-1}).limit(200)"
+    ".forEach(function(d){print(JSON.stringify({id:String(d._id),key:d.key,"
+    "time:Number(d.time),severity:d.severity,parameters:d.parameters}))})'"
 )
 
 # The allowlist. Every entry is a read; none writes, restarts, or configures.
@@ -221,6 +248,30 @@ COMMANDS: tuple[Command, ...] = (
         "This is the record of a refused join that no controller API carries.",
         verified=True,
     ),
+    # Threat Management on the gateway. The Network Integration API has no
+    # threat, IPS or event route at any version (every path of the 10.4.57
+    # specification was checked), so the perimeter posture is read from the
+    # gateway's own runtime files and the controller's alert collection.
+    Command(
+        "ips_config",
+        IPS_CONFIG_ARGV,
+        "Threat Management posture: Prevent or Detect, the category set, the "
+        "block time, the allowlisted networks that Suricata is told never to "
+        "alert on, HOME_NET, and the interfaces it inspects. Parsed into the "
+        "Network Security findings; verified on a UCG-Fiber running Network "
+        "10.4.57.",
+        verified=True,
+    ),
+    Command(
+        "ips_block_log",
+        IPS_BLOCK_LOG_ARGV,
+        "The newest 200 threat and firewall-policy blocks from the controller's "
+        "alert collection, via the gateway's own mongo shell: when, which key, "
+        "severity, source client or address, destination, and the policy that "
+        "fired. The Suricata signature behind a threat block is not persisted "
+        "anywhere on this release, so it is not here either.",
+        verified=False,
+    ),
 )
 
 COMMANDS_BY_ID = {command.id: command for command in COMMANDS}
@@ -249,7 +300,7 @@ _assert_reads_are_allowlisted(COMMANDS)
 # parser has no use for (the inform authkey, passwords, wireless keys) and
 # that would otherwise be rendered in a panel and pasted into a bug report.
 _SECRET_LINE = re.compile(
-    r"^(?P<key>[^=\n]*(?:authkey|password|passwd|psk|secret|privkey|wpa\.\d+\.psk)[^=\n]*)=.*$",
+    r"^(?P<key>[^=\n]*(?:authkey|password|passwd|psk|secret|privkey|token|wpa\.\d+\.psk)[^=\n]*)=.*$",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -258,7 +309,7 @@ _SECRET_LINE = re.compile(
 # output, and a wireless key rendered in the panel is the exact thing that
 # rule exists to prevent.
 _SECRET_JSON = re.compile(
-    r'(?P<key>"[^"\n]*(?:authkey|password|passwd|psk|secret|privkey)[^"\n]*"\s*:\s*)'
+    r'(?P<key>"[^"\n]*(?:authkey|password|passwd|psk|secret|privkey|token)[^"\n]*"\s*:\s*)'
     r'"(?:[^"\\]|\\.)*"',
     re.IGNORECASE,
 )
@@ -480,14 +531,43 @@ async def async_run_commands(
     except (OSError, asyncio.TimeoutError, asyncssh.Error) as err:
         raise SshDeviceError(ERR_UNREACHABLE, f"Could not reach the device: {err}") from err
 
+    ran_at = dt_util.utcnow().isoformat()
+    _remember_ips_posture(store, checked_host, results, ran_at)
     return {
         "host": checked_host,
         "username": username,
         "host_key_fingerprint": host_key_fp,
         "host_key_pinned_now": pinner.pinned_now,
         "results": results,
-        "ran_at": dt_util.utcnow().isoformat(),
+        "ran_at": ran_at,
     }
+
+
+def ips_posture(store) -> dict[str, Any] | None:
+    """The last parsed Threat Management posture, or None when never collected."""
+    value = (store.data.get("unifi_ssh") or {}).get("ips_posture")
+    return dict(value) if isinstance(value, dict) else None
+
+
+def _remember_ips_posture(store, host: str, results: list[dict[str, Any]], ran_at: str) -> None:
+    """Keep the derived posture so the Network Security findings can use it.
+
+    The one thing this module persists from a run, and deliberately not the
+    text: the posture is category names, CIDR lists and interface names,
+    which carry no credential, while the raw files carry the daemon token.
+    A run that did not include ips_config, or whose read failed, leaves the
+    previous posture in place rather than blanking it.
+    """
+    for result in results:
+        if result["command_id"] != "ips_config" or result["state"] != STATE_PASS:
+            continue
+        analysis = result.get("analysis")
+        if not isinstance(analysis, dict):
+            continue
+        stored = dict(store.data.get("unifi_ssh") or {})
+        stored["ips_posture"] = {"host": host, "collected_at": ran_at, "posture": analysis}
+        store.async_set_unifi_ssh(stored)
+        return
 
 
 async def _run_one(conn: Any, command: Command) -> dict[str, Any]:
@@ -546,18 +626,36 @@ def _result(
 def _analyze(command: Command, stdout: str | None) -> dict[str, Any] | None:
     """Parse a command's output when a parser exists for it.
 
-    Only syslog_tail has one today: its output carries the per-client join
-    attempts that no controller API reports. Parsing here rather than in the
-    panel keeps the reading next to the four-state model, and a parser that
-    raises must never turn a successful collection into a failure.
+    Three commands have one: syslog_tail (per-client join attempts that no
+    controller API reports), ips_config (the gateway's Threat Management
+    posture) and ips_block_log (the controller's block rows). Parsing here
+    rather than in the panel keeps the reading next to the four-state model,
+    and a parser that raises must never turn a successful collection into a
+    failure. Every analysis carries ``kind`` so the panel can tell them apart.
     """
-    if command.id != "syslog_tail" or not stdout:
+    if not stdout:
+        return None
+    parser = _PARSERS.get(command.id)
+    if parser is None:
         return None
     try:
-        return unifi_ap_log.analyze(stdout)
+        return parser(stdout)
     except Exception:  # noqa: BLE001 - output we have never seen must not break a run
-        _LOGGER.debug("Access point log analysis failed", exc_info=True)
+        _LOGGER.debug("Analysis of %s output failed", command.id, exc_info=True)
         return None
+
+
+def _analyze_ap_log(stdout: str) -> dict[str, Any]:
+    analysis = unifi_ap_log.analyze(stdout)
+    analysis.setdefault("kind", "ap_log")
+    return analysis
+
+
+_PARSERS = {
+    "syslog_tail": _analyze_ap_log,
+    "ips_config": unifi_ips.parse_ips_config,
+    "ips_block_log": unifi_ips.parse_block_log,
+}
 
 
 def _clip(text: str) -> str:

@@ -543,11 +543,16 @@ def test_the_ap_tool_set_covers_both_device_generations() -> None:
         assert by_id[command_id].verified is False
 
 
-def test_only_the_log_command_carries_an_analysis() -> None:
+def test_only_the_parsed_commands_carry_an_analysis() -> None:
     """A command with no parser reports null, which is not "found nothing"."""
     by_id = {c.id: c for c in sd.COMMANDS}
     plain = sd._result(by_id["whoami"], sd.STATE_PASS, 0, None, "UBNTDevice-Auth")
     assert plain["analysis"] is None
+    assert {cid for cid in by_id if sd._analyze(by_id[cid], "x") is not None} == {
+        "syslog_tail",
+        "ips_config",
+        "ips_block_log",
+    }
 
     log = sd._result(
         by_id["syslog_tail"],
@@ -558,10 +563,65 @@ def test_only_the_log_command_carries_an_analysis() -> None:
         '"mac":"c4:5b:be:6a:fe:6f","vap":"wifi0ap6","wpa_auth_failures": "1",'
         '"avg_rssi": "-78","auth_rssi": "-74"}',
     )
+    assert log["analysis"]["kind"] == "ap_log"
     assert log["analysis"]["wireless_activity"] is True
     (client,) = log["analysis"]["clients"]
     assert client["mac"] == "c4:5b:be:6a:fe:6f"
     assert client["last_stage"] == "WPA handshake"
+
+
+def test_the_gateway_reads_are_allowlisted_and_read_only() -> None:
+    """Both Threat Management entries: every path in READABLE_PATHS, no
+    mutation, and the mongo query is a find on the alert collection only."""
+    by_id = {c.id: c for c in sd.COMMANDS}
+    assert by_id["ips_config"].verified is True
+    for token in by_id["ips_config"].argv.split():
+        if token.startswith("/"):
+            assert token in sd.READABLE_PATHS, token
+    block = by_id["ips_block_log"]
+    assert block.verified is False
+    assert "db.alert.find(" in block.argv
+    for word in ("insert", "update", "remove", "drop", "delete", "save("):
+        assert word not in block.argv.lower(), word
+
+
+def test_the_daemon_token_is_redacted() -> None:
+    text = '{\n    "logging_threat_event": true,\n    "token": "12e96e70e4a491d1f7a7e960"\n}'
+    masked = sd.redact_output(text)
+    assert "12e96e70e4a491d1f7a7e960" not in masked
+    assert '"token": "[redacted]"' in masked
+    assert '"logging_threat_event": true' in masked
+
+
+async def test_a_passing_ips_config_read_is_remembered_and_a_failed_one_is_not(
+    hass: HomeAssistant, enabled: MockConfigEntry, fake_ssh
+) -> None:
+    """The derived posture is the one thing a run persists, and only from a
+    pass; the raw text is never stored."""
+    from tests.test_unifi_ips import FULL
+
+    runtime = enabled.runtime_data
+    await sd.async_generate_keypair(hass, runtime.secrets)
+    assert sd.ips_posture(runtime.store) is None
+
+    fake_ssh["outputs"][sd.IPS_CONFIG_ARGV] = (FULL, "", 0)
+    result = await sd.async_run_commands(
+        hass, runtime.store, runtime.secrets, "192.168.254.254", ["ips_config"], username="ubnt"
+    )
+    (row,) = result["results"]
+    assert row["state"] == sd.STATE_PASS
+    assert row["analysis"]["mode"] == "prevent"
+    assert "not-the-real-token" not in row["stdout"]
+    remembered = sd.ips_posture(runtime.store)
+    assert remembered["host"] == "192.168.254.254"
+    assert remembered["posture"]["mode"] == "prevent"
+    assert "not-the-real-token" not in repr(remembered)
+
+    fake_ssh["outputs"][sd.IPS_CONFIG_ARGV] = ("", "cat: no such file", 1)
+    await sd.async_run_commands(
+        hass, runtime.store, runtime.secrets, "192.168.254.254", ["ips_config"], username="ubnt"
+    )
+    assert sd.ips_posture(runtime.store)["posture"]["mode"] == "prevent"
 
 
 def test_analysis_never_turns_a_good_collection_into_a_failure() -> None:

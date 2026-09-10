@@ -29,6 +29,7 @@ from .const import (
     SUGGESTION_STATUS_IGNORED,
     SUGGESTION_STATUS_PLANNED,
 )
+from . import ssh_devices
 from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
@@ -271,10 +272,41 @@ def _pihole_findings(pihole: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
-def build_findings(
-    unifi_overview: dict[str, Any], pihole_overview: dict[str, Any]
+def _ips_findings(
+    ips_posture: dict[str, Any] | None, server_ports: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Pure combination of the two snapshots into an advisory findings list,
+    """Threat Management findings from the posture the last ips_config read
+    left in the store. No posture means the gateway has never been read, and
+    that is reported as nothing rather than as a clean bill."""
+    if not ips_posture or not isinstance(ips_posture.get("posture"), dict):
+        return []
+    from .unifi import _server_ip_addresses
+    from .unifi_ips import evaluate
+
+    server_ips = _server_ip_addresses(server_ports.get("ports") or []) if server_ports.get("available") else []
+    collected = ips_posture.get("collected_at") or "an unknown time"
+    host = ips_posture.get("host") or "the gateway"
+    findings = []
+    for item in evaluate(ips_posture["posture"], server_ips):
+        findings.append(
+            _finding(
+                item["id"],
+                item["severity"],
+                item["category"],
+                item["title"],
+                f"{item['detail']} Read from {host} at {collected}; run ips_config again "
+                "from the Device SSH card after changing the gateway.",
+            )
+        )
+    return findings
+
+
+def build_findings(
+    unifi_overview: dict[str, Any],
+    pihole_overview: dict[str, Any],
+    ips_posture: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Pure combination of the snapshots into an advisory findings list,
     highest severity first, then stable by id. No I/O, no persistence."""
     acl = unifi_overview.get("acl") or {}
     firewall_policies = unifi_overview.get("firewall_policies") or {}
@@ -284,6 +316,7 @@ def build_findings(
     findings.extend(_firewall_policy_findings(firewall_policies))
     findings.extend(_server_port_findings(unifi_overview.get("server_ports") or {}))
     findings.extend(_pihole_findings(pihole_overview))
+    findings.extend(_ips_findings(ips_posture, unifi_overview.get("server_ports") or {}))
 
     order = {SEVERITY_HIGH: 0, SEVERITY_MEDIUM: 1, SEVERITY_INFO: 2}
     findings.sort(key=lambda f: (order.get(f["severity"], 99), f["id"]))
@@ -412,9 +445,10 @@ async def async_network_security_overview(
         "unifi_error": unifi_overview["error"],
         "pihole": pihole_overview,
         "findings": decorate_findings(
-            build_findings(unifi_overview, pihole_overview),
+            build_findings(unifi_overview, pihole_overview, ssh_devices.ips_posture(store)),
             store.data.get("network_suggestions") or {},
         ),
+        "ips_posture": ssh_devices.ips_posture(store),
         # True only when the owner enabled write-back; the write key's presence is not disclosed here.
         "write_enabled": write_enabled,
         "generated_at": unifi_overview["generated_at"],

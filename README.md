@@ -202,7 +202,21 @@ URL a parser actually needs stays visible.
   controller distributes to every adopted device, so no per-device password is
   ever stored. Owner-only, off by default, commands come from a fixed allowlist
   (no command text crosses the wire), host keys are pinned on first use and a
-  mismatch is refused, and output is redacted and stored nowhere.
+  mismatch is refused, and output is redacted and stored nowhere, with one
+  exception below.
+- **Threat Management posture (gateway)**: the UniFi Network API has no
+  threat, IPS, or event route at any version, so two allowlisted SSH reads on
+  the gateway supply what it cannot: the IPS runtime configuration (Prevent or
+  Detect, the category set, the networks Suricata is told never to alert on,
+  HOME_NET, the inspected interfaces) and the controller's own threat and
+  firewall-policy block log. The parsed posture is the one SSH result that is
+  kept, so the Network Security suggestions can say whether the Home Assistant
+  server is exempt from the IDS, outside HOME_NET, or behind a Detect-only or
+  switched-off engine, between runs. The first of those fired on the estate
+  this was built against: the server's own address was on the allowlist. What
+  the gateway does not persist, the Suricata signature behind a block, is
+  reported as absent rather than guessed; the verified facts are in
+  [`docs/UNIFI-LOCAL-API-CONTRACT.md`](docs/UNIFI-LOCAL-API-CONTRACT.md).
 - **UniFi configuration baseline**: an owner-accepted snapshot of the
   controller's networks, firewall zones, firewall policies, ACL rules and
   devices, with per-section drift against it (NIST 800-53 CM-6). Rule
@@ -404,6 +418,8 @@ custom_components/ha_soc/
 ├── dashboard_files.py  - read/overwrite YAML under <config>/dashboards (Dashboard Files tab)
 ├── config_ledger.py  - UniFi configuration baseline + drift (Network Security tab)
 ├── ssh_devices.py  - read-only SSH collection from UniFi devices (Device SSH card)
+├── unifi_ips.py  - gateway Threat Management posture and block log parsers, and
+│                           the IDS coverage findings (Network Security tab)
 ├── config_hygiene.py  - Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py  - lock/siren/valve entities + curated integration health (Dashboard)

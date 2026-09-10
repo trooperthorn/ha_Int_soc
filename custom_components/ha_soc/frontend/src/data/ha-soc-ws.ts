@@ -864,6 +864,9 @@ export interface NetworkSecurityOverview {
   unifi_error: string | null;
   pihole: PiHoleOverview;
   findings: NetworkSecurityFinding[];
+  // The gateway's Threat Management posture from the last ips_config read, or
+  // null when the gateway has never been read from the Device SSH card.
+  ips_posture: StoredIpsPosture | null;
   // True only when the owner enabled write-back in Settings; Apply is offered only then.
   write_enabled: boolean;
   generated_at: string;
@@ -1558,6 +1561,7 @@ export interface ApLogClient {
 }
 
 export interface ApLogAnalysis {
+  kind?: "ap_log";
   lines: number;
   events: Record<string, unknown>[];
   clients: ApLogClient[];
@@ -1569,6 +1573,78 @@ export interface ApLogAnalysis {
   inform_failures: number;
 }
 
+// The gateway's Threat Management posture, from the six /run/ips/config files
+// (unifi_ips.py). A file that did not come back is false in `parsed`, and the
+// lists derived from it are then empty because they are unknown, not because
+// there is nothing in them.
+export interface IpsPosture {
+  kind: "ips_config";
+  parsed: {
+    config: boolean;
+    daemon: boolean;
+    reputation: boolean;
+    homenet: boolean;
+    interfaces: boolean;
+    threshold: boolean;
+  };
+  mode: "prevent" | "detect" | "off" | "unknown";
+  drop_categories: string[];
+  alert_categories: string[];
+  drop_signature_ids: string[];
+  block_time_seconds: number | null;
+  logging_threat_event: boolean | null;
+  ssl_inspection: boolean | null;
+  suricata_version: number | null;
+  exempt_sources: string[];
+  exempt_destinations: string[];
+  exempt_networks: string[];
+  suppressed_networks: string[];
+  suppressed_signatures: { gen_id: number; sig_id: number; networks: string[] }[];
+  home_networks: string[];
+  interfaces: { interface: string; bpf_filter: string | null }[];
+}
+
+export interface IpsBlockEndpoint {
+  kind: string | null;
+  address: string | null;
+  mac: string | null;
+  name: string | null;
+}
+
+export interface IpsBlockRow {
+  id: string;
+  key: string;
+  kind: "threat" | "firewall" | "other";
+  time: string | null;
+  severity: string | null;
+  source: IpsBlockEndpoint;
+  destination: IpsBlockEndpoint;
+  policy: string | null;
+  last_24h: boolean;
+}
+
+// The controller's *_BLOCKED* alert rows. The Suricata signature behind a
+// threat block is not persisted on the gateway, so no row carries one.
+export interface IpsBlockLog {
+  kind: "ips_block_log";
+  rows: IpsBlockRow[];
+  unparsed: number;
+  by_key: Record<string, number>;
+  threat_blocks_24h: number;
+  firewall_blocks_24h: number;
+  sources_24h: string[];
+}
+
+export type SshAnalysis = ApLogAnalysis | IpsPosture | IpsBlockLog;
+
+// The posture the last ips_config read left behind, so the findings can use
+// it between runs; null until the gateway has been read once.
+export interface StoredIpsPosture {
+  host: string;
+  collected_at: string;
+  posture: IpsPosture;
+}
+
 export interface SshCommandResult extends SshCommand {
   state: "pass" | "fail" | "unknown";
   exit_status: number | null;
@@ -1576,7 +1652,7 @@ export interface SshCommandResult extends SshCommand {
   stderr: string;
   bytes: number;
   // null means the command has no parser, not that a parser found nothing.
-  analysis: ApLogAnalysis | null;
+  analysis: SshAnalysis | null;
 }
 
 export interface SshPinnedHostKey {
