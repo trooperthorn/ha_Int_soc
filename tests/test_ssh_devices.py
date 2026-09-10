@@ -522,3 +522,21 @@ def test_a_command_with_no_path_is_allowed() -> None:
         sd.Command("c", "tail -n 200 /var/log/messages", "", verified=False),
     )
     sd._assert_reads_are_allowlisted(fine)
+
+
+def test_the_ap_tool_set_covers_both_device_generations() -> None:
+    """The access-point tools differ by generation, so the set overlaps.
+
+    Observed 2026-09-10: the U7 Pro has wifi_list and stainfo and no wstalist,
+    mca-dump or tail; the UDB Pro has wstalist, mca-dump and tail and no
+    wifi_list. Dropping either half would leave one generation with nothing,
+    and an absent tool already reports unknown rather than fail.
+    """
+    by_id = {c.id: c for c in sd.COMMANDS}
+    assert by_id["wifi_list"].argv == "wifi_list"
+    assert by_id["stainfo"].argv == "stainfo"
+    assert by_id["wstalist"].argv == "wstalist"
+    # wifi_list output has been captured from this estate; the rest have not.
+    assert by_id["wifi_list"].verified is True
+    for command_id in ("stainfo", "wstalist", "mca_dump", "syslog_tail"):
+        assert by_id[command_id].verified is False

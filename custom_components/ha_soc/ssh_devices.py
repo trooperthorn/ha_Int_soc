@@ -164,11 +164,38 @@ COMMANDS: tuple[Command, ...] = (
     # endpoint. A client that cannot join a wireless network is absent from
     # every UniFi client collection, so the access point's own view is the
     # only record that a join was ever attempted; see unifi_wifi.py.
+    #
+    # The tools differ by device generation, so the set is deliberately
+    # overlapping rather than minimal: whichever entries a given device lacks
+    # report unknown, which is what the four-state model is for. Observed
+    # 2026-09-10 on this estate:
+    #   U7 Pro (/bin)    wifi_list, stainfo, stamgr -> stainfo, ubus; no tail,
+    #                    no wstalist, no mca-dump in /bin
+    #   UDB Pro (/sbin)  wstalist -> ubntbox, mca-dump -> mca.sh, mca-sta,
+    #                    amstainfo, tail -> busybox, wpa_cli, hostapd -> wpad
+    Command(
+        "wifi_list",
+        "wifi_list",
+        "Per-SSID radio summary and the stations on each: band, channel, PHY "
+        "generation, BSSID, then each client's MAC, signal, key management "
+        "(PSK or SAE) and negotiated capabilities. The clearest single answer "
+        "to which clients an access point is actually carrying, and on which "
+        "SSID.",
+        verified=True,
+    ),
+    Command(
+        "stainfo",
+        "stainfo",
+        "Station table on the newer access point generation, which has no "
+        "wstalist. Present as stamgr by another name.",
+        verified=False,
+    ),
     Command(
         "wstalist",
         "wstalist",
         "Stations currently associated to this access point, as the radio sees "
-        "them rather than as the controller reports them.",
+        "them rather than as the controller reports them. Present on the "
+        "ubntbox generation; absent from the U7 Pro.",
         verified=False,
     ),
     Command(
@@ -176,7 +203,8 @@ COMMANDS: tuple[Command, ...] = (
         "mca-dump",
         "Full device status, expected to carry the per-SSID station tables. The "
         "output is JSON and is redacted for wireless keys before it leaves the "
-        "integration.",
+        "integration. Present on the ubntbox generation as a wrapper script; "
+        "absent from the U7 Pro's /bin.",
         verified=False,
     ),
     Command(
@@ -184,7 +212,9 @@ COMMANDS: tuple[Command, ...] = (
         "tail -n 200 /var/log/messages",
         "The last 200 log lines, where hostapd records association, "
         "authentication and deauthentication with their reason codes. This is "
-        "the only place a refused join is recorded at all.",
+        "the only place a refused join is recorded at all. tail is busybox on "
+        "the ubntbox generation and is not in the U7 Pro's /bin, so this "
+        "reports unknown there rather than failing.",
         verified=False,
     ),
 )
