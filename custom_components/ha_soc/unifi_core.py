@@ -156,6 +156,11 @@ def _snapshot_client(client: Any, wireless: frozenset[str]) -> dict[str, Any] | 
         "hostname": getattr(client, "hostname", None),
         "ip": getattr(client, "ip", None),
         "essid": getattr(client, "essid", None),
+        # The AP the client is associated with. Core unifi carries this on
+        # every connected wireless client (see its device_tracker
+        # CLIENT_CONNECTED_ATTRIBUTES); it is the only per-client AP
+        # attribution either source offers.
+        "ap_mac": normalize_mac(getattr(client, "ap_mac", None)),
         "is_wired": is_wired,
         "vlan": raw.get("vlan"),
         "network": raw.get("network"),
@@ -166,6 +171,32 @@ def _snapshot_client(client: Any, wireless: frozenset[str]) -> dict[str, Any] | 
         "tx_bytes_r": getattr(client, "tx_bytes_r", None),
         "wired_rx_bytes_r": getattr(client, "wired_rx_bytes_r", None),
         "wired_tx_bytes_r": getattr(client, "wired_tx_bytes_r", None),
+    }
+
+
+def _snapshot_history_client(client: Any, wireless: frozenset[str]) -> dict[str, Any] | None:
+    """One aiounifi Client from the all-users collection, whitelisted.
+
+    This collection is the only place a client that is NOT connected right now
+    appears at all. A device that cannot join a network is absent from every
+    connected-client view by definition, so without this there is nothing to
+    look at; ``last_seen`` here is the last time the controller saw it, not a
+    statement about why it left.
+    """
+    mac = normalize_mac(getattr(client, "mac", None))
+    if mac is None:
+        return None
+    is_wired = bool(getattr(client, "is_wired", False))
+    if mac in wireless:
+        is_wired = False
+    return {
+        "mac": mac,
+        "name": getattr(client, "name", None),
+        "hostname": getattr(client, "hostname", None),
+        "essid": getattr(client, "essid", None),
+        "is_wired": is_wired,
+        "first_seen": _to_epoch(getattr(client, "first_seen", None)),
+        "last_seen": _to_epoch(getattr(client, "last_seen", None)),
     }
 
 
@@ -298,6 +329,7 @@ def network_snapshot(hass: HomeAssistant) -> dict[str, Any]:
     snap: dict[str, Any] = {
         "available": False,
         "clients": {},
+        "clients_history": {},
         "devices": {},
         "gateway": None,
         "wlans": [],
@@ -313,6 +345,10 @@ def network_snapshot(hass: HomeAssistant) -> dict[str, Any]:
                 entry = _snapshot_client(client, wireless)
                 if entry is not None:
                     snap["clients"][entry["mac"]] = entry
+            for client in _handler_values(getattr(api, "clients_all", None)):
+                entry = _snapshot_history_client(client, wireless)
+                if entry is not None:
+                    snap["clients_history"][entry["mac"]] = entry
             for device in _handler_values(getattr(api, "devices", None)):
                 entry = _snapshot_device(device)
                 if entry is None:

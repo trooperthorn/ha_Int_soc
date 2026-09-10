@@ -131,6 +131,33 @@ COMMANDS: tuple[Command, ...] = (
         "UniFi's own status summary, including adoption and inform state.",
         verified=False,
     ),
+    # Association and authentication, which no controller API exposes at any
+    # endpoint. A client that cannot join a wireless network is absent from
+    # every UniFi client collection, so the access point's own view is the
+    # only record that a join was ever attempted; see unifi_wifi.py.
+    Command(
+        "wstalist",
+        "wstalist",
+        "Stations currently associated to this access point, as the radio sees "
+        "them rather than as the controller reports them.",
+        verified=False,
+    ),
+    Command(
+        "mca_dump",
+        "mca-dump",
+        "Full device status, expected to carry the per-SSID station tables. The "
+        "output is JSON and is redacted for wireless keys before it leaves the "
+        "integration.",
+        verified=False,
+    ),
+    Command(
+        "syslog_tail",
+        "tail -n 200 /var/log/messages",
+        "The last 200 log lines, where hostapd records association, "
+        "authentication and deauthentication with their reason codes. This is "
+        "the only place a refused join is recorded at all.",
+        verified=False,
+    ),
 )
 
 COMMANDS_BY_ID = {command.id: command for command in COMMANDS}
@@ -143,12 +170,27 @@ _SECRET_LINE = re.compile(
     re.IGNORECASE | re.MULTILINE,
 )
 
+# The same fields in JSON. mca-dump and wstalist answer with JSON, not
+# key=value, so the line rule above would not touch a passphrase in their
+# output, and a wireless key rendered in the panel is the exact thing that
+# rule exists to prevent.
+_SECRET_JSON = re.compile(
+    r'(?P<key>"[^"\n]*(?:authkey|password|passwd|psk|secret|privkey)[^"\n]*"\s*:\s*)'
+    r'"(?:[^"\\]|\\.)*"',
+    re.IGNORECASE,
+)
+
 _HOSTNAME = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9._-]{0,251}[A-Za-z0-9])?$")
 
 
 def redact_output(text: str) -> str:
-    """Mask credential-shaped assignments, keeping the key name visible."""
-    return _SECRET_LINE.sub(lambda m: f"{m.group('key')}=[redacted]", text)
+    """Mask credential-shaped assignments, keeping the key name visible.
+
+    Both shapes the devices produce: ``key=value`` configuration lines, and
+    JSON ``"key": "value"`` pairs.
+    """
+    text = _SECRET_LINE.sub(lambda m: f"{m.group('key')}=[redacted]", text)
+    return _SECRET_JSON.sub(lambda m: f'{m.group("key")}"[redacted]"', text)
 
 
 def validate_host(host: Any) -> str:
