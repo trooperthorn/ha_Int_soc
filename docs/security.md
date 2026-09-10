@@ -31,6 +31,12 @@ Host-key pinning is trust on first use with a hard refusal on change. A changed 
 
 Output never enters durable storage. It is redacted for credential-shaped assignments in both shapes the devices produce, `key=value` configuration lines and JSON `"key": "value"` pairs (the JSON rule was added with the association commands, whose output is JSON: without it a wireless passphrase in `mca-dump` would have reached the panel unmasked), capped, returned to the calling owner session, and dropped. `ssh_device_command` records the host, account, host-key fingerprint and the per-command outcome map only.
 
+What the credential actually is, stated plainly because the fences above can read as stronger than they are: the key the controller distributes is an **ordinary shell login** on every adopted device. The device enforces no restriction on it. There is no `command=` or `restrict` option to attach, because the controller owns the `authorized_keys` entry and the Integration API exposes no key-management route at v10.4.57, so HA SOC cannot narrow it from this side. "Read-only, and only these files" is therefore this module's own restraint, enforced by the allowlist in HA SOC's code and by nothing on the device.
+
+Two consequences follow, and neither is hypothetical. Anyone who can edit this repository can read any file on every adopted device by adding one allowlist entry, since `cat` and `tail` are already in it and will read whatever path they are given. And anyone who can read the private key out of the secret store has a shell on the estate, with no further step.
+
+`READABLE_PATHS` is the guard for the first: every file the allowlist may read is enumerated, and `_assert_reads_are_allowlisted` refuses at import when any entry names an absolute path outside that set, whichever tool does the reading. A careless addition fails in CI rather than on a live estate, and widening the set is a deliberate edit with a reason attached. It is a guard against mistake and drift, not against a determined author of this code; nothing in-process can be. The second consequence is bounded only by the secret store and the owner-only gate, which is why the key is worth rotating in the controller if the Home Assistant host is ever suspect.
+
 What this does not do: it does not configure, restart, adopt, or power-cycle anything, and it holds no capability to. The two device actions the Network API defines (`RESTART`, port `POWER_CYCLE`) are not wired to anything in this release.
 
 ### UniFi configuration ledger
