@@ -117,13 +117,19 @@ write_config() {
     printf 'createUser %s SHA-256 "%s" AES "%s"\n' \
         "${username}" "${auth_pass}" "${priv_pass}" \
         > "${PERSIST_DIR}/snmpd.conf"
-    chmod 600 "${CONFIG_DIR}/snmp.conf" "${CONFIG_DIR}/snmpd.conf" "${PERSIST_DIR}/snmpd.conf"
-    # snmpd drops to ha_soc_snmp; its persistent dir must stay writable by that account.
-    chown ha_soc_snmp:ha_soc_snmp "${PERSIST_DIR}" "${PERSIST_DIR}/snmpd.conf"
+    chmod 600 "${CONFIG_DIR}/snmp.conf" "${CONFIG_DIR}/snmpd.conf"
+    # snmpd drops to ha_soc_snmp and rewrites this file with localized keys, so the
+    # account needs write through the group; root stays the owner of both the file and
+    # the directory so this script can always replace them without CAP_DAC_OVERRIDE.
+    chown root:ha_soc_snmp "${PERSIST_DIR}/snmpd.conf"
+    chmod 660 "${PERSIST_DIR}/snmpd.conf"
 }
 
 start_agent() {
     export SNMPCONFPATH="${CONFIG_DIR}"
+    # The views and the agent's own data are numeric OIDs; the base image ships no MIB
+    # texts, and loading them is what produces the "Cannot find module" noise.
+    export MIBS=""
     snmpd -f -Lo &
     SNMPD_PID=$!
     sleep 1
@@ -197,7 +203,12 @@ shutdown() {
 trap shutdown TERM INT
 
 mkdir -p "${CONFIG_DIR}" "${PERSIST_DIR}"
-chmod 700 "${STATE_DIR}" "${CONFIG_DIR}" "${PERSIST_DIR}"
+chmod 700 "${STATE_DIR}" "${CONFIG_DIR}"
+# Reclaim the persistent directory: releases up to 2026.09.09.2 handed it to
+# ha_soc_snmp outright, which left this script unable to replace the createUser file
+# on the next generation. Root owns it; the daemon account writes through the group.
+chown root:ha_soc_snmp "${PERSIST_DIR}"
+chmod 770 "${PERSIST_DIR}"
 ensure_probe_secret
 CURRENT_GENERATION="$(cat "${GENERATION_FILE}" 2>/dev/null || echo "")"
 CURRENT_ADDRESS="$(jq -r '.address // ""' "${PUBLIC_STATE_FILE}" 2>/dev/null || echo "")"

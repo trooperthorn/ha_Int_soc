@@ -109,6 +109,8 @@ class FakeClient:
         self.tx_bytes_r = kw.get("tx_bytes_r")
         self.wired_rx_bytes_r = kw.get("wired_rx_bytes_r")
         self.wired_tx_bytes_r = kw.get("wired_tx_bytes_r")
+        self.ap_mac = kw.get("ap_mac")
+        self.first_seen = kw.get("first_seen")
         self.raw = kw.get("raw", {})
 
 
@@ -138,8 +140,11 @@ class FakeWlan:
 
 
 class FakeController:
-    def __init__(self, clients=(), devices=(), wlans=()):
+    def __init__(self, clients=(), devices=(), wlans=(), clients_all=()):
         self.clients = FakeHandler(clients)
+        # aiounifi's all-users collection: the only place a client that is
+        # NOT connected right now appears.
+        self.clients_all = FakeHandler(clients_all)
         self.devices = FakeHandler(devices)
         self.wlans = FakeHandler(wlans)
 
@@ -801,3 +806,48 @@ async def test_protect_absent_core_keeps_subscription_notice(
     assert out["camera_count"] == 1
     assert out["events"] == []
     assert out["events_error"] is not None
+
+
+def test_snapshot_carries_ap_mac_and_the_all_clients_collection() -> None:
+    """AP attribution and the disconnected-client population.
+
+    ap_mac is the only per-client access-point identifier core unifi offers,
+    and clients_all is the only collection that holds a client which is not
+    connected. Without both, a device that cannot join is invisible.
+    """
+    connected = FakeClient(
+        "AA:BB:CC:00:00:01",
+        name="phone",
+        essid="HomeWiFi",
+        ap_mac="AA:BB:CC:00:00:99",
+    )
+    gone = FakeClient(
+        "DD:EE:FF:00:00:02",
+        name="sensor",
+        essid="IoT",
+        first_seen=1_600_000_000,
+        last_seen=1_700_000_000,
+    )
+    hub = FakeHub(FakeController(clients=[connected], clients_all=[connected, gone]))
+    snap = unifi_core.network_snapshot(FakeHass({"unifi": [FakeEntry(hub)]}))
+
+    assert snap["clients"]["aa:bb:cc:00:00:01"]["ap_mac"] == "aa:bb:cc:00:00:99"
+    history = snap["clients_history"]
+    assert set(history) == {"aa:bb:cc:00:00:01", "dd:ee:ff:00:00:02"}
+    assert history["dd:ee:ff:00:00:02"]["last_seen"] == 1_700_000_000
+    assert history["dd:ee:ff:00:00:02"]["first_seen"] == 1_600_000_000
+    assert history["dd:ee:ff:00:00:02"]["essid"] == "IoT"
+
+
+def test_snapshot_without_an_all_clients_collection_is_empty_not_broken() -> None:
+    """An aiounifi without clients_all must not take the snapshot down."""
+
+    class NoAllUsers(FakeController):
+        def __init__(self, **kw):
+            super().__init__(**kw)
+            del self.clients_all
+
+    hub = FakeHub(NoAllUsers(clients=[FakeClient("AA:BB:CC:00:00:01", name="phone")]))
+    snap = unifi_core.network_snapshot(FakeHass({"unifi": [FakeEntry(hub)]}))
+    assert snap["available"] is True
+    assert snap["clients_history"] == {}

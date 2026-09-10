@@ -47,8 +47,10 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   capability net_bind_service,
   capability setuid,
   capability setgid,
-  # The Net-SNMP persistent directory is handed to the unprivileged
-  # daemon account after its root-only initialization file is created.
+  # The Net-SNMP persistent directory and its createUser file stay
+  # root-owned and carry the ha_soc_snmp group, so the daemon account can
+  # rewrite the localized key database while this profile still needs no
+  # dac_override or fowner. Setting that group is the one chown.
   capability chown,
 
   # s6 sends the services TERM on stop; the run scripts' timers signal
@@ -73,23 +75,36 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   unix,
 
   # S6-Overlay tree, per the documented example ("generally don't remove
-  # anything" from this block).
-  # /init is an s6-overlay shell script.  Its interpreter must be able to
-  # read it as well as execute it while inheriting this profile.
+  # anything" from this block), with one deliberate difference.
+  #
+  # The documented example opens with a blanket `file,` rule, so its `ix`
+  # entries never need `r`: read is already granted everywhere. This profile
+  # drops `file,` and enumerates paths instead, which means every rule
+  # covering a SCRIPT must grant read as well as execute, because the
+  # interpreter has to open the file. ELF binaries do not need it; the
+  # kernel loads those.
+  #
+  # s6-overlay's boot chain is scripts: /init execs
+  # /package/admin/s6-overlay-<version>/libexec/preinit, which execs stage0,
+  # stage1 and stage2. /command holds execline scripts (with-contenv among
+  # them) alongside binaries, and bashio is sourced shell. Granting `ix`
+  # without `r` on those paths stops the container in preinit with
+  # "/bin/sh: can't open ...: Permission denied" and exit code 2.
   /init rix,
-  /bin/** ix,
-  /usr/bin/** ix,
+  /bin/** rix,
+  /usr/bin/** rix,
   /run/{s6,s6-rc*,service}/** ix,
-  /package/** ix,
-  /command/** ix,
+  /package/** rix,
+  /command/** rix,
   /etc/services.d/** rwix,
   /etc/cont-init.d/** rwix,
   /etc/cont-finish.d/** rwix,
   /run/{,**} rwk,
   /dev/tty rw,
 
-  # Bashio, per the documented example.
-  /usr/lib/bashio/** ix,
+  # Bashio, per the documented example. Read as well as execute: bashio is
+  # shell that the run scripts source, so the interpreter opens it.
+  /usr/lib/bashio/** rix,
   /tmp/** rwk,
 
   # iptables, ip6tables, iptables-save/ip6tables-save, and iproute2's

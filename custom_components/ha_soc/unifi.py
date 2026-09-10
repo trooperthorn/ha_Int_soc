@@ -24,7 +24,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from . import unifi_core
+from . import unifi_core, unifi_wifi
 from .const import (
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
@@ -587,6 +587,16 @@ def _normalize_client(
         "vlan": vlan,
         "ssid": ssid,
         "wired": wired,
+        # AP attribution. uplinkDeviceId is the Integration API's only link
+        # from a client to the access point carrying it; ap_mac is core
+        # unifi's. "ap" is filled in later, once the device list is known.
+        "ap": None,
+        "ap_id": _str_or_none(_first(raw, "uplinkDeviceId", "uplink_device_id")),
+        "ap_mac": (
+            str(_first(raw, "apMac", "ap_mac")).lower()
+            if _first(raw, "apMac", "ap_mac")
+            else None
+        ),
         "uptime": uptime,
         "bandwidth": _bandwidth_of(raw),
         "last_seen": last_seen,
@@ -786,16 +796,37 @@ def _derive_wan(gateway: dict[str, Any] | None) -> dict[str, Any]:
     return wan
 
 
-async def _fetch_broadcast_map(
+async def _fetch_broadcast_rows(
     hass: HomeAssistant, conn: _Conn, site_id: str
-) -> dict[str, str]:
-    """{broadcast_id: ssid_name} from /wifi/broadcasts. Best-effort - {} when
-    the console cannot serve it. Only UniFiError is swallowed; anything else
-    is a programming error that must surface."""
+) -> list[dict[str, Any]]:
+    """Raw /wifi/broadcasts rows, each merged with its detail response.
+
+    The collection response carries the SSID's state, radios, network and
+    broadcasting-device filter; hideName, the MAC filter and the blackout
+    schedule appear only in the per-broadcast detail. Both are best-effort:
+    a detail request that fails leaves the collection row as it stands, and
+    the readiness view simply reports fewer findings.
+    """
     try:
         rows = await _get_paginated(hass, conn, f"/sites/{site_id}/wifi/broadcasts")
     except UniFiError:
-        return {}
+        return []
+
+    async def _one(row: dict[str, Any]) -> dict[str, Any]:
+        bid = _first(row, "id", "_id")
+        if not bid:
+            return row
+        try:
+            detail = await _get(hass, conn, f"/sites/{site_id}/wifi/broadcasts/{bid}")
+        except UniFiError:
+            return row
+        return {**row, **detail} if isinstance(detail, dict) else row
+
+    return list(await asyncio.gather(*(_one(r) for r in rows)))
+
+
+def _broadcast_map(rows: list[dict[str, Any]]) -> dict[str, str]:
+    """{broadcast_id: ssid_name}, the SSID join the client rows use."""
     out: dict[str, str] = {}
     for b in rows:
         bid = _first(b, "id", "_id")
@@ -1554,6 +1585,15 @@ async def async_network_overview(
         # The controller version that answered this snapshot; None when the
         # console did not answer or is not configured.
         "application_version": None,
+        # Why a wireless client may be unable to join, and the clients that
+        # are known but not connected. Neither source reports an association
+        # failure; see unifi_wifi.py and docs/UNIFI-LOCAL-API-CONTRACT.md.
+        "wifi_join": {
+            "available": False,
+            "ssids": [],
+            "absent_clients": [],
+            "absent_available": False,
+        },
         "server_ports": {"available": False, "server_ips": [], "ports": []},
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
@@ -1622,7 +1662,8 @@ async def _fill_network_from_api(
         return
 
     # All best-effort; when a console endpoint returns nothing the core unifi inventory fills the map.
-    broadcast_map = await _fetch_broadcast_map(hass, conn, site_id)
+    broadcast_rows = await _fetch_broadcast_rows(hass, conn, site_id)
+    broadcast_map = _broadcast_map(broadcast_rows)
     if not broadcast_map and core_snap is not None:
         broadcast_map = unifi_core.wlan_ssid_map(core_snap)
     devices_raw = await _fetch_device_details(hass, conn, site_id, devices_raw)
@@ -1636,6 +1677,12 @@ async def _fill_network_from_api(
 
     clients = [_normalize_client(r, endpoints, broadcast_map, now_ts) for r in clients_raw]
     devices = [_normalize_device(r, endpoints) for r in devices_raw]
+
+    device_names_by_id = {
+        str(_first(d, "id", "_id", "deviceId")): str(_first(d, "name", "model", default=""))
+        for d in devices_raw
+        if _first(d, "id", "_id", "deviceId") and _first(d, "name", "model")
+    }
 
     gateway = _select_gateway(devices_raw)
     wan = _derive_wan(gateway)
@@ -1659,7 +1706,70 @@ async def _fill_network_from_api(
             "devices": devices,
         }
     )
+    _resolve_client_access_points(result, device_names_by_id)
+    result["wifi_join"] = {
+        "available": bool(broadcast_rows),
+        "ssids": unifi_wifi.build_ssid_readiness(
+            broadcast_rows,
+            device_names_by_id,
+            _network_id_names(network_map),
+            ap_count=_access_point_count(devices_raw),
+        ),
+        "absent_clients": [],
+        "absent_available": False,
+    }
     _recompute_client_stats(result)
+
+
+def _access_point_count(devices_raw: list[dict[str, Any]]) -> int | None:
+    """How many listed devices can broadcast an SSID.
+
+    The API has no device-role field, so this counts devices whose reported
+    features include a wireless radio and returns None when nothing in the
+    payload says. A restricted SSID's "3 of 7 access points" line is omitted
+    rather than invented when the total is unknown.
+    """
+    total = 0
+    seen_signal = False
+    for dev in devices_raw:
+        features = dev.get("features")
+        if isinstance(features, list):
+            seen_signal = True
+            if any(str(f).upper() in ("ACCESS_POINT", "WIFI") for f in features):
+                total += 1
+    return total if seen_signal and total else None
+
+
+def _network_id_names(network_map: dict[str, str]) -> dict[str, str]:
+    """The network map keyed by id, as unifi_wifi expects it."""
+    return {str(k): str(v) for k, v in (network_map or {}).items()}
+
+
+def _resolve_client_access_points(
+    result: dict[str, Any], device_names_by_id: dict[str, str]
+) -> None:
+    """Name the access point each wireless client is on.
+
+    Two independent identifiers reach here and neither is guaranteed: the
+    Integration API's ``uplinkDeviceId`` and core unifi's ``ap_mac``. A row
+    that carries neither, or that carries one naming a device this snapshot
+    did not list, keeps ``ap`` at None rather than guessing.
+    """
+    by_mac = {
+        str(d["mac"]).lower(): d["name"]
+        for d in result["devices"]
+        if d.get("mac") and d.get("name")
+    }
+    for row in result["clients"]:
+        if row.get("wired"):
+            continue
+        ap_id = row.get("ap_id")
+        if ap_id and ap_id in device_names_by_id:
+            row["ap"] = device_names_by_id[ap_id]
+            continue
+        ap_mac = row.get("ap_mac")
+        if ap_mac and ap_mac in by_mac:
+            row["ap"] = by_mac[ap_mac]
 
 
 def _recompute_client_stats(result: dict[str, Any]) -> None:
@@ -1721,6 +1831,7 @@ def _apply_core_network_data(
         _enrich_clients_from_core(result, snap, endpoints, now_ts)
         _enrich_devices_from_core(result, snap, endpoints)
         _enrich_wan_from_core(result, snap)
+        _enrich_absent_clients_from_core(result, snap, now_ts)
         _recompute_client_stats(result)
         # Core-memory rows are real data even when the direct API is down; any API error string stays.
         if result["clients"] or result["devices"]:
@@ -1728,6 +1839,30 @@ def _apply_core_network_data(
             result["reachable"] = True
     except Exception:  # noqa: BLE001
         _LOGGER.debug("Core unifi enrichment failed", exc_info=True)
+
+
+def _enrich_absent_clients_from_core(
+    result: dict[str, Any], snap: dict[str, Any], now_ts: int
+) -> None:
+    """The wireless clients the controller knows but is not carrying now.
+
+    Only core unifi has them: the Integration API's client collection is
+    connected clients only, so a device that cannot join appears in neither
+    that collection nor the Clients table. Without the core integration
+    loaded this list is empty and says so, rather than reading as "every
+    client is fine".
+    """
+    history = snap.get("clients_history") or {}
+    if not history:
+        return
+    connected = {
+        unifi_core.normalize_mac(row.get("mac")) or ""
+        for row in result["clients"]
+    }
+    result["wifi_join"]["absent_clients"] = unifi_wifi.build_absent_clients(
+        history, connected, now_ts
+    )
+    result["wifi_join"]["absent_available"] = True
 
 
 def _enrich_clients_from_core(
@@ -1774,6 +1909,8 @@ def _fill_client_row_from_core(
         row["last_seen"] = cc["last_seen"]
     if row.get("bandwidth") is None:
         row["bandwidth"] = unifi_core.client_bandwidth(cc)
+    if row.get("ap_mac") is None and cc.get("ap_mac"):
+        row["ap_mac"] = cc["ap_mac"]
 
 
 def _client_row_from_core(
@@ -1795,6 +1932,7 @@ def _client_row_from_core(
         "vlan": unifi_core.resolve_client_vlan(cc, networks),
         "uptime": unifi_core.uptime_to_seconds(cc.get("uptime"), now_ts),
         "last_seen": cc.get("last_seen"),
+        "ap_mac": cc.get("ap_mac"),
     }
     row = _normalize_client(raw, endpoints, {}, now_ts)
     row["bandwidth"] = unifi_core.client_bandwidth(cc)
