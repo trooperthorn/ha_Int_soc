@@ -195,7 +195,7 @@ COMMANDS: tuple[Command, ...] = (
         "wstalist",
         "Stations currently associated to this access point, as the radio sees "
         "them rather than as the controller reports them. Present on the "
-        "ubntbox generation; absent from the U7 Pro.",
+        "ubntbox generation; not in the U7 Pro's /bin.",
         verified=False,
     ),
     Command(
@@ -210,12 +210,14 @@ COMMANDS: tuple[Command, ...] = (
     Command(
         "syslog_tail",
         "tail -n 200 /var/log/messages",
-        "The last 200 log lines, where hostapd records association, "
-        "authentication and deauthentication with their reason codes. This is "
-        "the only place a refused join is recorded at all. tail is busybox on "
-        "the ubntbox generation and is not in the U7 Pro's /bin, so this "
-        "reports unknown there rather than failing.",
-        verified=False,
+        "The last 200 log lines. hostapd records authentication, association "
+        "and deauthentication here, and alongside it UniFi's own station "
+        "tracker (stahtd) emits one STA_ASSOC_TRACKER JSON object per attempt "
+        "carrying event_type (association, success, soft failure, failure), "
+        "auth_failures and wpa_auth_failures, auth_rssi and avg_rssi, the "
+        "per-stage deltas, and the 802.11 disassoc_reason or deauth_reason. "
+        "This is the record of a refused join that no controller API carries.",
+        verified=True,
     ),
 )
 

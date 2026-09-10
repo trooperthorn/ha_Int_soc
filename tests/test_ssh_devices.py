@@ -536,7 +536,9 @@ def test_the_ap_tool_set_covers_both_device_generations() -> None:
     assert by_id["wifi_list"].argv == "wifi_list"
     assert by_id["stainfo"].argv == "stainfo"
     assert by_id["wstalist"].argv == "wstalist"
-    # wifi_list output has been captured from this estate; the rest have not.
+    # Output captured from this estate; the rest have not been seen.
     assert by_id["wifi_list"].verified is True
-    for command_id in ("stainfo", "wstalist", "mca_dump", "syslog_tail"):
+    # /var/log/messages and tail both exist on the U7 Pro and the UDB Pro.
+    assert by_id["syslog_tail"].verified is True
+    for command_id in ("stainfo", "wstalist", "mca_dump"):
         assert by_id[command_id].verified is False
