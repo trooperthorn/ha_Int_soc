@@ -176,3 +176,21 @@ def test_probe_policy_has_no_community_or_write_access() -> None:
     assert "rwcommunity" not in script
     assert "view haSocReadOnly included .1.3.6.1.2.1.25.2" in script
     assert "view haSocReadOnly included .1.3.6.1.2.1.25 " not in script
+
+
+def test_persistent_directory_stays_root_owned_with_daemon_group() -> None:
+    """Regression: handing the directory to ha_soc_snmp outright made every
+    credential generation after the first fail with Permission denied when the
+    supervisor script tried to replace persistent/snmpd.conf."""
+    script = Path("ha_soc_probe/rootfs/etc/services.d/ha_soc_probe_snmp/run").read_text()
+    assert 'chown root:ha_soc_snmp "${PERSIST_DIR}"' in script
+    assert 'chown root:ha_soc_snmp "${PERSIST_DIR}/snmpd.conf"' in script
+    assert 'chmod 770 "${PERSIST_DIR}"' in script
+    assert 'chmod 660 "${PERSIST_DIR}/snmpd.conf"' in script
+    assert "chown ha_soc_snmp:ha_soc_snmp" not in script
+
+
+def test_snmpd_starts_without_loading_mib_texts() -> None:
+    """The base image ships no MIB texts and every view is a numeric OID."""
+    script = Path("ha_soc_probe/rootfs/etc/services.d/ha_soc_probe_snmp/run").read_text()
+    assert 'export MIBS=""' in script

@@ -36,8 +36,9 @@ Network collection calls use `/sites`, then the documented site routes:
 `firewall/policies`, plus, since 2026-09-08, the read-only
 `acl-rules/ordering`, `firewall/policies/ordering`, and
 `networks/{networkId}/references` site routes and the site-independent
-`GET /info`. Ten of the specification's 44 paths were called before that
-change; thirteen are now. The implementation no longer probes undocumented legacy
+`GET /info`, and since 2026-09-09 `wifi/broadcasts/{wifiBroadcastId}`. Ten
+of the specification's 44 paths were called before the 2026-09-08 change;
+fourteen are now. The implementation no longer probes undocumented legacy
 ACL or `network-confs` paths.
 
 Protect camera inventory uses an unpaginated `GET /cameras`. Protect 7.2.105
@@ -89,6 +90,19 @@ Facts moved out of `unifi.py` and `unifi_core.py`. "Verified" means checked agai
 | Firmware-updatable is a boolean on the device detail object (`firmwareUpdatable`, `updateAvailable`, `update_available`). | Unverified (backlog) |
 | A gateway's `interfaces` may be a dict (`interfaces.wan` / `interfaces.ports`) or a list; the WAN-port or uplink shape is the single most uncertain mapping. | Unverified (backlog) |
 | `/devices/{id}` supplies configuration and detail fields and `/devices/{id}/statistics/latest` supplies heartbeat, utilization, uptime, and uplink rates; each request is independent and non-fatal, and detail values win over list values. | Verified |
+
+### Why a client cannot join, and what the API does not say
+
+| Fact | Verified |
+| --- | --- |
+| No endpoint in the specification carries an association attempt, an authentication failure, a retry or error counter, or any per-client history. A client that cannot join is absent from `/clients` entirely, because that collection is connected clients only. The Wi-Fi join view therefore reports configuration that refuses a join, never a failure. | Verified (all 44 paths) |
+| The whole client object is `id`, `name`, `macAddress`, `ipAddress`, `connectedAt`, `type`, `uplinkDeviceId`, and `access.type`. `uplinkDeviceId` is the only link from a client to the access point carrying it. | Verified (`Wireless client overview` / `Client overview`) |
+| Core `unifi`'s in-memory client carries `ap_mac`, which is the same attribution by MAC and the fallback when the direct API path produced no row. | Verified (core `device_tracker.py` `CLIENT_CONNECTED_ATTRIBUTES`) |
+| Clients that are NOT connected exist only in core `unifi`'s all-clients collection (`api.clients_all`, with `first_seen` and `last_seen`). Without the core integration loaded there is no absent-client list at all, and the panel says so rather than showing an empty one. | Verified (core `services.py` uses `hub.api.clients_all`) |
+| `broadcastingDeviceFilter` is documented as "List of Access Point capable device IDs to which the WiFi broadcast applies", with variants `DEVICES` (`deviceIds`) and `DEVICE_TAGS` (`deviceTagIds`). Its absence means every AP broadcasts the SSID. There is no route to resolve a device tag, so a `DEVICE_TAGS` filter reports the tag count and claims nothing about coverage. | Verified (`Broadcasting device filter`) |
+| The broadcast collection response carries `enabled`, `name`, `network`, `securityConfiguration.type`, `type` (`STANDARD` or `IOT_OPTIMIZED`), `broadcastingDeviceFilter`, and, on `STANDARD`, `broadcastingFrequenciesGHz`. `hideName`, `clientFilteringPolicy` and `blackoutScheduleConfiguration` appear only in the per-broadcast detail response, which is why the detail route is now called. | Verified (`Wifi broadcast overview` / `Wifi broadcast details`) |
+| Security types are `OPEN`, `WPA2_PERSONAL`, `WPA3_PERSONAL`, `WPA2_WPA3_PERSONAL`, and the three enterprise twins. | Verified (`Wifi security configuration overview` discriminator) |
+| A blackout schedule is reported as a day count, never evaluated against the current time; whether the SSID is off at this moment is not claimed. | Verified (code) |
 
 ### ACL rule schema (Network 10.4.57 OpenAPI)
 

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Fixed SNMPv3 reconfiguration failing with `Permission denied` on
+  `/data/ha_soc_snmp/persistent/snmpd.conf`. The persistent directory was
+  chowned to the unprivileged `ha_soc_snmp` account, so the supervisor script
+  could no longer replace the createUser file once a credential generation
+  changed. The directory and the file are now root-owned with group
+  `ha_soc_snmp` (0770 / 0660), and the script reclaims ownership at startup for
+  installs created by an earlier release.
+- Suppressed the `Cannot find module (...-MIB)` warnings at snmpd startup. The
+  base image ships no MIB texts and the agent's views are numeric OIDs, so MIB
+  loading is now disabled explicitly.
+
 - Firewall rules gained port ranges and lists, destination addresses,
   interface matches, ICMP and ICMPv6 types, REJECT, rate-limited kernel
   logging, and single-token comments. The add-on probes the optional

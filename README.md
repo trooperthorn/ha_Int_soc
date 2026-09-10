@@ -17,6 +17,45 @@ of what looks like finer-grained control (view visibility, per-user sidebar
 hiding) is cosmetic. HA SOC is built to say so, everywhere, rather than
 imply otherwise.
 
+## Screenshots
+
+Every value in these images is invented for the screenshot. They are the real
+panel rendered against example data, not a capture of a live deployment, so no
+posture score, device, address, key, or fingerprint below describes a real
+system.
+
+### Security overview
+
+The console's landing view: posture with its grade, what is open right now,
+and operational health kept on a separate axis from risk.
+
+![The HA SOC security overview: posture score, open detections, asset availability, finding severity, posture trend, priority queue, entity reliability, identity protection, and the device and integration triage queues](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/security-overview.png)
+
+### UniFi configuration baseline
+
+Drift against the baseline the owner accepted, per section, down to the
+changed field. Rule evaluation order is part of the comparison, because
+reordering changes which rule wins without changing any rule.
+
+![The Configuration Baseline card showing three changes since the accepted baseline, a per-section drift table, the changed fields for a firewall policy and a device, and the recorded change history](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-configuration-baseline.png)
+
+### Device SSH
+
+The read-only collector. Commands come from a fixed allowlist in the
+integration, so no command text crosses the wire; four of them are badged
+`unverified` until their output has been seen on real hardware.
+
+![The Device SSH card showing the public key to paste into the UniFi controller, the allowlisted commands with unverified badges, and the pinned host key table](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-device-ssh.png)
+
+### Device SSH, after a run
+
+The four-state model in practice. `mca-cli-op info` exited 127 because the
+tool is absent on that model, so it reports `unknown` rather than `fail`, and
+the management config comes back with `mgmt.authkey` redacted while the inform
+URL a parser actually needs stays visible.
+
+![A completed Device SSH run: two commands reporting pass, one reporting unknown with exit 127, and management config output with the authkey redacted and the inform URL intact](https://raw.githubusercontent.com/trooperthorn/ha_Int_soc/main/docs/screenshots/unifi-device-ssh-run.png)
+
 ## What it does
 
 - **Users & Access**: every user, their real last-login (from refresh-token
@@ -153,8 +192,13 @@ imply otherwise.
   Home Assistant host itself, via the optional companion
   [HA SOC Probe](ha_soc_probe/) add-on. See below.
 - **Device SSH (read-only)**: reads the facts UniFi's API does not expose at any
-  endpoint, such as per-port VLAN handling and the inform URL a device actually
-  holds. Authentication is an Ed25519 keypair HA SOC generates and the UniFi
+  endpoint, such as per-port VLAN handling, the inform URL a device actually
+  holds, and, on an access point, the association and authentication record
+  (`wstalist`, `mca-dump`, and the syslog tail carrying hostapd's reason codes)
+  that no controller endpoint carries at all. That last set is the only source
+  for why a wireless client was refused, and the companion to
+  [Wi-Fi Join Diagnostics](#network-tab), which can read configuration but
+  never a failure. Authentication is an Ed25519 keypair HA SOC generates and the UniFi
   controller distributes to every adopted device, so no per-device password is
   ever stored. Owner-only, off by default, commands come from a fixed allowlist
   (no command text crosses the wire), host keys are pinned on first use and a
@@ -746,6 +790,25 @@ two tables:
   Updatable**, Bandwidth, Last Seen, Integration (no IPv6/Uptime, not
   applicable to infrastructure). Each device is enriched from the documented
   `/devices/{id}` detail and `/devices/{id}/statistics/latest` endpoints.
+
+**Wi-Fi Join Diagnostics** is a separate section for the case the Clients
+table structurally cannot cover: a wireless client that cannot join at all
+never appears in it, because the controller's client collection is connected
+clients only. No UniFi source records an association attempt or an
+authentication failure, so this section never claims a client failed. It
+shows, per SSID, whether the network is enabled, which radios carry it, the
+network and VLAN it lands on, whether a MAC filter or a hidden name or a
+blackout schedule would refuse a device, **which access points are permitted
+to broadcast it** as against which are carrying clients right now, and, from
+the core `unifi` integration's all-clients collection, the wireless clients
+the controller knows but is not carrying. The view opens on the IoT
+network when it can find one, meaning a broadcast the controller typed as
+IoT-optimised or an SSID whose name contains "iot" (which catches both `IoT`
+and `wifiot`); every SSID stays selectable. Each finding is labelled blocking,
+possible, or unknown, and a condition the API cannot resolve (a
+broadcast restricted by device tag, or whether a blackout window is in force
+this minute) says so rather than guessing. The Clients table's columns are
+unchanged.
 
 **Firewall Policies**, **ACL Rules, Security Audit**, the HA server's own
 port coverage, and the Pi-hole DNS section live on their own tab, see
