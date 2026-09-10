@@ -1,5 +1,5 @@
 pytest-homeassistant-custom-component==0.13.363
-home-assistant-frontend==20260826.4
+home-assistant-frontend==20260826.6
 aiousbwatcher==1.1.2
 # Matches the manifest pin; the suite needs it to generate and import keys.
 # asyncssh is not core-constrained, so an exact pin is correct in both places.
