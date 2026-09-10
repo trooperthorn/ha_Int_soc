@@ -1537,12 +1537,46 @@ export interface SshCommand {
   verified: boolean;
 }
 
+// Mirrors unifi_ap_log.py. One client's join attempts as the access point
+// recorded them. "ever_succeeded" and "failures" are separate facts: a client
+// that got on once and failed later is not one that never got on.
+export interface ApLogClient {
+  mac: string;
+  vap: string | null;
+  attempts: number;
+  failures: number;
+  ever_succeeded: boolean;
+  last_outcome: string | null;
+  last_stage: string | null;
+  last_reason: string | null;
+  last_reason_code: number | null;
+  auth_failures: number;
+  wpa_auth_failures: number;
+  worst_rssi: number | null;
+  last_rssi: number | null;
+  last_seen_at: number | null;
+}
+
+export interface ApLogAnalysis {
+  lines: number;
+  events: Record<string, unknown>[];
+  clients: ApLogClient[];
+  hostapd_station_lines: number;
+  // False means this log cannot answer the question. It is NOT "every client
+  // is fine": an unadopted access point produces exactly this.
+  wireless_activity: boolean;
+  controller_unreachable: boolean;
+  inform_failures: number;
+}
+
 export interface SshCommandResult extends SshCommand {
   state: "pass" | "fail" | "unknown";
   exit_status: number | null;
   stdout: string;
   stderr: string;
   bytes: number;
+  // null means the command has no parser, not that a parser found nothing.
+  analysis: ApLogAnalysis | null;
 }
 
 export interface SshPinnedHostKey {

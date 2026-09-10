@@ -30,6 +30,8 @@ import homeassistant.util.dt as dt_util
 
 from homeassistant.core import HomeAssistant
 
+from . import unifi_ap_log
+
 _LOGGER = logging.getLogger(__name__)
 
 CONNECT_TIMEOUT_SECONDS = 10
@@ -534,7 +536,28 @@ def _result(
         "stdout": redact_output(stdout) if stdout else "",
         "stderr": redact_output(stderr) if stderr else "",
         "bytes": len(stdout or ""),
+        # Structured reading of the output, for the commands that have one.
+        # None means this command has no parser, which is not the same as a
+        # parser that found nothing.
+        "analysis": _analyze(command, stdout),
     }
+
+
+def _analyze(command: Command, stdout: str | None) -> dict[str, Any] | None:
+    """Parse a command's output when a parser exists for it.
+
+    Only syslog_tail has one today: its output carries the per-client join
+    attempts that no controller API reports. Parsing here rather than in the
+    panel keeps the reading next to the four-state model, and a parser that
+    raises must never turn a successful collection into a failure.
+    """
+    if command.id != "syslog_tail" or not stdout:
+        return None
+    try:
+        return unifi_ap_log.analyze(stdout)
+    except Exception:  # noqa: BLE001 - output we have never seen must not break a run
+        _LOGGER.debug("Access point log analysis failed", exc_info=True)
+        return None
 
 
 def _clip(text: str) -> str:
