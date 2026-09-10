@@ -476,3 +476,49 @@ def test_the_association_commands_are_present_and_unverified() -> None:
     assert by_id["syslog_tail"].argv == "tail -n 200 /var/log/messages"
     for command_id in ("wstalist", "mca_dump", "syslog_tail"):
         assert by_id[command_id].verified is False
+
+
+# --- what the allowlist may read -------------------------------------------
+
+
+def test_every_path_the_allowlist_reads_is_enumerated() -> None:
+    """The shipped allowlist reads nothing outside READABLE_PATHS.
+
+    `cat` and `tail` read whatever path they are given, and the device enforces
+    nothing: the key the controller distributes is an ordinary shell login. So
+    the set of readable files is this module's own restraint, and it has to be
+    explicit to be auditable.
+    """
+    sd._assert_reads_are_allowlisted(sd.COMMANDS)
+    for command in sd.COMMANDS:
+        for token in command.argv.split():
+            if token.startswith("/"):
+                assert token in sd.READABLE_PATHS, command.argv
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        "cat /etc/shadow",
+        "cat /etc/persistent/cfg/mgmt.bak",
+        "tail -n 200 /data/ha_soc/secrets",
+        # A reader nobody has added yet must be caught the same way.
+        "head -c 1024 /etc/dropbear/dropbear_rsa_host_key",
+        "grep -r psk /etc",
+    ],
+)
+def test_an_unvetted_read_is_refused_at_import(argv: str) -> None:
+    """A careless future entry fails in CI, not on a live estate."""
+    bad = (sd.Command("new", argv, "should not ship", verified=False),)
+    with pytest.raises(RuntimeError, match="READABLE_PATHS"):
+        sd._assert_reads_are_allowlisted(bad)
+
+
+def test_a_command_with_no_path_is_allowed() -> None:
+    """Tools that take no file argument are unaffected by the path rule."""
+    fine = (
+        sd.Command("a", "whoami", "", verified=True),
+        sd.Command("b", "mca-dump", "", verified=False),
+        sd.Command("c", "tail -n 200 /var/log/messages", "", verified=False),
+    )
+    sd._assert_reads_are_allowlisted(fine)

@@ -7,9 +7,15 @@ keeps the private half in the private secret store, and shows the public half
 for pasting into the controller once.
 
 Nothing here writes to a device. Commands come from a fixed allowlist; there
-is no path from a client-supplied string to a shell. Scope, the host-key rule,
-and why this lives in HA SOC rather than the diagnostics sibling are in
-docs/design.md and docs/decisions.md.
+is no path from a client-supplied string to a shell.
+
+The key the controller distributes is nonetheless an ordinary shell login, and
+the device enforces no restriction on it: the controller owns the
+authorized_keys entry and the Integration API has no key-management route, so
+no command= or restrict option can be attached from this side. Read-only, and
+only the files in READABLE_PATHS, is this module's restraint and nothing
+else's. Scope, the host-key rule, and why this lives in HA SOC rather than the
+diagnostics sibling are in docs/design.md and docs/decisions.md.
 """
 from __future__ import annotations
 
@@ -79,6 +85,29 @@ class Command:
         self.description = description
         self.verified = verified
 
+
+# Every file the allowlist is permitted to read, in full.
+#
+# This set exists because of what the credential actually is. The key the
+# controller distributes is an ordinary shell login, so the device enforces
+# nothing: "read-only, and only these files" is this module's restraint and
+# nobody else's, and the allowlist already contains `cat` and `tail`, which
+# will read whatever path they are given. Without an explicit set, a later
+# entry reaching for /etc/shadow, a stored private key, or a wireless
+# passphrase file would look exactly like the entries already here.
+#
+# Adding a path is a deliberate edit with a reason, the same as adding a
+# command. _assert_reads_are_allowlisted refuses at import time otherwise, so
+# a mistake fails in CI rather than on a live estate.
+READABLE_PATHS = frozenset(
+    {
+        "/proc/uptime",
+        "/etc/board.info",
+        "/tmp/system.cfg",
+        "/etc/persistent/cfg/mgmt",
+        "/var/log/messages",
+    }
+)
 
 # The allowlist. Every entry is a read; none writes, restarts, or configures.
 # Entries are marked unverified until their output has been captured from a
@@ -161,6 +190,26 @@ COMMANDS: tuple[Command, ...] = (
 )
 
 COMMANDS_BY_ID = {command.id: command for command in COMMANDS}
+
+
+def _assert_reads_are_allowlisted(commands: tuple[Command, ...]) -> None:
+    """Refuse an allowlist entry that reads a file READABLE_PATHS does not name.
+
+    Checked at import, so a command added with an unvetted path cannot reach a
+    device: the integration fails to load and CI says why. Any absolute path
+    in any entry counts, not only arguments to cat and tail, because the next
+    reader could be head, grep, or a tool nobody has thought of yet.
+    """
+    for command in commands:
+        for token in command.argv.split():
+            if token.startswith("/") and token not in READABLE_PATHS:
+                raise RuntimeError(
+                    f"SSH command {command.id!r} reads {token!r}, which is not in "
+                    "READABLE_PATHS. Add the path there with a reason, or drop it."
+                )
+
+
+_assert_reads_are_allowlisted(COMMANDS)
 
 # Redacted before the output ever leaves this module. These are the fields a
 # parser has no use for (the inform authkey, passwords, wireless keys) and
