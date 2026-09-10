@@ -541,3 +541,32 @@ def test_the_ap_tool_set_covers_both_device_generations() -> None:
     assert by_id["syslog_tail"].verified is True
     for command_id in ("stainfo", "wstalist", "mca_dump"):
         assert by_id[command_id].verified is False
+
+
+def test_only_the_log_command_carries_an_analysis() -> None:
+    """A command with no parser reports null, which is not "found nothing"."""
+    by_id = {c.id: c for c in sd.COMMANDS}
+    plain = sd._result(by_id["whoami"], sd.STATE_PASS, 0, None, "UBNTDevice-Auth")
+    assert plain["analysis"] is None
+
+    log = sd._result(
+        by_id["syslog_tail"],
+        sd.STATE_PASS,
+        0,
+        None,
+        'stahtd_dump_event(): {"message_type":"STA_ASSOC_TRACKER","event_type":"failure",'
+        '"mac":"c4:5b:be:6a:fe:6f","vap":"wifi0ap6","wpa_auth_failures": "1",'
+        '"avg_rssi": "-78","auth_rssi": "-74"}',
+    )
+    assert log["analysis"]["wireless_activity"] is True
+    (client,) = log["analysis"]["clients"]
+    assert client["mac"] == "c4:5b:be:6a:fe:6f"
+    assert client["last_stage"] == "WPA handshake"
+
+
+def test_analysis_never_turns_a_good_collection_into_a_failure() -> None:
+    """Output shaped in a way the parser has never seen must not raise."""
+    by_id = {c.id: c for c in sd.COMMANDS}
+    result = sd._result(by_id["syslog_tail"], sd.STATE_PASS, 0, None, "\x00 not a log at all")
+    assert result["state"] == sd.STATE_PASS
+    assert result["analysis"]["wireless_activity"] is False

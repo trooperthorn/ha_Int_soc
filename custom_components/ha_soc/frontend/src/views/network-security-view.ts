@@ -6,6 +6,7 @@ import type { LayoutSection } from "../customize";
 import { navigate } from "../nav";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import {
+  ApLogAnalysis,
   AclReport,
   AclRule,
   FirewallPoliciesReport,
@@ -561,6 +562,67 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
     `;
   }
 
+  // The access point's own record of who tried to join and what stopped them.
+  // No controller API carries this; see unifi_ap_log.py.
+  private _renderApLogAnalysis(a: ApLogAnalysis) {
+    if (!a.wireless_activity) {
+      return html`
+        <div class="alert" style="margin:6px 0;">
+          This log contains no wireless events, so it says nothing about who tried to join.
+          ${a.controller_unreachable
+            ? html`It is also full of failed controller informs
+                (${a.inform_failures} in this excerpt), which is what an access point that
+                cannot reach the controller produces.`
+            : nothing}
+        </div>
+      `;
+    }
+    if (!a.clients.length) {
+      return html`<p class="muted" style="margin:6px 0;font-size:12px;">
+        Wireless activity present, but no station-tracker records in this excerpt.
+      </p>`;
+    }
+    return html`
+      <table style="margin:6px 0;">
+        <thead>
+          <tr>
+            <th>Client</th>
+            <th>SSID VAP</th>
+            <th>Attempts</th>
+            <th>Stopped at</th>
+            <th>Signal</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${a.clients.map(
+            (c) => html`
+              <tr>
+                <td class="mono">${c.mac}</td>
+                <td>${c.vap ?? "—"}</td>
+                <td>
+                  ${c.attempts}
+                  ${c.failures
+                    ? html`<span class="muted">(${c.failures} failed)</span>`
+                    : nothing}
+                </td>
+                <td>
+                  ${c.failures && !c.ever_succeeded
+                    ? html`<span class="pill pill-fail">${c.last_stage}</span>`
+                    : html`<span class="muted">${c.last_outcome}</span>`}
+                </td>
+                <td>
+                  ${c.worst_rssi !== null ? `${c.worst_rssi} dBm` : "—"}
+                </td>
+                <td>${c.last_reason ?? (c.last_reason_code ?? "—")}</td>
+              </tr>
+            `
+          )}
+        </tbody>
+      </table>
+    `;
+  }
+
   private _renderSshRun(run: SshRunResult) {
     return html`
       <p class="muted" style="font-size:12px;">
@@ -577,6 +639,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
                 ? html`<span class="muted" style="font-size:11.5px;">exit ${r.exit_status}</span>`
                 : nothing}
             </div>
+            ${r.analysis ? this._renderApLogAnalysis(r.analysis) : nothing}
             ${r.stdout ? html`<pre class="ssh-out">${r.stdout}</pre>` : nothing}
             ${r.stderr ? html`<pre class="ssh-out ssh-err">${r.stderr}</pre>` : nothing}
           </div>
