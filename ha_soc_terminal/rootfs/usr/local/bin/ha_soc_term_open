@@ -29,10 +29,13 @@ if [ "${RECORD}" = "true" ]; then
     umask 077
     # util-linux script: transcript and timing as separate files, flushed as
     # written, so a session that is killed still leaves what happened so far.
-    exec script -q -f -e \
+    # Run as a child, not exec: the EXIT trap above is what writes the index
+    # line, and exec would replace the shell that holds it.
+    script -q -f -e \
         --log-out "${SESSIONS_DIR}/${SESSION_ID}.out" \
         --log-timing "${SESSIONS_DIR}/${SESSION_ID}.timing" \
-        -c "bash -l"
+        -c "bash -l" || status=$?
+    exit "${status:-0}"
 fi
 
 exec bash -l

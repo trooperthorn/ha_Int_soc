@@ -221,7 +221,7 @@ URL a parser actually needs stays visible.
   executes only on this server, shipped as the `ha_soc_terminal` app in this
   repository. One shell per connection with no tmux, so scrollback and paste
   behave; every session written by util-linux `script` with its hash in an
-  index; `bat`, `yq` and `nano` with syntax files for YAML; no SSH client or
+  index; `nano` with syntax files for YAML; no SSH client or
   other network tool in the image, no host network, no Docker socket, and
   the Supervisor token never exported into the shell. This release opens it
   through ingress for testing; the next moves it behind HA SOC's own access

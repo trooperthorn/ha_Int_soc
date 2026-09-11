@@ -78,7 +78,7 @@ is its sshd hardening (for phase 3) and the history-persistence idea.
 | Shell | bash, login shell | One binary, no plugin ecosystem, `PROMPT_COMMAND` gives a per-command history line with `HISTTIMEFORMAT` stamps. zsh's editing was judged not worth oh-my-zsh and its plugins. |
 | Terminal server | `ttyd` without tmux | One PTY per connection, so browser scrollback and bracketed paste work and no session is shared. |
 | Recording | util-linux `script` with `--log-out` and `--log-timing`, per session, under `/data/sessions` | Full transcript with timing (replayable, keeps color), written by the wrapper before the shell starts, hashed at exit into `/data/sessions/index.jsonl`. |
-| Readability | `bat`, `yq`, `nano` with its syntax files, `dircolors`, colored `PS1` with the last exit status | Covers reading commands, reading YAML, editing YAML. No `ble.sh`. |
+| Readability | `nano` with its syntax files (plus a `view` alias for `nano -v`), `dircolors`, colored `PS1` with the last exit status | Covers reading commands, reading YAML, editing YAML. No `ble.sh`. `bat` and `yq` were in the first build and dropped on 2026-09-10: `bat` links libgit2 and so libssh2, an SSH client library with open high-severity CVEs; `yq`'s Go build carried two open high-severity module findings. The image scan refuses both, and a reader is not worth a CVE. |
 | Idle timeout | bash `TMOUT` from the `idle_timeout_minutes` option | Built in, nothing to add. |
 | Client tools | None: no `openssh`, `mosh`, `nmap`, `ncat`, `tcpdump`, `rsync`, `git`, `python3`, `sudo`, `tmux`; the BusyBox `nc`, `wget`, `telnet`, `tftp` and ftp applet names are removed | "Cannot proxy to another host" holds for what the image ships. `curl` stays because bashio needs it, and `busybox nc` remains reachable by that spelling since the applets live inside the one binary. CI asserts the absent command names on every build. |
 | Privileges | No `host_network`, no `docker_api`, no `privileged`, custom AppArmor, `homeassistant_config:rw` only | Rating 6 with ingress and the profile; the app can reach `/homeassistant` and its own `/data` and nothing else. |
@@ -161,11 +161,10 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
 ## Verification list
 
 - [x] Phase 1 image builds (verified locally 2026-09-10: util-linux 2.42.3
-      `script`, ttyd 1.7.7, bat 0.26.1, yq 4.53.3); `ttyd`, `bash`, `bat`,
-      `yq`, `nano`, `script` present; `ssh`, `nmap`, `ncat`, `nc`, `wget`,
+      `script`, ttyd 1.7.7); `ttyd`, `bash`, `nano`, `script` present; `ssh`, `nmap`, `ncat`, `nc`, `wget`,
       `tcpdump`, `mosh`, `tmux`, `python3`, `sudo` absent (CI, `security.yml`).
 - [ ] Ingress terminal on the live install: scrollback in the browser, paste
-      of a multi-line YAML block arrives unchanged, `bat` and `yq` colour
+      of a multi-line YAML block arrives unchanged, `view` colours YAML
       correctly, theme readable in light and dark.
 - [ ] A session leaves `/data/sessions/<id>.out`, `.timing`, and an index
       line whose sha256 matches the file.

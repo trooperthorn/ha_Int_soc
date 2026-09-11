@@ -44,8 +44,8 @@ alias ls='ls --color=auto'
 alias grep='grep --color=auto'
 alias ll='ls -la --color=auto'
 export EDITOR=nano
-export BAT_THEME="ansi"
-export BAT_STYLE="numbers,changes,header"
+# Read-only colourised view of a file: nano in view mode with the syntax files.
+alias view='nano -v'
 export LESS="-R"
 export PAGER="less"
 
@@ -58,5 +58,5 @@ if [ -n "${HA_SOC_TERM_SESSION_ID:-}" ]; then
     else
         printf 'HA SOC Terminal %s  session %s  not recorded\n' "${HA_SOC_TERM_VERSION:-}" "${HA_SOC_TERM_SESSION_ID}"
     fi
-    printf 'bat <file> and yq <file> read YAML in colour; nano edits it. This shell reaches /config and nothing beyond this server.\n'
+    printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /config and nothing beyond this server.\n'
 fi
