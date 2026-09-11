@@ -1,7 +1,8 @@
 # HA SOC Terminal: design
 
 Status: phase 1 shipped as the `ha_soc_terminal` app (2026-09-10); phase 2,
-the panel gate and proxy, shipped 2026-09-11 with the `self` target only;
+the panel gate and proxy, shipped and verified live 2026-09-11 with the
+`self` target only;
 phase 3 and the `core` and `addon` targets are design only. This document owns the terminal surface: what it is,
 where it executes, who may open it, what it records, and what it can never do.
 The dated decisions behind it are in `decisions.md` under "Terminal".
@@ -208,9 +209,9 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       session then closed at once: ttyd requires the credential a second
       time as `AuthToken` in the handshake and the proxy sent it empty.
       Fixed the same day.
-- [ ] Phase 2 on the live install, second pass: a session stays open,
-      paste and scrollback behave in xterm.js, the theme follows light and
-      dark, and closing the view leaves a `terminal_session_close` audit
-      record.
+- [x] Phase 2 on the live install, second pass (v2026.09.11.2, 2026-09-11):
+      a session stays open, paste and scrollback behave in xterm.js, the
+      theme follows light and dark, and closing the view leaves a
+      `terminal_session_close` audit record. Phase 2 is closed.
 - [ ] ttyd `-a` URL arguments reach the wrapper (needed only for the `core`
       and `addon` targets; unverified).
