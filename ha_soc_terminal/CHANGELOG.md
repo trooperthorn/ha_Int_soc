@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed the service restarting with `ln: failed to create symbolic link
+  '/config': Permission denied`: the AppArmor profile keeps the filesystem
+  root read-only by design, so the convenience link is now `~/config` and
+  the shell starts in `/homeassistant`.
 - Dropped `bat`: it links libgit2 and therefore libssh2, an SSH client
   library with open high-severity findings, in an image whose point is to
   carry no SSH. Dropped `yq` as well: its Go build carries two open

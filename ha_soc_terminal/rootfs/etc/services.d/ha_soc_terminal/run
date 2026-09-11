@@ -27,9 +27,10 @@ if bashio::var.true "${HA_SOC_TERM_HISTORY}"; then
     chmod 600 "${HISTORY_FILE}"
 fi
 
-# The Supervisor maps the configuration directory at /homeassistant; /config is
-# the name every guide uses.
-[ -e /config ] || ln -s /homeassistant /config
+# The Supervisor maps the configuration directory at /homeassistant. The
+# AppArmor profile keeps / read-only, so the convenience link lives in the
+# shell's home instead of at the root.
+[ -e /root/config ] || ln -s /homeassistant /root/config
 
 bashio::log.info "HA SOC Terminal ${TERMINAL_VERSION}: recording=${HA_SOC_TERM_RECORD}, history=${HA_SOC_TERM_HISTORY}, idle=${HA_SOC_TERM_IDLE_MINUTES}m"
 
