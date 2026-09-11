@@ -35,6 +35,14 @@ profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
   network inet6 udp,
   unix,
 
+  # Directory listings everywhere, read-only. libwebsockets scans /usr/lib
+  # for its event-loop plugin before ttyd can start (the third live-install
+  # failure: "Scandir on '/usr/lib' failed, errno 13"), and bash completion,
+  # ls and nano list directories constantly. File contents stay governed by
+  # the rules below; this grants the entries, not the bytes.
+  / r,
+  /**/ r,
+
   # s6-overlay boot chain and the base image's programs. Scripts need `r`
   # as well as `ix` because the interpreter opens the file; see the Probe's
   # profile for the full reasoning.

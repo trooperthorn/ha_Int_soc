@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Fixed ttyd failing to start with `Scandir on '/usr/lib' failed, errno 13`:
+  the AppArmor profile granted file contents but not directory listings,
+  which libwebsockets needs to find its event-loop plugin and which bash
+  completion needs everywhere. Directories are now readable throughout.
 - Fixed the service restarting with `ln: failed to create symbolic link
   '/config': Permission denied`: the AppArmor profile keeps the filesystem
   root read-only by design, so the convenience link is now `~/config` and
