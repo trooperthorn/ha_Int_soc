@@ -3,17 +3,20 @@
 # Same contract as ha_soc_probe/apparmor.txt (developers.home-assistant
 # docs/apps/presentation.md, "AppArmor"): a file named apparmor.txt beside
 # config.yaml is loaded by the Supervisor as the container's profile, named
-# after the slug. Not yet loaded on a live Supervisor; the verification list
-# in docs/TERMINAL-DESIGN.md carries that step.
+# after the slug. Loaded on a live Supervisor on 2026-09-10: the first
+# version granted `ix` without `r` on the s6 boot chain and stopped the
+# container at "/bin/sh: can't open '/init': Permission denied", the failure
+# the Probe's profile comment predicts. Every path that holds a script now
+# carries `r` as well as `ix`.
 #
 # What this profile is FOR: a terminal legitimately reads, writes and
 # executes broadly inside its own container and inside /homeassistant, so
-# file access is granted broadly, as the documented example does. What it
-# withholds is capability and network: no capability at all beyond what the
-# base image's s6 needs, and TCP only, for the ttyd listener and the start
-# script's call to http://supervisor. There is no raw socket and no netlink,
-# so nothing in this shell can sniff or reshape the network even if a tool
-# for that were ever added to the image.
+# file access is granted at the directory level rather than enumerated.
+# What it withholds is capability and network: no capability at all beyond
+# what the base image's s6 needs, and TCP only, for the ttyd listener and
+# the start script's call to http://supervisor. There is no raw socket and
+# no netlink, so nothing in this shell can sniff or reshape the network
+# even if a tool for that were ever added to the image.
 
 #include <tunables/global>
 
@@ -25,42 +28,60 @@ profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
   signal (receive),
 
   # ttyd listens on TCP; bashio's curl reaches http://supervisor over TCP
-  # and resolves it over UDP.
+  # and resolves it over UDP. No raw, no packet, no netlink.
   network inet tcp,
   network inet6 tcp,
   network inet udp,
   network inet6 udp,
   unix,
 
-  # s6-overlay tree, per the documented example.
-  /init ix,
-  /bin/** ix,
-  /usr/bin/** ix,
-  /usr/local/bin/** ix,
-  /run/{s6,s6-rc*,service}/** ix,
-  /package/** ix,
-  /command/** ix,
+  # s6-overlay boot chain and the base image's programs. Scripts need `r`
+  # as well as `ix` because the interpreter opens the file; see the Probe's
+  # profile for the full reasoning.
+  /init rix,
+  /bin/** rix,
+  /sbin/** rix,
+  /usr/bin/** rix,
+  /usr/sbin/** rix,
+  /usr/local/bin/** rix,
+  /run/{s6,s6-rc*,service}/** rix,
+  /package/** rix,
+  /command/** rix,
   /etc/services.d/** rwix,
   /etc/cont-init.d/** rwix,
   /etc/cont-finish.d/** rwix,
   /run/{,**} rwk,
-  /dev/tty rw,
-  /dev/pts/** rw,
-  /dev/ptmx rw,
-
-  # bashio and the shells' own files.
-  /usr/lib/bashio/** ix,
-  /tmp/** rwk,
+  /usr/lib/bashio/** rix,
+  /usr/lib/** rm,
+  /lib/** rm,
+  /usr/share/** r,
   /etc/** r,
-  /usr/** r,
-  /lib/** r,
-  /root/** rwk,
+  /tmp/ r,
+  /tmp/** rwk,
 
-  # The two places a session may write: the app's state (transcripts,
-  # history) and the configuration directory it was mapped for.
+  # Pseudo-terminals for ttyd and script.
+  /dev/tty rw,
+  /dev/ptmx rw,
+  /dev/pts/ r,
+  /dev/pts/** rw,
+  /dev/null rw,
+  /dev/urandom r,
+
+  # The shell's home, the app's state (transcripts, history, options), and
+  # the configuration directory it was mapped for. These are the only
+  # writable trees outside the s6 and /tmp paths above.
+  /root/ r,
+  /root/** rwk,
+  /data/ r,
   /data/** rwk,
+  /homeassistant/ r,
   /homeassistant/** rwk,
+  /config/ r,
   /config/** rwk,
-  /proc/** r,
+
+  # Own-process and system reads for bash, ls, and the readers.
+  @{PROC}/ r,
+  @{PROC}/** r,
+  /sys/ r,
   /sys/** r,
 }

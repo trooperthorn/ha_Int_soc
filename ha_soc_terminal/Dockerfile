@@ -10,14 +10,13 @@ RUN apk upgrade --no-cache \
     && apk add --no-cache \
         bash \
         bash-completion \
-        bat \
         coreutils \
+        less \
         nano \
         nano-syntax \
         ncurses \
         ttyd \
         util-linux-misc \
-        yq \
     && rm -f /usr/bin/tempio \
     # BusyBox applet names that open connections; the applets stay inside the
     # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools").

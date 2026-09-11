@@ -24,7 +24,7 @@ the phases, and the accepted limits are in the repository's
   directory mapped in is the Home Assistant configuration directory, at
   `/config` (a link to `/homeassistant`). There is no host network, no
   Docker socket, and no extra capability.
-- **Readable.** `bat` and `yq` read YAML and shell in colour, `nano` edits
+- **Readable.** `view` (nano read-only) reads YAML and shell in colour, `nano` edits
   with syntax highlighting and line numbers, `ls` and `grep` are coloured,
   and the prompt shows the last command's exit status in red when it was
   not zero.
