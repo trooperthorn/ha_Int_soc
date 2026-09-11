@@ -29,7 +29,14 @@ the phases, and the accepted limits are in the repository's
   and the prompt shows the last command's exit status in red when it was
   not zero.
 - **No token in the shell.** The Supervisor token is used by the app's own
-  start script and is not exported into your session.
+  start script and removed before the terminal server starts, so no session,
+  transcript or history file carries it. The `ha` command gets it back for
+  its own process only.
+- **Supervisor CLI.** `ha` (the official Supervisor CLI, pinned by checksum)
+  works in the shell: `ha hardware info`, `ha core logs`, `ha apps`, and the
+  rest. The app declares the `manager` role the Supervisor documents for
+  apps that run CLIs; Protection Mode stays on. `lscpu` and `lspci` are
+  present for hardware questions.
 
 ## What it is not
 

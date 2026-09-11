@@ -1,0 +1,18 @@
+# Grype ignore rules for the image scans in .github/workflows/security.yml.
+# Every entry is scoped to one file and one advisory and carries the date and
+# the reason; an entry with no reason is a lowered gate. See docs/decisions.md.
+ignore:
+  # 2026-09-11: the Supervisor CLI (home-assistant/cli 5.5.0, the newest
+  # release) is a static Go binary carrying golang.org/x/net and x/text at
+  # versions with fixed advisories. It is a client that only ever talks to
+  # http://supervisor on the internal network, run interactively by the
+  # session owner. Remove both entries when a CLI release ships newer
+  # modules (backlog.md).
+  - vulnerability: GO-2026-5942
+    package:
+      name: golang.org/x/net
+      location: /usr/bin/ha.real
+  - vulnerability: GO-2026-5970
+    package:
+      name: golang.org/x/text
+      location: /usr/bin/ha.real
