@@ -14,14 +14,12 @@ init: false
 startup: services
 # A terminal does not come up with the host; the owner starts it.
 boot: manual
-# Ingress is the phase 1 testing surface; phase 2 removes it and the HA SOC
-# integration becomes the only door (docs/TERMINAL-DESIGN.md).
-ingress: true
-ingress_port: 7681
-ingress_stream: true
-panel_icon: mdi:console-line
-panel_title: SOC Terminal
-panel_admin: true
+# No ingress: the HA SOC panel is the only door. ttyd listens on the
+# Supervisor's internal network with a per-install credential that the app
+# hands Core through ha_soc.pair_terminal (docs/TERMINAL-DESIGN.md).
+ingress: false
+# Needed for that one pairing call through the Supervisor's Core proxy.
+homeassistant_api: true
 # The only directory the terminal can reach outside its own /data.
 map:
   - homeassistant_config:rw

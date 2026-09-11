@@ -92,6 +92,20 @@
           "description": "Up to 200 records in sequence order."
         }
       }
+    },
+    "pair_terminal": {
+      "name": "Pair the Terminal app",
+      "description": "Called by the HA SOC Terminal app on start to hand HA SOC the credential its terminal server requires; accepted only from the Supervisor's context.",
+      "fields": {
+        "secret": {
+          "name": "Secret",
+          "description": "The app's per-install credential."
+        },
+        "version": {
+          "name": "Version",
+          "description": "The app's version, for the audit record."
+        }
+      }
     }
   }
 }

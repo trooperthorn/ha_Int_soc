@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Ingress removed. The terminal opens only from the HA SOC panel, behind
+  HA SOC's access tier, with every session's open and close audited. The
+  app generates a credential once, requires it on every connection, and
+  hands it to HA SOC through `ha_soc.pair_terminal` (declared
+  `homeassistant_api` for that one call). ttyd's built-in page is no
+  longer served to a browser; the panel's own terminal carries the theme.
 - Fixed ttyd failing to start with `Scandir on '/usr/lib' failed, errno 13`:
   the AppArmor profile granted file contents but not directory listings,
   which libwebsockets needs to find its event-loop plugin and which bash

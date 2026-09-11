@@ -137,3 +137,22 @@ poll_snmp_config:
       required: false
       selector:
         text:
+
+pair_terminal:
+  name: Pair the Terminal app
+  description: Called by the HA SOC Terminal app on start, through the Supervisor's Core proxy, to hand HA SOC the credential its terminal server requires. Accepted only from the Supervisor's own context; the first secret is pinned and a different one is refused and audited.
+  fields:
+    secret:
+      name: Secret
+      description: The app's per-install credential, 32 to 256 characters.
+      required: true
+      selector:
+        text:
+          type: password
+    version:
+      name: Version
+      description: The app's version, for the audit record.
+      required: false
+      example: "2026.09.11.1"
+      selector:
+        text:

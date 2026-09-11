@@ -180,6 +180,10 @@ Updating the panel still needs a browser reload, and no server-side action can a
 
 The Configure dialog (Settings, Devices and services, HA SOC, Configure) holds no settings. Submitting it reloads the config entry, which re-registers the panel with the bundle currently on disk and refreshes the token. That is the tool to use when the bundle changed without a Core restart, for example during frontend development; a HACS update still needs the Core restart for its Python code. Removing and re-adding the integration is never required for a panel update.
 
+## Terminal app
+
+Install HA SOC Terminal from the repository's app store entry and start it (it does not start on boot). Within a minute its log says "Paired with HA SOC"; until then the panel's Terminal workspace reports the app as not paired. Sessions open from that workspace; the app's own options (`session_recording`, `history_persist`, `idle_timeout_minutes`) are read back into the panel header. To re-pair after the app's data directory was wiped: clear the `terminal_secret` key (HA SOC Settings, or delete it from the private secret store) and restart the app; a pairing with a different secret is refused and audited rather than replacing the pinned one. Limits are constants in terminal.py: `MAX_SESSIONS_PER_USER` 1, `MAX_SESSIONS_TOTAL` 3, `MAX_SESSION_SECONDS` 28800, `MAX_INPUT_BYTES` 64 KiB, `CONNECT_TIMEOUT_SECONDS` 10.
+
 ## Probe add-on
 
 ### Privileges and options (config.yaml)

@@ -60,6 +60,9 @@ _CEF_EVENT_NAMES = {
     "ssh_device_command": "Device SSH Command Run",
     "ssh_key_change": "Device SSH Key Changed",
     "ssh_host_key_changed": "Device SSH Host Key Mismatch",
+    "terminal_session_open": "Terminal Session Opened",
+    "terminal_session_close": "Terminal Session Closed",
+    "terminal_pairing_rejected": "Terminal Pairing Rejected",
     "unifi_baseline_accepted": "UniFi Baseline Accepted",
     "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
@@ -95,7 +98,12 @@ _CEF_EVENT_NAMES = {
 }
 
 _CEF_VERY_HIGH_10 = {"audit_chain_reset"}
-_CEF_VERY_HIGH_9 = {"probe_auth_rejected", "external_audit_chain_break", "external_audit_rejected"}
+_CEF_VERY_HIGH_9 = {
+    "probe_auth_rejected",
+    "external_audit_chain_break",
+    "external_audit_rejected",
+    "terminal_pairing_rejected",
+}
 _CEF_HIGH_7 = {
     "dashboard_file_denied",
     "ssh_host_key_changed",
@@ -108,6 +116,8 @@ _CEF_MEDIUM_5 = {
     "dashboard_file_write",
     "ssh_device_command",
     "ssh_key_change",
+    "terminal_session_open",
+    "terminal_session_close",
     "unifi_config_drift",
     "unifi_baseline_accepted",
     "detection_status_changed",

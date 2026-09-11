@@ -48,15 +48,21 @@ the phases, and the accepted limits are in the repository's
 | `history_persist` | `true` | Keep bash history in `/data/.bash_history` across restarts, with timestamps. |
 | `idle_timeout_minutes` | `30` | Close a shell idle at its prompt for this long; `0` disables. A running program is not interrupted. |
 
-## Access today, and what changes next
+## Access
 
-In this release the terminal opens from the sidebar through ingress, which
-means any Home Assistant administrator can open it. That is the testing
-surface for the shell, theme, paste and scrollback. The next release moves
-the terminal into the HA SOC panel behind HA SOC's own access tier (owner
-only by default), removes ingress, and writes every session open and close
-into HA SOC's audit chain with the transcript hash. Until then, treat this
-app like the one it replaces: start it when you need it and stop it after.
+There is no sidebar entry and no ingress. The terminal opens from the HA
+SOC panel's Terminal workspace, behind HA SOC's own access tier: the account
+owner by default, or owner and administrators when HA SOC's access setting
+says so. Every open and close is written to HA SOC's audit log with the
+session's duration and byte counts.
+
+The app generates a credential once (`/data/ha_soc_terminal_secret`),
+requires it for every connection to its terminal server, and hands it to HA
+SOC through the `ha_soc.pair_terminal` service within a minute of starting;
+the app log says "Paired with HA SOC" when that succeeded. HA SOC keeps the
+first credential it sees. If the app is reinstalled and its data directory
+wiped, it generates a new one and HA SOC refuses it: forget the pairing in HA
+SOC's Settings, then restart the app.
 
 ## Known limits
 

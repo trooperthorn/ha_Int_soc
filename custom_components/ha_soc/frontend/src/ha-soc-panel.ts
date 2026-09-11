@@ -22,6 +22,7 @@ import "./views/entity-remap-view";
 import "./views/dashboard-files-view";
 import "./views/integration-security-view";
 import "./views/settings-view";
+import "./views/terminal-view";
 
 type TabId = SocTab;
 
@@ -482,6 +483,9 @@ export class HaSocPanel extends LitElement {
           .hass=${this.hass}
           .customizeMode=${cm}
         ></ha-soc-integration-security-view>`;
+      case "terminal":
+        // The WS commands enforce the tier; the view itself is the same for owner and admins.
+        return html`<ha-soc-terminal-view .hass=${this.hass}></ha-soc-terminal-view>`;
       case "settings":
         // Defense in depth: the owner-only WS commands would reject a non-owner anyway.
         if (!this._access?.is_owner) {

@@ -133,6 +133,13 @@ Network reports MACs as `aa:bb:cc:dd:ee:ff` and Protect uppercase without separa
 - Docker Engine API over `/var/run/docker.sock`: `POST http://localhost/containers/addon_<slug>/update` with `Memory`, `MemorySwap`, `NanoCpus` (memory bytes = memory_mb x 1048576, NanoCpus = cpus x 1e9). `0` means unlimited (the reset body also sends `CpuShares: 0`). `MemorySwap` must equal `Memory` or Docker rejects the update, and a cap the container can dodge by swapping is not a cap. HTTP 200 is applied, 404 container not found, curl `000` socket unreachable.
 - s6 behavior relied on: every service starts as root; SIGTERM on every stop, restart, and update; the finish script receives the exit code as `$1`; a non-zero exit is restarted once finish returns.
 
+## Terminal app
+
+- `ha_soc.pair_terminal` takes `{secret (32 to 256 characters), version?}` and answers `{accepted, pinned, rejected?}`. Accepted only from the Supervisor user's context; the first secret is pinned under the secret store's `terminal_secret` key; a later call with the same secret answers `pinned: false`, a different one is refused with `secret_mismatch` and audited as `terminal_pairing_rejected`.
+- The integration finds the app by slug suffix `_ha_soc_terminal` in `get_supervisor_info(hass)["addons"]` and reads `GET /addons/{slug}/info` for `hostname`, `state`, `version` and `options` (Core may read an app's options). It connects to `ws://{hostname}:7681/ws` with subprotocol `tty` and HTTP basic auth `hasoc:<secret>`.
+- ttyd wire protocol (1.7.7, verified against its client and by a container run): first client message is text JSON `{"AuthToken": "", "columns", "rows"}`; client to server binary frames are `0`+bytes (input) and `1`+JSON `{columns, rows}` (resize); server to client frames are `0`+bytes (output), `1`+text (title), `2`+JSON (preferences, ignored).
+- WebSocket commands and their shapes are in the phase 2 table of TERMINAL-DESIGN.md; bytes are base64 in both directions and the open result is repeated as the first `opened` event because the frontend's subscribe helper discards the result message.
+
 ## External audit ingest
 
 `ha_soc.ingest_audit` accepts hash-chained audit records from another tool on the

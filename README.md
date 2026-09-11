@@ -217,15 +217,18 @@ URL a parser actually needs stays visible.
   the gateway does not persist, the Suricata signature behind a block, is
   reported as absent rather than guessed; the verified facts are in
   [`docs/UNIFI-LOCAL-API-CONTRACT.md`](docs/UNIFI-LOCAL-API-CONTRACT.md).
-- **Terminal app (optional, phase 1)**: a recorded bash terminal that
-  executes only on this server, shipped as the `ha_soc_terminal` app in this
-  repository. One shell per connection with no tmux, so scrollback and paste
-  behave; every session written by util-linux `script` with its hash in an
-  index; `nano` with syntax files for YAML; no SSH client or
-  other network tool in the image, no host network, no Docker socket, and
-  the Supervisor token never exported into the shell. This release opens it
-  through ingress for testing; the next moves it behind HA SOC's own access
-  tier with audit records per session. Design, phases and accepted limits:
+- **Terminal**: a recorded bash terminal in the panel that executes only on
+  this server, in the optional `ha_soc_terminal` app from this repository.
+  The app has no ingress and no host port; the panel is the only door, behind
+  HA SOC's own access tier, and the integration holds the one connection to
+  the app's terminal server with a credential the app paired on first start.
+  One shell per session with no tmux, so scrollback and paste behave; every
+  session recorded by util-linux `script` in the app with its hash in an
+  index, and every open and close audited here with byte counts; xterm.js in
+  the panel with the palette built from the active HA theme; `nano` with
+  syntax files for YAML; no SSH client or other network tool in the image, no
+  host network, no Docker socket, and the Supervisor token never exported
+  into the shell. Design, phases and accepted limits:
   [`docs/TERMINAL-DESIGN.md`](docs/TERMINAL-DESIGN.md).
 - **UniFi configuration baseline**: an owner-accepted snapshot of the
   controller's networks, firewall zones, firewall policies, ACL rules and
@@ -430,6 +433,8 @@ custom_components/ha_soc/
 ├── ssh_devices.py  - read-only SSH collection from UniFi devices (Device SSH card)
 ├── unifi_ips.py  - gateway Threat Management posture and block log parsers, and
 │                           the IDS coverage findings (Network Security tab)
+├── terminal.py  - the Terminal app's pairing service and the per-session proxy to
+│                           its terminal server (Terminal workspace)
 ├── config_hygiene.py  - Spook-inspired broken-reference sweep (service/device/area/
 │                           floor/label/alert/notify-group/person/group/proximity/registry)
 ├── security_health.py  - lock/siren/valve entities + curated integration health (Dashboard)
