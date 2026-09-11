@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # Keep in lockstep with config.yaml's `version:` on every release.
-TERMINAL_VERSION="2026.09.10.3"
+TERMINAL_VERSION="2026.09.10.4"
 
 SESSIONS_DIR="/data/sessions"
 HISTORY_FILE="/data/.bash_history"
