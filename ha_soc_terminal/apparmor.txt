@@ -27,6 +27,18 @@ profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
   signal (send) set=(kill,term,int,hup,cont),
   signal (receive),
 
+  # sshd for the SFTP service (phase 3): privilege separation drops the
+  # network-facing process to the sshd account (setuid, setgid), the login
+  # is chrooted into /homeassistant (sys_chroot), and the chroot must be
+  # root-owned, which sshd checks with fowner. Nothing else is granted; in
+  # particular no net_bind_service, because 2222 is unprivileged, and no
+  # dac_override, so a file the root session cannot open stays closed.
+  capability setuid,
+  capability setgid,
+  capability sys_chroot,
+  capability fowner,
+  capability kill,
+
   # ttyd listens on TCP; bashio's curl reaches http://supervisor over TCP
   # and resolves it over UDP. No raw, no packet, no netlink.
   network inet tcp,
@@ -80,6 +92,10 @@ profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
   # writable trees outside the s6 and /tmp paths above.
   /root/ r,
   /root/** rwk,
+  # sshd's privilege-separation directory and its own re-exec.
+  /var/empty/ r,
+  /usr/sbin/sshd rix,
+  /usr/lib/ssh/** rix,
   /data/ r,
   /data/** rwk,
   /homeassistant/ r,

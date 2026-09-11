@@ -15,3 +15,14 @@ configuration:
     description: >-
       Close a shell that has sat at its prompt for this long. 0 disables the
       timeout. A running program is not interrupted.
+  sftp_enabled:
+    name: SFTP server
+    description: >-
+      Start the SFTP server for file transfer to the configuration directory
+      (key authentication only, no shell). A host port must also be mapped to
+      container port 2222 under Network.
+  sftp_authorized_keys:
+    name: SFTP authorized keys
+    description: >-
+      Public keys allowed to log in for SFTP, one per entry, in
+      authorized_keys line form (for example "ssh-ed25519 AAAA... name").

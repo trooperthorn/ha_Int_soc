@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added SFTP to the configuration directory (phase 3): OpenSSH sshd with
+  the shell removed, forced into internal-sftp inside a chroot of the
+  configuration directory, key authentication only, no forwarding or
+  tunnels. Off by default (`sftp_enabled`), keys from the new
+  `sftp_authorized_keys` option, container port 2222 unmapped until the
+  owner maps it. The host key is generated once into /data and its
+  fingerprint logged at every start.
 - Added the Supervisor `ha` CLI (5.5.0, checksum-pinned per architecture),
   `lscpu` and `lspci`. The app declares `hassio_api` with the `manager`
   role for the CLI; Protection Mode stays on.
