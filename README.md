@@ -85,6 +85,13 @@ URL a parser actually needs stays visible.
   across every dashboard, labeled `enforced` or `cosmetic` on every toggle -
   because `lovelace/config` has no permission check at all; visibility
   changes what a user's UI renders, never what their account can fetch.
+- **HACS Updates**: a card on the Integration Security view that forces HACS
+  to re-check every downloaded repository now and installs everything
+  pending in one confirmed, audited, owner-only action, through the same
+  `update.install` path a click on each update entity runs. HACS re-checks
+  on its own schedule, which made keeping many custom integrations current a
+  manual round of clicks. A Core restart is still needed afterwards, and the
+  card says so. HACS that is absent or rate-limited is reported as such.
 - **Integration Security Scanner**: static AST/regex analysis of every
   installed integration's source (core and custom) for security
   anti-patterns (disabled TLS verification, `shell=True` injection risk,

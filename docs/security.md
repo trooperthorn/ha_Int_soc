@@ -8,6 +8,8 @@ Trust boundaries, enforced versus cosmetic controls, secret handling, redaction 
 
 Every `ha_soc/*` command is gated by `@require_soc_access` (admin, plus HA SOC's own `access_level` setting), regardless of the panel being registered `require_admin=True`; panel visibility is cosmetic, so the real gate is the websocket layer. A security-posture tool is itself a high-value target, so it defaults to owner-only. The one exception is `ha_soc/access/info` (and `ha_soc/version/get`), which stay on plain `require_admin` so an admin locked out by `access_level` can still ask why, instead of every command silently returning unauthorized.
 
+`ha_soc/hacs/refresh_all` and `ha_soc/hacs/update_all` are `@require_owner`: the first spends GitHub API calls against HACS's rate-limit budget and the second installs code into this process. `ha_soc/hacs/status` is a read at the panel tier. Both writes are audited with their outcome lists.
+
 Above that baseline sit two owner-only tiers. `@require_owner` refuses a non-owner admin even under `owner_and_admins` (D-4, D-5, D-23):
 
 | Command group | Why owner-only | Enforced or cosmetic |

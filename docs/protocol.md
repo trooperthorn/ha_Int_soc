@@ -86,6 +86,12 @@ Each record's hash is `sha256(prev_hash + json.dumps(record, sort_keys=True))` o
 
 Verification result fields: `ok`, `records_checked`, `first_break_seq`, `reason`, `verified_from_seq`, `expired_through`, plus extras per failure. `reason` values: `corrupt_record`, `hash_mismatch`, `anchor_inconsistent`, `chain_reset` (with `store_head_seq` and `checkpoint_seq`, or `reset_seq`), and `tail_truncated` (with `checkpoint_seq` and `last_on_disk_seq`). The store mirror `audit_head` is `{seq, hash, at}`.
 
+## HACS
+
+- `ha_soc/hacs/status` returns `{available, reason, repositories, pending, last_refresh, last_update}`; each repository row is `{id, full_name, category, installed_version, available_version, pending_update, entity_id, entity_state, in_progress}` where `id` is HACS's numeric repository id as a string and `entity_id` is the HACS update entity (platform `hacs`, unique id equal to the repository id) or null. `available: false` carries the reason (not installed, disabled with HACS's reason, or not readable).
+- `ha_soc/hacs/refresh_all` (owner-only) returns `{refreshed: [full_name], failed: [{full_name, error}], pending_after: [full_name], at}`. `ha_soc/hacs/update_all` (owner-only) takes an optional `repository_ids` list and returns `{installed: [{full_name, from, to, entity_id}], skipped: [{full_name, reason}], failed: [{full_name, error}], at, restart_needed}`. Error code `hacs_unavailable` for both.
+- HACS facts relied on (hacs/integration at `adb7d83`, 2026-09-05): `hacs.repositories.list_downloaded`, `repository.update_repository(ignore_issues, force)`, `repository.pending_update`, `display_installed_version`, `display_available_version`, `hacs.data.async_write()`, `hacs.coordinators[category].async_update_listeners()`, `hacs.system.disabled`, and the update entity's `_attr_unique_id = str(repository.data.id)`.
+
 ## External APIs
 
 ### NVD
