@@ -1794,3 +1794,57 @@ export const resizeTerminal = (hass: HomeAssistant, sessionId: string, cols: num
 
 export const closeTerminal = (hass: HomeAssistant, sessionId: string) =>
   ws<{ closed: boolean }>(hass, { type: "ha_soc/terminal/close", session_id: sessionId });
+
+
+// --- HACS force refresh and update -------------------------------------------
+// Mirrors hacs_updates.py. Reads are panel-tier; refresh_all and update_all
+// are owner-only server-side regardless of the access setting.
+
+export interface HacsRepositoryRow {
+  id: string;
+  full_name: string;
+  category: string;
+  installed_version: string | null;
+  available_version: string | null;
+  pending_update: boolean;
+  entity_id: string | null;
+  entity_state: string | null;
+  in_progress: boolean;
+}
+
+export interface HacsStatus {
+  available: boolean;
+  // Why HACS could not be read: not installed, disabled, or not shaped as expected.
+  reason: string | null;
+  repositories: HacsRepositoryRow[];
+  pending: number;
+  last_refresh: string | null;
+  last_update: string | null;
+}
+
+export interface HacsRefreshResult {
+  refreshed: string[];
+  failed: { full_name: string; error: string }[];
+  pending_after: string[];
+  at: string;
+}
+
+export interface HacsUpdateResult {
+  installed: { full_name: string; from: string | null; to: string | null; entity_id: string }[];
+  skipped: { full_name: string; reason: string }[];
+  failed: { full_name: string; error: string }[];
+  at: string;
+  restart_needed: boolean;
+}
+
+export const fetchHacsStatus = (hass: HomeAssistant) =>
+  ws<HacsStatus>(hass, { type: "ha_soc/hacs/status" });
+
+export const hacsRefreshAll = (hass: HomeAssistant) =>
+  ws<HacsRefreshResult>(hass, { type: "ha_soc/hacs/refresh_all" });
+
+export const hacsUpdateAll = (hass: HomeAssistant, repositoryIds?: string[]) =>
+  ws<HacsUpdateResult>(hass, {
+    type: "ha_soc/hacs/update_all",
+    ...(repositoryIds ? { repository_ids: repositoryIds } : {}),
+  });

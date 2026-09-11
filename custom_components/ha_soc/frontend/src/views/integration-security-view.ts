@@ -17,6 +17,12 @@ import {
   fetchContainerResources,
   fetchWatchdogStatus,
   setWatchdog,
+  HacsStatus,
+  HacsRefreshResult,
+  HacsUpdateResult,
+  fetchHacsStatus,
+  hacsRefreshAll,
+  hacsUpdateAll,
 } from "../data/ha-soc-ws";
 
 const TIER_LABEL: Record<IntegrationTier, string> = {
@@ -67,12 +73,63 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   @state() private _watchdog: WatchdogStatus | null = null;
   @state() private _editSlug: string | null = null;
   @state() private _wdError: string | null = null;
+  @state() private _hacs: HacsStatus | null = null;
+  @state() private _hacsBusy: "refresh" | "update" | null = null;
+  @state() private _hacsError: string | null = null;
+  @state() private _hacsRefresh: HacsRefreshResult | null = null;
+  @state() private _hacsUpdate: HacsUpdateResult | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
     this._load();
     this._loadContainers();
     this._loadWatchdog();
+    this._loadHacs();
+  }
+
+  private async _loadHacs() {
+    try {
+      this._hacs = await fetchHacsStatus(this.hass);
+    } catch (err: any) {
+      this._hacs = null;
+      this._hacsError = err?.message ?? String(err);
+    }
+  }
+
+  private async _hacsRefreshAll() {
+    this._hacsBusy = "refresh";
+    this._hacsError = null;
+    this._hacsRefresh = null;
+    try {
+      this._hacsRefresh = await hacsRefreshAll(this.hass);
+      await this._loadHacs();
+    } catch (err: any) {
+      this._hacsError = err?.message ?? String(err);
+    } finally {
+      this._hacsBusy = null;
+    }
+  }
+
+  private async _hacsUpdateAll() {
+    const pending = this._hacs?.repositories.filter((r) => r.pending_update) ?? [];
+    if (!pending.length) return;
+    const names = pending.map((r) => `${r.full_name} (${r.installed_version ?? "?"} \u2192 ${r.available_version ?? "?"})`);
+    const ok = window.confirm(
+      `Install ${pending.length} HACS update(s) now?\n\n${names.join("\n")}\n\nIntegrations take effect after a Home Assistant restart. This is audited.`
+    );
+    if (!ok) return;
+    this._hacsBusy = "update";
+    this._hacsError = null;
+    this._hacsUpdate = null;
+    try {
+      this._hacsUpdate = await hacsUpdateAll(this.hass);
+      await this._loadHacs();
+      await this._load();
+    } catch (err: any) {
+      this._hacsError = err?.message ?? String(err);
+    } finally {
+      this._hacsBusy = null;
+    }
   }
 
   private async _loadWatchdog() {
@@ -301,6 +358,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
       </div>
         `,
       },
+      { id: "hacs_updates", title: "HACS Updates", render: () => this._renderHacs() },
       { id: "container_resources", title: "Container Resource Usage", render: () => this._renderContainers() },
     ];
     return this._renderSections(sections);
@@ -344,6 +402,85 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     disk: (r) => (r.blk_read == null && r.blk_write == null ? null : (r.blk_read ?? 0) + (r.blk_write ?? 0)),
     flags: (r) => r.flags.length,
   };
+
+  // Force HACS to re-check every downloaded repository now and install what is
+  // pending, instead of waiting for its own schedule and clicking through each
+  // update entity. Reads are for everyone on the panel; the two actions are
+  // owner-only server-side and audited.
+  private _renderHacs() {
+    const h = this._hacs;
+    const pending = h?.repositories.filter((r) => r.pending_update) ?? [];
+    const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
+    return html`
+      <div class="card">
+        <h3>HACS Updates</h3>
+        <p class="muted" style="margin-top:-4px;font-size:12.5px;">
+          HACS re-checks each repository on its own schedule. Refresh forces that check for
+          everything downloaded, right now; Install runs the same update as clicking each
+          update entity. Both are owner-only and audited.
+        </p>
+        ${this._hacsError ? html`<div class="alert">${this._hacsError}</div>` : nothing}
+        ${!h
+          ? html`<p class="muted">Loading HACS state\u2026</p>`
+          : !h.available
+            ? html`<p class="muted">${h.reason ?? "HACS is not available."}</p>`
+            : html`
+                <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
+                  <button class="ha-btn" ?disabled=${this._hacsBusy !== null} @click=${() => this._hacsRefreshAll()}>
+                    ${this._hacsBusy === "refresh" ? "Refreshing\u2026" : `Refresh all (${h.repositories.length})`}
+                  </button>
+                  <button class="ha-btn" ?disabled=${this._hacsBusy !== null || !pending.length} @click=${() => this._hacsUpdateAll()}>
+                    ${this._hacsBusy === "update" ? "Installing\u2026" : `Install ${pending.length} pending`}
+                  </button>
+                  <span class="muted" style="font-size:12px;">
+                    Last refresh ${fmt(h.last_refresh)} \u00b7 last install ${fmt(h.last_update)}
+                  </span>
+                </div>
+                ${this._hacsRefresh
+                  ? html`<p class="muted" style="font-size:12px;">
+                      Refreshed ${this._hacsRefresh.refreshed.length}${this._hacsRefresh.failed.length ? `, ${this._hacsRefresh.failed.length} failed` : ""};
+                      ${this._hacsRefresh.pending_after.length} update(s) pending.
+                    </p>`
+                  : nothing}
+                ${this._hacsUpdate
+                  ? html`<p class="muted" style="font-size:12px;">
+                      Installed ${this._hacsUpdate.installed.length}${this._hacsUpdate.failed.length ? `, ${this._hacsUpdate.failed.length} failed` : ""}${this._hacsUpdate.skipped.length ? `, ${this._hacsUpdate.skipped.length} skipped` : ""}.
+                      ${this._hacsUpdate.restart_needed ? html`<strong>Restart Home Assistant to load the new integration code.</strong>` : nothing}
+                    </p>`
+                  : nothing}
+                ${this._hacsUpdate?.failed.length
+                  ? html`<ul class="muted" style="font-size:12px;">${this._hacsUpdate.failed.map((f) => html`<li>${f.full_name}: ${f.error}</li>`)}</ul>`
+                  : nothing}
+                <div class="table-wrap">
+                  <table>
+                    <thead>
+                      <tr><th>Repository</th><th>Category</th><th>Installed</th><th>Available</th><th>State</th></tr>
+                    </thead>
+                    <tbody>
+                      ${h.repositories.map(
+                        (r) => html`
+                          <tr>
+                            <td class="mono">${r.full_name}</td>
+                            <td>${r.category}</td>
+                            <td class="mono">${r.installed_version ?? "\u2014"}</td>
+                            <td class="mono">${r.available_version ?? "\u2014"}</td>
+                            <td>
+                              ${r.in_progress
+                                ? html`<span class="pill medium"><span class="dot"></span>installing</span>`
+                                : r.pending_update
+                                  ? html`<span class="pill medium"><span class="dot"></span>update pending</span>`
+                                  : html`<span class="pill good"><span class="dot"></span>current</span>`}
+                            </td>
+                          </tr>
+                        `
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              `}
+      </div>
+    `;
+  }
 
   private _renderContainers() {
     const c = this._containers;

@@ -151,6 +151,8 @@ class StoreData(TypedDict):
     # {"host_keys": {host: {"fingerprint", "pinned_at"}}}: trust on first
     # use, and a later mismatch is refused rather than re-pinned.
     unifi_ssh: dict[str, Any]
+    # When the owner last forced a HACS refresh or update from the panel.
+    hacs_updates: dict[str, Any]
 
 
 def default_store_data() -> StoreData:
@@ -215,6 +217,7 @@ def default_store_data() -> StoreData:
         integration_security={"github": {}, "refreshed_at": None},
         unifi_ledger={"baseline": None, "history": []},
         unifi_ssh={"host_keys": {}},
+        hacs_updates={"last_refresh": None, "last_update": None},
         resource_watchdog={
             "enabled": False,
             "default_cpu_percent": 85,

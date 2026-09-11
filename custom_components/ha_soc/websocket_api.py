@@ -296,6 +296,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_reset_pairing,
         ws_integration_security_list,
         ws_integration_security_refresh,
+        ws_hacs_status,
+        ws_hacs_refresh_all,
+        ws_hacs_update_all,
         ws_containers_resources,
         ws_watchdog_status,
         ws_watchdog_set,
@@ -2434,3 +2437,63 @@ async def ws_terminal_close(hass: HomeAssistant, connection, msg: dict) -> None:
         connection.send_error(msg["id"], err.code, err.message)
         return
     connection.send_result(msg["id"], {"closed": True})
+
+
+# --- HACS force refresh and update -------------------------------------------
+#
+# Reading what HACS has downloaded is a panel read; forcing a refresh spends
+# GitHub API calls and installing updates changes the code that runs in this
+# process, so both writes are owner-only regardless of the access setting.
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/hacs/status"})
+@websocket_api.async_response
+async def ws_hacs_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .hacs_updates import async_hacs_status
+
+    runtime = _runtime(hass)
+    connection.send_result(msg["id"], await async_hacs_status(hass, runtime.store))
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/hacs/refresh_all"})
+@websocket_api.async_response
+async def ws_hacs_refresh_all(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .hacs_updates import HacsUnavailable, async_hacs_refresh_all
+
+    runtime = _runtime(hass)
+    try:
+        result = await async_hacs_refresh_all(
+            hass, runtime.store, runtime.audit, user_id=connection.user.id
+        )
+    except HacsUnavailable as err:
+        connection.send_error(msg["id"], "hacs_unavailable", str(err))
+        return
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/hacs/update_all",
+        vol.Optional("repository_ids"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=200)),
+    }
+)
+@websocket_api.async_response
+async def ws_hacs_update_all(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .hacs_updates import HacsUnavailable, async_hacs_update_all
+
+    runtime = _runtime(hass)
+    try:
+        result = await async_hacs_update_all(
+            hass,
+            runtime.store,
+            runtime.audit,
+            user_id=connection.user.id,
+            repository_ids=msg.get("repository_ids"),
+        )
+    except HacsUnavailable as err:
+        connection.send_error(msg["id"], "hacs_unavailable", str(err))
+        return
+    connection.send_result(msg["id"], result)
