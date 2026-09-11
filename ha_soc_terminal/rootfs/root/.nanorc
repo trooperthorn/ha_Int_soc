@@ -1,0 +1,9 @@
+## HA SOC Terminal nano defaults: YAML-friendly editing with syntax colour.
+include "/usr/share/nano/*.nanorc"
+set linenumbers
+set tabsize 2
+set tabstospaces
+set autoindent
+set softwrap
+set constantshow
+set mouse

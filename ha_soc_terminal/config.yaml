@@ -1,0 +1,35 @@
+name: HA SOC Terminal
+version: "2026.09.10.1"
+slug: ha_soc_terminal
+description: >-
+  A recorded bash terminal for the HA SOC integration that executes only on
+  this Home Assistant server. No SSH client, no host shell, no shared
+  sessions; every session is written to a transcript. Design and limits are
+  in docs/TERMINAL-DESIGN.md of the HA SOC repository.
+url: https://github.com/trooperthorn/ha_Int_soc
+arch:
+  - aarch64
+  - amd64
+init: false
+startup: services
+# A terminal does not come up with the host; the owner starts it.
+boot: manual
+# Ingress is the phase 1 testing surface; phase 2 removes it and the HA SOC
+# integration becomes the only door (docs/TERMINAL-DESIGN.md).
+ingress: true
+ingress_port: 7681
+ingress_stream: true
+panel_icon: mdi:console-line
+panel_title: SOC Terminal
+panel_admin: true
+# The only directory the terminal can reach outside its own /data.
+map:
+  - homeassistant_config:rw
+options:
+  session_recording: true
+  history_persist: true
+  idle_timeout_minutes: 30
+schema:
+  session_recording: bool
+  history_persist: bool
+  idle_timeout_minutes: int(0,1440)

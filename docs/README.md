@@ -17,6 +17,7 @@ One line per document, stating what it is responsible for, so a reader knows whe
 - `SNMPV3.md`: the SNMPv3 telemetry export served by the Probe (security contract, exposed MIB objects, scope boundary, configuration and validation steps, agent and wire facts).
 - `UNIFI-LOCAL-API-CONTRACT.md`: the verified UniFi Network and Protect Local Integration API contract (artifact hashes, bases, corrected calls, Firewall Policies versus ACL Rules, verified response shapes).
 - `OPERATIONS-NOTES.md`: Supervisor transport quirks discovered during integration (the journald log gateway's missing Range header and ANSI output).
+- `TERMINAL-DESIGN.md`: the HA SOC Terminal app and its planned panel integration (why not app-ssh, goals and non-goals, the phase 1 app's choices and residuals, the phase 2 WebSocket contract and target model, phase 3 SFTP, verification list).
 - `RESOURCE-WATCHDOG.md`: the two-layer container resource watchdog summary (soft Supervisor-native actions, hard Docker caps via the Probe).
 - `THREAT-MODEL.md`: assets, trust boundaries, the principal threat table with controls and residual actions, mechanism notes, and assumptions.
 

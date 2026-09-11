@@ -70,6 +70,10 @@ edits = [
      r'(^version:\s*")[^"]*(")', rf'\g<1>{version}\g<2>'),
     ("ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run",
      r'(SCANNER_VERSION=")[^"]*(")', rf'\g<1>{version}\g<2>'),
+    ("ha_soc_terminal/config.yaml",
+     r'(^version:\s*")[^"]*(")', rf'\g<1>{version}\g<2>'),
+    ("ha_soc_terminal/rootfs/etc/services.d/ha_soc_terminal/run",
+     r'(TERMINAL_VERSION=")[^"]*(")', rf'\g<1>{version}\g<2>'),
 ]
 
 for path, pattern, repl in edits:
@@ -93,7 +97,9 @@ fi
 python3 -m py_compile custom_components/ha_soc/*.py
 
 git add custom_components/ha_soc/manifest.json ha_soc_probe/config.yaml \
-    ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
+    ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run \
+    ha_soc_terminal/config.yaml \
+    ha_soc_terminal/rootfs/etc/services.d/ha_soc_terminal/run
 git commit -m "Release ${VERSION}"
 echo "Pushing release branch ${branch}…"
 git push --set-upstream origin "${branch}"

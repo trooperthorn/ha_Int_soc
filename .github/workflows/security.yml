@@ -74,7 +74,35 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check shell programs
         # with-contenv shebang, so the shell is declared; SC1091 skips the /usr/lib source that only exists in the image.
-        run: find ha_soc_probe/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' \) -print0 | xargs -0 shellcheck --shell=bash --exclude=SC1091
+        run: find ha_soc_probe/rootfs ha_soc_terminal/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' -o -path '*/usr/local/bin/*' \) -print0 | xargs -0 shellcheck --shell=bash --exclude=SC1091
+
+  terminal-image-security:
+    name: Terminal image build and local-only check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build the actual Terminal image
+        run: docker build --tag local/ha-soc-terminal:${{ github.sha }} ha_soc_terminal
+      # The design's "local only" claim is what the image ships; assert it on every build (docs/TERMINAL-DESIGN.md).
+      - name: Verify the shell, the recorder, the readers, and the absent network tools
+        run: |
+          img=local/ha-soc-terminal:${{ github.sha }}
+          for present in ttyd bash script bat yq nano dircolors; do
+            docker run --rm --entrypoint /bin/sh "$img" -c "command -v $present"
+          done
+          for absent in ssh scp sftp sshd mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
+            docker run --rm --entrypoint /bin/sh "$img" -c "! command -v $absent"
+          done
+          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open'
+      - name: Scan installed OS packages
+        uses: anchore/scan-action@27805bf3b4e84b4a5c980df22ed233c00390a439 # v7.4.2
+        with:
+          image: local/ha-soc-terminal:${{ github.sha }}
+          fail-build: true
+          severity-cutoff: high
+          only-fixed: false
+          output-format: table
+          grype-version: v0.110.0
 
   probe-image-security:
     name: Probe image build and vulnerability scan

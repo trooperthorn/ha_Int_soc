@@ -1,0 +1,66 @@
+# AppArmor profile for the HA SOC Terminal add-on.
+#
+# Same contract as ha_soc_probe/apparmor.txt (developers.home-assistant
+# docs/apps/presentation.md, "AppArmor"): a file named apparmor.txt beside
+# config.yaml is loaded by the Supervisor as the container's profile, named
+# after the slug. Not yet loaded on a live Supervisor; the verification list
+# in docs/TERMINAL-DESIGN.md carries that step.
+#
+# What this profile is FOR: a terminal legitimately reads, writes and
+# executes broadly inside its own container and inside /homeassistant, so
+# file access is granted broadly, as the documented example does. What it
+# withholds is capability and network: no capability at all beyond what the
+# base image's s6 needs, and TCP only, for the ttyd listener and the start
+# script's call to http://supervisor. There is no raw socket and no netlink,
+# so nothing in this shell can sniff or reshape the network even if a tool
+# for that were ever added to the image.
+
+#include <tunables/global>
+
+profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  # s6 sends the service TERM on stop; the wrapper's trap runs at exit.
+  signal (send) set=(kill,term,int,hup,cont),
+  signal (receive),
+
+  # ttyd listens on TCP; bashio's curl reaches http://supervisor over TCP
+  # and resolves it over UDP.
+  network inet tcp,
+  network inet6 tcp,
+  network inet udp,
+  network inet6 udp,
+  unix,
+
+  # s6-overlay tree, per the documented example.
+  /init ix,
+  /bin/** ix,
+  /usr/bin/** ix,
+  /usr/local/bin/** ix,
+  /run/{s6,s6-rc*,service}/** ix,
+  /package/** ix,
+  /command/** ix,
+  /etc/services.d/** rwix,
+  /etc/cont-init.d/** rwix,
+  /etc/cont-finish.d/** rwix,
+  /run/{,**} rwk,
+  /dev/tty rw,
+  /dev/pts/** rw,
+  /dev/ptmx rw,
+
+  # bashio and the shells' own files.
+  /usr/lib/bashio/** ix,
+  /tmp/** rwk,
+  /etc/** r,
+  /usr/** r,
+  /lib/** r,
+  /root/** rwk,
+
+  # The two places a session may write: the app's state (transcripts,
+  # history) and the configuration directory it was mapped for.
+  /data/** rwk,
+  /homeassistant/** rwk,
+  /config/** rwk,
+  /proc/** r,
+  /sys/** r,
+}

@@ -35,6 +35,15 @@ def _version_fixture(tmp_path: Path, version: str = "2026.09.02.2") -> Path:
         f'#!/usr/bin/with-contenv bashio\nSCANNER_VERSION="{version}"\n',
         encoding="utf-8",
     )
+    terminal = repository / "ha_soc_terminal/config.yaml"
+    terminal_run = repository / "ha_soc_terminal/rootfs/etc/services.d/ha_soc_terminal/run"
+    terminal.parent.mkdir(parents=True)
+    terminal_run.parent.mkdir(parents=True)
+    terminal.write_text(f'name: HA SOC Terminal\nversion: "{version}"\n', encoding="utf-8")
+    terminal_run.write_text(
+        f'#!/usr/bin/with-contenv bashio\nTERMINAL_VERSION="{version}"\n',
+        encoding="utf-8",
+    )
     return repository
 
 
