@@ -27,11 +27,22 @@ hassio_role: manager
 # The only directory the terminal can reach outside its own /data.
 map:
   - homeassistant_config:rw
+# SFTP to the configuration directory. Disabled (null) until the owner maps
+# a host port in the app's network settings and turns sftp_enabled on.
+ports:
+  2222/tcp: null
+ports_description:
+  2222/tcp: SFTP to the configuration directory (key auth only, no shell). Leave empty to keep it off.
 options:
   session_recording: true
   history_persist: true
   idle_timeout_minutes: 30
+  sftp_enabled: false
+  sftp_authorized_keys: []
 schema:
   session_recording: bool
   history_persist: bool
   idle_timeout_minutes: int(0,1440)
+  sftp_enabled: bool
+  sftp_authorized_keys:
+    - str

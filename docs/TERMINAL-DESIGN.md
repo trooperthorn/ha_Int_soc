@@ -2,8 +2,8 @@
 
 Status: phase 1 shipped as the `ha_soc_terminal` app (2026-09-10); phase 2,
 the panel gate and proxy, shipped and verified live 2026-09-11 with the
-`self` target only;
-phase 3 and the `core` and `addon` targets are design only. This document owns the terminal surface: what it is,
+`self` target only; phase 3, SFTP, shipped 2026-09-11; the `core` and
+`addon` targets are design only. This document owns the terminal surface: what it is,
 where it executes, who may open it, what it records, and what it can never do.
 The dated decisions behind it are in `decisions.md` under "Terminal".
 
@@ -40,8 +40,8 @@ a tmux pane, and paste goes through tmux's mouse mode.
 Goals: an interactive bash terminal in the HA SOC panel that executes only on
 the local Home Assistant server, is opened only by the owner (or admins, by
 setting), records every session tamper-evidently, follows the panel's theme,
-and reads YAML and shell comfortably. Later, SFTP to the config directory
-under the same gate.
+and reads YAML and shell comfortably, plus SFTP to the config directory for
+file transfer, off until the owner opens it.
 
 Non-goals: SSH to any other host from inside the terminal; a host (HAOS)
 root shell; a shell inside the Core container's Python process; session
@@ -169,14 +169,51 @@ light-mode neutral set) and rebuilds it whenever `hass` changes, keeps a
 5,000-line scrollback, and ends the session when the view is left. A
 Settings override for the palette is not built.
 
-## SFTP (phase 3, design)
+## SFTP (phase 3, shipped)
 
-sshd from app-ssh's hardened `sshd_config` (modern ciphers, no forwarding, key
-auth only, root login off) with only the `internal-sftp` subsystem and a
-`ChrootDirectory` of `/homeassistant`, on a port the owner opens explicitly,
-off by default. No shell over SSH: the terminal is the panel's. Keys come from
-the same secret store path as Device SSH, and every login is audited from
-sshd's journald lines through the Logs tab's Supervisor gateway.
+A second s6 service in the app runs OpenSSH's sshd for file transfer only.
+Its `sshd_config` takes app-ssh's hardening (modern ciphers, MACs and key
+exchange, no TCP, agent, stream-local or X11 forwarding, no tunnels, key
+authentication only, `MaxAuthTries 4`, `LoginGraceTime 60`) and removes the
+shell: `Subsystem sftp internal-sftp`, `ForceCommand internal-sftp -l INFO`,
+`PermitTTY no`, and `ChrootDirectory /homeassistant`, so a login sees the
+configuration directory as `/` and nothing else. Verified in a container on
+2026-09-11: `get` and `put` work, `ssh ... id` answers "This service allows
+sftp connections only", a `-L` forward is refused, and every accepted key is
+logged with its fingerprint.
+
+Two departures from the earlier design paragraph, each for a reason:
+
+- The login is `root`, with `PermitRootLogin prohibit-password`, not a
+  dedicated account. The configuration directory and everything in it are
+  root-owned on Home Assistant OS, so a non-root SFTP user could read but
+  never write; app-ssh reaches the same conclusion ("SFTP only works if the
+  user is root"). What limits root here is the forced command and the
+  chroot, not the account.
+- The authorized public keys are an app option (`sftp_authorized_keys`),
+  not a Home Assistant secret. A public key is not a secret, sshd is the
+  app's process, and the integration has no channel into the app's files
+  except options. The service writes them to `/data/sftp_authorized_keys`
+  (0600) on every start, so a removed key stops working at the next
+  restart.
+
+Off by default twice over: `sftp_enabled` is false, and the container port
+2222 is mapped to no host port until the owner sets one in the app's network
+settings. With the option on and no key that parses as a public key, the
+service idles and says why rather than starting an sshd nobody can log in
+to. The Ed25519 host key is generated once into `/data` and its fingerprint
+is logged at every start so the owner can pin it. sshd runs in the foreground
+with its log on stderr, so logins, refusals and the fingerprint land in the
+app log the HA SOC Logs tab reads; turning accepted-key lines into audit
+records is in the backlog.
+
+AppArmor grants sshd `setuid`, `setgid` (privilege separation to the `sshd`
+account), `sys_chroot` and `fowner` (the chroot and its ownership check),
+`kill`, `/var/empty/`, and execution under `/usr/lib/ssh`; no
+`net_bind_service` (2222 is unprivileged) and no `dac_override`. The image
+adds `openssh-server` only: `ssh`, `scp` and `sftp` clients stay absent and
+CI asserts it, along with an `sshd -t` of the shipped config and a check that
+it resolves to the SFTP-only settings.
 
 ## Verification list
 
@@ -215,3 +252,12 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       `terminal_session_close` audit record. Phase 2 is closed.
 - [ ] ttyd `-a` URL arguments reach the wrapper (needed only for the `core`
       and `addon` targets; unverified).
+- [x] SFTP in a container (2026-09-11): host key generated, `get` and `put`
+      through the chroot, shell and port forward refused, accepted keys
+      logged with fingerprints, `sshd -t` clean, config resolves to the six
+      SFTP-only settings.
+- [ ] SFTP on the live install: `/homeassistant` passes sshd's chroot
+      ownership check (root-owned, not group or world writable; a failure
+      logs "bad ownership or modes for chroot directory"), the mapped port
+      answers, and a client can `get` and `put` under the configuration
+      directory.

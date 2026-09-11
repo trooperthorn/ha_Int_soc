@@ -184,6 +184,8 @@ The Configure dialog (Settings, Devices and services, HA SOC, Configure) holds n
 
 Install HA SOC Terminal from the repository's app store entry and start it (it does not start on boot). Within a minute its log says "Paired with HA SOC"; until then the panel's Terminal workspace reports the app as not paired. Sessions open from that workspace; the app's own options (`session_recording`, `history_persist`, `idle_timeout_minutes`) are read back into the panel header. To re-pair after the app's data directory was wiped: clear the `terminal_secret` key (HA SOC Settings, or delete it from the private secret store) and restart the app; a pairing with a different secret is refused and audited rather than replacing the pinned one. Limits are constants in terminal.py: `MAX_SESSIONS_PER_USER` 1, `MAX_SESSIONS_TOTAL` 3, `MAX_SESSION_SECONDS` 28800, `MAX_INPUT_BYTES` 64 KiB, `CONNECT_TIMEOUT_SECONDS` 10.
 
+SFTP: set `sftp_authorized_keys` and `sftp_enabled` in the app's options, map a host port to container port 2222 under the app's Network settings, restart the app, and read the host key fingerprint from its log. If the log says "bad ownership or modes for chroot directory", the configuration directory is not root-owned or is group or world writable, which sshd refuses by design; fix the ownership on the host rather than the config. Client: `sftp -P <host port> root@<home assistant address>`.
+
 ## Probe add-on
 
 ### Privileges and options (config.yaml)

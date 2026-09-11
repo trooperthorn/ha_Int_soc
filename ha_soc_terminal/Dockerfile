@@ -24,6 +24,7 @@ RUN apk upgrade --no-cache \
         nano \
         nano-syntax \
         ncurses \
+        openssh-server \
         pciutils \
         ttyd \
         util-linux-misc \
@@ -48,8 +49,11 @@ COPY rootfs /
 RUN chmod a+x \
     /etc/services.d/ha_soc_terminal/run \
     /etc/services.d/ha_soc_terminal/finish \
+    /etc/services.d/ha_soc_terminal_sftp/run \
+    /etc/services.d/ha_soc_terminal_sftp/finish \
     /usr/local/bin/ha_soc_term_open \
-    /usr/local/bin/ha
+    /usr/local/bin/ha \
+    && chmod 0600 /etc/ssh/sshd_config
 
 LABEL \
     org.opencontainers.image.title="HA SOC Terminal" \

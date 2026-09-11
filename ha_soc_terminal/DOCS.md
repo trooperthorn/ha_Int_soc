@@ -43,8 +43,9 @@ the phases, and the accepted limits are in the repository's
 - Not a host shell. Home Assistant OS documents its own root path: debug SSH
   on port 22222 with an `authorized_keys` file on a USB partition named
   `CONFIG`.
-- Not an SSH server. There is no port to open. SFTP to the configuration
-  directory is a planned, separately enabled feature.
+- Not an SSH shell server. SFTP to the configuration directory is
+  available, off by default, key-only, with no shell and no forwarding;
+  see "SFTP" below.
 - Not shared. Two people opening the terminal get two shells.
 
 ## Options
@@ -54,6 +55,31 @@ the phases, and the accepted limits are in the repository's
 | `session_recording` | `true` | Write the transcript, timing file, and index line for every session. |
 | `history_persist` | `true` | Keep bash history in `/data/.bash_history` across restarts, with timestamps. |
 | `idle_timeout_minutes` | `30` | Close a shell idle at its prompt for this long; `0` disables. A running program is not interrupted. |
+| `sftp_enabled` | `false` | Start the SFTP server. Also needs a host port mapped to container port 2222 in the app's network settings. |
+| `sftp_authorized_keys` | `[]` | Public keys allowed to log in for SFTP, one per entry, in `authorized_keys` line form. |
+
+## SFTP
+
+File transfer to the configuration directory over SFTP, for editors and
+sync tools that speak it. It is OpenSSH's sshd with the shell removed: every
+login is forced into the built-in SFTP server inside a chroot of the
+configuration directory, so a client sees that directory as `/` and nothing
+else. No password login, no TCP or agent forwarding, no tunnels, no TTY.
+
+To turn it on: add your public key to `sftp_authorized_keys`, set
+`sftp_enabled` to true, map a host port to container port 2222 under the
+app's Network settings, and start or restart the app. The app log prints the
+host key fingerprint at every start; pin it in your client. Then, for a host
+port of 2222:
+
+```bash
+sftp -P 2222 root@homeassistant.local
+```
+
+The login is `root` because the configuration directory is root-owned and a
+non-root account could not write to it; the forced command and the chroot are
+what limit the session. Every accepted key and every refusal is in the app
+log with the key's fingerprint.
 
 ## Access
 
