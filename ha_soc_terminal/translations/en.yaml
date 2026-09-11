@@ -1,0 +1,17 @@
+configuration:
+  session_recording:
+    name: Record sessions
+    description: >-
+      Write every terminal session to a transcript with timing under the
+      app's data directory and record its hash. On by default; the panel
+      shows the state in the terminal header.
+  history_persist:
+    name: Keep shell history
+    description: >-
+      Keep bash history across restarts and updates of the app, with a
+      timestamp on every line.
+  idle_timeout_minutes:
+    name: Idle timeout (minutes)
+    description: >-
+      Close a shell that has sat at its prompt for this long. 0 disables the
+      timeout. A running program is not interrupted.

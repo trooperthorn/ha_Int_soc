@@ -63,7 +63,7 @@ jobs:
           fi
 
           if git diff --quiet "$LATEST_TAG"..HEAD -- \
-            custom_components/ha_soc ha_soc_probe; then
+            custom_components/ha_soc ha_soc_probe ha_soc_terminal; then
             echo "No release-bearing changes exist after $LATEST_TAG."
             printf 'prepare=false\n' >> "$GITHUB_OUTPUT"
             exit 0
@@ -136,7 +136,9 @@ jobs:
           git add -- \
             custom_components/ha_soc/manifest.json \
             ha_soc_probe/config.yaml \
-            ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run
+            ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run \
+            ha_soc_terminal/config.yaml \
+            ha_soc_terminal/rootfs/etc/services.d/ha_soc_terminal/run
           git commit -m "Release v${VERSION}"
 
           if [ -z "$REMOTE_SHA" ]; then

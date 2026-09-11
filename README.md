@@ -217,6 +217,16 @@ URL a parser actually needs stays visible.
   the gateway does not persist, the Suricata signature behind a block, is
   reported as absent rather than guessed; the verified facts are in
   [`docs/UNIFI-LOCAL-API-CONTRACT.md`](docs/UNIFI-LOCAL-API-CONTRACT.md).
+- **Terminal app (optional, phase 1)**: a recorded bash terminal that
+  executes only on this server, shipped as the `ha_soc_terminal` app in this
+  repository. One shell per connection with no tmux, so scrollback and paste
+  behave; every session written by util-linux `script` with its hash in an
+  index; `bat`, `yq` and `nano` with syntax files for YAML; no SSH client or
+  other network tool in the image, no host network, no Docker socket, and
+  the Supervisor token never exported into the shell. This release opens it
+  through ingress for testing; the next moves it behind HA SOC's own access
+  tier with audit records per session. Design, phases and accepted limits:
+  [`docs/TERMINAL-DESIGN.md`](docs/TERMINAL-DESIGN.md).
 - **UniFi configuration baseline**: an owner-accepted snapshot of the
   controller's networks, firewall zones, firewall policies, ACL rules and
   devices, with per-section drift against it (NIST 800-53 CM-6). Rule
@@ -321,8 +331,8 @@ placeholder instead, that's expected, not a bug here.
 Calendar versioning, displayed as `vYYYY.MM.DD.V`: the release date plus a
 same-day revision counter starting at 1 (e.g. the first release on
 August 30, 2026 is `v2026.08.30.1`; a second release that same day is
-`v2026.08.30.2`). One version number covers the integration and the
-optional HA SOC Probe add-on together, so a release identifier is always
+`v2026.08.30.2`). One version number covers the integration, the
+optional HA SOC Probe add-on, and the optional HA SOC Terminal app together, so a release identifier is always
 unambiguous and directly comparable across the whole project, never a
 pre-1.0 `0.x.y` number implying "still in development."
 

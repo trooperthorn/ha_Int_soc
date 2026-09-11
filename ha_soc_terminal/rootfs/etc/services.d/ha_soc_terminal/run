@@ -1,0 +1,50 @@
+#!/usr/bin/with-contenv bashio
+# HA SOC Terminal: one ttyd, one PTY per connection, every connection through the session wrapper.
+# No tmux, so nothing is shared between connections; see docs/TERMINAL-DESIGN.md.
+set -euo pipefail
+
+# Keep in lockstep with config.yaml's `version:` on every release.
+TERMINAL_VERSION="2026.09.10.1"
+
+SESSIONS_DIR="/data/sessions"
+HISTORY_FILE="/data/.bash_history"
+
+mkdir -p "${SESSIONS_DIR}"
+chmod 700 "${SESSIONS_DIR}"
+
+# Options reach the wrapper and the shell as environment only; SUPERVISOR_TOKEN
+# is deliberately not exported into the session environment.
+HA_SOC_TERM_RECORD="$(bashio::config 'session_recording')"
+HA_SOC_TERM_HISTORY="$(bashio::config 'history_persist')"
+HA_SOC_TERM_IDLE_MINUTES="$(bashio::config 'idle_timeout_minutes')"
+export HA_SOC_TERM_RECORD HA_SOC_TERM_HISTORY HA_SOC_TERM_IDLE_MINUTES
+export HA_SOC_TERM_VERSION="${TERMINAL_VERSION}"
+export HA_SOC_TERM_SESSIONS_DIR="${SESSIONS_DIR}"
+export HA_SOC_TERM_HISTORY_FILE="${HISTORY_FILE}"
+
+if bashio::var.true "${HA_SOC_TERM_HISTORY}"; then
+    touch "${HISTORY_FILE}"
+    chmod 600 "${HISTORY_FILE}"
+fi
+
+# The Supervisor maps the configuration directory at /homeassistant; /config is
+# the name every guide uses.
+[ -e /config ] || ln -s /homeassistant /config
+
+bashio::log.info "HA SOC Terminal ${TERMINAL_VERSION}: recording=${HA_SOC_TERM_RECORD}, history=${HA_SOC_TERM_HISTORY}, idle=${HA_SOC_TERM_IDLE_MINUTES}m"
+
+# Client options: a fixed title, no leave-page alert, and a palette that
+# approximates the HA SOC panel until the panel's own xterm.js component
+# carries the real theme (phase 2).
+THEME='{"background":"#1c2128","foreground":"#e6edf3","cursor":"#58a6ff","selectionBackground":"#264f78","black":"#484f58","red":"#ff7b72","green":"#3fb950","yellow":"#d29922","blue":"#58a6ff","magenta":"#bc8cff","cyan":"#39c5cf","white":"#b1bac4","brightBlack":"#6e7681","brightRed":"#ffa198","brightGreen":"#56d364","brightYellow":"#e3b341","brightBlue":"#79c0ff","brightMagenta":"#d2a8ff","brightCyan":"#56d4dd","brightWhite":"#f0f6fc"}'
+
+cd /root
+
+exec ttyd \
+    --port 7681 \
+    --writable \
+    -t titleFixed="HA SOC Terminal" \
+    -t disableLeaveAlert=true \
+    -t fontSize=14 \
+    -t "theme=${THEME}" \
+    /usr/local/bin/ha_soc_term_open
