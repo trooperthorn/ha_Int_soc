@@ -315,17 +315,22 @@ class TerminalSessions:
         """
         session = async_get_clientsession(self._hass)
         url = f"ws://{host}:{TTYD_PORT}/ws"
+        # ttyd checks the credential twice: HTTP basic auth on the upgrade,
+        # and the same base64 "user:password" again as AuthToken in the
+        # first message. An empty AuthToken is a policy-violation close
+        # (1008) right after the handshake; verified against ttyd 1.7.7.
+        token = base64.b64encode(f"{TTYD_USER}:{secret}".encode("utf-8")).decode("ascii")
         try:
             async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
                 ws = await session.ws_connect(
                     url,
                     protocols=("tty",),
-                    auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                    headers={"Authorization": f"Basic {token}"},
                     heartbeat=30,
                 )
         except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
             raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
-        await ws.send_str(json.dumps({"AuthToken": "", "columns": cols, "rows": rows}))
+        await ws.send_str(json.dumps({"AuthToken": token, "columns": cols, "rows": rows}))
         return ws
 
     async def _read(self, session: TerminalSession) -> None:

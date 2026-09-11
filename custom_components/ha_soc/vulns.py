@@ -207,7 +207,7 @@ class DeviceVulnerabilityTracker:
         registry = dr.async_get(self.hass)
         physical_devices = [
             device
-            for device in registry.devices.values()
+            for device in registry.devices
             if device.entry_type != dr.DeviceEntryType.SERVICE
         ]
         devices_by_id = {device.id: device for device in physical_devices}
@@ -243,7 +243,7 @@ class DeviceVulnerabilityTracker:
         entity_registry = er.async_get(self.hass)
         physical_devices = [
             device
-            for device in registry.devices.values()
+            for device in registry.devices
             if device.entry_type != dr.DeviceEntryType.SERVICE
         ]
 

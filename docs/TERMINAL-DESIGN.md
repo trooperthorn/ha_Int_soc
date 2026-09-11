@@ -139,7 +139,7 @@ slug suffix, reads `GET /addons/<slug>/info` for `hostname`, `state` and
 `options`, and connects to `ws://<hostname>:7681/ws` with subprotocol `tty`
 and basic auth `hasoc:<secret>`. The ttyd wire protocol is one command byte
 then the payload in each direction: the first client message is JSON
-`{AuthToken, columns, rows}`, then `0`+bytes is input, `1`+JSON is resize,
+`{AuthToken, columns, rows}` with `AuthToken` the base64 credential again (an empty token is closed with 1008), then `0`+bytes is input, `1`+JSON is resize,
 and from ttyd `0`+bytes is output, `1`+text is a title, `2`+JSON preferences
 are ignored. The per-connection target as a ttyd URL argument stays design
 with the `core` and `addon` targets.
@@ -202,11 +202,15 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       and `-b/--base-path` (read from `ttyd --help` in the image), and with a
       credential set answers 401 to anonymous HTTP and WebSocket requests
       (verified in a container).
-- [ ] Phase 2 on the live install: the app pairs within a minute of
-      starting (its log says "Paired with HA SOC"), the app's Supervisor
-      `hostname` is reachable from Core on 7681, a session opens from the
-      panel's Terminal workspace, paste and scrollback behave in xterm.js,
-      the theme follows light and dark, and closing the view leaves a
-      `terminal_session_close` audit record.
+- [x] Phase 2 on the live install, first pass 2026-09-11: the app paired,
+      Core reached the app's hostname on 7681, and the panel received the
+      `opened` event, so the gate, pairing and proxy work end to end. The
+      session then closed at once: ttyd requires the credential a second
+      time as `AuthToken` in the handshake and the proxy sent it empty.
+      Fixed the same day.
+- [ ] Phase 2 on the live install, second pass: a session stays open,
+      paste and scrollback behave in xterm.js, the theme follows light and
+      dark, and closing the view leaves a `terminal_session_close` audit
+      record.
 - [ ] ttyd `-a` URL arguments reach the wrapper (needed only for the `core`
       and `addon` targets; unverified).
