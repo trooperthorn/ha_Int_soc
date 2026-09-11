@@ -174,6 +174,9 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       `ix` without `r` on the s6 boot chain, fixed 2026-09-10. The second
       profile denied `ln -s /homeassistant /config` at the root, which is
       correct: the root stays read-only and the link moved to `~/config`.
+      The third
+      denied libwebsockets' scan of `/usr/lib` for its event-loop plugin:
+      file rules do not grant directory listings, so `/**/ r` was added.
       Still open: a normal session with no denials in
       `journalctl _TRANSPORT="audit"`.
 - [ ] Phase 2: the app's Supervisor `hostname` is reachable from Core on
