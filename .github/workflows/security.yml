@@ -87,13 +87,15 @@ jobs:
       - name: Verify the shell, the recorder, the readers, and the absent network tools
         run: |
           img=local/ha-soc-terminal:${{ github.sha }}
-          for present in ttyd bash script nano less dircolors; do
+          for present in ttyd bash script nano less dircolors lscpu lspci ha ha.real; do
             docker run --rm --entrypoint /bin/sh "$img" -c "command -v $present"
           done
+          # The CLI binary is the pinned release and runs (it has no --version flag; help exits 0).
+          docker run --rm --entrypoint /bin/sh "$img" -c '/usr/bin/ha.real --help >/dev/null'
           for absent in ssh scp sftp sshd mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
             docker run --rm --entrypoint /bin/sh "$img" -c "! command -v $absent"
           done
-          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open'
+          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha'
           # No SSH library either: libssh2 arrived once through bat via libgit2.
           docker run --rm --entrypoint /bin/sh "$img" -c '! apk info -e libssh2 && ! apk info -e libgit2'
       - name: Scan installed OS packages

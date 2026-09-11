@@ -1,0 +1,6 @@
+#!/bin/bash
+# The Supervisor CLI. The interactive shell deliberately carries no Supervisor
+# token, so a transcript or the history file cannot record one; this wrapper
+# re-imports the container environment for the CLI process only, the same way
+# the app's own start script gets it. See docs/TERMINAL-DESIGN.md.
+exec /usr/bin/with-contenv /usr/bin/ha.real "$@"

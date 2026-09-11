@@ -29,11 +29,12 @@ pair_with_core() {
     # different secret is pinned; the log says so and the app keeps running,
     # since the panel explains the un-paired state and how to reset it.
     local delay=5 code body
+    local token="${SUPERVISOR_TOKEN}"
     while true; do
         body="$(jq -n --arg secret "${TERMINAL_SECRET}" --arg version "${TERMINAL_VERSION}" \
             '{secret: $secret, version: $version}')"
         code="$(curl -sS -o /tmp/pair_response.json -w '%{http_code}' -X POST \
-            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" -H "Content-Type: application/json" \
+            -H "Authorization: Bearer ${token}" -H "Content-Type: application/json" \
             -d "${body}" "${PAIR_URL}?return_response" 2>/dev/null || echo 000)"
         if [ "${code}" = "200" ]; then
             if grep -q '"accepted": *true' /tmp/pair_response.json 2>/dev/null; then
@@ -75,6 +76,11 @@ fi
 bashio::log.info "HA SOC Terminal ${TERMINAL_VERSION}: recording=${HA_SOC_TERM_RECORD}, history=${HA_SOC_TERM_HISTORY}, idle=${HA_SOC_TERM_IDLE_MINUTES}m"
 
 cd /root
+
+# ttyd and every shell under it inherit this process's environment, so the
+# Supervisor token is removed here, after the pairing loop captured what it
+# needs. The ha wrapper re-imports it for the CLI process alone.
+unset SUPERVISOR_TOKEN
 
 # Basic auth with the pinned credential: only HA SOC's proxy holds it, so
 # nothing else on the Supervisor network can open a shell here. The panel's
