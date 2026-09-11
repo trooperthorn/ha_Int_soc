@@ -123,7 +123,8 @@ def fake_ttyd(monkeypatch):
             raise state["raises"]
         state["connect_args"] = (host, secret, cols, rows)
         ws = _FakeTtyd()
-        await ws.send_str(json.dumps({"AuthToken": "", "columns": cols, "rows": rows}))
+        token = base64.b64encode(f"hasoc:{secret}".encode()).decode()
+        await ws.send_str(json.dumps({"AuthToken": token, "columns": cols, "rows": rows}))
         state["ws"] = ws
         return ws
 
@@ -268,7 +269,11 @@ async def test_a_session_relays_bytes_both_ways_and_is_audited(
     assert opened["host"] == "3fd1bd45-ha-soc-terminal"
     assert fake_ttyd["connect_args"] == ("3fd1bd45-ha-soc-terminal", SECRET, 100, 30)
     # The handshake carried the size; the "opened" event repeats the result.
-    assert json.loads(fake_ttyd["ws"].sent[0]) == {"AuthToken": "", "columns": 100, "rows": 30}
+    assert json.loads(fake_ttyd["ws"].sent[0]) == {
+        "AuthToken": base64.b64encode(f"hasoc:{SECRET}".encode()).decode(),
+        "columns": 100,
+        "rows": 30,
+    }
     assert _events(connection)[0]["kind"] == "opened"
     assert _events(connection)[0]["session_id"] == session_id
     assert 1 in connection.subscriptions

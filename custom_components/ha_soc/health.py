@@ -268,14 +268,15 @@ class IntegrationHealth:
             self._timer_unsub()
             self._timer_unsub = None
         if self._started_unsub is not None:
-            try:
-                self._started_unsub()
-            except Exception:  # noqa: BLE001 - already-fired listen_once is fine
-                pass
+            self._started_unsub()
             self._started_unsub = None
 
     @callback
     def _on_started(self, _event) -> None:
+        # A one-time listener has removed itself by now; dropping the handle
+        # keeps async_stop from removing it a second time, which core logs
+        # as an error.
+        self._started_unsub = None
         self._started_at = dt.utcnow()
 
     async def _on_entry_changed(
@@ -903,7 +904,7 @@ class IntegrationHealth:
                 "name": device.name_by_user or device.name,
                 "configuration_url": device.configuration_url,
             }
-            for device in registry.devices.values()
+            for device in registry.devices
             if device.configuration_url
             and device.configuration_url.startswith("http://")
         ]
