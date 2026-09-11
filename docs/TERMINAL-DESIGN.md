@@ -169,8 +169,11 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       correctly, theme readable in light and dark.
 - [ ] A session leaves `/data/sessions/<id>.out`, `.timing`, and an index
       line whose sha256 matches the file.
-- [ ] AppArmor profile loads (`ha addons info` reports it) and the audit log
-      shows no denials during a normal session.
+- [x] AppArmor profile loads. The Supervisor does apply `apparmor.txt` to a
+      locally built app: the first profile stopped the container at
+      `/bin/sh: can't open '/init': Permission denied` because it granted
+      `ix` without `r` on the s6 boot chain, fixed 2026-09-10. Still open:
+      a normal session with no denials in `journalctl _TRANSPORT="audit"`.
 - [ ] Phase 2: the app's Supervisor `hostname` is reachable from Core on
       7681; ttyd `-a` URL arguments reach the wrapper (unverified against ttyd
       1.7.7).

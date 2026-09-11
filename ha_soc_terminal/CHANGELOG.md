@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Fixed the AppArmor profile stopping the container at startup with
+  `/bin/sh: can't open '/init': Permission denied`: the s6 boot chain
+  paths were granted execute without read.
 - First release of the HA SOC Terminal app: one bash login shell per
   connection through ttyd with no tmux, every session recorded by
   util-linux `script` with its hash in `/data/sessions/index.jsonl`,
