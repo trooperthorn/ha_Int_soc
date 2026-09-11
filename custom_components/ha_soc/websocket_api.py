@@ -19,7 +19,7 @@ from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
-from . import config_ledger, dashboard_files, ssh_devices
+from . import config_ledger, dashboard_files, ssh_devices, terminal
 from .const import (
     ACCESS_LEVEL_OWNER_AND_ADMINS,
     ACCESS_LEVEL_OWNER_ONLY,
@@ -308,6 +308,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_settings_get,
         ws_settings_set,
         ws_subscribe,
+        ws_terminal_status,
+        ws_terminal_open,
+        ws_terminal_input,
+        ws_terminal_resize,
+        ws_terminal_close,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -2300,3 +2305,132 @@ async def ws_ssh_run(hass: HomeAssistant, connection, msg: dict) -> None:
         flush=True,
     )
     connection.send_result(msg["id"], result)
+
+
+# --- Terminal app -----------------------------------------------------------
+#
+# The same owner-or-admins tier as the rest of the panel, applied per
+# command. A session is a subscription: output arrives as events on the open
+# command's id until either side closes it, and the browser going away closes
+# it too. Bytes ride as base64 in both directions because a terminal stream is
+# not text. Shapes: docs/protocol.md; design: docs/TERMINAL-DESIGN.md.
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/terminal/status"})
+@websocket_api.async_response
+async def ws_terminal_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    status = await terminal.async_terminal_status(hass, runtime.secrets, runtime.terminal)
+    status["sessions"] = runtime.terminal.async_session_summaries()
+    connection.send_result(msg["id"], status)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/open",
+        vol.Optional("target", default=terminal.TARGET_SELF): cv.string,
+        vol.Optional("cols", default=80): vol.All(int, vol.Range(min=10, max=500)),
+        vol.Optional("rows", default=24): vol.All(int, vol.Range(min=4, max=200)),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_open(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    msg_id = msg["id"]
+
+    @callback
+    def _send(event: dict) -> None:
+        connection.send_message(websocket_api.event_message(msg_id, event))
+
+    try:
+        session = await runtime.terminal.async_open(
+            user_id=connection.user.id,
+            target=msg.get("target", terminal.TARGET_SELF),
+            cols=msg.get("cols", 80),
+            rows=msg.get("rows", 24),
+            send=_send,
+        )
+    except terminal.TerminalError as err:
+        connection.send_error(msg_id, err.code, err.message)
+        return
+
+    session_id = session.session_id
+
+    @callback
+    def _on_unsubscribe() -> None:
+        # The browser went away or unsubscribed: the session ends with it.
+        hass.async_create_task(
+            runtime.terminal.async_close(session_id, None, "connection_lost")
+        )
+
+    connection.subscriptions[msg_id] = _on_unsubscribe
+    opened = {
+        "session_id": session_id,
+        "target": session.target,
+        "host": session.host,
+        "started": session.started.isoformat(),
+        "recorded": True,
+        "max_session_seconds": terminal.MAX_SESSION_SECONDS,
+    }
+    connection.send_result(msg_id, opened)
+    # The subscribe helper in the frontend discards the result message, so the
+    # same facts follow as the first event on the subscription.
+    _send({"kind": "opened", **opened})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/input",
+        vol.Required("session_id"): cv.string,
+        vol.Required("data"): vol.All(cv.string, vol.Length(max=terminal.MAX_INPUT_BYTES * 2)),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_input(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    try:
+        await runtime.terminal.async_input(msg["session_id"], connection.user.id, msg["data"])
+    except terminal.TerminalError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/resize",
+        vol.Required("session_id"): cv.string,
+        vol.Required("cols"): vol.All(int, vol.Range(min=10, max=500)),
+        vol.Required("rows"): vol.All(int, vol.Range(min=4, max=200)),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_resize(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    try:
+        await runtime.terminal.async_resize(
+            msg["session_id"], connection.user.id, msg["cols"], msg["rows"]
+        )
+    except terminal.TerminalError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/terminal/close", vol.Required("session_id"): cv.string}
+)
+@websocket_api.async_response
+async def ws_terminal_close(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    try:
+        await runtime.terminal.async_close(msg["session_id"], connection.user.id, "user_closed")
+    except terminal.TerminalError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    connection.send_result(msg["id"], {"closed": True})

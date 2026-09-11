@@ -8,9 +8,49 @@ TERMINAL_VERSION="2026.09.10.5"
 
 SESSIONS_DIR="/data/sessions"
 HISTORY_FILE="/data/.bash_history"
+SECRET_FILE="/data/ha_soc_terminal_secret"
+PAIR_URL="http://supervisor/core/api/services/ha_soc/pair_terminal"
 
 mkdir -p "${SESSIONS_DIR}"
 chmod 700 "${SESSIONS_DIR}"
+
+# The ttyd credential: generated once per install, mode 0600, handed to Core
+# through ha_soc.pair_terminal, which pins the first value it sees. Never
+# exported into a session; the wrapper and the shell do not know it.
+if [ ! -s "${SECRET_FILE}" ]; then
+    ( umask 077; head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}" )
+fi
+chmod 600 "${SECRET_FILE}"
+TERMINAL_SECRET="$(cat "${SECRET_FILE}")"
+
+pair_with_core() {
+    # Retried in the background until Core accepts; a 400 usually means the
+    # HA SOC integration is not loaded yet. Accepted with a mismatch means a
+    # different secret is pinned; the log says so and the app keeps running,
+    # since the panel explains the un-paired state and how to reset it.
+    local delay=5 code body
+    while true; do
+        body="$(jq -n --arg secret "${TERMINAL_SECRET}" --arg version "${TERMINAL_VERSION}" \
+            '{secret: $secret, version: $version}')"
+        code="$(curl -sS -o /tmp/pair_response.json -w '%{http_code}' -X POST \
+            -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" -H "Content-Type: application/json" \
+            -d "${body}" "${PAIR_URL}?return_response" 2>/dev/null || echo 000)"
+        if [ "${code}" = "200" ]; then
+            if grep -q '"accepted": *true' /tmp/pair_response.json 2>/dev/null; then
+                bashio::log.info "Paired with HA SOC."
+            else
+                bashio::log.warning "HA SOC refused the pairing: $(cat /tmp/pair_response.json 2>/dev/null). Delete /data/ha_soc_terminal_secret on this app and forget the pairing in HA SOC Settings to re-pair."
+            fi
+            rm -f /tmp/pair_response.json
+            return 0
+        fi
+        bashio::log.info "HA SOC did not accept the pairing yet (HTTP ${code}); retrying in ${delay}s."
+        sleep "${delay}"
+        delay=$(( delay * 2 ))
+        [ "${delay}" -gt 300 ] && delay=300
+    done
+}
+pair_with_core &
 
 # Options reach the wrapper and the shell as environment only; SUPERVISOR_TOKEN
 # is deliberately not exported into the session environment.
@@ -34,18 +74,14 @@ fi
 
 bashio::log.info "HA SOC Terminal ${TERMINAL_VERSION}: recording=${HA_SOC_TERM_RECORD}, history=${HA_SOC_TERM_HISTORY}, idle=${HA_SOC_TERM_IDLE_MINUTES}m"
 
-# Client options: a fixed title, no leave-page alert, and a palette that
-# approximates the HA SOC panel until the panel's own xterm.js component
-# carries the real theme (phase 2).
-THEME='{"background":"#1c2128","foreground":"#e6edf3","cursor":"#58a6ff","selectionBackground":"#264f78","black":"#484f58","red":"#ff7b72","green":"#3fb950","yellow":"#d29922","blue":"#58a6ff","magenta":"#bc8cff","cyan":"#39c5cf","white":"#b1bac4","brightBlack":"#6e7681","brightRed":"#ffa198","brightGreen":"#56d364","brightYellow":"#e3b341","brightBlue":"#79c0ff","brightMagenta":"#d2a8ff","brightCyan":"#56d4dd","brightWhite":"#f0f6fc"}'
-
 cd /root
 
+# Basic auth with the pinned credential: only HA SOC's proxy holds it, so
+# nothing else on the Supervisor network can open a shell here. The panel's
+# own xterm.js carries the theme; ttyd's built-in page is never served to a
+# browser.
 exec ttyd \
     --port 7681 \
+    --credential "hasoc:${TERMINAL_SECRET}" \
     --writable \
-    -t titleFixed="HA SOC Terminal" \
-    -t disableLeaveAlert=true \
-    -t fontSize=14 \
-    -t "theme=${THEME}" \
     /usr/local/bin/ha_soc_term_open

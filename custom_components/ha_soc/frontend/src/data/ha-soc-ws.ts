@@ -1695,3 +1695,102 @@ export const forgetSshHostKey = (hass: HomeAssistant, host: string) =>
 // command_ids must come from the catalog; the server refuses anything else.
 export const runSshCommands = (hass: HomeAssistant, host: string, commandIds: string[]) =>
   ws<SshRunResult>(hass, { type: "ha_soc/ssh/run", host, command_ids: commandIds });
+
+// --- Terminal app -----------------------------------------------------------
+// Mirrors terminal.py. Bytes ride as base64 in both directions.
+
+export interface TerminalTarget {
+  id: string;
+  label: string;
+  available: boolean;
+}
+
+export interface TerminalStatus {
+  supervisor: boolean;
+  installed: boolean;
+  running: boolean;
+  paired: boolean;
+  version: string | null;
+  hostname: string | null;
+  // null when the app's options could not be read; false when recording is off.
+  recording: boolean | null;
+  targets: TerminalTarget[];
+  sessions_open: number;
+  max_sessions: number;
+  max_session_seconds: number;
+  sessions: { session_id: string; user_id: string; target: string; started: string; bytes_in: number; bytes_out: number }[];
+}
+
+export interface TerminalOpenResult {
+  session_id: string;
+  target: string;
+  host: string;
+  started: string;
+  recorded: boolean;
+  max_session_seconds: number;
+}
+
+export type TerminalEvent =
+  | { kind: "opened"; session_id: string; target: string; host: string; started: string; recorded: boolean; max_session_seconds: number }
+  | { kind: "output"; data: string }
+  | { kind: "title"; title: string }
+  | { kind: "closed"; reason: string; duration_seconds: number };
+
+export const fetchTerminalStatus = (hass: HomeAssistant) =>
+  ws<TerminalStatus>(hass, { type: "ha_soc/terminal/status" });
+
+/**
+ * Opens a session. The subscribe helper discards the command's result, so the
+ * server repeats the session facts as the first event ("opened"); this
+ * resolves on that event and hands every later one to `onEvent`.
+ */
+export const openTerminal = (
+  hass: HomeAssistant,
+  target: string,
+  cols: number,
+  rows: number,
+  onEvent: (ev: TerminalEvent) => void
+): Promise<{ result: TerminalOpenResult; unsubscribe: () => Promise<void> }> =>
+  new Promise((resolve, reject) => {
+    let unsubscribe: (() => Promise<void>) | null = null;
+    let settled = false;
+    const timer = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      void unsubscribe?.();
+      reject(new Error("The Terminal app did not answer in time."));
+    }, 15000);
+    hass.connection
+      .subscribeMessage<TerminalEvent>(
+        (ev) => {
+          if (ev.kind === "opened") {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timer);
+            const { kind: _kind, ...result } = ev;
+            resolve({ result, unsubscribe: unsubscribe ?? (async () => undefined) });
+            return;
+          }
+          onEvent(ev);
+        },
+        { type: "ha_soc/terminal/open", target, cols, rows }
+      )
+      .then((unsub) => {
+        unsubscribe = unsub;
+      })
+      .catch((err) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timer);
+        reject(err);
+      });
+  });
+
+export const sendTerminalInput = (hass: HomeAssistant, sessionId: string, dataB64: string) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/terminal/input", session_id: sessionId, data: dataB64 });
+
+export const resizeTerminal = (hass: HomeAssistant, sessionId: string, cols: number, rows: number) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/terminal/resize", session_id: sessionId, cols, rows });
+
+export const closeTerminal = (hass: HomeAssistant, sessionId: string) =>
+  ws<{ closed: boolean }>(hass, { type: "ha_soc/terminal/close", session_id: sessionId });

@@ -1,7 +1,8 @@
 # HA SOC Terminal: design
 
-Status: phase 1 shipped as the `ha_soc_terminal` app (2026-09-10); phases 2
-and 3 are design only. This document owns the terminal surface: what it is,
+Status: phase 1 shipped as the `ha_soc_terminal` app (2026-09-10); phase 2,
+the panel gate and proxy, shipped 2026-09-11 with the `self` target only;
+phase 3 and the `core` and `addon` targets are design only. This document owns the terminal surface: what it is,
 where it executes, who may open it, what it records, and what it can never do.
 The dated decisions behind it are in `decisions.md` under "Terminal".
 
@@ -63,9 +64,10 @@ ha_soc_terminal app                           phase 1
                  -> docker exec addon_<slug>      [addon]  phase 2, docker_api
 ```
 
-Phase 1 exposes the app through ingress so the shell, theme, paste and
-scrollback can be exercised before the integration side exists. Ingress is
-removed in phase 2; from then on the only door is the integration's proxy.
+Phase 1 exposed the app through ingress so the shell, paste and scrollback
+could be exercised before the integration side existed. Phase 2 removed
+ingress; the only door is the integration's proxy, and the app declares
+`homeassistant_api` for the one pairing call it makes.
 
 ## The app (phase 1, shipped)
 
@@ -83,7 +85,7 @@ is its sshd hardening (for phase 3) and the history-persistence idea.
 | Client tools | None: no `openssh`, `mosh`, `nmap`, `ncat`, `tcpdump`, `rsync`, `git`, `python3`, `sudo`, `tmux`; the BusyBox `nc`, `wget`, `telnet`, `tftp` and ftp applet names are removed | "Cannot proxy to another host" holds for what the image ships. `curl` stays because bashio needs it, and `busybox nc` remains reachable by that spelling since the applets live inside the one binary. CI asserts the absent command names on every build. |
 | Privileges | No `host_network`, no `docker_api`, no `privileged`, custom AppArmor, `homeassistant_config:rw` only | Rating 6 with ingress and the profile; the app can reach `/homeassistant` and its own `/data` and nothing else. |
 | Token | Not exported. `SUPERVISOR_TOKEN` is read by bashio in the run script and never written to a profile or file. | app-ssh's item 3. |
-| Ingress | On, `panel_admin: true`, phase 1 only | Testing surface; the tier gate does not exist until phase 2. |
+| Ingress | Off since phase 2 | The panel is the only door. ttyd requires HTTP basic auth with a per-install credential the app generates once (`/data/ha_soc_terminal_secret`, mode 0600) and hands Core through `ha_soc.pair_terminal`; verified in a container that ttyd answers 401 to an anonymous HTTP or WebSocket request with the credential set. |
 | Boot | `boot: manual` | A terminal should not come up with the host. |
 
 Options: `session_recording` (default on), `history_persist` (default on),
@@ -97,57 +99,74 @@ index. `script -f` flushes as it writes, so a session that is killed still
 leaves what happened so far; the index line is the fact HA SOC will later
 ingest.
 
-Residuals accepted for phase 1 and written down: ingress is any-admin until
-phase 2; the transcript captures anything typed at a prompt, including a
+Residuals written down: the transcript captures anything typed at a prompt, including a
 password typed into a program that asked for one, and the redaction rules
 that mask key names cannot mask a bare value; bash `TMOUT` is a courtesy, not
 a control, since a running program does not honour it.
 
-## The integration side (phase 2, design)
+## The integration side (phase 2, shipped)
 
-WebSocket commands, all `@require_owner` by default, admins when the
-existing access setting opens the panel to them:
+`terminal.py` holds one aiohttp WebSocket to ttyd per session and relays
+bytes both ways as base64; the browser never talks to the app. The commands
+carry the panel's own tier (`require_soc_access`: owner only by default,
+owner and admins when the access setting says so):
 
 | Command | Payload | Answer |
 | --- | --- | --- |
-| `ha_soc/terminal/status` | none | `{installed, running, targets: [{id, label, available}], recording, sessions_open, max_sessions}` |
-| `ha_soc/terminal/open` | `{target, cols, rows}` | `{session_id, recorded: true}` then a subscription stream of `{data}` frames |
-| `ha_soc/terminal/input` | `{session_id, data}` | ack |
-| `ha_soc/terminal/resize` | `{session_id, cols, rows}` | ack |
+| `ha_soc/terminal/status` | none | `{supervisor, installed, running, paired, version, hostname, recording, targets: [{id, label, available}], sessions_open, max_sessions, max_session_seconds, sessions}` |
+| `ha_soc/terminal/open` | `{target, cols, rows}` | result `{session_id, target, host, started, recorded, max_session_seconds}`, repeated as the first event `{kind: "opened", ...}`, then events `{kind: "output", data}` (base64), `{kind: "title", title}`, and finally `{kind: "closed", reason, duration_seconds}` |
+| `ha_soc/terminal/input` | `{session_id, data}` (base64, at most 64 KiB decoded) | `{ok: true}` |
+| `ha_soc/terminal/resize` | `{session_id, cols, rows}` | `{ok: true}` |
 | `ha_soc/terminal/close` | `{session_id}` | `{closed: true}` |
 
-`target` is one of `self` (the app's own bash), `core` (`docker exec -it
-homeassistant /bin/bash`, the shell HAOS itself documents), or `addon:<slug>`
-validated against the Supervisor's installed list the way the Logs tab
-validates slugs. `core` and `addon:*` need `docker_api` on the app and
-Protection Mode off, spelled out in the panel exactly as the Probe's caps
-are. The host is not a target; the documented HAOS path for that is debug SSH
-on port 22222 with a key on a USB `CONFIG` partition.
+Refusal codes: `not_supervisor`, `app_not_installed`, `app_not_running`,
+`app_not_paired`, `session_limit_user`, `session_limit_total`,
+`unknown_target`, `unknown_session`, `connect_failed`. Close reasons:
+`user_closed`, `remote_closed`, `connection_lost` (the browser unsubscribed
+or its WebSocket dropped), `max_duration`, `unloaded`, `error`.
 
-The integration reaches ttyd over the Supervisor internal network at the
-app's hostname (`{repo}-ha-soc-terminal`, from `GET /addons/<slug>/info`
-`hostname`) on port 7681, with ttyd bound to that interface only and ingress
-off. The per-connection target rides as a ttyd URL argument to the wrapper,
-which validates it again; the browser never talks to ttyd.
+`target` is `self` (the app's own bash) today. `core` (`docker exec -it
+homeassistant /bin/bash`, the shell HAOS itself documents) and `addon:<slug>`
+(validated against the Supervisor's installed list the way the Logs tab
+validates slugs) remain design: both need `docker_api` on the app and
+Protection Mode off, a privilege change the app has not made, to be spelled
+out in the panel exactly as the Probe's caps are. The host is never a target;
+the documented HAOS path for that is debug SSH on port 22222 with a key on a
+USB `CONFIG` partition.
+
+The integration finds the app in the Supervisor's cached add-on list by
+slug suffix, reads `GET /addons/<slug>/info` for `hostname`, `state` and
+`options`, and connects to `ws://<hostname>:7681/ws` with subprotocol `tty`
+and basic auth `hasoc:<secret>`. The ttyd wire protocol is one command byte
+then the payload in each direction: the first client message is JSON
+`{AuthToken, columns, rows}`, then `0`+bytes is input, `1`+JSON is resize,
+and from ttyd `0`+bytes is output, `1`+text is a title, `2`+JSON preferences
+are ignored. The per-connection target as a ttyd URL argument stays design
+with the `core` and `addon` targets.
 
 Every open writes an audit record (`terminal_session_open`, flushed) with
-target, user, session id; every close writes `terminal_session_close` with
-duration, byte counts, and the transcript sha256 the wrapper reported through
-the external audit ingest contract (`ha_soc.ingest_audit`, per-source secret
-pinned on first call). A session that ends without a close record is a
-finding, not silence.
+target, user, session id, host and size; every close writes
+`terminal_session_close` with duration, bytes in and out, and the reason.
+`terminal_pairing_rejected` records a pairing call that was not the
+Supervisor's or carried a different secret than the pinned one. Not yet
+wired: the transcript sha256 the wrapper writes to the app's index, which
+would ride the external audit ingest contract; it stays in the app's
+`/data/sessions/index.jsonl` (backlog).
 
-Limits: one session per user, three per install, a hard maximum duration,
-and the idle timeout. Recording cannot be switched off from the panel; the
-app option is the only place, and the panel shows the state in the header.
+Limits: one session per user, three per install, eight hours maximum, and
+the app's idle timeout. Recording cannot be switched off from the panel; the
+app option is the only place, and the panel header shows the state it read
+from the app's options.
 
-The panel bundles xterm.js (Lit component, `@xterm/xterm` and the fit,
-web-links and clipboard addons), builds the terminal theme from the HA theme's
-CSS variables (background, foreground, the sixteen ANSI colors mapped from the
-theme's accent and state colors, with a Settings override), enables bracketed
-paste, and keeps a bounded scrollback. Phase 1 approximates the theme with
-ttyd's `-t theme=` client option so the palette can be judged before the
-component exists.
+The panel bundles xterm.js (`@xterm/xterm` 6 and `@xterm/addon-fit`; the
+stylesheet is copied into `src/generated/xterm-css.ts` by
+`scripts/gen-xterm-css.mjs` at build time because the view renders in shadow
+DOM), builds the terminal theme from the HA theme's CSS variables (code
+editor background, primary text, primary and accent colors, the error,
+success, warning and info state colors mapped onto the ANSI palette, with a
+light-mode neutral set) and rebuilds it whenever `hass` changes, keeps a
+5,000-line scrollback, and ends the session when the view is left. A
+Settings override for the palette is not built.
 
 ## SFTP (phase 3, design)
 
@@ -179,6 +198,15 @@ sshd's journald lines through the Logs tab's Supervisor gateway.
       file rules do not grant directory listings, so `/**/ r` was added.
       Still open: a normal session with no denials in
       `journalctl _TRANSPORT="audit"`.
-- [ ] Phase 2: the app's Supervisor `hostname` is reachable from Core on
-      7681; ttyd `-a` URL arguments reach the wrapper (unverified against ttyd
-      1.7.7).
+- [x] ttyd 1.7.7 offers `-c/--credential`, `-a/--url-arg`, `-i/--interface`
+      and `-b/--base-path` (read from `ttyd --help` in the image), and with a
+      credential set answers 401 to anonymous HTTP and WebSocket requests
+      (verified in a container).
+- [ ] Phase 2 on the live install: the app pairs within a minute of
+      starting (its log says "Paired with HA SOC"), the app's Supervisor
+      `hostname` is reachable from Core on 7681, a session opens from the
+      panel's Terminal workspace, paste and scrollback behave in xterm.js,
+      the theme follows light and dark, and closing the view leaves a
+      `terminal_session_close` audit record.
+- [ ] ttyd `-a` URL arguments reach the wrapper (needed only for the `core`
+      and `addon` targets; unverified).

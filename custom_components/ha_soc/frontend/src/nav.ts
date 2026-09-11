@@ -12,9 +12,10 @@ export type SocTab =
   | "entity_remap"
   | "dashboard_files"
   | "integration_security"
+  | "terminal"
   | "settings";
 
-export type SocWorkspace = "overview" | "assets" | "findings" | "identity" | "siem" | "settings";
+export type SocWorkspace = "overview" | "assets" | "findings" | "identity" | "siem" | "terminal" | "settings";
 
 export interface SocWorkspaceDefinition {
   id: SocWorkspace;
@@ -73,6 +74,12 @@ export const SOC_WORKSPACES: SocWorkspaceDefinition[] = [
       { id: "audit", label: "Audit Log" },
       { id: "logs", label: "Logs" },
     ],
+  },
+  {
+    id: "terminal",
+    label: "Terminal",
+    defaultTab: "terminal",
+    tabs: [{ id: "terminal", label: "Terminal" }],
   },
   {
     id: "settings",

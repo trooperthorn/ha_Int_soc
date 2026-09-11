@@ -26,6 +26,11 @@ from .external_audit import (
     async_unregister_external_audit_service,
 )
 from .probe import async_register_probe_service, async_unregister_probe_service
+from .terminal import (
+    TerminalSessions,
+    async_register_pairing_service,
+    async_unregister_pairing_service,
+)
 from .repairs import (
     async_sync_admin_mfa_issues,
     async_sync_stale_token_issues,
@@ -72,6 +77,7 @@ class HaSocRuntimeData:
     detections: DetectionEngine
     watchdog: "ResourceWatchdog"
     syslog: SyslogExporter
+    terminal: TerminalSessions
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -126,6 +132,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     risk = RiskEngine(hass, store, users=users)
     detections = DetectionEngine(hass, store, audit=audit, users=users)
     watchdog = ResourceWatchdog(hass, store, audit)
+    terminal = TerminalSessions(hass, audit, secrets)
 
     entry.runtime_data = HaSocRuntimeData(
         store=store,
@@ -141,6 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         detections=detections,
         watchdog=watchdog,
         syslog=syslog,
+        terminal=terminal,
     )
 
     await audit.async_start()
@@ -153,6 +161,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     async_register_websocket_api(hass)
     async_register_probe_service(hass, store, audit, secrets)
     async_register_external_audit_service(hass, store, audit, secrets)
+    async_register_pairing_service(hass, store, audit, secrets)
     await async_register_panel(hass)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -255,6 +264,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
 
     runtime = entry.runtime_data
     if runtime is not None:
+        await runtime.terminal.async_close_all()
         await runtime.audit.async_stop()
         await runtime.syslog.async_stop(drain=True)
         await runtime.permissions.async_stop()
@@ -264,5 +274,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
 
     async_unregister_probe_service(hass)
     async_unregister_external_audit_service(hass)
+    async_unregister_pairing_service(hass)
     await async_unregister_panel(hass)
     return True

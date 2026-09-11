@@ -21,10 +21,14 @@ PROBE_PAIRING_SECRET_KEY = "probe_pairing_secret"
 # One JSON map of source slug to secret for ha_soc.ingest_audit callers, pinned per source.
 EXTERNAL_AUDIT_SECRETS_KEY = "external_audit_secrets"
 
+# The ttyd basic-auth credential the Terminal app hands Core through ha_soc.pair_terminal, pinned on first call.
+TERMINAL_SECRET_KEY = "terminal_secret"
+
 # Enforced on every get/set; add a new key to SECRET_SETTING_KEYS first.
 ALLOWED_SECRET_KEYS: frozenset[str] = SECRET_SETTING_KEYS | {
     PROBE_PAIRING_SECRET_KEY,
     EXTERNAL_AUDIT_SECRETS_KEY,
+    TERMINAL_SECRET_KEY,
 }
 
 
