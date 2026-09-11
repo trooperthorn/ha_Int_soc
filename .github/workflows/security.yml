@@ -87,15 +87,17 @@ jobs:
       - name: Verify the shell, the recorder, the readers, and the absent network tools
         run: |
           img=local/ha-soc-terminal:${{ github.sha }}
-          for present in ttyd bash script nano less dircolors lscpu lspci ha ha.real; do
+          for present in ttyd bash script nano less dircolors lscpu lspci ha ha.real sshd ssh-keygen; do
             docker run --rm --entrypoint /bin/sh "$img" -c "command -v $present"
           done
           # The CLI binary is the pinned release and runs (it has no --version flag; help exits 0).
           docker run --rm --entrypoint /bin/sh "$img" -c '/usr/bin/ha.real --help >/dev/null'
-          for absent in ssh scp sftp sshd mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
+          for absent in ssh scp sftp mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
             docker run --rm --entrypoint /bin/sh "$img" -c "! command -v $absent"
           done
-          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha'
+          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha && bash -n /etc/services.d/ha_soc_terminal_sftp/run'
+          # The SFTP sshd config passes sshd's own check against a throwaway host key, and resolves to SFTP-only settings.
+          docker run --rm --entrypoint /bin/sh "$img" -c 'mkdir -p /data /homeassistant && ssh-keygen -q -t ed25519 -N "" -f /data/ssh_host_ed25519_key && sshd -t -f /etc/ssh/sshd_config && sshd -T -f /etc/ssh/sshd_config | grep -E "^(permitrootlogin prohibit-password|passwordauthentication no|allowtcpforwarding no|permittty no|chrootdirectory /homeassistant|forcecommand internal-sftp)" | wc -l | grep -qx 6'
           # No SSH library either: libssh2 arrived once through bat via libgit2.
           docker run --rm --entrypoint /bin/sh "$img" -c '! apk info -e libssh2 && ! apk info -e libgit2'
       - name: Scan installed OS packages
