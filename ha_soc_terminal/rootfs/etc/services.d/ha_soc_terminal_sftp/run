@@ -1,0 +1,54 @@
+#!/usr/bin/with-contenv bashio
+# HA SOC Terminal: SFTP to the configuration directory, off unless the owner
+# turns it on and maps the port. sshd runs in the foreground with its log on
+# stderr, so every login and every refusal lands in the app log that the HA
+# SOC Logs tab reads. See docs/TERMINAL-DESIGN.md, "SFTP (phase 3)".
+set -euo pipefail
+
+HOST_KEY="/data/ssh_host_ed25519_key"
+AUTHORIZED_KEYS="/data/sftp_authorized_keys"
+SSHD_CONFIG="/etc/ssh/sshd_config"
+
+hold() {
+    # An s6 longrun must stay up; a disabled feature idles rather than exits,
+    # which would otherwise read as a crash and restart forever.
+    bashio::log.info "$1"
+    exec sleep infinity
+}
+
+if ! bashio::config.true 'sftp_enabled'; then
+    hold "SFTP is off (sftp_enabled is false)."
+fi
+
+if ! bashio::config.has_value 'sftp_authorized_keys'; then
+    hold "SFTP is enabled but sftp_authorized_keys is empty; nothing can log in, so sshd is not started."
+fi
+
+# The owner's public keys, from the app options, into the file sshd reads.
+# Written fresh on every start so a removed key stops working at the next
+# restart; mode 0600, root-owned, as StrictModes requires.
+( umask 077; bashio::config 'sftp_authorized_keys' > "${AUTHORIZED_KEYS}" )
+chmod 600 "${AUTHORIZED_KEYS}"
+key_count="$(grep -c -E '^(ssh-ed25519|ecdsa-sha2-nistp[0-9]+|ssh-rsa|sk-ssh-ed25519@openssh\.com|sk-ecdsa-sha2-nistp256@openssh\.com) ' "${AUTHORIZED_KEYS}" || true)"
+if [ "${key_count}" -eq 0 ]; then
+    hold "SFTP is enabled but no entry in sftp_authorized_keys looks like a public key; sshd is not started."
+fi
+
+# One Ed25519 host key per install, generated on first use and kept in /data
+# so the fingerprint the owner's client pinned survives updates.
+if [ ! -s "${HOST_KEY}" ]; then
+    ( umask 077; ssh-keygen -q -t ed25519 -N "" -f "${HOST_KEY}" )
+    bashio::log.notice "Generated the SFTP host key."
+fi
+chmod 600 "${HOST_KEY}"
+bashio::log.info "SFTP host key fingerprint: $(ssh-keygen -lf "${HOST_KEY}.pub" | awk '{print $2}')"
+
+if ! /usr/sbin/sshd -t -f "${SSHD_CONFIG}"; then
+    bashio::exit.nok "The sshd configuration failed its own check; SFTP is not started."
+fi
+
+# The token is not wanted in sshd's environment either.
+unset SUPERVISOR_TOKEN
+
+bashio::log.info "SFTP: ${key_count} authorized key(s), port 2222 in the container; reachable only where the owner mapped it."
+exec /usr/sbin/sshd -D -e -f "${SSHD_CONFIG}"

@@ -1,0 +1,58 @@
+# HA SOC Terminal: SFTP to the configuration directory, and nothing else.
+# The hardening below follows the community SSH app's sshd_config (modern
+# ciphers, no forwarding, key auth only) with the shell removed: every login
+# is forced into internal-sftp inside a chroot of /homeassistant. The port is
+# reachable only when the owner maps it in the app's network settings.
+# See docs/TERMINAL-DESIGN.md, "SFTP (phase 3)".
+
+Port 2222
+AddressFamily any
+TCPKeepAlive no
+ClientAliveInterval 600
+ClientAliveCountMax 3
+UseDNS no
+
+SyslogFacility AUTH
+LogLevel VERBOSE
+
+StrictModes yes
+HostKey /data/ssh_host_ed25519_key
+
+Ciphers aes256-gcm@openssh.com,aes128-gcm@openssh.com,aes256-ctr,aes192-ctr,aes128-ctr
+MACs -hmac-sha1,hmac-sha1-etm@openssh.com,hmac-sha2-256,hmac-sha2-512,umac-128@openssh.com,umac-64-etm@openssh.com,umac-64@openssh.com
+KexAlgorithms -diffie-hellman-group-exchange-sha256,diffie-hellman-group14-sha256,diffie-hellman-group16-sha512,diffie-hellman-group18-sha512,ecdh-sha2-nistp256,ecdh-sha2-nistp384,ecdh-sha2-nistp521
+
+LoginGraceTime 60
+MaxAuthTries 4
+MaxSessions 4
+MaxStartups 4:30:10
+# The configuration directory is root-owned, so writes need root; keys only.
+PermitRootLogin prohibit-password
+AllowUsers root
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitEmptyPasswords no
+HostbasedAuthentication no
+IgnoreRhosts yes
+IgnoreUserKnownHosts yes
+# Written by the sftp service from the app's sftp_authorized_keys option.
+AuthorizedKeysFile /data/sftp_authorized_keys
+PermitUserEnvironment no
+
+X11Forwarding no
+PermitTunnel no
+AllowTcpForwarding no
+AllowAgentForwarding no
+AllowStreamLocalForwarding no
+GatewayPorts no
+PermitTTY no
+
+Banner none
+PrintMotd no
+
+# SFTP only: no shell, no command, no subsystem but the built-in server,
+# rooted at the configuration directory.
+Subsystem sftp internal-sftp
+ChrootDirectory /homeassistant
+ForceCommand internal-sftp -l INFO
