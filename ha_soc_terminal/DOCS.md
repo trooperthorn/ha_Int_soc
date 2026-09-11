@@ -22,7 +22,7 @@ the phases, and the accepted limits are in the repository's
 - **Local only.** The image carries no SSH client, no `mosh`, `nmap`,
   `ncat`, `tcpdump`, `rsync`, `git`, `python`, or `sudo`. The only
   directory mapped in is the Home Assistant configuration directory, at
-  `/config` (a link to `/homeassistant`). There is no host network, no
+  `/homeassistant` (also reachable as `~/config`). There is no host network, no
   Docker socket, and no extra capability.
 - **Readable.** `view` (nano read-only) reads YAML and shell in colour, `nano` edits
   with syntax highlighting and line numbers, `ls` and `grep` are coloured,

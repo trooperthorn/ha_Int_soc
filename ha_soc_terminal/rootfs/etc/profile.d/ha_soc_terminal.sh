@@ -50,7 +50,7 @@ export LESS="-R"
 export PAGER="less"
 
 # Where to start.
-cd /config 2>/dev/null || cd /root || true
+cd /homeassistant 2>/dev/null || cd /root || true
 
 if [ -n "${HA_SOC_TERM_SESSION_ID:-}" ]; then
     if [ "${HA_SOC_TERM_RECORD:-true}" = "true" ]; then
@@ -58,5 +58,5 @@ if [ -n "${HA_SOC_TERM_SESSION_ID:-}" ]; then
     else
         printf 'HA SOC Terminal %s  session %s  not recorded\n' "${HA_SOC_TERM_VERSION:-}" "${HA_SOC_TERM_SESSION_ID}"
     fi
-    printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /config and nothing beyond this server.\n'
+    printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /homeassistant (also ~/config) and nothing beyond this server.\n'
 fi
