@@ -80,6 +80,91 @@ const FALLBACK: ITheme = {
   brightWhite: "#f0f6fc",
 };
 
+// Font choices offered in the header. "theme" resolves Home Assistant's
+// --ha-font-family-code token (plain `monospace` unless a theme sets it);
+// the rest are families common on Windows, macOS and Linux. Nothing is
+// bundled: a family renders only when the viewing machine has it, so the
+// list marks each one installed or not by measuring it.
+type FontChoice = { id: string; label: string; stack: string };
+const FONT_CHOICES: FontChoice[] = [
+  { id: "theme", label: "Theme code font", stack: "" },
+  { id: "cascadia", label: "Cascadia Mono", stack: "'Cascadia Mono', 'Cascadia Code'" },
+  { id: "consolas", label: "Consolas", stack: "Consolas" },
+  { id: "jetbrains", label: "JetBrains Mono", stack: "'JetBrains Mono'" },
+  { id: "fira", label: "Fira Code", stack: "'Fira Code', 'Fira Mono'" },
+  { id: "menlo", label: "Menlo / SF Mono", stack: "Menlo, 'SF Mono'" },
+  { id: "roboto", label: "Roboto Mono", stack: "'Roboto Mono'" },
+  { id: "dejavu", label: "DejaVu Sans Mono", stack: "'DejaVu Sans Mono'" },
+  { id: "courier", label: "Courier New", stack: "'Courier New'" },
+  { id: "mono", label: "Browser monospace", stack: "monospace" },
+];
+const GENERIC_TAIL = "Consolas, 'DejaVu Sans Mono', 'Courier New', monospace";
+const FONT_SIZES = [11, 12, 13, 14, 15, 16, 18, 20];
+const LINE_HEIGHTS = [1, 1.1, 1.2, 1.3, 1.4];
+const PREFS_KEY = "ha_soc.terminal.font";
+
+type FontPrefs = { family: string; size: number; lineHeight: number };
+const DEFAULT_PREFS: FontPrefs = { family: "theme", size: 14, lineHeight: 1.2 };
+
+const loadPrefs = (): FontPrefs => {
+  try {
+    const raw = window.localStorage.getItem(PREFS_KEY);
+    if (!raw) return { ...DEFAULT_PREFS };
+    const p = JSON.parse(raw) as Partial<FontPrefs>;
+    return {
+      family: FONT_CHOICES.some((f) => f.id === p.family) ? (p.family as string) : DEFAULT_PREFS.family,
+      size: FONT_SIZES.includes(p.size as number) ? (p.size as number) : DEFAULT_PREFS.size,
+      lineHeight: LINE_HEIGHTS.includes(p.lineHeight as number)
+        ? (p.lineHeight as number)
+        : DEFAULT_PREFS.lineHeight,
+    };
+  } catch {
+    return { ...DEFAULT_PREFS };
+  }
+};
+
+const savePrefs = (p: FontPrefs) => {
+  try {
+    window.localStorage.setItem(PREFS_KEY, JSON.stringify(p));
+  } catch {
+    // Private window or storage blocked; the choice lasts for this page.
+  }
+};
+
+// document.fonts.check() answers "nothing left to load", which is true for
+// any system family whether or not it exists, so installation is detected
+// the classic way: a family that is present changes the measured width
+// against at least one generic fallback.
+const fontInstalledCache = new Map<string, boolean>();
+const isFontInstalled = (family: string): boolean => {
+  const cached = fontInstalledCache.get(family);
+  if (cached !== undefined) return cached;
+  let result = false;
+  try {
+    const canvas = document.createElement("canvas");
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      const sample = "mmmmmmmmmmlli1|WWW0O";
+      const width = (font: string) => {
+        ctx.font = `32px ${font}`;
+        return ctx.measureText(sample).width;
+      };
+      for (const generic of ["monospace", "serif", "sans-serif"]) {
+        if (width(`${family}, ${generic}`) !== width(generic)) {
+          result = true;
+          break;
+        }
+      }
+    }
+  } catch {
+    result = false;
+  }
+  fontInstalledCache.set(family, result);
+  return result;
+};
+
+const firstFamily = (stack: string): string => stack.split(",")[0].trim();
+
 @customElement("ha-soc-terminal-view")
 export class HaSocTerminalView extends LitElement {
   static styles = [
@@ -112,6 +197,20 @@ export class HaSocTerminalView extends LitElement {
       .term-box .xterm {
         height: 100%;
       }
+      .font-ctl {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--secondary-text-color);
+      }
+      .font-ctl select {
+        font: inherit;
+        color: var(--primary-text-color);
+        background: var(--card-background-color, #fff);
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 4px;
+        padding: 2px 4px;
+      }
       .recorded {
         color: var(--error-color, #db4437);
         font-weight: 600;
@@ -128,6 +227,7 @@ export class HaSocTerminalView extends LitElement {
   @state() private _error: string | null = null;
   @state() private _open: TerminalOpenResult | null = null;
   @state() private _ended: { reason: string; duration: number } | null = null;
+  @state() private _prefs: FontPrefs = loadPrefs();
   @state() private _busy = false;
 
   @query(".term-box") private _box!: HTMLDivElement;
@@ -211,8 +311,13 @@ export class HaSocTerminalView extends LitElement {
       await this.updateComplete;
       const term = new Terminal({
         cursorBlink: true,
-        fontSize: 14,
-        fontFamily: "var(--code-font-family, 'JetBrains Mono', Menlo, Consolas, monospace)",
+        fontSize: this._prefs.size,
+        // Never a var() here: xterm measures the cell on an OffscreenCanvas,
+        // whose font parser rejects custom properties and silently keeps the
+        // canvas default (10px sans-serif). Every row was measured on that
+        // font and drawn in the real one, which is what "compressed" was.
+        fontFamily: this._fontFamily(),
+        lineHeight: this._prefs.lineHeight,
         scrollback: 5000,
         allowProposedApi: false,
         theme: this._theme(),
@@ -250,6 +355,69 @@ export class HaSocTerminalView extends LitElement {
     } finally {
       this._busy = false;
     }
+  }
+
+  /** Concrete font-family string for xterm, with the theme token resolved. */
+  private _fontFamily(): string {
+    const choice = FONT_CHOICES.find((f) => f.id === this._prefs.family) ?? FONT_CHOICES[0];
+    if (choice.id === "theme") {
+      const themed = getComputedStyle(this).getPropertyValue("--ha-font-family-code").trim();
+      if (themed && themed !== "monospace") return `${themed}, ${GENERIC_TAIL}`;
+      return GENERIC_TAIL;
+    }
+    if (choice.id === "mono") return "monospace";
+    return `${choice.stack}, ${GENERIC_TAIL}`;
+  }
+
+  private _setPrefs(patch: Partial<FontPrefs>) {
+    this._prefs = { ...this._prefs, ...patch };
+    savePrefs(this._prefs);
+    const term = this._term;
+    if (!term) return;
+    term.options.fontFamily = this._fontFamily();
+    term.options.fontSize = this._prefs.size;
+    term.options.lineHeight = this._prefs.lineHeight;
+    this._fit?.fit();
+    term.focus();
+  }
+
+  private _renderFontControls() {
+    const p = this._prefs;
+    return html`
+      <label class="font-ctl">
+        Font
+        <select
+          @change=${(e: Event) => this._setPrefs({ family: (e.target as HTMLSelectElement).value })}
+        >
+          ${FONT_CHOICES.map((f) => {
+            const installed =
+              f.id === "theme" || f.id === "mono" ? true : isFontInstalled(firstFamily(f.stack));
+            return html`<option value=${f.id} ?selected=${f.id === p.family} ?disabled=${!installed}>
+              ${f.label}${installed ? "" : " (not installed)"}
+            </option>`;
+          })}
+        </select>
+      </label>
+      <label class="font-ctl">
+        Size
+        <select
+          @change=${(e: Event) => this._setPrefs({ size: Number((e.target as HTMLSelectElement).value) })}
+        >
+          ${FONT_SIZES.map((n) => html`<option value=${n} ?selected=${n === p.size}>${n}px</option>`)}
+        </select>
+      </label>
+      <label class="font-ctl">
+        Line
+        <select
+          @change=${(e: Event) =>
+            this._setPrefs({ lineHeight: Number((e.target as HTMLSelectElement).value) })}
+        >
+          ${LINE_HEIGHTS.map(
+            (n) => html`<option value=${n} ?selected=${n === p.lineHeight}>${n.toFixed(1)}</option>`,
+          )}
+        </select>
+      </label>
+    `;
   }
 
   private _onEvent(ev: TerminalEvent) {
@@ -326,6 +494,7 @@ export class HaSocTerminalView extends LitElement {
                         : `Ready. ${s.sessions_open} of ${s.max_sessions} sessions open.`}
           </span>
           <span class="spacer"></span>
+          ${this._renderFontControls()}
           ${this._open
             ? html`<button class="ha-btn" @click=${() => this._close("user_closed")}>Close session</button>`
             : html`<button class="ha-btn" ?disabled=${!canOpen} @click=${() => this._start()}>
@@ -346,6 +515,8 @@ export class HaSocTerminalView extends LitElement {
           Executes only on this server, in the Terminal app's own container. Paste with
           Ctrl+Shift+V or the browser's paste; scroll with the mouse wheel. Every session is
           recorded by the app unless its option is off, and opens and closes are audited here.
+          Font, size and line spacing are remembered in this browser; a family listed as not
+          installed is missing on this machine, not on the server.
         </p>
       </div>
     `;

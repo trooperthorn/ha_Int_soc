@@ -148,7 +148,7 @@ export const sharedStyles = css`
     font-size: 10.5px;
     padding: 2px 6px;
     border-radius: 5px;
-    font-family: var(--code-font-family, monospace);
+    font-family: var(--ha-font-family-code, monospace);
   }
   .tag.enforced {
     background: rgba(67, 160, 71, 0.15);

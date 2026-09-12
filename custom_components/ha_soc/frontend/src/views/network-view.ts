@@ -226,7 +226,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
         text-decoration: none;
       }
       .plate {
-        font-family: var(--code-font-family, monospace);
+        font-family: var(--ha-font-family-code, monospace);
         font-weight: 700;
         letter-spacing: 0.06em;
         background: rgba(var(--rgb-primary-text-color, 0, 0, 0), 0.06);
@@ -246,7 +246,7 @@ export class HaSocNetworkView extends HaSocCustomizableView {
         font-variant-numeric: tabular-nums;
       }
       .mono {
-        font-family: var(--code-font-family, monospace);
+        font-family: var(--ha-font-family-code, monospace);
         font-size: 12px;
       }
       .match {

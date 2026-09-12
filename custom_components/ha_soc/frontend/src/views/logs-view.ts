@@ -111,7 +111,7 @@ export class HaSocLogsView extends HaSocCustomizableView {
       }
       .rawlog {
         max-height: 600px;
-        font-family: var(--code-font-family, monospace);
+        font-family: var(--ha-font-family-code, monospace);
       }
     `,
   ];

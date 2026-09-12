@@ -169,6 +169,23 @@ light-mode neutral set) and rebuilds it whenever `hass` changes, keeps a
 5,000-line scrollback, and ends the session when the view is left. A
 Settings override for the palette is not built.
 
+Fonts. xterm.js measures the character cell on an OffscreenCanvas, and the
+canvas font parser rejects CSS custom properties, so a `var()` in
+`fontFamily` is silently dropped and every cell is measured on the canvas
+default of 10px sans-serif while the glyphs are drawn in the real font: rows
+overlap and the text looks compressed. The view therefore resolves a
+concrete family string before creating the terminal. The header offers a
+family (Home Assistant's `--ha-font-family-code` token, which is plain
+`monospace` unless a theme sets it, or Cascadia Mono, Consolas, JetBrains
+Mono, Fira Code, Menlo, Roboto Mono, DejaVu Sans Mono, Courier New), a size
+from 11 to 20px and a line height from 1.0 to 1.4, remembered per browser in
+`localStorage` under `ha_soc.terminal.font`. Nothing is bundled; a family is
+offered only when the viewing machine has it, detected by measuring the
+family against the generic fallbacks, because `document.fonts.check()`
+reports true for any system family. Bundling a woff2 (JetBrains Mono, OFL,
+about 100 KB per weight) would make the look uniform across machines at the
+cost of bundle size; not done.
+
 ## SFTP (phase 3, shipped)
 
 A second s6 service in the app runs OpenSSH's sshd for file transfer only.
