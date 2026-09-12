@@ -247,3 +247,23 @@ Operational claims carried from code comments that were not re-verified in this 
 - const.py:309-310: "the add-on truncates to this same length before sending (head -c in the run script)".
 - .github/workflows/test.yml:37: "The harness pin brings Home Assistant core 2026.2.3"; requirements-test.txt was not inspected by the pass that recorded it.
 - ha_soc_probe/rootfs/etc/services.d/ha_soc_probe/run (pre-edit line 49): the probe secret "was found at 0644" on the first live verification run, a historical observation behind the chmod.
+
+## View visibility on YAML dashboards
+
+The Permissions matrix writes `visible:` on a view through the dashboard's own
+save path. A dashboard configured in YAML mode (`lovelace: dashboards: <url>:
+mode: yaml`) refuses every save, so the matrix reports the refusal and restores
+the checkbox. Set the key in the dashboard file instead, then choose Refresh on
+the dashboard:
+
+```yaml
+views:
+  - title: Utility Room
+    path: utility-room
+    visible:
+      - user: 0123456789abcdef0123456789abcdef
+```
+
+The user id is the one shown on the Users tab. The Dashboard Editor
+integration (trooperthorn/ha_int_dashboard_editor) makes the same edit
+through Home Assistant's own view editor and commits it back to the file.
