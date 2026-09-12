@@ -767,7 +767,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
         </div>
         ${outcomes.map(
           (o) => html`
-            <div class="muted" style="font-size:12px;font-family:var(--code-font-family,monospace);">
+            <div class="muted" style="font-size:12px;font-family:var(--ha-font-family-code, monospace);">
               ${o.slug}: ${o.text}
             </div>
           `

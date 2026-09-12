@@ -95,7 +95,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
         font-variant-numeric: tabular-nums;
       }
       .mono {
-        font-family: var(--code-font-family, monospace);
+        font-family: var(--ha-font-family-code, monospace);
         font-size: 12px;
       }
       .match {
