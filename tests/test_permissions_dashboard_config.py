@@ -8,7 +8,6 @@ import logging
 from types import SimpleNamespace
 
 import pytest
-
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
@@ -80,3 +79,14 @@ async def test_successful_load_returns_config(hass: HomeAssistant, matrix: Permi
     config = await matrix.async_get_dashboard_config(None)
 
     assert config == {"views": []}
+
+
+def test_view_visibility_message_names_yaml_mode() -> None:
+    """A YAML dashboard refusal tells the owner where the setting lives instead of a generic error."""
+    from custom_components.ha_soc.websocket_api import view_visibility_error_message
+
+    text = view_visibility_error_message("yaml_dashboard_read_only")
+    assert "YAML mode" in text
+    assert "visible:" in text
+    assert view_visibility_error_message(None) == "Could not update view visibility"
+    assert view_visibility_error_message("no_such_reason") == "Could not update view visibility"

@@ -12,7 +12,6 @@ from functools import wraps
 from typing import Any
 
 import voluptuous as vol
-
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
@@ -26,19 +25,17 @@ from .const import (
     CONF_ACCESS_LEVEL,
     CONF_AUDIT_MAX_BYTES,
     CONF_AUDIT_RETENTION_DAYS,
+    CONF_DASHBOARD_EDIT_ENABLED,
+    CONF_GITHUB_TOKEN,
+    CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
-    CONF_GITHUB_TOKEN,
     CONF_NVD_API_KEY,
     CONF_PIHOLE_API_KEY,
     CONF_PIHOLE_HOST,
     CONF_PIHOLE_IOT_CIDR,
     CONF_PIHOLE_VERIFY_SSL,
     CONF_SCANNER_ENABLED,
-    CONF_SSH_COLLECTION_ENABLED,
-    CONF_SSH_USERNAME,
-    CONF_DASHBOARD_EDIT_ENABLED,
-    CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_SCANNER_NETWORK_CHECKS_ENABLED,
     CONF_SECURITY_SOURCES_ENABLED,
     CONF_SNMP_AUTH_PASSPHRASE,
@@ -47,6 +44,8 @@ from .const import (
     CONF_SNMP_PORT,
     CONF_SNMP_PRIV_PASSPHRASE,
     CONF_SNMP_USERNAME,
+    CONF_SSH_COLLECTION_ENABLED,
+    CONF_SSH_USERNAME,
     CONF_SYSLOG_FACILITY,
     CONF_SYSLOG_FORMAT,
     CONF_SYSLOG_HOST,
@@ -56,10 +55,8 @@ from .const import (
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
-    SUGGESTION_STATUS_PLANNED,
-    SUGGESTION_STATUS_IGNORED,
-    CONF_UNIFI_NETWORK_WRITE_ENABLED,
     CONF_UNIFI_NETWORK_WRITE_API_KEY,
+    CONF_UNIFI_NETWORK_WRITE_ENABLED,
     CONF_UNIFI_PROTECT_API_KEY,
     CONF_UNIFI_PROTECT_HOST,
     CONF_UNIFI_PROTECT_VERIFY_SSL,
@@ -73,13 +70,19 @@ from .const import (
     SECRET_SETTING_KEYS,
     SEVERITY_ORDER,
     SIGNAL_UPDATE,
-    SYSLOG_TRANSPORTS,
+    SUGGESTION_STATUS_IGNORED,
+    SUGGESTION_STATUS_PLANNED,
     SYSLOG_FORMATS,
+    SYSLOG_TRANSPORTS,
     WATCHDOG_ACTIONS,
 )
 from .dashboard_files import (
     AUDIT_CATEGORY_DENIED as DASHBOARD_AUDIT_DENIED,
+)
+from .dashboard_files import (
     AUDIT_CATEGORY_WRITE as DASHBOARD_AUDIT_WRITE,
+)
+from .dashboard_files import (
     DashboardFileError,
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
@@ -682,6 +685,27 @@ async def ws_permissions_dashboard_config(hass: HomeAssistant, connection, msg: 
     connection.send_result(msg["id"], {"config": config})
 
 
+VIEW_VISIBILITY_MESSAGES: dict[str, str] = {
+    "yaml_dashboard_read_only": (
+        "This dashboard is in YAML mode, and Home Assistant refuses every save on a "
+        "YAML dashboard. Set `visible:` on the view in its YAML file (docs/operations.md), "
+        "or edit the dashboard through the Dashboard Editor integration and commit."
+    ),
+    "dashboard_not_found": "The dashboard no longer exists; reload the matrix.",
+    "view_not_found": "The view no longer exists on that dashboard; reload the matrix.",
+    "dashboard_load_failed": "Home Assistant could not load the dashboard; see the Core log.",
+    "dashboard_save_failed": "Home Assistant could not save the dashboard; see the Core log.",
+    "lovelace_internals_unavailable": (
+        "The dashboard store has an unexpected shape on this Core version; see the Core log."
+    ),
+}
+
+
+def view_visibility_error_message(reason: str | None) -> str:
+    """Human-readable text for a refused view visibility write."""
+    return VIEW_VISIBILITY_MESSAGES.get(reason or "", "Could not update view visibility")
+
+
 @require_soc_access
 @websocket_api.websocket_command(
     {
@@ -698,7 +722,9 @@ async def ws_permissions_view_visibility_set(hass: HomeAssistant, connection, ms
         msg.get("url_path"), msg["view_path"], msg["user_ids"]
     )
     if not ok:
-        connection.send_error(msg["id"], reason or "set_failed", "Could not update view visibility")
+        connection.send_error(
+            msg["id"], reason or "set_failed", view_visibility_error_message(reason)
+        )
         return
     runtime.audit.async_log(
         "lovelace_change",
