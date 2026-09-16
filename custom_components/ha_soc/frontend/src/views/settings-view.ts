@@ -127,6 +127,7 @@ export class HaSocSettingsView extends LitElement {
       | "unifi_network_write_api_key"
       | "unifi_protect_api_key"
       | "pihole_api_key"
+      | "technitium_api_token"
       | "snmp_auth_passphrase"
       | "snmp_priv_passphrase",
     isSet: boolean
@@ -537,6 +538,45 @@ export class HaSocSettingsView extends LitElement {
               const v = (e.target as HTMLInputElement).value.trim();
               this._update("pihole_iot_cidr", v ? v : null);
             }}
+          />
+        </label>
+      </div>
+
+      <div class="card">
+        <h3>Technitium DNS Server</h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Connects directly to a Technitium DNS Server instance over your LAN with an
+          <strong>API token</strong> (Technitium → Administration → Sessions → Create token) to
+          populate the <strong>Network Security</strong> tab's DNS section — blocking
+          status, query totals, and the zone/record inventory. Read-only; nothing is ever
+          toggled or edited on Technitium. Independent of Pi-hole above — configure either,
+          both, or neither.
+        </p>
+        <label class="settings-row">
+          <span>Technitium host or IP</span>
+          <input
+            type="text"
+            placeholder="e.g. dns.local or 192.168.1.6"
+            .value=${s.technitium_host ?? ""}
+            @change=${(e: Event) => {
+              const v = (e.target as HTMLInputElement).value.trim();
+              this._update("technitium_host", v ? v : null);
+            }}
+          />
+        </label>
+        ${this._renderSecretField("API token", "technitium_api_token", !!s.technitium_api_token_set)}
+        <label class="settings-row">
+          <span>
+            Verify TLS certificate
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Off by default — most home Technitium instances are plain HTTP on the LAN.</span
+            >
+          </span>
+          <input
+            type="checkbox"
+            .checked=${s.technitium_verify_ssl}
+            @change=${(e: Event) =>
+              this._update("technitium_verify_ssl", (e.target as HTMLInputElement).checked)}
           />
         </label>
       </div>

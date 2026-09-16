@@ -27,6 +27,7 @@ import {
   generateSshKey,
   runSshCommands,
   PiHoleOverview,
+  TechnitiumOverview,
   ServerPortsReport,
   UnifiLedgerState,
   acceptUnifiBaseline,
@@ -419,6 +420,7 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
       { id: "device_ssh", title: "Device SSH", render: () => this._renderDeviceSsh() },
       { id: "server_ports", title: "Home Assistant Server Ports", render: () => this._renderServerPorts(o.server_ports) },
       { id: "pihole", title: "Pi-hole DNS", render: () => this._renderPihole(o.pihole) },
+      { id: "technitium", title: "Technitium DNS", render: () => this._renderTechnitium(o.technitium) },
     ];
     return html`
       <div class="toolbar" style="margin-bottom:12px;display:flex;gap:8px;align-items:center;">
@@ -1705,6 +1707,104 @@ export class HaSocNetworkSecurityView extends HaSocCustomizableView {
                         <span class="label">Recently blocked</span>
                         <div class="domain-list">
                           ${p.recent_blocked.map((d) => html`<div class="row"><span>${d}</span></div>`)}
+                        </div>
+                      </div>
+                    `
+                  : nothing}
+              </div>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
+  private _renderTechnitium(t: TechnitiumOverview) {
+    if (!t.configured) {
+      return html`
+        <div class="card">
+          <h3>Technitium DNS</h3>
+          <div class="empty">
+            Not connected. Add a Technitium host and API token in Settings to see blocking
+            status, DNS zones/records, and recently blocked domains here.
+          </div>
+        </div>
+      `;
+    }
+    if (!t.reachable) {
+      return html`
+        <div class="card">
+          <h3>Technitium DNS</h3>
+          <div class="alert">${t.error ?? "Technitium is not reachable."}</div>
+        </div>
+      `;
+    }
+    const zoneRows = Object.entries(t.records).flatMap(([zone, records]) =>
+      records.map((r) => ({ zone, ...r }))
+    );
+    return html`
+      <div class="card">
+        <h3>Technitium DNS</h3>
+        <div class="stat-row">
+          <div class="stat-tile">
+            <span class="label">Blocking</span>
+            <span class="value">${t.blocking_enabled ? "On" : "Off"}</span>
+          </div>
+          <div class="stat-tile">
+            <span class="label">Queries (last hour)</span>
+            <span class="value">${t.summary?.total ?? "—"}</span>
+          </div>
+          <div class="stat-tile">
+            <span class="label">Blocked</span>
+            <span class="value"
+              >${t.summary?.blocked ?? "—"}${
+                t.summary?.percent_blocked != null ? ` (${t.summary.percent_blocked.toFixed(1)}%)` : ""
+              }</span
+            >
+          </div>
+          <div class="stat-tile">
+            <span class="label">Zones</span>
+            <span class="value">${t.zones.length}</span>
+          </div>
+        </div>
+        ${zoneRows.length
+          ? html`
+              <div class="stat-row" style="margin-top:12px;">
+                <div class="stat-tile" style="grid-column: span 4;">
+                  <span class="label">DNS records</span>
+                  <div class="domain-list">
+                    ${zoneRows.map(
+                      (r) =>
+                        html`<div class="row">
+                          <span>${r.zone} / ${r.name} (${r.type})</span>
+                          <span>${JSON.stringify(r.data)}</span>
+                        </div>`
+                    )}
+                  </div>
+                </div>
+              </div>
+            `
+          : nothing}
+        ${t.top_blocked_domains.length || t.recent_blocked.length
+          ? html`
+              <div class="stat-row" style="margin-top:12px;">
+                ${t.top_blocked_domains.length
+                  ? html`
+                      <div class="stat-tile" style="grid-column: span 2;">
+                        <span class="label">Top blocked domains</span>
+                        <div class="domain-list">
+                          ${t.top_blocked_domains.map(
+                            (d) => html`<div class="row"><span>${d.domain}</span><span>${d.count}</span></div>`
+                          )}
+                        </div>
+                      </div>
+                    `
+                  : nothing}
+                ${t.recent_blocked.length
+                  ? html`
+                      <div class="stat-tile" style="grid-column: span 2;">
+                        <span class="label">Recently blocked</span>
+                        <div class="domain-list">
+                          ${t.recent_blocked.map((d) => html`<div class="row"><span>${d}</span></div>`)}
                         </div>
                       </div>
                     `

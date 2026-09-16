@@ -389,6 +389,12 @@ export interface HaSocSettings {
   pihole_api_key_set?: boolean;
   pihole_verify_ssl: boolean;
   pihole_iot_cidr: string | null;
+  // Technitium DNS Server connection: a parallel, independently-configurable
+  // source alongside Pi-hole; stateless API token instead of a masked app password.
+  technitium_host: string | null;
+  technitium_api_token?: string | null;
+  technitium_api_token_set?: boolean;
+  technitium_verify_ssl: boolean;
   // Optional Probe-hosted SNMPv3 AuthPriv listener; passphrases are masked and never returned.
   snmp_enabled: boolean;
   snmp_listen_address: string | null;
@@ -856,6 +862,41 @@ export interface PiHoleOverview {
   generated_at: string;
 }
 
+// Mirrors technitium.py's async_technitium_overview().
+export interface TechnitiumZone {
+  name: string | null;
+  type: string | null;
+  disabled: boolean | null;
+}
+
+export interface TechnitiumRecord {
+  name: string | null;
+  type: string | null;
+  ttl: number | null;
+  disabled: boolean | null;
+  data: Record<string, unknown>;
+}
+
+export interface TechnitiumSummary {
+  total: number | null;
+  blocked: number | null;
+  percent_blocked: number | null;
+  unique_domains: number | null;
+}
+
+export interface TechnitiumOverview {
+  configured: boolean;
+  reachable: boolean;
+  error: string | null;
+  blocking_enabled: boolean | null;
+  summary: TechnitiumSummary | null;
+  zones: TechnitiumZone[];
+  records: Record<string, TechnitiumRecord[]>;
+  top_blocked_domains: { domain: string | null; count: number | null }[];
+  recent_blocked: string[];
+  generated_at: string;
+}
+
 // Mirrors network_security.py's build_findings() plus decorate_findings().
 export type SuggestionStatus = "planned" | "ignored" | "applied";
 export type RemediationKind = "disable_firewall_policy" | "disable_acl_rule";
@@ -903,6 +944,7 @@ export interface NetworkSecurityOverview {
   unifi_reachable: boolean;
   unifi_error: string | null;
   pihole: PiHoleOverview;
+  technitium: TechnitiumOverview;
   findings: NetworkSecurityFinding[];
   // The gateway's Threat Management posture from the last ips_config read, or
   // null when the gateway has never been read from the Device SSH card.
