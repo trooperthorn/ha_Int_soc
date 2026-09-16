@@ -55,6 +55,9 @@ from .const import (
     CONF_SYSLOG_PORT,
     CONF_SYSLOG_TLS_VERIFY,
     CONF_SYSLOG_TRANSPORT,
+    CONF_TECHNITIUM_API_TOKEN,
+    CONF_TECHNITIUM_HOST,
+    CONF_TECHNITIUM_VERIFY_SSL,
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
@@ -1858,6 +1861,11 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_PIHOLE_API_KEY): str,
         vol.Optional(CONF_PIHOLE_VERIFY_SSL): bool,
         vol.Optional(CONF_PIHOLE_IOT_CIDR): vol.Any(str, None),
+        # Technitium DNS Server: a parallel, independently-configurable DNS
+        # source; stateless API token instead of Pi-hole's session cookie.
+        vol.Optional(CONF_TECHNITIUM_HOST): vol.Any(str, None),
+        vol.Optional(CONF_TECHNITIUM_API_TOKEN): str,
+        vol.Optional(CONF_TECHNITIUM_VERIFY_SSL): bool,
         # Only an explicit unicast listener and SNMPv3 AuthPriv are representable.
         vol.Optional(CONF_SNMP_ENABLED): bool,
         vol.Optional(CONF_SNMP_LISTEN_ADDRESS): snmp_ip_address,

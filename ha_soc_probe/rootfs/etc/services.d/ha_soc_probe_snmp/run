@@ -203,7 +203,22 @@ shutdown() {
 trap shutdown TERM INT
 
 mkdir -p "${CONFIG_DIR}" "${PERSIST_DIR}"
-chmod 700 "${STATE_DIR}" "${CONFIG_DIR}"
+chmod 700 "${CONFIG_DIR}"
+# STATE_DIR itself must give the ha_soc_snmp group traversal (x-only, no r/w) so
+# snmpd can still reach PERSIST_DIR after it drops privileges via agentuser/
+# agentgroup: Net-SNMP's persistent-store checkpoint (read_config_store) runs
+# repeatedly as the dropped account, not just at startup while still root, and
+# Unix requires the executable bit on every path component to open a file
+# underneath it. Without this, PERSIST_DIR's own 770 grant is unreachable and
+# every checkpoint fails at the STATE_DIR traversal step with "Failed to create
+# the persistent directory for .../snmpd.conf" / "read_config_store open
+# failure" -- a misleading message; the log names the full file path, not the
+# directory that actually blocked it. Verified in a throwaway container: the
+# error reproduces under plain DAC with STATE_DIR at 700 root:root regardless
+# of PERSIST_DIR's own permissions, and disappears once STATE_DIR grants the
+# group execute bit -- this is unrelated to AppArmor confinement.
+chown root:ha_soc_snmp "${STATE_DIR}"
+chmod 710 "${STATE_DIR}"
 # Reclaim the persistent directory: releases up to 2026.09.09.2 handed it to
 # ha_soc_snmp outright, which left this script unable to replace the createUser file
 # on the next generation. Root owns it; the daemon account writes through the group.

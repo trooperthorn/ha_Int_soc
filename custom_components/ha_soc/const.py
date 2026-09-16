@@ -146,6 +146,14 @@ CONF_PIHOLE_IOT_CIDR = "pihole_iot_cidr"
 DEFAULT_PIHOLE_VERIFY_SSL = False
 PIHOLE_API_PATH = "/api"
 
+# Technitium DNS Server: a parallel, independently-configurable DNS visibility
+# source alongside Pi-hole (not a replacement); see docs/decisions.md.
+CONF_TECHNITIUM_HOST = "technitium_host"
+CONF_TECHNITIUM_API_TOKEN = "technitium_api_token"
+CONF_TECHNITIUM_VERIFY_SSL = "technitium_verify_ssl"
+DEFAULT_TECHNITIUM_VERIFY_SSL = False
+TECHNITIUM_API_PATH = "/api"
+
 # Every credential-shaped setting belongs here; async_log and ws_settings_get redact by it.
 SECRET_SETTING_KEYS: frozenset[str] = frozenset(
     {
@@ -155,6 +163,7 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
         CONF_UNIFI_NETWORK_WRITE_API_KEY,
         CONF_UNIFI_PROTECT_API_KEY,
         CONF_PIHOLE_API_KEY,
+        CONF_TECHNITIUM_API_TOKEN,
         CONF_SNMP_AUTH_PASSPHRASE,
         CONF_SNMP_PRIV_PASSPHRASE,
         # Generated, never accepted from the client; listed here so it is

@@ -17,6 +17,7 @@ from typing import Any
 import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
 
+from . import ssh_devices
 from .const import (
     CONF_UNIFI_NETWORK_WRITE_ENABLED,
     DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
@@ -29,7 +30,6 @@ from .const import (
     SUGGESTION_STATUS_IGNORED,
     SUGGESTION_STATUS_PLANNED,
 )
-from . import ssh_devices
 from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
@@ -272,6 +272,40 @@ def _pihole_findings(pihole: dict[str, Any]) -> list[dict[str, Any]]:
     return findings
 
 
+def _technitium_findings(technitium: dict[str, Any]) -> list[dict[str, Any]]:
+    findings: list[dict[str, Any]] = []
+    if not technitium.get("configured"):
+        findings.append(
+            _finding(
+                "technitium_not_configured",
+                SEVERITY_INFO,
+                "dns",
+                "Technitium DNS Server is not connected to HA SOC",
+                "Configure the Technitium host and API token in Settings to see "
+                "DNS blocking status, zone/record inventory, and recently "
+                "blocked domains here.",
+            )
+        )
+        return findings
+    if not technitium.get("reachable"):
+        return findings  # technitium.py already surfaces the "why" via technitium.error
+
+    if technitium.get("blocking_enabled") is False:
+        findings.append(
+            _finding(
+                "technitium_blocking_disabled",
+                SEVERITY_HIGH,
+                "dns",
+                "Technitium DNS blocking is currently disabled",
+                "Blocking is off, so devices whose DNS is forwarded here are not "
+                "having any application-reporting/telemetry domains filtered "
+                "right now.",
+            )
+        )
+
+    return findings
+
+
 def _ips_findings(
     ips_posture: dict[str, Any] | None, server_ports: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -305,6 +339,7 @@ def build_findings(
     unifi_overview: dict[str, Any],
     pihole_overview: dict[str, Any],
     ips_posture: dict[str, Any] | None = None,
+    technitium_overview: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     """Pure combination of the snapshots into an advisory findings list,
     highest severity first, then stable by id. No I/O, no persistence."""
@@ -316,6 +351,8 @@ def build_findings(
     findings.extend(_firewall_policy_findings(firewall_policies))
     findings.extend(_server_port_findings(unifi_overview.get("server_ports") or {}))
     findings.extend(_pihole_findings(pihole_overview))
+    if technitium_overview is not None:
+        findings.extend(_technitium_findings(technitium_overview))
     findings.extend(_ips_findings(ips_posture, unifi_overview.get("server_ports") or {}))
 
     order = {SEVERITY_HIGH: 0, SEVERITY_MEDIUM: 1, SEVERITY_INFO: 2}
@@ -389,7 +426,7 @@ async def async_apply_suggestion(
             return False, "unknown_remediation", None
     except UniFiError as err:
         return False, str(err), None
-    except Exception as err:  # noqa: BLE001 - the panel gets a reason, never a trace
+    except Exception as err:
         _LOGGER.exception("UniFi write-back failed for %s", finding_id)
         return False, f"Unexpected error: {err}", None
     store.async_set_suggestion_decision(
@@ -433,6 +470,10 @@ async def async_network_security_overview(
 
     pihole_overview = await async_pihole_overview(hass, store, secrets)
 
+    from .technitium import async_technitium_overview
+
+    technitium_overview = await async_technitium_overview(hass, store, secrets)
+
     write_enabled = bool(
         store.settings.get(CONF_UNIFI_NETWORK_WRITE_ENABLED, DEFAULT_UNIFI_NETWORK_WRITE_ENABLED)
     )
@@ -444,8 +485,14 @@ async def async_network_security_overview(
         "unifi_reachable": unifi_overview["reachable"],
         "unifi_error": unifi_overview["error"],
         "pihole": pihole_overview,
+        "technitium": technitium_overview,
         "findings": decorate_findings(
-            build_findings(unifi_overview, pihole_overview, ssh_devices.ips_posture(store)),
+            build_findings(
+                unifi_overview,
+                pihole_overview,
+                ssh_devices.ips_posture(store),
+                technitium_overview,
+            ),
             store.data.get("network_suggestions") or {},
         ),
         "ips_posture": ssh_devices.ips_posture(store),

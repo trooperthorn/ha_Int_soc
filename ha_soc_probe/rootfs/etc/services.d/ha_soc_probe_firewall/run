@@ -379,8 +379,9 @@ chain_rules_lines() {
             if (target == "LOG") { pending_log = 1; next }
             action = (target == "ACCEPT") ? "allow" : (target == "REJECT") ? "reject" : "deny"
             if (proto == "ipv6-icmp") { proto = "icmp" }
-            log = pending_log ? "true" : "false"; pending_log = 0
-            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"ports\":%s,\"icmp_code\":%s,\"source\":%s,\"destination\":%s,\"interface\":%s,\"log\":%s,\"comment\":%s,\"family\":\"%s\"}\n", action, proto, jstr(ports), (proto == "icmp") ? "\"" icmp "\"" : "null", jstr(source), jstr(dest), jstr(iface), log, jstr(comment), family
+            # "log" is an awk builtin (natural log); a bareword variable of that name is a syntax error.
+            log_flag = pending_log ? "true" : "false"; pending_log = 0
+            printf "{\"action\":\"%s\",\"proto\":\"%s\",\"ports\":%s,\"icmp_code\":%s,\"source\":%s,\"destination\":%s,\"interface\":%s,\"log\":%s,\"comment\":%s,\"family\":\"%s\"}\n", action, proto, jstr(ports), (proto == "icmp") ? "\"" icmp "\"" : "null", jstr(source), jstr(dest), jstr(iface), log_flag, jstr(comment), family
         }
     '
 }
