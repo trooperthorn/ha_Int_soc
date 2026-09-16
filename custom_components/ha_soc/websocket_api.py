@@ -30,6 +30,9 @@ from .const import (
     CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
+    CONF_NETSCAN_ENABLED,
+    CONF_NETSCAN_MAX_CONCURRENCY,
+    CONF_NETSCAN_PORT_LIST,
     CONF_NVD_API_KEY,
     CONF_PIHOLE_API_KEY,
     CONF_PIHOLE_HOST,
@@ -86,6 +89,8 @@ from .dashboard_files import (
     DashboardFileError,
 )
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
+from .netscan import validate_max_concurrency as validate_netscan_max_concurrency
+from .netscan import validate_port_list as validate_netscan_port_list
 from .resource_watchdog import ADDON_SLUG_PATTERN
 from .snmp import (
     snmp_ip_address,
@@ -292,6 +297,8 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_entity_remap_broken_references,
         ws_security_health_list,
         ws_firewall_status,
+        ws_netscan_status,
+        ws_netscan_rescan,
         ws_firewall_test,
         ws_firewall_confirm,
         ws_firewall_cancel,
@@ -1341,6 +1348,47 @@ async def ws_firewall_status(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], await async_get_status(hass, runtime.store))
 
 
+# Owner-only, same reasoning as the firewall status gate: the discovered LAN
+# host/port/service map is itself a reconnaissance asset (docs/THREAT-MODEL.md's
+# netscan row), so no account but the owner may even read the last result.
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/netscan/status"})
+@websocket_api.async_response
+async def ws_netscan_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    connection.send_result(
+        msg["id"],
+        {
+            "enabled": runtime.store.settings.get(CONF_NETSCAN_ENABLED, False),
+            "port_list": runtime.store.settings.get(CONF_NETSCAN_PORT_LIST),
+            "max_concurrency": runtime.store.settings.get(CONF_NETSCAN_MAX_CONCURRENCY),
+            "result": runtime.store.data.get("netscan_result"),
+        },
+    )
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/netscan/rescan"})
+@websocket_api.async_response
+async def ws_netscan_rescan(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: ask the Probe to run an out-of-cycle scan on its next poll.
+
+    Same reasoning as ws_netscan_status's gate: triggering a LAN sweep on
+    demand is as sensitive as reading its result.
+    """
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    at = dt_util.utcnow().isoformat()
+    runtime.store.async_request_netscan_rescan(at)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_rescan_requested", "requested_at": at},
+    )
+    connection.send_result(msg["id"], {"ok": True, "requested_at": at})
+
+
 @require_owner
 @websocket_api.websocket_command(
     {
@@ -1817,6 +1865,10 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SNMP_USERNAME): vol.Any(None, validate_snmp_username),
         vol.Optional(CONF_SNMP_AUTH_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
         vol.Optional(CONF_SNMP_PRIV_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
+        # Netscan carries no credentials, so all three fields are plain settings.
+        vol.Optional(CONF_NETSCAN_ENABLED): bool,
+        vol.Optional(CONF_NETSCAN_PORT_LIST): validate_netscan_port_list,
+        vol.Optional(CONF_NETSCAN_MAX_CONCURRENCY): validate_netscan_max_concurrency,
     }
 )
 @websocket_api.async_response

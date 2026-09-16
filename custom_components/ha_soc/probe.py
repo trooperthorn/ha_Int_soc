@@ -23,9 +23,11 @@ from .const import (
     FIREWALL_RULE_ACTIONS,
     FIREWALL_RULE_FAMILIES,
     FIREWALL_RULE_PROTOS,
+    NETSCAN_CAPABILITIES,
     PROBE_ADDON_NAME,
     SERVICE_INGEST_PROBE_RESULT,
     SERVICE_POLL_FIREWALL_COMMAND,
+    SERVICE_POLL_NETSCAN_CONFIG,
     SERVICE_POLL_SNMP_CONFIG,
 )
 from .firewall import (
@@ -33,6 +35,8 @@ from .firewall import (
     async_report_from_addon,
     async_verify_or_pin_secret,
 )
+from .netscan import NETSCAN_HOST_SCHEMA, NETSCAN_MAX_HOSTS_PER_RESULT
+from .netscan import async_config_for_probe as async_netscan_config_for_probe
 from .secrets_store import HaSocSecretStore
 from .snmp import async_config_for_probe
 from .store import HaSocData
@@ -82,6 +86,13 @@ def _known_capabilities(reported: dict[str, bool] | None) -> dict[str, bool] | N
     return {key: bool(reported[key]) for key in FIREWALL_CAPABILITIES if key in reported}
 
 
+def _known_netscan_capabilities(reported: dict[str, bool] | None) -> dict[str, bool] | None:
+    """Same allowlist shape as _known_capabilities, for the Probe's netscan negotiation."""
+    if reported is None:
+        return None
+    return {key: bool(reported[key]) for key in NETSCAN_CAPABILITIES if key in reported}
+
+
 INGEST_SERVICE_SCHEMA = vol.Schema(
     {
         # Optional: the firewall poller calls this service too and never sends a port list.
@@ -100,6 +111,14 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         # Host interface names from the scanner, so the rule builder can offer them all.
         vol.Optional("interfaces"): vol.Any(None, [vol.All(str, vol.Length(min=1, max=15))]),
         vol.Optional("resource_limit_state"): vol.Any(None, {str: dict}),
+        # Netscan capability negotiation, same shape as firewall_capabilities: a Probe
+        # build too old to send this reports nothing and the panel treats it as absent.
+        vol.Optional("netscan_capabilities"): vol.Any(None, {str: bool}),
+        # One cycle's worth of discovered hosts; bounded so an ingest call cannot write
+        # an unbounded amount of scan data.
+        vol.Optional("netscan_result"): vol.Any(
+            None, vol.All([NETSCAN_HOST_SCHEMA], vol.Length(max=NETSCAN_MAX_HOSTS_PER_RESULT))
+        ),
         vol.Optional("snmp_status"): vol.Any(
             None,
             {
@@ -130,6 +149,16 @@ POLL_FIREWALL_SERVICE_SCHEMA = vol.Schema(
 )
 
 POLL_SNMP_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("generation"): vol.Any(
+            None, vol.All(str, vol.Length(max=64))
+        ),
+        vol.Optional("probe_secret"): vol.Any(None, str),
+    }
+)
+
+# Same shape as poll_snmp_config's schema; netscan carries no secret material.
+POLL_NETSCAN_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("generation"): vol.Any(
             None, vol.All(str, vol.Length(max=64))
@@ -306,6 +335,17 @@ def async_register_probe_service(
             status = dict(call.data["snmp_status"])
             status["reported_at"] = dt_util.utcnow().isoformat()
             store.async_set_snmp_status(status)
+        if call.data.get("netscan_result") is not None:
+            store.async_set_netscan_result(
+                {
+                    "hosts": call.data["netscan_result"],
+                    "capabilities": _known_netscan_capabilities(
+                        call.data.get("netscan_capabilities")
+                    ),
+                    "scanner_version": call.data.get("scanner_version"),
+                    "reported_at": dt_util.utcnow().isoformat(),
+                }
+            )
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
         # A rejected caller gets an empty answer, not an error.
@@ -331,6 +371,16 @@ def async_register_probe_service(
             return {"enabled": config["enabled"], "generation": config["generation"]}
         return config
 
+    async def _handle_poll_netscan(call: ServiceCall) -> dict:
+        if await _async_call_rejected(call, SERVICE_POLL_NETSCAN_CONFIG) is not None:
+            return {"enabled": False}
+        config = await async_netscan_config_for_probe(store.settings)
+        # Not part of the hashed "generation" material (that is settings-only):
+        # an on-demand rescan request the run script diffs against every poll,
+        # independent of whether the port list or concurrency cap changed.
+        config["rescan_requested_at"] = store.data.get("netscan_rescan_requested_at")
+        return config
+
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_PROBE_RESULT, _handle_ingest, schema=INGEST_SERVICE_SCHEMA
     )
@@ -348,6 +398,13 @@ def async_register_probe_service(
         schema=POLL_SNMP_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_POLL_NETSCAN_CONFIG,
+        _handle_poll_netscan,
+        schema=POLL_NETSCAN_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 def async_unregister_probe_service(hass: HomeAssistant) -> None:
@@ -356,6 +413,7 @@ def async_unregister_probe_service(hass: HomeAssistant) -> None:
         SERVICE_INGEST_PROBE_RESULT,
         SERVICE_POLL_FIREWALL_COMMAND,
         SERVICE_POLL_SNMP_CONFIG,
+        SERVICE_POLL_NETSCAN_CONFIG,
     ):
         if hass.services.has_service(DOMAIN, service):
             hass.services.async_remove(DOMAIN, service)

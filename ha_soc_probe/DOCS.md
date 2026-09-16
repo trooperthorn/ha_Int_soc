@@ -205,6 +205,39 @@ Two things to know before using it:
 A capped add-on that exceeds its memory limit is OOM-killed by the kernel;
 Supervisor's own add-on watchdog restarts it if enabled.
 
+## Netscan (optional, off by default)
+
+Local-subnet host/port discovery: a bounded TCP-connect sweep of this host's
+own IPv4 subnet(s) against a configurable port list, unioned with whatever
+the kernel's own ARP table (`/proc/net/arp`) already knows about. A
+successful connect gets one best-effort banner read and, on TLS-typical
+ports, one additional TLS handshake to read the peer certificate
+(verification disabled on purpose - a self-signed certificate on a LAN
+device is the expected case). Each discovered MAC gets a best-effort vendor
+label from a small, explicitly non-exhaustive static table, never treated as
+identity.
+
+This is stdlib Python only (`asyncio`, `ssl`, `socket`, `ipaddress`, `re`,
+`json`) - no `nmap`, no `scapy`, no Angry IP Scanner binary, and no new
+add-on privilege. It uses exactly the two things this add-on already has:
+an ordinary TCP-connect socket (no `NET_RAW`, no raw ICMP) and a read of a
+`/proc` file the kernel already populates.
+
+Off by default and owner-controlled the same way SNMP is: enabling it,
+the port list, and the concurrency cap all come from HA SOC's owner-only
+settings, delivered to this add-on over the same poll-service pattern
+(`poll_netscan_config`, mirroring `poll_snmp_config`). Results are ingested
+through the existing `ingest_probe_result` service the same way firewall
+and SNMP results already are. The discovered host/port/service map is
+gated owner-only on the WebSocket side, because a LAN service map is itself
+a reconnaissance asset - see the main repo's `docs/security.md` "Netscan
+capability" section.
+
+OS fingerprinting and UDP scanning are explicitly out of scope: both need
+either raw sockets (which this add-on deliberately does not have) or
+accepting an unreliable, easily-spoofed signal, and neither is worth the
+privilege or the false-positive cost for what this feature is for.
+
 ## What it deliberately does NOT do
 
 - **No process-name attribution.** Knowing *which port* is open is useful
@@ -213,10 +246,12 @@ Supervisor's own add-on watchdog restarts it if enabled.
   privilege on top of `host_network`. That's a real security cost for a
   nice-to-have, so this add-on doesn't ask for it. The HA SOC panel shows
   port + protocol only.
-- **No active scanning.** This reads the kernel's own connection table -
-  the same data `netstat`/`ss` show, rather than connecting outward to
-  probe ports, so it never generates outbound traffic or triggers an IDS
-  on your own network.
+- **No active scanning of *this host*.** The always-on port inventory reads
+  the kernel's own connection table - the same data `netstat`/`ss` show -
+  rather than connecting outward to probe ports, so it never generates
+  outbound traffic on its own. The separately opt-in netscan capability
+  below is the one deliberate exception: it does connect outward, only to
+  the local subnet, only when the owner turns it on.
 - **No UDP port-inventory claims.** `/proc/net/udp[6]` has no meaningful
   "listening" state the way TCP does, so the inventory does not label UDP
   sockets open/closed. The separately enabled SNMP agent does intentionally
@@ -226,9 +261,21 @@ Supervisor's own add-on watchdog restarts it if enabled.
 
 ```yaml
 scan_interval_hours: 6
+netscan_enabled: false
+netscan_port_list: [22, 23, 80, 443, 445, 3389, 8080, 8443]
+netscan_max_concurrency: 32
 ```
 
 `scan_interval_hours` (1–24, default 6): how often to re-scan and report.
+
+`netscan_enabled`, `netscan_port_list`, `netscan_max_concurrency`: documented
+defaults for the netscan capability described above, matching what a fresh
+HA SOC install starts with. The values actually in force at runtime are
+always whatever HA SOC's owner-only settings currently say, delivered fresh
+on every poll (the same pattern `scan_interval_hours` does not follow, but
+`netscan_*` and SNMP's settings do) - these add-on options exist so the
+schema documents the shape and the safe defaults, not because this add-on
+reads them at runtime.
 
 ## Requirements
 

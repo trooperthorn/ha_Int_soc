@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Optional netscan: local-subnet host/port discovery using TCP-connect
+  liveness, a banner grab, a TLS certificate read (no verification -- a
+  self-signed LAN certificate is expected), and a MAC vendor label from the
+  host's own ARP table. Stdlib Python only (asyncio, ssl, socket, ipaddress),
+  no NET_RAW, no ICMP, and no new add-on privileges; replaces the idea of
+  bundling nmap, scapy, or Angry IP Scanner. Off by default, owner-controlled
+  through the same settings service pattern as SNMP, and gated owner-only on
+  the WebSocket side because a LAN service map is itself a reconnaissance
+  asset. See docs/security.md's "Netscan capability" section.
 - Fixed SNMPv3 reconfiguration failing with `Permission denied` on
   `/data/ha_soc_snmp/persistent/snmpd.conf`. The persistent directory was
   chowned to the unprivileged `ha_soc_snmp` account, so the supervisor script

@@ -5,8 +5,9 @@ FROM ${BUILD_FROM}
 
 # apk upgrade pulls Alpine fixes published after the base digest.
 # Real iptables and iproute2 binaries, not busybox stubs; snmpset and tempio are deliberately absent.
+# python3 is stdlib-only for netscan.py: no pip, no scapy, no nmap/Angry IP Scanner binary.
 RUN apk upgrade --no-cache \
-    && apk add --no-cache iptables iproute2 net-snmp \
+    && apk add --no-cache iptables iproute2 net-snmp python3 \
     && rm -f /usr/bin/tempio
 
 # A dedicated account keeps the nobody scanner from reading Net-SNMP's mode-0600 USM key database.
@@ -21,7 +22,9 @@ RUN chmod a+x \
     /etc/services.d/ha_soc_probe_firewall/run \
     /etc/services.d/ha_soc_probe_firewall/finish \
     /etc/services.d/ha_soc_probe_snmp/run \
-    /etc/services.d/ha_soc_probe_snmp/finish
+    /etc/services.d/ha_soc_probe_snmp/finish \
+    /etc/services.d/ha_soc_probe_netscan/run \
+    /etc/services.d/ha_soc_probe_netscan/finish
 
 LABEL \
     org.opencontainers.image.title="HA SOC Probe" \
