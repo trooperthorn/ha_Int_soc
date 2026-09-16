@@ -73,6 +73,37 @@ async def test_device_matched_to_owning_integration(hass: HomeAssistant, store: 
     assert row["assigned_integration"] == {"entry_id": entry.entry_id, "domain": "zwave_js", "title": "Z-Wave"}
 
 
+async def test_davis_vantage_link_key_is_recognized(hass: HomeAssistant, store: HaSocData) -> None:
+    # davis_vantage stores its serial endpoint under CONFIG_LINK = "link"; a
+    # device showed unassigned in the panel despite Davis genuinely owning it
+    # because "link" was missing from INTEGRATION_LOCATOR_KEYS.
+    entry = MockConfigEntry(domain="davis_vantage", data={"link": "/dev/ttyUSB0"}, title="Davis Vantage (/dev/ttyUSB0)")
+    entry.add_to_hass(hass)
+
+    device = _usb_device("/dev/ttyUSB0")
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+
+    assert overview["unassigned_count"] == 0
+    row = overview["devices"][0]
+    assert row["assigned_integration"] == {"entry_id": entry.entry_id, "domain": "davis_vantage", "title": entry.title}
+
+
+async def test_yamaha_ynca_serial_url_key_is_recognized(hass: HomeAssistant, store: HaSocData) -> None:
+    # yamaha_ynca stores its serial endpoint under CONF_SERIAL_URL = "serial_url",
+    # a second locator key name missing alongside "link".
+    entry = MockConfigEntry(domain="yamaha_ynca", data={"serial_url": "/dev/ttyUSB0"}, title="Yamaha YNCA")
+    entry.add_to_hass(hass)
+
+    device = _usb_device("/dev/ttyUSB0")
+    with patch("homeassistant.components.usb.utils.scan_serial_ports", return_value=[device]):
+        overview = await async_peripheral_overview(hass, store)
+
+    assert overview["unassigned_count"] == 0
+    row = overview["devices"][0]
+    assert row["assigned_integration"]["domain"] == "yamaha_ynca"
+
+
 async def test_by_id_symlink_resolved_to_real_tty_path(hass: HomeAssistant, store: HaSocData, tmp_path) -> None:
     # Real symlink on disk, exactly like /dev/serial/by-id/usb-FTDI... -> ../../ttyUSB0,
     # so os.path.realpath() genuinely resolves it rather than being mocked.

@@ -185,6 +185,8 @@ INTEGRATION_LOCATOR_KEYS: tuple[str, ...] = (
     "device",
     "port",
     "serial_port",
+    "serial_url",
+    "link",
     "path",
     "usb_path",
     "entity_id",
