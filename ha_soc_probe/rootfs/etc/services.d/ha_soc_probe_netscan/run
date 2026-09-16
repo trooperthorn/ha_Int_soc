@@ -1,0 +1,100 @@
+#!/usr/bin/with-contenv bashio
+# Optional netscan poller: local-subnet TCP-connect discovery + ARP-table MAC
+# vendor labeling, stdlib Python only. Off until the owner enables it via the
+# same owner-only settings service that gates SNMP. See docs/security.md
+# "Netscan capability" and netscan.py's module docstring for the design.
+set -uo pipefail
+
+STATE_DIR="/data"
+SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
+LAST_RESCAN_FILE="${STATE_DIR}/ha_soc_probe_netscan_last_rescan"
+POLL_URL="http://supervisor/core/api/services/ha_soc/poll_netscan_config?return_response"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+# A full cycle can itself take a while (bounded sweep x port list, each
+# connect independently timed out), so the scan cadence stays on the same
+# order as SNMP's, not the 5s firewall cadence. The config poll itself runs
+# on a shorter cadence so an owner's "rescan now" request (rescan_requested_at
+# in the poll response) is picked up promptly without scanning that often.
+POLL_INTERVAL_SECONDS=300
+CHECK_INTERVAL_SECONDS=10
+PROBE_SECRET=""
+LAST_RESCAN_SEEN=""
+LAST_SCAN_AT=0
+
+# Shared with the firewall and SNMP services via /data; see ensure_probe_secret's twin comments there.
+ensure_probe_secret() {
+    if [ ! -s "${SECRET_FILE}" ]; then
+        ( set -o noclobber
+          umask 077
+          head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
+        ) 2>/dev/null || true
+    fi
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
+    PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+}
+
+STOP_REQUESTED=0
+on_stop_signal() { STOP_REQUESTED=1; }
+trap on_stop_signal TERM INT
+
+interruptible_sleep() {
+    sleep "$1" &
+    wait $! 2>/dev/null || true
+}
+
+ensure_probe_secret
+LAST_RESCAN_SEEN="$(cat "${LAST_RESCAN_FILE}" 2>/dev/null || echo "")"
+bashio::log.info "HA SOC Probe netscan poller starting; netscan remains off until owner-enabled."
+
+while true; do
+    if [ "${STOP_REQUESTED}" -eq 1 ]; then
+        bashio::log.info "HA SOC Probe netscan poller received a stop signal; exiting cleanly."
+        exit 0
+    fi
+
+    payload=$(jq -n --arg secret "${PROBE_SECRET}" '{probe_secret: $secret}')
+    response=$(curl -fsS -X POST \
+        -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+        -H "Content-Type: application/json" \
+        -d "${payload}" "${POLL_URL}" 2>/dev/null || echo "")
+
+    enabled=$(printf '%s' "${response}" | jq -r '.service_response.enabled // false' 2>/dev/null || echo "false")
+    if [ "${enabled}" = "true" ]; then
+        rescan_at=$(printf '%s' "${response}" | jq -r '.service_response.rescan_requested_at // ""' 2>/dev/null || echo "")
+        now=$(date +%s)
+        elapsed=$((now - LAST_SCAN_AT))
+        rescan_requested=0
+        if [ -n "${rescan_at}" ] && [ "${rescan_at}" != "${LAST_RESCAN_SEEN}" ]; then
+            rescan_requested=1
+        fi
+
+        if [ "${rescan_requested}" -eq 1 ] || [ "${elapsed}" -ge "${POLL_INTERVAL_SECONDS}" ]; then
+            port_list=$(printf '%s' "${response}" | jq -c '.service_response.port_list // []' 2>/dev/null || echo "[]")
+            max_concurrency=$(printf '%s' "${response}" | jq -r '.service_response.max_concurrency // 32' 2>/dev/null || echo "32")
+
+            if [ "${rescan_requested}" -eq 1 ]; then
+                bashio::log.info "Netscan: owner requested an immediate rescan; starting now (ports=${port_list}, max_concurrency=${max_concurrency})."
+            else
+                bashio::log.info "Netscan: starting a scan cycle (ports=${port_list}, max_concurrency=${max_concurrency})."
+            fi
+            if ! SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN}" PROBE_SECRET="${PROBE_SECRET}" \
+                python3 /usr/lib/ha_soc/netscan.py \
+                    --ports "${port_list}" \
+                    --max-concurrency "${max_concurrency}" \
+                    --ingest-url "${INGEST_URL}"
+            then
+                bashio::log.warning "Netscan: scan cycle exited non-zero; will retry next cycle."
+            fi
+            LAST_SCAN_AT=$(date +%s)
+            if [ "${rescan_requested}" -eq 1 ]; then
+                LAST_RESCAN_SEEN="${rescan_at}"
+                printf '%s' "${LAST_RESCAN_SEEN}" > "${LAST_RESCAN_FILE}" 2>/dev/null || true
+            fi
+        fi
+    fi
+
+    if [ "${STOP_REQUESTED}" -eq 1 ]; then
+        exit 0
+    fi
+    interruptible_sleep "${CHECK_INTERVAL_SECONDS}"
+done

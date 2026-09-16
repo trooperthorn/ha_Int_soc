@@ -17,6 +17,9 @@ import {
   FirewallStatus,
   FirewallPendingTest,
   ScannerDomainCoverage,
+  NetscanStatus,
+  NetscanHost,
+  NetscanOpenPort,
   fetchScannerListing,
   scanIntegrationNow,
   exportFinding,
@@ -32,6 +35,8 @@ import {
   confirmFirewallTest,
   cancelFirewallTest,
   discardFirewallPending,
+  fetchNetscanStatus,
+  requestNetscanRescan,
 } from "../data/ha-soc-ws";
 
 const STATUS_OPTIONS = ["new", "confirmed", "dismissed", "resolved"];
@@ -203,6 +208,11 @@ export class HaSocScannerView extends HaSocCustomizableView {
   // The firewall feature is owner-only server-side; defaults false and stays false on a failed lookup (fail closed).
   @state() private _isOwner = false;
 
+  // Netscan is owner-only for the same reason as the firewall status gate (see docs/THREAT-MODEL.md's netscan row).
+  @state() private _netscan: NetscanStatus | null = null;
+  @state() private _netscanRescanSubmitting = false;
+  @state() private _netscanError: string | null = null;
+
   // Column sort state per table; null keeps each table's default order.
   @state() private _misconfigSort: SortState | null = null;
   @state() private _scannerSort: SortState | null = null;
@@ -210,6 +220,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
   @state() private _portSort: SortState | null = null;
   @state() private _fwRulesSort: SortState | null = null;
   @state() private _coverageSort: SortState | null = null;
+  @state() private _netscanSort: SortState | null = null;
 
   private static readonly MISCONFIG_SORT: Record<string, (f: Finding) => unknown> = {
     check: (f) => f.check,
@@ -254,6 +265,13 @@ export class HaSocScannerView extends HaSocCustomizableView {
     port: (p) => p.port,
     proto: (p) => p.proto,
     interface: (p) => p.interface,
+  };
+
+  private static readonly NETSCAN_HOST_SORT: Record<string, (h: NetscanHost) => unknown> = {
+    ip: (h) => h.ip.split(".").map((n) => n.padStart(3, "0")).join("."),
+    mac: (h) => h.mac ?? null,
+    vendor: (h) => h.vendor ?? null,
+    open_ports: (h) => h.open_ports?.length ?? 0,
   };
 
   private static readonly FW_RULE_SORT: Record<string, (r: FirewallRule) => unknown> = {
@@ -317,6 +335,10 @@ export class HaSocScannerView extends HaSocCustomizableView {
       // ha_soc/firewall/status is owner-only; not asked as a non-owner.
       this._firewall = this._isOwner
         ? await fetchFirewallStatus(this.hass).catch(() => null)
+        : null;
+      // ha_soc/netscan/status is owner-only too; same reconnaissance-asset reasoning.
+      this._netscan = this._isOwner
+        ? await fetchNetscanStatus(this.hass).catch(() => null)
         : null;
       this._maybeManageFirewallPolling();
     } catch (err: any) {
@@ -467,6 +489,22 @@ export class HaSocScannerView extends HaSocCustomizableView {
       this._fwError = err?.message ?? "Failed to discard the pending firewall test.";
     } finally {
       this._fwSubmitting = false;
+    }
+  }
+
+  private async _onNetscanRescan() {
+    this._netscanError = null;
+    this._netscanRescanSubmitting = true;
+    try {
+      await requestNetscanRescan(this.hass);
+      // The Probe picks up the request on its own poll cadence (up to a few
+      // seconds), so the fresh result isn't back yet; a follow-up load would
+      // just re-show the same result. Re-fetch status only for the ack.
+      this._netscan = await fetchNetscanStatus(this.hass).catch(() => this._netscan);
+    } catch (err: any) {
+      this._netscanError = err?.message ?? "Failed to request a rescan.";
+    } finally {
+      this._netscanRescanSubmitting = false;
     }
   }
 
@@ -848,6 +886,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
       },
       { id: "host_probe", title: "Host Probe", render: () => this._renderProbeCard() },
       { id: "firewall_rules", title: "Firewall Rules", render: () => this._renderFirewallCard() },
+      { id: "netscan", title: "Network Scan", render: () => this._renderNetscanCard() },
     ];
     return html`
       ${this._scanError
@@ -1203,6 +1242,136 @@ export class HaSocScannerView extends HaSocCustomizableView {
           ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">${this._fwError}</p>`
           : nothing}
       </div>
+    `;
+  }
+
+  private _renderNetscanCard() {
+    const probe = this._probe;
+    // Same prerequisite as Host Probe and Firewall Rules: the add-on must be running.
+    if (!probe?.supervisor || !probe?.installed) return nothing;
+    // Owner-only in its entirety, same reasoning as ha_soc/netscan/status's server gate:
+    // a LAN service map is a reconnaissance asset (docs/THREAT-MODEL.md's netscan row).
+    if (!this._isOwner) {
+      return html`
+        <div class="card">
+          <h3>Network Scan <span class="tag cosmetic">owner only</span></h3>
+          <p class="muted" style="font-size:12.5px;">
+            The network scan is available to the account owner only.
+          </p>
+        </div>
+      `;
+    }
+    const netscan = this._netscan;
+    if (!netscan) return nothing;
+
+    const result = netscan.result;
+    // A Probe build too old to negotiate netscan reports no capabilities at all; treat that
+    // the same as "not capable" rather than assuming an old build behaves like a new one.
+    const capable = !!result && result.capabilities?.tcp_connect === true;
+
+    return html`
+      <div class="card">
+        <h3>
+          Network Scan
+          <span class="tag ${netscan.enabled ? "enforced" : "cosmetic"}">
+            ${netscan.enabled ? "enabled" : "disabled"}
+          </span>
+        </h3>
+        <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+          Local-subnet TCP-connect discovery from the HA SOC Probe add-on: which hosts answer
+          on the configured ports, a best-effort banner or TLS certificate read, and a MAC
+          vendor label from the host's own ARP table. Stdlib-only on the Probe — no raw
+          sockets, no ICMP. Configure the port list and enable it under Settings.
+        </p>
+        ${!netscan.enabled
+          ? html`<div class="empty">Netscan is disabled; enable it under Settings to start scanning.</div>`
+          : !result
+            ? html`<div class="empty">No scan reported yet.</div>`
+            : !capable
+              ? html`
+                  <div class="empty">
+                    This Probe build hasn't reported netscan capability yet; update the HA SOC
+                    Probe add-on to use this feature.
+                  </div>
+                `
+              : html`
+                  <p class="muted" style="font-size:12px;">
+                    Last reported ${new Date(result.reported_at).toLocaleString()}
+                    ${result.scanner_version ? html`(${result.scanner_version})` : nothing}
+                  </p>
+                  ${!result.hosts.length
+                    ? html`<div class="empty">No hosts discovered.</div>`
+                    : this._renderNetscanHostsTable(result.hosts)}
+                `}
+        <div class="toolbar" style="margin-top:12px;">
+          <button
+            class="ha-btn"
+            ?disabled=${this._netscanRescanSubmitting || !netscan.enabled}
+            title=${netscan.enabled
+              ? "Ask the Probe to run a scan on its next poll, ahead of its normal schedule."
+              : "Enable netscan under Settings first."}
+            @click=${this._onNetscanRescan}
+          >
+            Rescan now
+          </button>
+        </div>
+        ${this._netscanError
+          ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;margin-top:10px;">${this._netscanError}</p>`
+          : nothing}
+      </div>
+    `;
+  }
+
+  private _renderNetscanPortsCell(ports: NetscanOpenPort[] | null | undefined) {
+    if (!ports || !ports.length) return html`<td class="muted">none</td>`;
+    return html`
+      <td>
+        ${ports.map(
+          (p) => html`
+            <div style="margin-bottom:2px;">
+              <span class="pill high"><span class="dot"></span>${p.port}</span>
+              ${p.service_guess ? html`<span class="muted">${p.service_guess}</span>` : nothing}
+              ${p.banner ? html`<span class="mono muted" title=${p.banner}> — ${p.banner.slice(0, 40)}</span>` : nothing}
+              ${p.tls
+                ? html`<span
+                    class="pill ${p.tls.self_signed ? "medium" : "low"}"
+                    title=${[p.tls.subject && `subject: ${p.tls.subject}`, p.tls.issuer && `issuer: ${p.tls.issuer}`, p.tls.not_after && `expires: ${p.tls.not_after}`]
+                      .filter(Boolean)
+                      .join("\n")}
+                    ><span class="dot"></span>TLS${p.tls.self_signed ? " (self-signed)" : ""}</span
+                  >`
+                : nothing}
+            </div>
+          `
+        )}
+      </td>
+    `;
+  }
+
+  private _renderNetscanHostsTable(hosts: NetscanHost[]) {
+    return html`
+      <table>
+        <thead>
+          <tr>
+            ${sortableTh("IP", "ip", this._netscanSort, (n) => (this._netscanSort = n))}
+            ${sortableTh("MAC", "mac", this._netscanSort, (n) => (this._netscanSort = n))}
+            ${sortableTh("Vendor", "vendor", this._netscanSort, (n) => (this._netscanSort = n))}
+            ${sortableTh("Open ports", "open_ports", this._netscanSort, (n) => (this._netscanSort = n))}
+          </tr>
+        </thead>
+        <tbody>
+          ${sortRows(hosts, this._netscanSort, HaSocScannerView.NETSCAN_HOST_SORT).map(
+            (h) => html`
+              <tr>
+                <td class="mono">${h.ip}</td>
+                <td class="mono muted">${h.mac ?? "—"}</td>
+                <td class="muted">${h.vendor ?? "—"}</td>
+                ${this._renderNetscanPortsCell(h.open_ports)}
+              </tr>
+            `
+          )}
+        </tbody>
+      </table>
     `;
   }
 

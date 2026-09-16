@@ -1,0 +1,11 @@
+#!/usr/bin/with-contenv bashio
+# Netscan has no armed/mutating state to revert (unlike the firewall service):
+# a cycle either finished and reported, or it did not, and the next poll just
+# tries again. This finish script only logs the stop/crash outcome.
+EXIT_CODE="${1:-0}"
+
+if [ "${EXIT_CODE}" -eq 0 ] 2>/dev/null; then
+    bashio::log.info "HA SOC Probe netscan poller stopped cleanly."
+else
+    bashio::log.warning "HA SOC Probe netscan poller exited with code ${EXIT_CODE}; s6 will restart it."
+fi

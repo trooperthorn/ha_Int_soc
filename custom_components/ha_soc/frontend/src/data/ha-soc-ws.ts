@@ -249,6 +249,46 @@ export interface FirewallStatus {
   history: FirewallPendingTest[];
 }
 
+// Mirrors netscan.py's schemas: one open port found on a discovered host.
+export interface NetscanTlsInfo {
+  subject?: string | null;
+  issuer?: string | null;
+  not_after?: string | null;
+  self_signed?: boolean | null;
+}
+
+export interface NetscanOpenPort {
+  port: number;
+  banner?: string | null;
+  service_guess?: string | null;
+  tls?: NetscanTlsInfo | null;
+}
+
+export interface NetscanHost {
+  ip: string;
+  mac?: string | null;
+  // Best-effort label from the Probe's static, explicitly non-exhaustive OUI table; never identity.
+  vendor?: string | null;
+  open_ports?: NetscanOpenPort[] | null;
+}
+
+// Mirrors probe.py's INGEST_SERVICE_SCHEMA netscan_capabilities allowlist (const.py's NETSCAN_CAPABILITIES).
+export type NetscanCapability = "tcp_connect";
+
+export interface NetscanResult {
+  hosts: NetscanHost[];
+  capabilities?: Partial<Record<NetscanCapability, boolean>> | null;
+  scanner_version: string | null;
+  reported_at: string;
+}
+
+export interface NetscanStatus {
+  enabled: boolean;
+  port_list: number[] | null;
+  max_concurrency: number | null;
+  result: NetscanResult | null;
+}
+
 // Mirrors peripherals.py's async_peripheral_overview(), built on core's own USB discovery data.
 export interface AssignedIntegration {
   entry_id: string;
@@ -1267,6 +1307,14 @@ export const cancelFirewallTest = (hass: HomeAssistant, testId: string) =>
 // Owner-only discard of a pending test after the add-on went silent; the server refuses it while the countdown runs.
 export const discardFirewallPending = (hass: HomeAssistant) =>
   ws<{ ok: boolean }>(hass, { type: "ha_soc/firewall/discard_pending" });
+
+// Owner-only, same reasoning as the firewall status gate: the discovered LAN host/port map is a reconnaissance asset.
+export const fetchNetscanStatus = (hass: HomeAssistant) =>
+  ws<NetscanStatus>(hass, { type: "ha_soc/netscan/status" });
+
+// Asks the Probe to run an out-of-cycle scan on its next poll; see docs/security.md "Netscan capability".
+export const requestNetscanRescan = (hass: HomeAssistant) =>
+  ws<{ ok: boolean; requested_at: string }>(hass, { type: "ha_soc/netscan/rescan" });
 
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });

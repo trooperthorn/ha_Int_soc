@@ -97,6 +97,21 @@ CONF_SNMP_PRIV_PASSPHRASE = "snmp_priv_passphrase"
 DEFAULT_SNMP_ENABLED = False
 DEFAULT_SNMP_PORT = 161
 
+# Optional local-subnet host/port discovery: TCP-connect liveness + banner grab + TLS cert
+# read + ARP-table MAC vendor label, stdlib-only in the Probe (no NET_RAW/ICMP). See
+# docs/security.md "Netscan capability" and docs/THREAT-MODEL.md's netscan row.
+CONF_NETSCAN_ENABLED = "netscan_enabled"
+DEFAULT_NETSCAN_ENABLED = False
+CONF_NETSCAN_PORT_LIST = "netscan_port_list"
+DEFAULT_NETSCAN_PORT_LIST: list[int] = [22, 23, 80, 443, 445, 3389, 8080, 8443]
+CONF_NETSCAN_MAX_CONCURRENCY = "netscan_max_concurrency"
+DEFAULT_NETSCAN_MAX_CONCURRENCY = 32
+NETSCAN_PORT_MIN = 1
+NETSCAN_PORT_MAX = 65535
+NETSCAN_MAX_PORT_LIST_ENTRIES = 64
+NETSCAN_MAX_CONCURRENCY_MIN = 1
+NETSCAN_MAX_CONCURRENCY_MAX = 128
+
 CONF_UNIFI_NETWORK_HOST = "unifi_network_host"
 CONF_UNIFI_NETWORK_API_KEY = "unifi_network_api_key"
 CONF_UNIFI_NETWORK_VERIFY_SSL = "unifi_network_verify_ssl"
@@ -219,6 +234,20 @@ SERVICE_POLL_FIREWALL_COMMAND = "poll_firewall_command"
 
 # Separate from poll_firewall_command on purpose; see docs/design.md.
 SERVICE_POLL_SNMP_CONFIG = "poll_snmp_config"
+
+# Same shape as poll_snmp_config: the Probe's netscan cycle polls this for its
+# owner-controlled enabled flag, port list, and concurrency cap.
+SERVICE_POLL_NETSCAN_CONFIG = "poll_netscan_config"
+
+# Field name carrying the netscan result list inside ingest_probe_result's payload;
+# no separate service is registered for results, matching the single-ingest-endpoint
+# shape already used for open_ports, firewall_*, and snmp_status.
+SERVICE_INGEST_NETSCAN_RESULT = "netscan_result"
+
+# What the Probe negotiates about its own netscan capability on ingest, so the panel
+# never shows netscan controls for a Probe build too old to run it.
+NETSCAN_CAPABILITY_TCP_CONNECT = "tcp_connect"
+NETSCAN_CAPABILITIES = [NETSCAN_CAPABILITY_TCP_CONNECT]
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
 # "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.

@@ -69,6 +69,17 @@ is therefore a takeover primitive, and even the read-only status maps the
 attack surface. The panel hides the card from non-owner admins for the same
 reason; the server-side gate is what actually enforces it.
 
+### Netscan control access gating
+
+`ws_netscan_status` is owner-only, the same tier and reasoning as firewall
+status: netscan is read-only against the network (TCP-connect + the host's
+own ARP table only, see security.md's "Netscan capability" section), so it
+never risks the platform going unreachable the way a firewall change can,
+but the LAN host/port/service/vendor map it produces is itself a
+reconnaissance asset, so no account but the owner may even read it. Enabling
+netscan and setting its port list/concurrency cap go through the same
+owner-only `ha_soc/settings/set` path as every other owner-only setting.
+
 ### UniFi write-back gating
 
 `ws_network_security_suggestion_apply` writes controller configuration

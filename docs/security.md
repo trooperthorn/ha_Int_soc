@@ -89,6 +89,54 @@ The Supervisor system-user context is the primary gate on every inbound Probe se
 
 `async_verify_or_pin_secret`: the add-on generates a random secret once, persists it in `/data`, and sends it on every call. Core pins the first non-empty secret it sees on a call that already passed the context check, then requires an exact match, so the first-caller-pins race the old trust-on-first-use design had is closed to anything that cannot call through the proxy. A missing secret is always a rejection; the old branch that accepted "nothing pinned and nothing presented" is gone because it let any local caller through until the real add-on's first report. An add-on too old to send a secret is rejected until updated, and the owner-only pairing reset is the recovery. The comparison uses `hmac.compare_digest` so a forger cannot learn the pin byte by byte through timing. The pin lives in the private secret store under `PROBE_PAIRING_SECRET_KEY`, fetched at use time (SEC-1).
 
+### Netscan capability
+
+Netscan is local-subnet host/port discovery: a bounded TCP-connect sweep of
+the Probe's own IPv4 subnet(s) against an owner-configured port list, unioned
+with whatever the host kernel's own ARP table (`/proc/net/arp`) already
+knows. This is the intentional replacement for the idea of bundling `nmap`,
+`scapy`, or an Angry IP Scanner binary into the Probe: everything it uses is
+a plain unprivileged TCP-connect socket and a read of a `/proc` file the
+kernel already populates, so it needs no `NET_RAW`, no raw ICMP, and no new
+entry in the add-on's `privileged:` list beyond what firewall control
+already requires. A successful connect gets one best-effort banner read;
+TLS-typical ports (443, 8443, 993, 995, 465, 636, 8883, 9443) get one
+additional TLS handshake to read the peer certificate, verification
+disabled on purpose because a self-signed certificate on a LAN device is
+the expected, common case, not a finding. Both reuse the same TCP
+connection's data path, nothing separate is opened for banners versus
+certificates. A small, explicitly non-exhaustive curated regex table
+(`SERVICE_SIGNATURES`) turns a banner into a best-effort service guess, and
+a static, explicitly non-exhaustive OUI prefix table turns a discovered MAC
+into a best-effort vendor label; neither is ever treated as identity or fed
+into any access decision.
+
+Netscan is off by default and owner-controlled through the same
+`ha_soc/settings/set` path SNMP already uses (`netscan_enabled`,
+`netscan_port_list`, `netscan_max_concurrency`), delivered to the Probe on
+its own poll service (`poll_netscan_config`, the same generation-tagged
+shape as `poll_snmp_config`) rather than the add-on's own `config.yaml`
+options, so a change takes effect without a Probe restart. Results are
+ingested through the existing `ingest_probe_result` service, validated by
+`NETSCAN_HOST_SCHEMA` before they ever reach the store, the same
+single-ingest-endpoint shape `open_ports`, `firewall_*`, and `snmp_status`
+already use. Reading the last result (`ha_soc/netscan/status`) is
+`@require_owner`, the same tier and the same reasoning as firewall status:
+a discovered host/port/service/vendor map for the whole LAN is itself a
+reconnaissance asset, so no account but the owner may even look, regardless
+of `access_level`.
+
+OS fingerprinting and UDP scanning are explicitly out of scope, both for the
+same underlying reason. Real OS fingerprinting (TCP/IP stack quirks, TTL and
+window-size heuristics) needs a raw socket to see packet-level detail this
+capability deliberately does not have access to, so it would require the
+exact `NET_RAW` grant this design set out to avoid. UDP is connectionless,
+so "is this port open" cannot be answered by a connect attempt the way TCP
+answers it: a real UDP probe needs either a raw socket to see ICMP
+port-unreachable replies (the same missing privilege) or protocol-specific
+payloads per port, and even then a silently-dropped probe produces a false
+"open," a reliability trade this feature does not take on.
+
 ### External audit ingest
 
 `ha_soc.ingest_audit` reuses the Probe's two gates: the Supervisor user's context

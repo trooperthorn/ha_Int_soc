@@ -18,23 +18,26 @@ from .const import (
     DEFAULT_ACCESS_LEVEL,
     DEFAULT_AUDIT_MAX_BYTES,
     DEFAULT_AUDIT_RETENTION_DAYS,
+    DEFAULT_DASHBOARD_EDIT_ENABLED,
+    DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_MFA_GRACE_PERIOD_DAYS,
     DEFAULT_MFA_POLICY,
+    DEFAULT_NETSCAN_ENABLED,
+    DEFAULT_NETSCAN_MAX_CONCURRENCY,
+    DEFAULT_NETSCAN_PORT_LIST,
+    DEFAULT_PIHOLE_VERIFY_SSL,
     DEFAULT_SCANNER_ENABLED,
-    DEFAULT_DASHBOARD_EDIT_ENABLED,
-    DEFAULT_SSH_COLLECTION_ENABLED,
-    DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
-    DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
+    DEFAULT_SECURITY_SOURCES_ENABLED,
     DEFAULT_SNMP_ENABLED,
     DEFAULT_SNMP_PORT,
-    DEFAULT_PIHOLE_VERIFY_SSL,
-    DEFAULT_SECURITY_SOURCES_ENABLED,
+    DEFAULT_SSH_COLLECTION_ENABLED,
     DEFAULT_SYSLOG_FACILITY,
     DEFAULT_SYSLOG_FORMAT,
     DEFAULT_SYSLOG_PORT,
     DEFAULT_SYSLOG_TLS_VERIFY,
     DEFAULT_SYSLOG_TRANSPORT,
+    DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
     DEFAULT_UNIFI_VERIFY_SSL,
     DETECTION_RESOLVED,
     STATUS_DISMISSED,
@@ -99,6 +102,10 @@ class SettingsData(TypedDict):
     snmp_listen_address: str | None
     snmp_port: int
     snmp_username: str | None
+    # Netscan carries no credentials; the whole config lives here.
+    netscan_enabled: bool
+    netscan_port_list: list[int]
+    netscan_max_concurrency: int
 
 
 class StoreData(TypedDict):
@@ -143,6 +150,14 @@ class StoreData(TypedDict):
     panel_layout: dict[str, dict[str, dict[str, Any]]]
     # last bounded, non-secret runtime report from the Probe's snmpd supervisor
     snmp_status: dict[str, Any] | None
+    # last netscan cycle's discovered hosts, from the Probe; owner-only to read
+    # (LAN service map = reconnaissance asset, see docs/security.md).
+    netscan_result: dict[str, Any] | None
+    # ISO timestamp of the owner's last "rescan now" request; the Probe's poll
+    # loop compares this against what it last actioned (see netscan.py's
+    # run script) and triggers an out-of-cycle scan on a change. None until
+    # the first request.
+    netscan_rescan_requested_at: str | None
     # source slug -> {"seq", "hash", "at"}: the last external audit record accepted per source
     external_audit_heads: dict[str, dict[str, Any]]
     # UniFi configuration baseline (CM-6) and the drift transitions since it:
@@ -192,6 +207,9 @@ def default_store_data() -> StoreData:
             snmp_listen_address=None,
             snmp_port=DEFAULT_SNMP_PORT,
             snmp_username=None,
+            netscan_enabled=DEFAULT_NETSCAN_ENABLED,
+            netscan_port_list=list(DEFAULT_NETSCAN_PORT_LIST),
+            netscan_max_concurrency=DEFAULT_NETSCAN_MAX_CONCURRENCY,
         ),
         audit_head=None,
         permissions_matrix={},
@@ -234,6 +252,8 @@ def default_store_data() -> StoreData:
         },
         panel_layout={},
         snmp_status=None,
+        netscan_result=None,
+        netscan_rescan_requested_at=None,
         external_audit_heads={},
     )
 
@@ -552,6 +572,16 @@ class HaSocData:
 
     def async_set_snmp_status(self, status: dict[str, Any]) -> None:
         self.data["snmp_status"] = status
+        self.async_schedule_save()
+
+    def async_set_netscan_result(self, result: dict[str, Any]) -> None:
+        self.data["netscan_result"] = result
+        self.async_schedule_save()
+
+    def async_request_netscan_rescan(self, at: str) -> None:
+        """Record an owner "rescan now" request; the Probe picks it up on its
+        next poll (see ha_soc_probe_netscan's run script)."""
+        self.data["netscan_rescan_requested_at"] = at
         self.async_schedule_save()
 
     def async_set_peripheral_ignored(
