@@ -954,9 +954,15 @@ class IntegrationHealth:
             ),
             detail=_capped_detail("cloud_integrations", cloud_integrations),
         )
-        # Inventory, not a problem: no Repairs mirror, upsert only.
-        self._store.async_upsert_finding("misconfig_findings", finding["id"], finding)
-        return [finding]
+        # Inventory, not a problem: INFO severity means _async_finalize_check never
+        # mirrors it to Repairs, but routing through it still reconciles the row via
+        # _async_resolve_missing so a stale row clears if this check ever stops firing.
+        return self._async_finalize_check(
+            "cloud_egress_inventory",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )
 
     def _supervisor_missing_key_item(
         self, check: str, slug: str, name: str, missing: list[str]
@@ -1067,7 +1073,7 @@ class IntegrationHealth:
         from homeassistant.helpers.hassio import is_hassio
 
         if not is_hassio(self.hass):
-            return []
+            return self._async_finalize_check("ssh_addon_inventory", [])
 
         from homeassistant.components.hassio import get_addons_info
 
@@ -1093,8 +1099,12 @@ class IntegrationHealth:
             ),
             detail=_capped_detail("addons", ssh_addons),
         )
-        self._store.async_upsert_finding("misconfig_findings", finding["id"], finding)
-        return [finding]
+        return self._async_finalize_check(
+            "ssh_addon_inventory",
+            [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })],
+        )
 
     async def _check_ssh_addon_exposed(self) -> list[dict]:
         """check="ssh_addon_exposed"; Supervisor-only, no-ops off Supervisor."""

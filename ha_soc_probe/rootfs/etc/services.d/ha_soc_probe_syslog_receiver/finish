@@ -1,0 +1,8 @@
+#!/usr/bin/with-contenv bashio
+EXIT_CODE="${1:-0}"
+
+if [ "${EXIT_CODE}" -eq 0 ] 2>/dev/null; then
+    bashio::log.info "HA SOC Probe syslog receiver stopped cleanly."
+else
+    bashio::log.warning "HA SOC Probe syslog receiver exited with code ${EXIT_CODE}; s6 will restart it."
+fi

@@ -315,6 +315,37 @@ export interface PeripheralOverview {
   unassigned_count: number;
 }
 
+// Mirrors probe.py's INGEST_SERVICE_SCHEMA "syslog_receiver_status" shape.
+export interface SyslogReceiverStatus {
+  enabled: boolean;
+  running: boolean;
+  generation?: string | null;
+  port?: number | null;
+  entry_count?: number | null;
+  last_received_at?: string | null;
+  error?: string | null;
+  reported_at?: string;
+}
+
+// Mirrors custom_components/ha_soc/syslog_receiver.py's parse_syslog_line() output shape.
+export interface SyslogReceiverEntry {
+  format: "rfc3164" | "rfc5424" | "raw";
+  facility: number | null;
+  severity: number | null;
+  severity_name: string | null;
+  timestamp: string;
+  hostname: string | null;
+  app_name: string | null;
+  message: string;
+  raw: boolean;
+}
+
+export interface SyslogReceiverEntriesResult {
+  entries: SyslogReceiverEntry[];
+  total: number;
+  status: SyslogReceiverStatus | null;
+}
+
 // Mirrors store.py's SettingsData exactly; the same object backs the native options-flow dialog.
 export type AccessLevel = "owner_only" | "owner_and_admins";
 export type MfaPolicy = "audit_only" | "auto_deactivate";
@@ -330,6 +361,12 @@ export interface HaSocSettings {
   syslog_port: number;
   syslog_tls_verify: boolean;
   syslog_facility: number;
+  // Syslog RECEIVER: the opposite direction (e.g. the "logspout" HA add-on
+  // forwarding every container's stdout/stderr over syslog+udp). No
+  // credentials; carries no masked-secret fields.
+  syslog_receiver_enabled: boolean;
+  syslog_receiver_port: number;
+  syslog_receiver_status?: SyslogReceiverStatus | null;
   syslog_status?: {
     enabled: boolean;
     transport: SyslogTransport;
@@ -359,6 +396,10 @@ export interface HaSocSettings {
   ssh_private_key_set?: boolean;
   // Device manufacturer and model strings go to NIST's NVD only while this is on.
   nvd_lookups_enabled: boolean;
+  // Phase 1 informational master switch only; does not gate any integration's
+  // runtime behavior yet. changed_at is server-stamped, never client-set.
+  external_connections_enabled: boolean;
+  external_connections_changed_at: string | null;
   // Secrets come back masked ("[redacted]" or ""); send a new value to change one, nothing or the placeholder to leave it.
   nvd_api_key: string | null;
   nvd_api_key_set?: boolean;
@@ -821,6 +862,8 @@ export interface NetworkOverview {
   failing_endpoint_count: number;
   generated_at: string;
   protect: ProtectStatus;
+  // Subnet picker for the Firewall Rules builder (Scanner tab); name + CIDR only.
+  networks: { name: string; ip_subnet: string | null }[];
 }
 
 // Mirrors pihole.py's async_pihole_overview().
@@ -1305,6 +1348,9 @@ export const scanIntegrationNow = (hass: HomeAssistant, domain?: string) =>
 export const exportFinding = (hass: HomeAssistant, findingId: string) =>
   ws(hass, { type: "ha_soc/scanner/export", finding_id: findingId });
 
+export const setScannerFindingStatus = (hass: HomeAssistant, findingId: string, status: string, note?: string) =>
+  ws(hass, { type: "ha_soc/scanner/set_status", finding_id: findingId, status, note });
+
 export const fetchHealth = (hass: HomeAssistant) =>
   ws<{ integrations: Record<string, unknown>[]; misconfig_findings: Finding[] }>(hass, {
     type: "ha_soc/health/list",
@@ -1357,6 +1403,59 @@ export const fetchNetscanStatus = (hass: HomeAssistant) =>
 // Asks the Probe to run an out-of-cycle scan on its next poll; see docs/security.md "Netscan capability".
 export const requestNetscanRescan = (hass: HomeAssistant) =>
   ws<{ ok: boolean; requested_at: string }>(hass, { type: "ha_soc/netscan/rescan" });
+
+// Owner-only, paginated: forwarded container logs (logspout-compatible syslog receiver).
+// Most recent first; `limit` defaults server-side to 200, capped at 500.
+export const fetchSyslogReceiverEntries = (hass: HomeAssistant, limit?: number) =>
+  ws<SyslogReceiverEntriesResult>(hass, {
+    type: "ha_soc/syslog_receiver/entries",
+    ...(limit ? { limit } : {}),
+  });
+
+export interface ConnectionTestResult {
+  ok: boolean;
+  reachable: boolean;
+  error: string | null;
+}
+
+export const testUnifiNetworkConnection = (hass: HomeAssistant) =>
+  ws<ConnectionTestResult>(hass, { type: "ha_soc/unifi_network/test_connection" });
+
+export const testUnifiProtectConnection = (hass: HomeAssistant) =>
+  ws<ConnectionTestResult>(hass, { type: "ha_soc/unifi_protect/test_connection" });
+
+export const testPiholeConnection = (hass: HomeAssistant) =>
+  ws<ConnectionTestResult>(hass, { type: "ha_soc/pihole/test_connection" });
+
+export const testTechnitiumConnection = (hass: HomeAssistant) =>
+  ws<ConnectionTestResult>(hass, { type: "ha_soc/technitium/test_connection" });
+
+export interface ProbeRestartResult {
+  ok: boolean;
+  reason?: string;
+  error?: string;
+}
+
+// Owner-only: restarts the HA SOC Probe add-on via Supervisor. A real,
+// disruptive action — the button click itself is the confirmation.
+export const restartProbe = (hass: HomeAssistant) =>
+  ws<ProbeRestartResult>(hass, { type: "ha_soc/probe/restart" });
+
+// Read-only, owner-gated: candidate LAN hosts for Pi-hole/Technitium from the
+// most recent stored netscan result. Never errors; empty lists when netscan
+// has not run or is disabled.
+export interface DiscoveredCandidate {
+  ip: string;
+  confidence: "high" | "low";
+}
+
+export interface DiscoverCandidatesResult {
+  pihole: DiscoveredCandidate[];
+  technitium: DiscoveredCandidate[];
+}
+
+export const discoverContainerCandidates = (hass: HomeAssistant) =>
+  ws<DiscoverCandidatesResult>(hass, { type: "ha_soc/containers/discover_candidates" });
 
 export const fetchIntegrationSecurity = (hass: HomeAssistant) =>
   ws<IntegrationSecurityOverview>(hass, { type: "ha_soc/integration_security/list" });
@@ -1900,6 +1999,9 @@ export interface HacsRepositoryRow {
   entity_id: string | null;
   entity_state: string | null;
   in_progress: boolean;
+  authors: string[];
+  // ISO 8601 release/update timestamp, or null when HACS hasn't populated one.
+  last_updated: string | null;
 }
 
 export interface HacsStatus {

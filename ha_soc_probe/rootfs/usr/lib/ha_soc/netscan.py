@@ -71,6 +71,14 @@ TLS_TYPICAL_PORTS = frozenset({443, 8443, 993, 995, 465, 636, 8883, 9443})
 # A small, curated, explicitly non-exhaustive set of banner signatures.
 # Matched against whatever plaintext was read (and, for TLS ports, an empty
 # string when only a certificate came back); first match wins.
+#
+# NOTE: _probe_one() never sends a request, only connects and reads -- so an
+# HTTP-family server (including Pi-hole's and Technitium's web UIs) will
+# usually stay silent until spoken to, and these two banner patterns will
+# rarely fire in practice. They are kept anyway for the case a banner (or a
+# body, if a future revision starts sending a request) does contain the
+# product name, and are backstopped by PORT_SERVICE_HINTS below for the
+# common silent-banner case.
 SERVICE_SIGNATURES: list[tuple[str, re.Pattern[str]]] = [
     ("ssh", re.compile(r"^SSH-\d")),
     ("ftp", re.compile(r"^220[ -].*FTP", re.IGNORECASE)),
@@ -82,14 +90,32 @@ SERVICE_SIGNATURES: list[tuple[str, re.Pattern[str]]] = [
     ("vnc", re.compile(r"^RFB \d")),
     ("mqtt", re.compile(r"^\x10")),
     ("smb", re.compile(r"^\x00\x00\x00")),
+    ("pihole", re.compile(r"pi-hole", re.IGNORECASE)),
+    ("technitium", re.compile(r"technitium", re.IGNORECASE)),
 ]
 
+# Lower-confidence, port-only fallback for services whose web UI does not
+# volunteer a banner on a bare connect (see the SERVICE_SIGNATURES note
+# above). Only entries with a distinctive, well-known default port belong
+# here -- generic ports like 80/443 are deliberately excluded because they
+# would produce too many false positives (e.g. Pi-hole has no such port and
+# is intentionally not represented here). 5380 is Technitium DNS Server's
+# documented default web console port (see docs/protocol.md's Technitium
+# section for the API base; the port itself is upstream's own default, not
+# independently re-verified in this repo).
+PORT_SERVICE_HINTS: dict[int, str] = {
+    5380: "technitium",
+}
 
-def _guess_service(text: str) -> str | None:
+
+def _guess_service(text: str) -> tuple[str | None, str | None]:
+    """Returns (service_guess, confidence). confidence is "high" for a
+    banner-text match, "low" for a port-only heuristic fallback, None when
+    there was no basis for a guess."""
     for name, pattern in SERVICE_SIGNATURES:
         if pattern.search(text):
-            return name
-    return None
+            return name, "high"
+    return None, None
 
 
 def _read_arp_table() -> dict[str, str]:
@@ -266,9 +292,14 @@ async def _probe_one(
     entry: dict[str, object] = {"port": port}
     if banner:
         entry["banner"] = banner.strip()
-    service_guess = _guess_service(banner) or ("tls" if tls_info is not None else None)
+    service_guess, confidence = _guess_service(banner)
+    if service_guess is None and port in PORT_SERVICE_HINTS:
+        service_guess, confidence = PORT_SERVICE_HINTS[port], "low"
+    if service_guess is None and tls_info is not None:
+        service_guess, confidence = "tls", "high"
     if service_guess:
         entry["service_guess"] = service_guess
+        entry["service_confidence"] = confidence
     if tls_info is not None:
         entry["tls"] = tls_info
     return entry

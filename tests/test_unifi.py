@@ -249,6 +249,42 @@ async def test_overview_not_configured(hass: HomeAssistant, store: HaSocData, se
     assert overview["reachable"] is False
     assert overview["clients"] == []
     assert overview["devices"] == []
+    # No core unifi integration loaded: the Firewall Rules subnet picker's
+    # list degrades to empty, never an error.
+    assert overview["networks"] == []
+
+
+async def test_overview_networks_from_core_snapshot(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    """The `networks` field the Firewall Rules builder's subnet picker reads
+    is derived from the same core snapshot `network_name_map` already uses,
+    filtered to entries with a usable CIDR and slimmed to name + ip_subnet."""
+    fake_snap = {
+        "available": True,
+        "networks": [
+            {"name": "LAN", "ip_subnet": "192.168.1.0/24"},
+            {"name": "IoT", "ip_subnet": "192.168.10.0/24"},
+            # No usable CIDR: dropped from the picker list.
+            {"name": "Guest", "ip_subnet": None},
+            {"name": None, "ip_subnet": "192.168.20.0/24"},
+        ],
+    }
+    with patch.object(unifi, "_core_network_snapshot", return_value=fake_snap):
+        overview = await async_network_overview(hass, store, secrets)
+    assert overview["networks"] == [
+        {"name": "LAN", "ip_subnet": "192.168.1.0/24"},
+        {"name": "IoT", "ip_subnet": "192.168.10.0/24"},
+        {"name": "192.168.20.0/24", "ip_subnet": "192.168.20.0/24"},
+    ]
+
+
+async def test_overview_networks_empty_when_core_snapshot_unavailable(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    with patch.object(unifi, "_core_network_snapshot", return_value=None):
+        overview = await async_network_overview(hass, store, secrets)
+    assert overview["networks"] == []
 
 
 async def test_overview_unreachable_reports_error_not_raise(

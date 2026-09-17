@@ -855,6 +855,9 @@ class IntegrationScanner:
 
     @callback
     def _on_config_entry_changed(self, change: ConfigEntryChange, entry: ConfigEntry) -> None:
+        if change == ConfigEntryChange.REMOVED:
+            self._on_config_entry_removed(entry)
+            return
         if change != ConfigEntryChange.ADDED:
             return
         # The scanner toggle governs every scan path, this trigger included.
@@ -862,6 +865,32 @@ class IntegrationScanner:
             return
         # Scan a newly added integration once, off the event loop.
         self.hass.async_create_task(self._async_scan_on_install(entry.domain))
+
+    @callback
+    def _on_config_entry_removed(self, entry: ConfigEntry) -> None:
+        """A domain's findings must not linger forever once fully uninstalled.
+
+        Unlike a rescan (_reconcile_domain_findings), there is no fresh report to
+        compare against here — every not-already-dismissed/confirmed finding for
+        the domain resolves outright, since the integration is gone.
+        """
+        domain = entry.domain
+        # Another config entry of the same domain may still be installed; only
+        # resolve once the domain has no entries left at all.
+        if any(e.domain == domain for e in self.hass.config_entries.async_entries(domain)):
+            return
+        now = dt_util.utcnow().isoformat()
+        for finding_id, finding in list(self._store.data["scanner_findings"].items()):
+            if finding.get("domain") != domain:
+                continue
+            if finding.get("status") in ("dismissed", "confirmed", "resolved"):
+                continue
+            self._store.async_set_finding_status(
+                "scanner_findings", finding_id, "resolved",
+                by_user_id=None, note=None, at=now,
+            )
+            finding["resolved_reason"] = "integration_removed"
+        self._store.async_schedule_save()
 
     async def _async_scan_on_install(self, domain: str) -> None:
         """Log-and-continue wrapper for the fire-and-forget on-install scan task."""

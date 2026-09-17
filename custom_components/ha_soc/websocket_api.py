@@ -12,6 +12,7 @@ from functools import wraps
 from typing import Any
 
 import voluptuous as vol
+import homeassistant.util.dt as dt_util
 from homeassistant.components import websocket_api
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import Unauthorized
@@ -26,6 +27,7 @@ from .const import (
     CONF_AUDIT_MAX_BYTES,
     CONF_AUDIT_RETENTION_DAYS,
     CONF_DASHBOARD_EDIT_ENABLED,
+    CONF_EXTERNAL_CONNECTIONS_ENABLED,
     CONF_GITHUB_TOKEN,
     CONF_HYGIENE_SCAN_YAML_DASHBOARDS,
     CONF_MFA_GRACE_PERIOD_DAYS,
@@ -53,6 +55,8 @@ from .const import (
     CONF_SYSLOG_FORMAT,
     CONF_SYSLOG_HOST,
     CONF_SYSLOG_PORT,
+    CONF_SYSLOG_RECEIVER_ENABLED,
+    CONF_SYSLOG_RECEIVER_PORT,
     CONF_SYSLOG_TLS_VERIFY,
     CONF_SYSLOG_TRANSPORT,
     CONF_TECHNITIUM_API_TOKEN,
@@ -66,6 +70,7 @@ from .const import (
     CONF_UNIFI_PROTECT_API_KEY,
     CONF_UNIFI_PROTECT_HOST,
     CONF_UNIFI_PROTECT_VERIFY_SSL,
+    PROBE_ADDON_SLUG,
     DEFAULT_ACCESS_LEVEL,
     DEFAULT_DASHBOARD_EDIT_ENABLED,
     DEFAULT_SSH_COLLECTION_ENABLED,
@@ -272,6 +277,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_scanner_list,
         ws_scanner_scan_now,
         ws_scanner_export,
+        ws_scanner_set_status,
         ws_health_list,
         ws_logs_fault,
         ws_logs_targets,
@@ -302,6 +308,13 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_status,
         ws_netscan_status,
         ws_netscan_rescan,
+        ws_syslog_receiver_entries,
+        ws_unifi_network_test_connection,
+        ws_probe_restart,
+        ws_unifi_protect_test_connection,
+        ws_pihole_test_connection,
+        ws_technitium_test_connection,
+        ws_containers_discover_candidates,
         ws_firewall_test,
         ws_firewall_confirm,
         ws_firewall_cancel,
@@ -1043,6 +1056,31 @@ async def ws_scanner_export(hass: HomeAssistant, connection, msg: dict) -> None:
 
 
 @require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/scanner/set_status",
+        vol.Required("finding_id"): str,
+        vol.Required("status"): vol.In(["new", "confirmed", "dismissed", "resolved"]),
+        vol.Optional("note"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_scanner_set_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    runtime.store.async_set_finding_status(
+        "scanner_findings",
+        msg["finding_id"],
+        msg["status"],
+        by_user_id=connection.user.id,
+        note=msg.get("note"),
+        at=dt_util.utcnow().isoformat(),
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_soc_access
 @websocket_api.websocket_command({vol.Required("type"): "ha_soc/health/list"})
 @websocket_api.async_response
 async def ws_health_list(hass: HomeAssistant, connection, msg: dict) -> None:
@@ -1390,6 +1428,199 @@ async def ws_netscan_rescan(hass: HomeAssistant, connection, msg: dict) -> None:
         detail={"action": "netscan_rescan_requested", "requested_at": at},
     )
     connection.send_result(msg["id"], {"ok": True, "requested_at": at})
+
+
+# Owner-only, same reasoning as netscan/firewall status: forwarded container
+# logs from every add-on on the host are a broad information-disclosure
+# surface (secrets/paths/internal hostnames can land in stdout), so only the
+# owner may read them. A dedicated fetch command (rather than embedding in
+# HaSocSettings like snmp_status) because this is a growing, paginated list,
+# not a point-in-time snapshot.
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/syslog_receiver/entries",
+        vol.Optional("limit", default=200): vol.All(vol.Coerce(int), vol.Range(min=1, max=500)),
+    }
+)
+@websocket_api.async_response
+async def ws_syslog_receiver_entries(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    entries: list[dict[str, Any]] = runtime.store.data.get("syslog_receiver_entries") or []
+    limit = msg["limit"]
+    # Most recent first, bounded to the requested page size.
+    page = list(reversed(entries[-limit:]))
+    connection.send_result(
+        msg["id"],
+        {
+            "entries": page,
+            "total": len(entries),
+            "status": runtime.store.data.get("syslog_receiver_status"),
+        },
+    )
+
+
+async def _connection_test_result(overview: dict[str, Any]) -> dict[str, Any]:
+    """Adapt a never-raises *_overview()/*_status() dict to the compact
+    {ok, reachable, error} shape the Test Connection buttons expect."""
+    if not overview.get("configured"):
+        return {"ok": True, "reachable": False, "error": "not configured"}
+    return {
+        "ok": True,
+        "reachable": bool(overview.get("reachable")),
+        "error": overview.get("error"),
+    }
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/unifi_network/test_connection"})
+@websocket_api.async_response
+async def ws_unifi_network_test_connection(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .unifi import async_network_overview
+
+    runtime = _runtime(hass)
+    try:
+        overview = await async_network_overview(hass, runtime.store, runtime.secrets)
+        result = await _connection_test_result(overview)
+    except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+        _LOGGER.exception("Unexpected error testing UniFi Network connection")
+        result = {"ok": True, "reachable": False, "error": str(err)}
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "connection_test", "service": "unifi_network", "result": result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/probe/restart"})
+@websocket_api.async_response
+async def ws_probe_restart(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: restart the HA SOC Probe add-on via Supervisor.
+
+    Restarting interrupts whatever the Probe is mid-doing (SNMP, netscan,
+    firewall reporting) while it comes back up, so this is a real,
+    disruptive action. The confirmation bar is the button click itself: it
+    only lives on the owner-gated Settings page and there is no destructive
+    data loss involved (the add-on simply restarts its services), so a
+    second propose/confirm round trip like the firewall-rule flow would add
+    friction without meaningfully protecting anything. Never raises: every
+    failure mode comes back as {"ok": false, "reason": ...}.
+    """
+    runtime = _runtime(hass)
+    result: dict[str, Any]
+
+    if "hassio" not in hass.config.components:
+        result = {"ok": False, "reason": "not_supervisor"}
+    else:
+        try:
+            from homeassistant.components.hassio import get_supervisor_client
+        except Exception:  # noqa: BLE001 - hassio internals not guaranteed stable
+            result = {"ok": False, "reason": "hassio_unavailable"}
+        else:
+            try:
+                client = get_supervisor_client(hass)
+            except Exception:  # noqa: BLE001
+                client = None
+            if client is None:
+                result = {"ok": False, "reason": "no_supervisor_client"}
+            else:
+                try:
+                    await client.addons.restart_addon(PROBE_ADDON_SLUG)
+                except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+                    _LOGGER.exception("Failed to restart the %s add-on", PROBE_ADDON_SLUG)
+                    result = {"ok": False, "reason": "restart_failed", "error": str(err)}
+                else:
+                    result = {"ok": True}
+
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "probe_restart_requested", "result": result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/unifi_protect/test_connection"})
+@websocket_api.async_response
+async def ws_unifi_protect_test_connection(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .unifi import async_protect_status
+
+    runtime = _runtime(hass)
+    try:
+        overview = await async_protect_status(hass, runtime.store, runtime.secrets)
+        result = await _connection_test_result(overview)
+    except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+        _LOGGER.exception("Unexpected error testing UniFi Protect connection")
+        result = {"ok": True, "reachable": False, "error": str(err)}
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "connection_test", "service": "unifi_protect", "result": result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/pihole/test_connection"})
+@websocket_api.async_response
+async def ws_pihole_test_connection(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .pihole import async_pihole_overview
+
+    runtime = _runtime(hass)
+    try:
+        overview = await async_pihole_overview(hass, runtime.store, runtime.secrets)
+        result = await _connection_test_result(overview)
+    except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+        _LOGGER.exception("Unexpected error testing Pi-hole connection")
+        result = {"ok": True, "reachable": False, "error": str(err)}
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "connection_test", "service": "pihole", "result": result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/technitium/test_connection"})
+@websocket_api.async_response
+async def ws_technitium_test_connection(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .technitium import async_technitium_overview
+
+    runtime = _runtime(hass)
+    try:
+        overview = await async_technitium_overview(hass, runtime.store, runtime.secrets)
+        result = await _connection_test_result(overview)
+    except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+        _LOGGER.exception("Unexpected error testing Technitium connection")
+        result = {"ok": True, "reachable": False, "error": str(err)}
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "connection_test", "service": "technitium", "result": result},
+    )
+    connection.send_result(msg["id"], result)
+
+
+# Read-only, owner-gated for the same reason ws_netscan_status is: the
+# discovered candidate IPs are a reconnaissance asset. No audit log needed
+# since nothing is changed, matching ws_netscan_status's own precedent.
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/containers/discover_candidates"})
+@websocket_api.async_response
+async def ws_containers_discover_candidates(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .netscan import candidate_hosts_for_service
+
+    runtime = _runtime(hass)
+    netscan_result = runtime.store.data.get("netscan_result")
+    result = {
+        "pihole": candidate_hosts_for_service(netscan_result, "pihole"),
+        "technitium": candidate_hosts_for_service(netscan_result, "technitium"),
+    }
+    connection.send_result(msg["id"], result)
 
 
 @require_owner
@@ -1808,6 +2039,7 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
     payload = await _masked_settings(runtime.store.settings, runtime.secrets)
     payload["syslog_status"] = runtime.syslog.status
     payload["snmp_status"] = runtime.store.data.get("snmp_status")
+    payload["syslog_receiver_status"] = runtime.store.data.get("syslog_receiver_status")
     connection.send_result(msg["id"], payload)
 
 
@@ -1827,6 +2059,10 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SYSLOG_TLS_VERIFY): bool,
         # local0 through local7 only.
         vol.Optional(CONF_SYSLOG_FACILITY): vol.All(vol.Coerce(int), vol.Range(min=16, max=23)),
+        # Syslog RECEIVER (opposite direction; e.g. logspout forwarding
+        # container logs to HA SOC). Carries no credentials.
+        vol.Optional(CONF_SYSLOG_RECEIVER_ENABLED): bool,
+        vol.Optional(CONF_SYSLOG_RECEIVER_PORT): vol.All(vol.Coerce(int), vol.Range(min=1, max=65535)),
         # The floor of 30 stops an accidental "1" from erasing an evidence trail.
         vol.Optional("evidence_retention_days"): vol.All(vol.Coerce(int), vol.Range(min=30, max=3650)),
         vol.Optional(CONF_SCANNER_ENABLED): bool,
@@ -1840,6 +2076,9 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SSH_USERNAME): vol.Any(None, vol.All(cv.string, vol.Length(max=64))),
         # Off switch for NVD lookups (consumed by vulns.py).
         vol.Optional("nvd_lookups_enabled"): bool,
+        # Phase 1 informational master switch; external_connections_changed_at is
+        # always server-stamped below, never accepted from the client.
+        vol.Optional(CONF_EXTERNAL_CONNECTIONS_ENABLED): bool,
         vol.Optional(CONF_NVD_API_KEY): str,
         vol.Optional(CONF_GITHUB_TOKEN): str,
         # Partial per-rule overrides; ranges come from detections.THRESHOLD_SPECS.
@@ -1955,6 +2194,12 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
                 stored_thresholds.setdefault(rule, {})[name] = value
         runtime.store.async_update_settings(detection_thresholds=stored_thresholds)
 
+    # Server-computed stamping only: never trust a client-supplied timestamp.
+    if CONF_EXTERNAL_CONNECTIONS_ENABLED in changes:
+        current = runtime.store.settings.get(CONF_EXTERNAL_CONNECTIONS_ENABLED)
+        if changes[CONF_EXTERNAL_CONNECTIONS_ENABLED] != current:
+            changes["external_connections_changed_at"] = dt_util.utcnow().isoformat()
+
     if changes:
         runtime.store.async_update_settings(**changes)
 
@@ -1987,6 +2232,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
     payload = await _masked_settings(runtime.store.settings, runtime.secrets)
     payload["syslog_status"] = runtime.syslog.status
     payload["snmp_status"] = runtime.store.data.get("snmp_status")
+    payload["syslog_receiver_status"] = runtime.store.data.get("syslog_receiver_status")
     connection.send_result(msg["id"], payload)
 
 

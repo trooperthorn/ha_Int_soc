@@ -9,9 +9,11 @@ import {
   ContainerLogTargets,
   FaultLogOverview,
   HaLogEntry,
+  SyslogReceiverEntry,
   fetchContainerLog,
   fetchFaultLog,
   fetchLogTargets,
+  fetchSyslogReceiverEntries,
   fetchSystemLog,
 } from "../data/ha-soc-ws";
 
@@ -34,6 +36,9 @@ function logLevelClass(level: string): string {
 
 // Captured-records table, the default source; container targets are raw text in a <pre>.
 const SOURCE_SYSTEM = "system";
+// Forwarded container logs (logspout-compatible syslog receiver): a continuously-growing
+// feed, so it renders as its own filterable/sortable table, not a raw-<pre> pull.
+const SOURCE_SYSLOG_RECEIVER = "syslog_receiver";
 
 @customElement("ha-soc-logs-view")
 export class HaSocLogsView extends HaSocCustomizableView {
@@ -129,6 +134,21 @@ export class HaSocLogsView extends HaSocCustomizableView {
   @state() private _source = SOURCE_SYSTEM;
   @state() private _containerLog: ContainerLog | null = null;
   @state() private _containerLoading = false;
+  @state() private _syslogEntries: SyslogReceiverEntry[] = [];
+  @state() private _syslogTotal = 0;
+  @state() private _syslogLoading = false;
+  @state() private _syslogError: string | null = null;
+  @state() private _syslogHostFilter = "";
+  @state() private _syslogSeverityFilter = "";
+  @state() private _syslogSort: SortState | null = null;
+
+  private static readonly SYSLOG_SORT: Record<string, (e: SyslogReceiverEntry) => unknown> = {
+    time: (e) => e.timestamp,
+    hostname: (e) => e.hostname ?? "",
+    app_name: (e) => e.app_name ?? "",
+    severity: (e) => (e.severity ?? 99),
+    message: (e) => e.message,
+  };
 
   // Time and count sort as numbers; level sorts by severity rank with unknown levels sinking.
   private static readonly LOG_SORT: Record<string, (e: HaLogEntry) => unknown> = {
@@ -186,16 +206,45 @@ export class HaSocLogsView extends HaSocCustomizableView {
     }
   }
 
+  private async _loadSyslogReceiver() {
+    this._syslogLoading = true;
+    this._syslogError = null;
+    try {
+      const result = await fetchSyslogReceiverEntries(this.hass);
+      this._syslogEntries = result.entries;
+      this._syslogTotal = result.total;
+    } catch (err: any) {
+      this._syslogError = err?.message ?? String(err);
+    } finally {
+      this._syslogLoading = false;
+    }
+  }
+
   private _onSourceChange(e: Event) {
     const value = (e.target as HTMLSelectElement).value;
     this._source = value;
     this._containerLog = null;
-    if (value !== SOURCE_SYSTEM) this._loadContainer(value);
+    if (value === SOURCE_SYSLOG_RECEIVER) this._loadSyslogReceiver();
+    else if (value !== SOURCE_SYSTEM) this._loadContainer(value);
   }
 
   private _refresh() {
     if (this._source === SOURCE_SYSTEM) this._load();
+    else if (this._source === SOURCE_SYSLOG_RECEIVER) this._loadSyslogReceiver();
     else this._loadContainer(this._source);
+  }
+
+  private get _syslogHosts(): string[] {
+    return Array.from(new Set(this._syslogEntries.map((e) => e.hostname ?? "(unknown)"))).sort();
+  }
+
+  private get _syslogFiltered(): SyslogReceiverEntry[] {
+    const filtered = this._syslogEntries.filter((e) => {
+      if (this._syslogHostFilter && (e.hostname ?? "(unknown)") !== this._syslogHostFilter) return false;
+      if (this._syslogSeverityFilter && e.severity_name !== this._syslogSeverityFilter) return false;
+      return true;
+    });
+    return sortRows(filtered, this._syslogSort, HaSocLogsView.SYSLOG_SORT);
   }
 
   private _toggleExpanded(index: number) {
@@ -282,6 +331,59 @@ export class HaSocLogsView extends HaSocCustomizableView {
     `;
   }
 
+  private _renderSyslogReceiver() {
+    const s = this._syslogSort;
+    const on = (next: SortState) => {
+      this._syslogSort = next;
+    };
+    if (this._syslogLoading && !this._syslogEntries.length) return html`<div class="empty">Loading…</div>`;
+    if (this._syslogError)
+      return html`
+        <div style="border:1px solid var(--error-color,#db4437);border-radius:6px;padding:10px 12px;">
+          <p style="font-size:13px;margin:0 0 8px;">${this._syslogError}</p>
+          <button class="ha-btn" @click=${() => this._loadSyslogReceiver()}>Retry</button>
+        </div>
+      `;
+    const filtered = this._syslogFiltered;
+    if (!filtered.length) return html`<div class="empty">No forwarded log entries received yet.</div>`;
+    return html`
+      <p class="muted" style="font-size:12px;">
+        Showing the most recent ${this._syslogEntries.length} of ${this._syslogTotal} buffered
+        entries (most recent first).
+      </p>
+      <table>
+        <thead>
+          <tr>
+            ${sortableTh("Time", "time", s, on)}
+            ${sortableTh("Hostname", "hostname", s, on)}
+            ${sortableTh("App / Tag", "app_name", s, on)}
+            ${sortableTh("Severity", "severity", s, on)}
+            ${sortableTh("Message", "message", s, on)}
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map(
+            (entry) => html`
+              <tr>
+                <td>${new Date(entry.timestamp).toLocaleString()}</td>
+                <td class="muted">${entry.hostname ?? "(unknown)"}</td>
+                <td class="muted">${entry.app_name ?? "-"}</td>
+                <td>
+                  ${entry.severity_name
+                    ? html`<span class="log-level ${logLevelClass(entry.severity_name.toUpperCase())}"
+                        ><span class="dot"></span>${entry.severity_name}</span
+                      >`
+                    : html`<span class="muted">-</span>`}
+                </td>
+                <td>${entry.message}${entry.raw ? html`<span class="muted"> (unparsed)</span>` : nothing}</td>
+              </tr>
+            `
+          )}
+        </tbody>
+      </table>
+    `;
+  }
+
   render() {
     const filtered = this._filtered;
     const s = this._sort;
@@ -291,6 +393,7 @@ export class HaSocLogsView extends HaSocCustomizableView {
       this._expanded = new Set();
     };
     const showingSystem = this._source === SOURCE_SYSTEM;
+    const showingSyslogReceiver = this._source === SOURCE_SYSLOG_RECEIVER;
 
     const sections: LayoutSection[] = [
       { id: "fault_log", title: "Home Assistant Crash Log", render: () => this._renderFaultLogCard() },
@@ -307,6 +410,11 @@ export class HaSocLogsView extends HaSocCustomizableView {
                 (<code>/config/logs</code>), deduplicated, most recent first. This shows Home
                 Assistant's own captured log records only. For an app or add-on's full
                 container output, pick it from the source selector.`
+            : showingSyslogReceiver
+            ? html`Container logs forwarded to HA SOC's syslog receiver (e.g. by the
+                "logspout" HA add-on), which forwards every Docker container's
+                stdout/stderr over syslog+udp — a continuously-growing feed, most
+                recent first. Configure the receiver in Settings → SIEM / Syslog Export.`
             : html`Raw container output captured by the Supervisor, the same stream as the
                 add-on's own Log tab. ANSI colors are stripped server-side.`}
         </p>
@@ -316,6 +424,9 @@ export class HaSocLogsView extends HaSocCustomizableView {
                 <select @change=${this._onSourceChange} aria-label="Log source">
                   <option value=${SOURCE_SYSTEM} ?selected=${showingSystem}>
                     Integration logs (captured records)
+                  </option>
+                  <option value=${SOURCE_SYSLOG_RECEIVER} ?selected=${showingSyslogReceiver}>
+                    Forwarded container logs (logspout)
                   </option>
                   ${this._targets.targets.map(
                     (t) => html`<option value=${t.id} ?selected=${t.id === this._source}>${t.name}</option>`
@@ -351,12 +462,45 @@ export class HaSocLogsView extends HaSocCustomizableView {
                 </select>
               `
             : nothing}
+          ${showingSyslogReceiver
+            ? html`
+                <select
+                  aria-label="Filter by hostname"
+                  @change=${(e: Event) => {
+                    this._syslogHostFilter = (e.target as HTMLSelectElement).value;
+                  }}
+                >
+                  <option value="" ?selected=${this._syslogHostFilter === ""}>All hostnames</option>
+                  ${this._syslogHosts.map(
+                    (h) => html`<option value=${h} ?selected=${h === this._syslogHostFilter}>${h}</option>`
+                  )}
+                </select>
+                <select
+                  aria-label="Filter by severity"
+                  @change=${(e: Event) => {
+                    this._syslogSeverityFilter = (e.target as HTMLSelectElement).value;
+                  }}
+                >
+                  <option value="" ?selected=${this._syslogSeverityFilter === ""}>All severities</option>
+                  ${["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"].map(
+                    (sev) =>
+                      html`<option value=${sev} ?selected=${sev === this._syslogSeverityFilter}>${sev}</option>`
+                  )}
+                </select>
+              `
+            : nothing}
           <span class="spacer"></span>
-          <button class="ha-btn" @click=${this._refresh} ?disabled=${this._containerLoading}>
-            ${this._containerLoading ? "Loading…" : "Refresh"}
+          <button
+            class="ha-btn"
+            @click=${this._refresh}
+            ?disabled=${this._containerLoading || this._syslogLoading}
+          >
+            ${this._containerLoading || this._syslogLoading ? "Loading…" : "Refresh"}
           </button>
         </div>
-        ${!showingSystem
+        ${showingSyslogReceiver
+          ? this._renderSyslogReceiver()
+          : !showingSystem
           ? this._renderContainerLog()
           : this._loading
           ? html`<div class="empty">Loading…</div>`

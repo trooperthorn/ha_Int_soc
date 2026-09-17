@@ -214,6 +214,7 @@ class DeviceVulnerabilityTracker:
 
         findings: list[dict] = []
         findings.extend(self._check_firmware_currency(devices_by_id))
+        self._resolve_findings_for_removed_devices(devices_by_id)
 
         # The owner's toggle governs the whole outbound pass; a missing key means on.
         if not self.store.settings.get("nvd_lookups_enabled", True):
@@ -342,6 +343,8 @@ class DeviceVulnerabilityTracker:
         entity_registry = er.async_get(self.hass)
         now_iso = dt_util.utcnow().isoformat()
         findings: list[dict] = []
+        # device ids with an active (state == "on") firmware_outdated finding this pass.
+        outdated_device_ids: set[str] = set()
 
         for state in self.hass.states.async_all("update"):
             if state.attributes.get("device_class") != "firmware":
@@ -378,8 +381,55 @@ class DeviceVulnerabilityTracker:
             }
             self.store.async_upsert_finding(FINDINGS_TABLE, finding_id, finding)
             findings.append(finding)
+            outdated_device_ids.add(device.id)
+
+        self._resolve_no_longer_outdated_firmware(devices_by_id, outdated_device_ids, now_iso)
 
         return findings
+
+    def _resolve_no_longer_outdated_firmware(
+        self,
+        devices_by_id: dict[str, dr.DeviceEntry],
+        outdated_device_ids: set[str],
+        now_iso: str,
+    ) -> None:
+        """Auto-clear firmware_outdated findings whose device's update entity is
+        no longer in state "on" — the negative case _check_firmware_currency
+        itself only ever upserts, never resolves.
+        """
+        for finding_id, finding in list(self.store.data.get(FINDINGS_TABLE, {}).items()):
+            if not finding_id.endswith(":firmware_outdated"):
+                continue
+            device_id = finding.get("device_id")
+            if device_id in outdated_device_ids:
+                continue
+            if device_id not in devices_by_id:
+                # Handled separately by _resolve_findings_for_removed_devices.
+                continue
+            if finding.get("status") in (STATUS_DISMISSED, STATUS_CONFIRMED, STATUS_RESOLVED):
+                continue
+            self.store.async_set_finding_status(
+                FINDINGS_TABLE, finding_id, STATUS_RESOLVED,
+                by_user_id=None, note="firmware_current", at=now_iso,
+            )
+
+    def _resolve_findings_for_removed_devices(self, devices_by_id: dict[str, dr.DeviceEntry]) -> None:
+        """Resolve ALL findings (any type) whose device_id no longer exists in the
+        current device registry — matches health.py's system-initiated-resolve
+        convention of by_user_id=None.
+        """
+        now_iso = dt_util.utcnow().isoformat()
+        for finding_id, finding in list(self.store.data.get(FINDINGS_TABLE, {}).items()):
+            device_id = finding.get("device_id")
+            if device_id in devices_by_id:
+                continue
+            if finding.get("status") in (STATUS_DISMISSED, STATUS_CONFIRMED, STATUS_RESOLVED):
+                continue
+            self.store.async_set_finding_status(
+                FINDINGS_TABLE, finding_id, STATUS_RESOLVED,
+                by_user_id=None, note="device_removed", at=now_iso,
+            )
+            finding["resolved_reason"] = "device_removed"
 
     async def _async_correlate_cves(self, devices: list[dr.DeviceEntry]) -> list[dict]:
         now = dt_util.utcnow()

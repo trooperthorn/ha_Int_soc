@@ -86,6 +86,60 @@ export const sharedStyles = css`
     letter-spacing: -0.005em;
     color: var(--primary-text-color);
   }
+  /* Two-column responsive grid for the Settings tab's cards; collapses to
+     one column under 700px of the panel's own inline size (:host has
+     container-type: inline-size). */
+  .settings-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 16px;
+    align-items: start;
+  }
+  @container (max-width: 700px) {
+    .settings-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  /* Collapsible cards: native <details class="card"> with the h3 (and an
+     optional status pill) moved into <summary>. */
+  details.card {
+    padding: 0;
+    margin-bottom: 0;
+  }
+  details.card > summary.card-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    list-style: none;
+    cursor: pointer;
+    padding: 16px;
+    user-select: none;
+  }
+  details.card > summary.card-summary::-webkit-details-marker {
+    display: none;
+  }
+  details.card > summary.card-summary::before {
+    content: "▸";
+    display: inline-block;
+    margin-right: 8px;
+    font-size: 11px;
+    color: var(--secondary-text-color);
+    transition: transform 0.15s ease;
+  }
+  details.card[open] > summary.card-summary::before {
+    transform: rotate(90deg);
+  }
+  details.card > summary.card-summary h3 {
+    margin: 0;
+    flex: 1;
+  }
+  details.card > *:not(summary) {
+    padding: 0 16px;
+  }
+  details.card > *:last-child {
+    padding-bottom: 16px;
+  }
   table {
     width: 100%;
     border-collapse: collapse;
@@ -158,6 +212,30 @@ export const sharedStyles = css`
     background: rgba(255, 166, 0, 0.18);
     color: var(--warning-color, #ffa600);
   }
+  .probe-error-notice {
+    border-left: 4px solid var(--status-critical, #d03b3b);
+    background: rgba(var(--rgb-error-color, 219, 68, 55), 0.06);
+    border-radius: 4px;
+    padding: 8px 12px;
+    margin: 8px 0;
+  }
+  .probe-error-notice .probe-error-text {
+    font-family: var(--ha-font-family-code, monospace);
+    font-size: 12px;
+    color: var(--status-critical, #d03b3b);
+    word-break: break-word;
+  }
+  .probe-error-notice .probe-error-hint {
+    font-size: 12px;
+    margin-top: 6px;
+  }
+  .probe-error-notice .probe-error-actions {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+  }
   button.ha-btn {
     font: inherit;
     font-weight: 500;
@@ -228,6 +306,20 @@ export const sharedStyles = css`
     padding: 10px 0;
     border-bottom: 1px solid var(--divider-color);
     font-size: 13.5px;
+  }
+  /* Visually separates two opposite-direction settings sub-sections sharing
+     one card (e.g. Syslog Export vs. Syslog Receiver). */
+  .syslog-subsection-divider {
+    margin: 18px 0 10px;
+    border-top: 2px dashed var(--divider-color);
+  }
+  .syslog-subsection-heading {
+    margin: 0 0 4px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--secondary-text-color);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
   }
   .settings-row:last-child {
     border-bottom: none;

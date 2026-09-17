@@ -29,6 +29,11 @@ from .const import (
     SERVICE_POLL_FIREWALL_COMMAND,
     SERVICE_POLL_NETSCAN_CONFIG,
     SERVICE_POLL_SNMP_CONFIG,
+    SERVICE_POLL_SYSLOG_RECEIVER_CONFIG,
+    SYSLOG_RECEIVER_FIELD_MAX,
+    SYSLOG_RECEIVER_MAX_BATCH,
+    SYSLOG_RECEIVER_MESSAGE_MAX,
+    SYSLOG_RECEIVER_STATUS_ERROR_MAX,
 )
 from .firewall import (
     async_next_addon_command,
@@ -40,6 +45,7 @@ from .netscan import async_config_for_probe as async_netscan_config_for_probe
 from .secrets_store import HaSocSecretStore
 from .snmp import async_config_for_probe
 from .store import HaSocData
+from .syslog_receiver import async_config_for_probe as async_syslog_receiver_config_for_probe
 
 if TYPE_CHECKING:
     # Type-only import: this module must stay importable without audit.py at runtime.
@@ -136,6 +142,57 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
                 ),
             },
         ),
+        # One batch of received syslog entries; bounded batch size and bounded
+        # per-field lengths, same flood-protection shape as netscan_result.
+        vol.Optional("syslog_entries"): vol.Any(
+            None,
+            vol.All(
+                [
+                    vol.Schema(
+                        {
+                            vol.Required("format"): vol.In(("rfc3164", "rfc5424", "raw")),
+                            vol.Optional("facility"): vol.Any(
+                                None, vol.All(vol.Coerce(int), vol.Range(min=0, max=23))
+                            ),
+                            vol.Optional("severity"): vol.Any(
+                                None, vol.All(vol.Coerce(int), vol.Range(min=0, max=7))
+                            ),
+                            vol.Optional("severity_name"): vol.Any(
+                                None, vol.All(str, vol.Length(max=16))
+                            ),
+                            vol.Required("timestamp"): vol.All(str, vol.Length(max=64)),
+                            vol.Optional("hostname"): vol.Any(
+                                None, vol.All(str, vol.Length(max=SYSLOG_RECEIVER_FIELD_MAX))
+                            ),
+                            vol.Optional("app_name"): vol.Any(
+                                None, vol.All(str, vol.Length(max=SYSLOG_RECEIVER_FIELD_MAX))
+                            ),
+                            vol.Required("message"): vol.All(
+                                str, vol.Length(max=SYSLOG_RECEIVER_MESSAGE_MAX)
+                            ),
+                            vol.Optional("raw"): bool,
+                        }
+                    )
+                ],
+                vol.Length(max=SYSLOG_RECEIVER_MAX_BATCH),
+            ),
+        ),
+        vol.Optional("syslog_receiver_status"): vol.Any(
+            None,
+            {
+                vol.Required("enabled"): bool,
+                vol.Required("running"): bool,
+                vol.Optional("generation"): vol.Any(
+                    None, vol.All(str, vol.Length(max=64))
+                ),
+                vol.Optional("port"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=1, max=65535))),
+                vol.Optional("entry_count"): vol.Any(None, vol.All(vol.Coerce(int), vol.Range(min=0))),
+                vol.Optional("last_received_at"): vol.Any(None, vol.All(str, vol.Length(max=64))),
+                vol.Optional("error"): vol.Any(
+                    None, vol.All(str, vol.Length(max=SYSLOG_RECEIVER_STATUS_ERROR_MAX))
+                ),
+            },
+        ),
         # Optional in the schema so a missing secret reaches the handler and is audited as no_secret.
         vol.Optional("probe_secret"): vol.Any(None, str),
     }
@@ -159,6 +216,16 @@ POLL_SNMP_SERVICE_SCHEMA = vol.Schema(
 
 # Same shape as poll_snmp_config's schema; netscan carries no secret material.
 POLL_NETSCAN_SERVICE_SCHEMA = vol.Schema(
+    {
+        vol.Optional("generation"): vol.Any(
+            None, vol.All(str, vol.Length(max=64))
+        ),
+        vol.Optional("probe_secret"): vol.Any(None, str),
+    }
+)
+
+# Same shape as poll_netscan_config's schema; the syslog receiver carries no secret material.
+POLL_SYSLOG_RECEIVER_SERVICE_SCHEMA = vol.Schema(
     {
         vol.Optional("generation"): vol.Any(
             None, vol.All(str, vol.Length(max=64))
@@ -346,6 +413,12 @@ def async_register_probe_service(
                     "reported_at": dt_util.utcnow().isoformat(),
                 }
             )
+        if call.data.get("syslog_entries"):
+            store.async_append_syslog_entries(call.data["syslog_entries"])
+        if call.data.get("syslog_receiver_status") is not None:
+            status = dict(call.data["syslog_receiver_status"])
+            status["reported_at"] = dt_util.utcnow().isoformat()
+            store.async_set_syslog_receiver_status(status)
 
     async def _handle_poll_firewall(call: ServiceCall) -> dict:
         # A rejected caller gets an empty answer, not an error.
@@ -381,6 +454,14 @@ def async_register_probe_service(
         config["rescan_requested_at"] = store.data.get("netscan_rescan_requested_at")
         return config
 
+    async def _handle_poll_syslog_receiver(call: ServiceCall) -> dict:
+        if await _async_call_rejected(call, SERVICE_POLL_SYSLOG_RECEIVER_CONFIG) is not None:
+            return {"enabled": False}
+        config = await async_syslog_receiver_config_for_probe(store.settings)
+        if call.data.get("generation") == config["generation"]:
+            return {"enabled": config["enabled"], "generation": config["generation"]}
+        return config
+
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_PROBE_RESULT, _handle_ingest, schema=INGEST_SERVICE_SCHEMA
     )
@@ -405,6 +486,13 @@ def async_register_probe_service(
         schema=POLL_NETSCAN_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_POLL_SYSLOG_RECEIVER_CONFIG,
+        _handle_poll_syslog_receiver,
+        schema=POLL_SYSLOG_RECEIVER_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 def async_unregister_probe_service(hass: HomeAssistant) -> None:
@@ -414,6 +502,7 @@ def async_unregister_probe_service(hass: HomeAssistant) -> None:
         SERVICE_POLL_FIREWALL_COMMAND,
         SERVICE_POLL_SNMP_CONFIG,
         SERVICE_POLL_NETSCAN_CONFIG,
+        SERVICE_POLL_SYSLOG_RECEIVER_CONFIG,
     ):
         if hass.services.has_service(DOMAIN, service):
             hass.services.async_remove(DOMAIN, service)

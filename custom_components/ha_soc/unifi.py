@@ -1598,6 +1598,11 @@ async def async_network_overview(
         "failing_endpoint_count": 0,
         "generated_at": dt_util.utcnow().isoformat(),
         "protect": {"configured": False, "reachable": False, "error": None},
+        # Subnet picker for the Firewall Rules builder (Scanner tab); slim on
+        # purpose, name + CIDR only. Filled below from the same core snapshot
+        # ``network_name_map`` already reads; empty when UniFi Network isn't
+        # configured or the core integration has nothing loaded.
+        "networks": [],
     }
 
     try:
@@ -1609,6 +1614,7 @@ async def async_network_overview(
 
             # Core snapshot first so the API path can borrow its WLAN and network maps as fallbacks.
             core_snap = _core_network_snapshot(hass)
+            result["networks"] = _networks_for_picker(core_snap)
 
             # The connection (and API key) lives only for this snapshot; an invalid host raises UniFiError.
             try:
@@ -1801,6 +1807,30 @@ def _recompute_client_stats(result: dict[str, Any]) -> None:
         }
     )
 
+
+
+def _networks_for_picker(core_snap: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Slim ``{name, ip_subnet}`` list for the Firewall Rules builder's subnet
+    picker (Scanner tab), from the same core snapshot ``network_name_map``
+    already reads. Never raises; entries with no usable CIDR are dropped, and
+    a missing/empty core snapshot yields an empty list."""
+    if not core_snap:
+        return []
+    try:
+        networks = core_snap.get("networks") or []
+        out: list[dict[str, Any]] = []
+        for net in networks:
+            if not isinstance(net, dict):
+                continue
+            subnet = net.get("ip_subnet")
+            if not subnet or not isinstance(subnet, str):
+                continue
+            name = net.get("name") or subnet
+            out.append({"name": str(name), "ip_subnet": subnet})
+        return out
+    except Exception:  # noqa: BLE001 - never let a shape surprise take the picker down
+        _LOGGER.debug("Could not derive network picker list from core snapshot", exc_info=True)
+        return []
 
 
 def _core_network_snapshot(hass: HomeAssistant) -> dict[str, Any] | None:

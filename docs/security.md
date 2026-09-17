@@ -137,6 +137,71 @@ port-unreachable replies (the same missing privilege) or protocol-specific
 payloads per port, and even then a silently-dropped probe produces a false
 "open," a reliability trade this feature does not take on.
 
+### Syslog receiver capability
+
+The syslog receiver is the opposite direction from the exporter documented
+in `CEF-SCHEMA.md`: instead of HA SOC sending its own hash-chained audit
+records off-box, it becomes a target something else on the LAN can point at.
+The primary compatibility target is the "logspout" HA add-on
+(github.com/bertbaron/hassio-addons/logspout), which forwards every Docker
+container's stdout/stderr on the host to a configured
+`syslog+udp://<host>:<port>` target, one line per log message, with a
+`hostname` field defaulting to `homeassistant`. Example logspout
+configuration pointed at HA SOC:
+
+```yaml
+routes:
+  - syslog+udp://<ha-host>:5514  # syslog_receiver_port (default 5514)
+```
+
+**UDP only this phase.** TCP and TLS receive support is explicitly out of
+scope for this revision: logspout's simplest and most commonly used
+configuration is UDP, and a listening TCP/TLS server is a materially larger
+attack surface (connection lifecycle, framing, certificate handling) than a
+stateless datagram listener bound to an owner-configured port. This is a
+documented follow-up, not an oversight.
+
+Parsing is best-effort, not RFC-compliant: the Probe's listener
+(`ha_soc_probe_syslog_receiver`, `usr/lib/ha_soc/syslog_receiver.py`)
+recognizes RFC 3164 (BSD syslog) and RFC 5424 headers well enough to extract
+PRI (facility/severity), timestamp (falling back to receipt time when the
+header's own timestamp cannot be parsed), hostname, and app-name/tag. A line
+whose header matches neither pattern is never dropped: the whole line is
+kept as the message with a `raw` fallback shape, so a malformed or
+unexpected line is still visible in the panel rather than silently lost.
+The same parser logic exists twice, once in the Core-side
+`custom_components/ha_soc/syslog_receiver.py` (imported and unit-tested by
+the WSL test harness) and once duplicated in the Probe's
+`usr/lib/ha_soc/syslog_receiver.py`, because the Probe container has no
+access to the Core add-on's Python package; the two are kept in sync by
+hand and this duplication is a known maintenance cost.
+
+Flood protection mirrors netscan's precedent (payload-shape bounding, not
+rate-limiting): the Probe buffers received entries in a bounded in-memory
+deque (`BUFFER_MAX`, drop-oldest on overflow) between "received over UDP"
+and its next periodic batch POST to Core, since Core is only pushed to every
+`BATCH_INTERVAL_SECONDS`, not continuously; `INGEST_SERVICE_SCHEMA`'s
+`syslog_entries` field then caps the batch size per ingest call
+(`SYSLOG_RECEIVER_MAX_BATCH`) and every entry's field lengths
+(`SYSLOG_RECEIVER_MESSAGE_MAX`, `SYSLOG_RECEIVER_FIELD_MAX`) before anything
+reaches the store. Core-side storage is a bounded ring buffer
+(`syslog_receiver_entries`, most recent `SYSLOG_RECEIVER_MAX_ENTRIES` kept,
+oldest dropped first) — deliberately not the audit.py hash-chain machinery,
+which exists for tamper-evident security records at security-audit
+retention timescales, not arbitrary container noise; there is no
+rotation-to-disk or long-term persistence in this phase.
+
+Off by default, owner-controlled through the same `ha_soc/settings/set`
+path SNMP and netscan already use (`syslog_receiver_enabled`,
+`syslog_receiver_port`), delivered to the Probe on its own poll service
+(`poll_syslog_receiver_config`, the same generation-tagged shape as
+`poll_snmp_config`/`poll_netscan_config`). Reading buffered entries
+(`ha_soc/syslog_receiver/entries`) is `@require_owner`, the same tier and
+reasoning as netscan status and firewall status: forwarded container logs
+from every add-on on the host are a broad information-disclosure surface
+(secrets, paths, or internal hostnames can land in a container's stdout),
+so no account but the owner may read them, regardless of `access_level`.
+
 ### External audit ingest
 
 `ha_soc.ingest_audit` reuses the Probe's two gates: the Supervisor user's context

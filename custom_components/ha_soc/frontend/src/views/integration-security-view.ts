@@ -18,6 +18,7 @@ import {
   fetchWatchdogStatus,
   setWatchdog,
   HacsStatus,
+  HacsRepositoryRow,
   HacsRefreshResult,
   HacsUpdateResult,
   fetchHacsStatus,
@@ -78,6 +79,9 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   @state() private _hacsError: string | null = null;
   @state() private _hacsRefresh: HacsRefreshResult | null = null;
   @state() private _hacsUpdate: HacsUpdateResult | null = null;
+  @state() private _hacsSort: SortState | null = null;
+  @state() private _hacsCategoryFilter = "all";
+  @state() private _hacsAuthorFilter = "all";
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -403,6 +407,27 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     flags: (r) => r.flags.length,
   };
 
+  // Accessors for the HACS Updates table's sortRows; nulls sink to the bottom
+  // per the shared helper.
+  private static readonly HACS_SORT: Record<string, (r: HacsRepositoryRow) => unknown> = {
+    name: (r) => r.full_name,
+    category: (r) => r.category,
+    installed: (r) => r.installed_version,
+    available: (r) => r.available_version,
+    author: (r) => (r.authors.length ? r.authors.join(", ") : null),
+    // ISO 8601 timestamps compare correctly as strings.
+    updated: (r) => r.last_updated,
+  };
+
+  private _filteredHacs(): HacsRepositoryRow[] {
+    const rows = this._hacs?.repositories ?? [];
+    const filtered = rows
+      .filter((r) => this._hacsCategoryFilter === "all" || r.category === this._hacsCategoryFilter)
+      .filter((r) => this._hacsAuthorFilter === "all" || r.authors.includes(this._hacsAuthorFilter));
+    if (!this._hacsSort) return filtered;
+    return sortRows(filtered, this._hacsSort, HaSocIntegrationSecurityView.HACS_SORT);
+  }
+
   // Force HACS to re-check every downloaded repository now and install what is
   // pending, instead of waiting for its own schedule and clicking through each
   // update entity. Reads are for everyone on the panel; the two actions are
@@ -411,6 +436,26 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     const h = this._hacs;
     const pending = h?.repositories.filter((r) => r.pending_update) ?? [];
     const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
+    const daysAgo = (iso: string | null) => {
+      if (!iso) return "—";
+      const t = new Date(iso).getTime();
+      if (Number.isNaN(t)) return "—";
+      const days = Math.floor((Date.now() - t) / 86400000);
+      if (days < 0) return "—";
+      if (days === 0) return "today";
+      return `${days} day${days === 1 ? "" : "s"} ago`;
+    };
+    const categories = h
+      ? Array.from(new Set(h.repositories.map((r) => r.category))).sort()
+      : [];
+    const authors = h
+      ? Array.from(new Set(h.repositories.flatMap((r) => r.authors))).sort()
+      : [];
+    const hs = this._hacsSort;
+    const onHacs = (next: SortState) => {
+      this._hacsSort = next;
+    };
+    const filteredHacs = this._filteredHacs();
     return html`
       <div class="card">
         <h3>HACS Updates</h3>
@@ -451,19 +496,51 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
                 ${this._hacsUpdate?.failed.length
                   ? html`<ul class="muted" style="font-size:12px;">${this._hacsUpdate.failed.map((f) => html`<li>${f.full_name}: ${f.error}</li>`)}</ul>`
                   : nothing}
+                <div class="toolbar">
+                  <select
+                    .value=${this._hacsCategoryFilter}
+                    @change=${(e: Event) => {
+                      this._hacsCategoryFilter = (e.target as HTMLSelectElement).value;
+                    }}
+                  >
+                    <option value="all">All categories</option>
+                    ${categories.map((c) => html`<option value=${c}>${c}</option>`)}
+                  </select>
+                  <select
+                    .value=${this._hacsAuthorFilter}
+                    @change=${(e: Event) => {
+                      this._hacsAuthorFilter = (e.target as HTMLSelectElement).value;
+                    }}
+                  >
+                    <option value="all">All authors</option>
+                    ${authors.map((a) => html`<option value=${a}>${a}</option>`)}
+                  </select>
+                </div>
                 <div class="table-wrap">
                   <table>
                     <thead>
-                      <tr><th>Repository</th><th>Category</th><th>Installed</th><th>Available</th><th>State</th></tr>
+                      <tr>
+                        ${sortableTh("Repository", "name", hs, onHacs)}
+                        ${sortableTh("Category", "category", hs, onHacs)}
+                        ${sortableTh("Installed", "installed", hs, onHacs)}
+                        ${sortableTh("Available", "available", hs, onHacs)}
+                        ${sortableTh("Author", "author", hs, onHacs)}
+                        ${sortableTh("Released", "updated", hs, onHacs)}
+                        <th>State</th>
+                      </tr>
                     </thead>
                     <tbody>
-                      ${h.repositories.map(
+                      ${filteredHacs.map(
                         (r) => html`
                           <tr>
                             <td class="mono">${r.full_name}</td>
                             <td>${r.category}</td>
                             <td class="mono">${r.installed_version ?? "\u2014"}</td>
                             <td class="mono">${r.available_version ?? "\u2014"}</td>
+                            <td>${r.authors.length ? r.authors.join(", ") : "\u2014"}</td>
+                            <td class="muted" style="font-size:11.5px;" title=${r.last_updated ?? ""}>
+                              ${daysAgo(r.last_updated)}
+                            </td>
                             <td>
                               ${r.in_progress
                                 ? html`<span class="pill medium"><span class="dot"></span>installing</span>`

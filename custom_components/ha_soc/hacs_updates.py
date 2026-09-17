@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
@@ -69,10 +70,32 @@ def _entity_id(hass: HomeAssistant, repo: Any) -> str | None:
     return registry.async_get_entity_id("update", "hacs", str(repo.data.id))
 
 
+def _release_date(data: Any) -> str | None:
+    """ISO 8601 release/update timestamp, defensively: last_updated (epoch-like
+    int, per HACS's own doc treated as possibly 0/missing) falls back to
+    last_fetched (a datetime), falls back to None. HACS's Python API is not a
+    stable one, so every read here is a getattr with a default.
+    """
+    last_updated = getattr(data, "last_updated", None)
+    if isinstance(last_updated, (int, float)) and last_updated > 0:
+        try:
+            return datetime.fromtimestamp(last_updated, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            pass
+    last_fetched = getattr(data, "last_fetched", None)
+    if isinstance(last_fetched, datetime):
+        try:
+            return last_fetched.isoformat()
+        except ValueError:
+            return None
+    return None
+
+
 def _row(hass: HomeAssistant, repo: Any) -> dict[str, Any]:
     data = repo.data
     entity_id = _entity_id(hass, repo)
     state = hass.states.get(entity_id) if entity_id else None
+    authors = getattr(data, "authors", None)
     return {
         "id": str(data.id),
         "full_name": str(data.full_name),
@@ -83,6 +106,8 @@ def _row(hass: HomeAssistant, repo: Any) -> dict[str, Any]:
         "entity_id": entity_id,
         "entity_state": state.state if state else None,
         "in_progress": bool(state.attributes.get("in_progress")) if state else False,
+        "authors": list(authors) if authors else [],
+        "last_updated": _release_date(data),
     }
 
 
