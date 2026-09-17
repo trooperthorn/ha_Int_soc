@@ -19,6 +19,7 @@ from .const import (
     DEFAULT_AUDIT_MAX_BYTES,
     DEFAULT_AUDIT_RETENTION_DAYS,
     DEFAULT_DASHBOARD_EDIT_ENABLED,
+    DEFAULT_EXTERNAL_CONNECTIONS_ENABLED,
     DEFAULT_HYGIENE_SCAN_YAML_DASHBOARDS,
     DEFAULT_MFA_GRACE_PERIOD_DAYS,
     DEFAULT_MFA_POLICY,
@@ -35,6 +36,8 @@ from .const import (
     DEFAULT_SYSLOG_FACILITY,
     DEFAULT_SYSLOG_FORMAT,
     DEFAULT_SYSLOG_PORT,
+    DEFAULT_SYSLOG_RECEIVER_ENABLED,
+    DEFAULT_SYSLOG_RECEIVER_PORT,
     DEFAULT_SYSLOG_TLS_VERIFY,
     DEFAULT_SYSLOG_TRANSPORT,
     DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
@@ -46,6 +49,7 @@ from .const import (
     STORAGE_SAVE_DELAY,
     STORAGE_VERSION_MAJOR,
     STORAGE_VERSION_MINOR,
+    SYSLOG_RECEIVER_MAX_ENTRIES,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +71,10 @@ class SettingsData(TypedDict):
     syslog_port: int
     syslog_tls_verify: bool
     syslog_facility: int
+    # Syslog RECEIVER (opposite direction, e.g. logspout forwarding container
+    # logs to HA SOC over UDP): off by default, distinct port from the exporter.
+    syslog_receiver_enabled: bool
+    syslog_receiver_port: int
     evidence_retention_days: int
     scanner_enabled: bool
     scanner_network_checks_enabled: bool
@@ -79,6 +87,10 @@ class SettingsData(TypedDict):
     # The device SSH account the UniFi controller pushes site-wide.
     ssh_username: str | None
     nvd_lookups_enabled: bool
+    # Phase 1: informational master switch only, does not gate any integration's
+    # runtime behavior yet. Server-stamped ISO timestamp of the last change.
+    external_connections_enabled: bool
+    external_connections_changed_at: str | None
     # Sparse rule id -> {parameter: value}; read effective values via detections.thresholds().
     detection_thresholds: dict[str, dict[str, Any]]
     access_level: str
@@ -153,6 +165,13 @@ class StoreData(TypedDict):
     # last netscan cycle's discovered hosts, from the Probe; owner-only to read
     # (LAN service map = reconnaissance asset, see docs/security.md).
     netscan_result: dict[str, Any] | None
+    # Bounded ring buffer of received syslog entries (most recent
+    # SYSLOG_RECEIVER_MAX_ENTRIES kept, oldest dropped first). No long-term
+    # persistence/rotation this phase; see syslog_receiver.py's module docstring.
+    syslog_receiver_entries: list[dict[str, Any]]
+    # last bounded, non-secret runtime report from the Probe's syslog receiver
+    # supervisor (enabled/running, entry count, last-received timestamp).
+    syslog_receiver_status: dict[str, Any] | None
     # ISO timestamp of the owner's last "rescan now" request; the Probe's poll
     # loop compares this against what it last actioned (see netscan.py's
     # run script) and triggers an out-of-cycle scan on a change. None until
@@ -182,6 +201,8 @@ def default_store_data() -> StoreData:
             syslog_port=DEFAULT_SYSLOG_PORT,
             syslog_tls_verify=DEFAULT_SYSLOG_TLS_VERIFY,
             syslog_facility=DEFAULT_SYSLOG_FACILITY,
+            syslog_receiver_enabled=DEFAULT_SYSLOG_RECEIVER_ENABLED,
+            syslog_receiver_port=DEFAULT_SYSLOG_RECEIVER_PORT,
             evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
             scanner_network_checks_enabled=DEFAULT_SCANNER_NETWORK_CHECKS_ENABLED,
@@ -190,6 +211,8 @@ def default_store_data() -> StoreData:
             ssh_collection_enabled=DEFAULT_SSH_COLLECTION_ENABLED,
             ssh_username=None,
             nvd_lookups_enabled=DEFAULT_NVD_LOOKUPS_ENABLED,
+            external_connections_enabled=DEFAULT_EXTERNAL_CONNECTIONS_ENABLED,
+            external_connections_changed_at=None,
             detection_thresholds={},
             access_level=DEFAULT_ACCESS_LEVEL,
             mfa_policy=DEFAULT_MFA_POLICY,
@@ -255,6 +278,8 @@ def default_store_data() -> StoreData:
         netscan_result=None,
         netscan_rescan_requested_at=None,
         external_audit_heads={},
+        syslog_receiver_entries=[],
+        syslog_receiver_status=None,
     )
 
 
@@ -576,6 +601,27 @@ class HaSocData:
 
     def async_set_netscan_result(self, result: dict[str, Any]) -> None:
         self.data["netscan_result"] = result
+        self.async_schedule_save()
+
+    def async_set_syslog_receiver_status(self, status: dict[str, Any]) -> None:
+        self.data["syslog_receiver_status"] = status
+        self.async_schedule_save()
+
+    def async_append_syslog_entries(
+        self, entries: list[dict[str, Any]], *, max_entries: int = SYSLOG_RECEIVER_MAX_ENTRIES
+    ) -> None:
+        """Append received syslog entries to the bounded ring buffer.
+
+        Oldest entries are dropped first once the buffer exceeds
+        ``max_entries``; there is no rotation-to-disk in this phase (see
+        syslog_receiver.py's module docstring).
+        """
+        if not entries:
+            return
+        buffer = self.data.setdefault("syslog_receiver_entries", [])  # type: ignore[misc]
+        buffer.extend(entries)
+        if len(buffer) > max_entries:
+            del buffer[: len(buffer) - max_entries]
         self.async_schedule_save()
 
     def async_request_netscan_rescan(self, at: str) -> None:

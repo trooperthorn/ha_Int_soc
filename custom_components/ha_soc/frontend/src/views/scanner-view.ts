@@ -27,6 +27,7 @@ import {
   scanVulnsNow,
   setVulnStatus,
   setMisconfigStatus,
+  setScannerFindingStatus,
   fetchHealth,
   fetchAccessInfo,
   fetchProbeStatus,
@@ -37,6 +38,7 @@ import {
   discardFirewallPending,
   fetchNetscanStatus,
   requestNetscanRescan,
+  fetchNetworkOverview,
 } from "../data/ha-soc-ws";
 
 const STATUS_OPTIONS = ["new", "confirmed", "dismissed", "resolved"];
@@ -208,6 +210,11 @@ export class HaSocScannerView extends HaSocCustomizableView {
   // The firewall feature is owner-only server-side; defaults false and stays false on a failed lookup (fail closed).
   @state() private _isOwner = false;
 
+  // UniFi subnets for the Firewall Rules builder's Source/Destination datalist convenience,
+  // same shape as ha_soc/network/overview's `networks` field. Best-effort: stays empty when
+  // UniFi Network isn't configured or the fetch fails, never blocking manual entry.
+  @state() private _fwNetworks: { name: string; ip_subnet: string | null }[] = [];
+
   // Netscan is owner-only for the same reason as the firewall status gate (see docs/THREAT-MODEL.md's netscan row).
   @state() private _netscan: NetscanStatus | null = null;
   @state() private _netscanRescanSubmitting = false;
@@ -340,6 +347,13 @@ export class HaSocScannerView extends HaSocCustomizableView {
       this._netscan = this._isOwner
         ? await fetchNetscanStatus(this.hass).catch(() => null)
         : null;
+      // Best-effort convenience data for the Firewall Rules builder's subnet picker;
+      // owner-only same as the firewall card itself, and never blocks the rest of the load.
+      this._fwNetworks = this._isOwner
+        ? await fetchNetworkOverview(this.hass)
+            .then((n) => n.networks ?? [])
+            .catch(() => [])
+        : [];
       this._maybeManageFirewallPolling();
     } catch (err: any) {
       // One rejected fetch fails the whole load; an empty findings table would read as a clean scan.
@@ -413,6 +427,33 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   private _fwRemoveRule(index: number) {
     this._fwDraftRules = this._fwDraftRules.filter((_, i) => i !== index);
+  }
+
+  // "(all interfaces)" and "unresolved" are Host Probe sentinels, not real interface
+  // names; INTERFACE_RE would reject them, so only a real name is carried over.
+  private static _interfaceForDraft(iface: string | null | undefined): string {
+    if (!iface || iface === "(all interfaces)" || iface === "unresolved") return "";
+    return iface;
+  }
+
+  // Seeds a new Firewall Rules draft row from a Host Probe open port: proto/ports/interface
+  // prefilled, Source/Destination left blank for manual entry (or the subnet picker), per the
+  // Host Probe "Add firewall rule" button. Reuses the current row when it is still the bare
+  // untouched default; otherwise appends, matching _fwAddRule()'s append behavior.
+  private _onAddFirewallRuleForPort(p: OpenPort) {
+    const empty = HaSocScannerView._emptyDraftRule();
+    const seeded: FirewallRule = {
+      ...empty,
+      proto: p.proto,
+      ports: String(p.port),
+      interface: HaSocScannerView._interfaceForDraft(p.interface),
+    };
+    const onlyRow = this._fwDraftRules.length === 1 ? this._fwDraftRules[0] : null;
+    const onlyRowUntouched = !!onlyRow && Object.keys(empty).every((k) => (onlyRow as any)[k] === (empty as any)[k]);
+    this._fwDraftRules = onlyRowUntouched ? [seeded] : [...this._fwDraftRules, seeded];
+    this.updateComplete.then(() => {
+      this.renderRoot.querySelector("#fw-rules-card")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   private async _onProposeTest() {
@@ -546,6 +587,19 @@ export class HaSocScannerView extends HaSocCustomizableView {
     await this._load();
   }
 
+  // Scanner findings live in the scanner_findings store table, not vuln_findings — a
+  // separate websocket command and handler from _onVulnStatus above (see websocket_api.py
+  // ha_soc/scanner/set_status).
+  private async _onScannerStatus(id: string, status: string) {
+    this._scanError = null;
+    try {
+      await setScannerFindingStatus(this.hass, id, status);
+    } catch (err: any) {
+      this._scanError = `Status change failed: ${err?.message ?? err}`;
+    }
+    await this._load();
+  }
+
   // The GHSA export is copy-to-clipboard only; the confirmation names the snippet and integration. See docs/security.md.
   private async _onExportFinding(f: any) {
     const ok = confirm(
@@ -593,8 +647,12 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
   // One header row per device, worst-first; sorting reorders within groups only, except CVE which also orders groups by name.
   private _groupedVulnFindings(): { device_name: string; findings: Finding[] }[] {
+    return this._groupedVulnFindingsFrom(this._vulnFindings);
+  }
+
+  private _groupedVulnFindingsFrom(findings: Finding[]): { device_name: string; findings: Finding[] }[] {
     const byDevice = new Map<string, Finding[]>();
-    for (const f of this._vulnFindings) {
+    for (const f of findings) {
       const name = String(f.device_name ?? "Unknown device");
       const list = byDevice.get(name);
       if (list) list.push(f);
@@ -700,6 +758,59 @@ export class HaSocScannerView extends HaSocCustomizableView {
     `;
   }
 
+  // Per-section "Resolved" collapsible persistence, ported from settings-view.ts's
+  // card open/closed pattern. Default CLOSED here (unlike settings cards, which
+  // default open) since the point of this section is decluttering resolved noise.
+  // Distinct localStorage key prefix from settings-view.ts's `ha-soc-settings-card-open:`
+  // since localStorage keys are global to the origin, not per-component.
+  @state() private _openResolved: Set<string> = new Set();
+
+  private _resolvedStorageKey(sectionKey: string) {
+    return `ha-soc-scanner-resolved-open:${sectionKey}`;
+  }
+
+  private _isOpen(sectionKey: string): boolean {
+    if (this._openResolved.has(sectionKey)) return true;
+    try {
+      const stored = localStorage.getItem(this._resolvedStorageKey(sectionKey));
+      if (stored === "true") {
+        this._openResolved.add(sectionKey);
+        return true;
+      }
+    } catch {
+      // Ignore: private windows, cleared storage, etc. — default stays closed.
+    }
+    return false;
+  }
+
+  private _onToggle(sectionKey: string, e: Event) {
+    const open = (e.target as HTMLDetailsElement).open;
+    if (open) {
+      this._openResolved.add(sectionKey);
+    } else {
+      this._openResolved.delete(sectionKey);
+    }
+    try {
+      localStorage.setItem(this._resolvedStorageKey(sectionKey), String(open));
+    } catch {
+      // Ignore: nothing to persist to in this environment.
+    }
+  }
+
+  // A finding is "resolved" (tucked away) once it's resolved or dismissed; new/confirmed stay visible.
+  private static _isResolvedStatus(status: string): boolean {
+    return status === "resolved" || status === "dismissed";
+  }
+
+  private static _splitByStatus<T extends { status: string }>(rows: T[]): { open: T[]; resolved: T[] } {
+    const open: T[] = [];
+    const resolved: T[] = [];
+    for (const r of rows) {
+      (HaSocScannerView._isResolvedStatus(r.status) ? resolved : open).push(r);
+    }
+    return { open, resolved };
+  }
+
   private _renderStatusSelect(id: string, current: string, onChange: (s: string) => void) {
     return html`
       <select @change=${(e: Event) => onChange((e.target as HTMLSelectElement).value)}>
@@ -731,10 +842,26 @@ export class HaSocScannerView extends HaSocCustomizableView {
       {
         id: "misconfig",
         title: "Misconfiguration Findings",
-        render: () => html`
+        render: () => {
+          const { open, resolved } = HaSocScannerView._splitByStatus(this._sortedMisconfigFindings());
+          const misconfigRow = (f: any) => html`
+            <tr>
+              <td>${f.check}</td>
+              <td><span class="pill ${f.severity}"><span class="dot"></span>${f.severity}</span></td>
+              <td>${f.summary}</td>
+              <td>
+                ${f.acknowledged_by_design
+                  ? html`<span class="tag enforced" title=${f.acknowledged_reason ?? "Acknowledged by design"}
+                      >acknowledged by design</span
+                    >`
+                  : this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}
+              </td>
+            </tr>
+          `;
+          return html`
       <div class="card">
         <h3>Misconfiguration Findings</h3>
-        ${!this._misconfigFindings.length
+        ${!open.length
           ? html`<div class="empty">No findings.</div>`
           : html`
               <table>
@@ -747,27 +874,36 @@ export class HaSocScannerView extends HaSocCustomizableView {
                   </tr>
                 </thead>
                 <tbody>
-                  ${this._sortedMisconfigFindings().map(
-                    (f: any) => html`
-                      <tr>
-                        <td>${f.check}</td>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.severity}</span></td>
-                        <td>${f.summary}</td>
-                        <td>
-                          ${f.acknowledged_by_design
-                            ? html`<span class="tag enforced" title=${f.acknowledged_reason ?? "Acknowledged by design"}
-                                >acknowledged by design</span
-                              >`
-                            : this._renderStatusSelect(f.id, f.status, (s) => this._onMisconfigStatus(f.id, s))}
-                        </td>
-                      </tr>
-                    `
-                  )}
+                  ${open.map(misconfigRow)}
                 </tbody>
               </table>
             `}
+        ${resolved.length
+          ? html`
+              <details
+                ?open=${this._isOpen("misconfig-resolved")}
+                @toggle=${(e: Event) => this._onToggle("misconfig-resolved", e)}
+              >
+                <summary>Resolved (${resolved.length})</summary>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Check</th>
+                      <th>Severity</th>
+                      <th>Summary</th>
+                      <th>Status</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${resolved.map(misconfigRow)}
+                  </tbody>
+                </table>
+              </details>
+            `
+          : nothing}
       </div>
-        `,
+          `;
+        },
       },
       {
         id: "integration_scanner",
@@ -788,41 +924,72 @@ export class HaSocScannerView extends HaSocCustomizableView {
             Scan all integrations now
           </button>
         </div>
-        ${!this._scannerFindings.length
-          ? html`<div class="empty">No findings.</div>`
-          : html`
-              <table>
-                <thead>
-                  <tr>
-                    ${sortableTh("Domain", "domain", this._scannerSort, (n) => (this._scannerSort = n))}
-                    ${sortableTh("Pattern", "pattern", this._scannerSort, (n) => (this._scannerSort = n))}
-                    ${sortableTh("Location", "location", this._scannerSort, (n) => (this._scannerSort = n))}
-                    ${sortableTh("Confidence", "confidence", this._scannerSort, (n) => (this._scannerSort = n))}
-                    ${sortableTh("CWE", "cwe", this._scannerSort, (n) => (this._scannerSort = n))}
-                    <th>Status</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${sortRows(this._scannerFindings, this._scannerSort, HaSocScannerView.SCANNER_SORT).map(
-                    (f: any) => html`
+        ${(() => {
+          const sorted = sortRows(this._scannerFindings, this._scannerSort, HaSocScannerView.SCANNER_SORT);
+          const { open, resolved } = HaSocScannerView._splitByStatus(sorted);
+          const scannerRow = (f: any) => html`
+            <tr>
+              <td>${f.domain}</td>
+              <td><span class="pill ${f.severity}"><span class="dot"></span>${f.pattern}</span></td>
+              <td>${f.file}:${f.line}</td>
+              <td>${f.confidence}</td>
+              <td>${f.cwe}</td>
+              <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onScannerStatus(f.id, s))}</td>
+              <td><button class="ha-btn" @click=${() => this._onExportFinding(f)}>Export</button></td>
+            </tr>
+          `;
+          return html`
+            ${!open.length
+              ? html`<div class="empty">No findings.</div>`
+              : html`
+                  <table>
+                    <thead>
                       <tr>
-                        <td>${f.domain}</td>
-                        <td><span class="pill ${f.severity}"><span class="dot"></span>${f.pattern}</span></td>
-                        <td>${f.file}:${f.line}</td>
-                        <td>${f.confidence}</td>
-                        <td>${f.cwe}</td>
-                        <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
-                        <td><button class="ha-btn" @click=${() => this._onExportFinding(f)}>Export</button></td>
+                        ${sortableTh("Domain", "domain", this._scannerSort, (n) => (this._scannerSort = n))}
+                        ${sortableTh("Pattern", "pattern", this._scannerSort, (n) => (this._scannerSort = n))}
+                        ${sortableTh("Location", "location", this._scannerSort, (n) => (this._scannerSort = n))}
+                        ${sortableTh("Confidence", "confidence", this._scannerSort, (n) => (this._scannerSort = n))}
+                        ${sortableTh("CWE", "cwe", this._scannerSort, (n) => (this._scannerSort = n))}
+                        <th>Status</th>
+                        <th></th>
                       </tr>
-                    `
-                  )}
-                </tbody>
-              </table>
-              ${this._exportNotice
-                ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${this._exportNotice}</p>`
-                : nothing}
-            `}
+                    </thead>
+                    <tbody>
+                      ${open.map(scannerRow)}
+                    </tbody>
+                  </table>
+                  ${this._exportNotice
+                    ? html`<p class="muted" style="font-size:12px;margin:6px 0 0;">${this._exportNotice}</p>`
+                    : nothing}
+                `}
+            ${resolved.length
+              ? html`
+                  <details
+                    ?open=${this._isOpen("scanner-resolved")}
+                    @toggle=${(e: Event) => this._onToggle("scanner-resolved", e)}
+                  >
+                    <summary>Resolved (${resolved.length})</summary>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>Domain</th>
+                          <th>Pattern</th>
+                          <th>Location</th>
+                          <th>Confidence</th>
+                          <th>CWE</th>
+                          <th>Status</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${resolved.map(scannerRow)}
+                      </tbody>
+                    </table>
+                  </details>
+                `
+              : nothing}
+          `;
+        })()}
         ${this._renderScannerCoverage()}
       </div>
         `,
@@ -843,44 +1010,81 @@ export class HaSocScannerView extends HaSocCustomizableView {
             Scan devices now
           </button>
         </div>
-        ${!this._vulnFindings.length
-          ? html`<div class="empty">No findings.</div>`
-          : html`
-              <table>
-                <thead>
-                  <tr>
-                    ${sortableTh("CVE", "cve", this._vulnSort, (n) => (this._vulnSort = n))}
-                    ${sortableTh("CVSS", "cvss", this._vulnSort, (n) => (this._vulnSort = n))}
-                    ${sortableTh("Confidence", "confidence", this._vulnSort, (n) => (this._vulnSort = n))}
-                    <th>Status</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${this._groupedVulnFindings().map(
-                    (group) => html`
+        ${(() => {
+          const { open, resolved } = HaSocScannerView._splitByStatus(this._vulnFindings);
+          const vulnGroupRows = (groups: { device_name: string; findings: Finding[] }[]) => html`
+            ${groups.map(
+              (group) => html`
+                <tr>
+                  <td colspan="4" style="font-weight:600;background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
+                    ${group.device_name}
+                    <span class="muted" style="font-weight:400;font-size:11.5px;"
+                      >(${group.findings.length} finding${group.findings.length === 1 ? "" : "s"})</span
+                    >
+                  </td>
+                </tr>
+                ${group.findings.map(
+                  (f: any) => html`
+                    <tr>
+                      <td>
+                        ${f.cve_id
+                          ? html`<a href="https://nvd.nist.gov/vuln/detail/${f.cve_id}" target="_blank" rel="noopener"
+                              >${f.cve_id}</a
+                            >`
+                          : "—"}
+                      </td>
+                      <td><span class="pill ${f.severity}"><span class="dot"></span>${f.cvss ?? "unscored"}</span></td>
+                      <td>${f.confidence}</td>
+                      <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
+                    </tr>
+                  `
+                )}
+              `
+            )}
+          `;
+          return html`
+            ${!open.length
+              ? html`<div class="empty">No findings.</div>`
+              : html`
+                  <table>
+                    <thead>
                       <tr>
-                        <td colspan="4" style="font-weight:600;background:rgba(var(--rgb-primary-text-color,0,0,0),0.04);">
-                          ${group.device_name}
-                          <span class="muted" style="font-weight:400;font-size:11.5px;"
-                            >(${group.findings.length} finding${group.findings.length === 1 ? "" : "s"})</span
-                          >
-                        </td>
+                        ${sortableTh("CVE", "cve", this._vulnSort, (n) => (this._vulnSort = n))}
+                        ${sortableTh("CVSS", "cvss", this._vulnSort, (n) => (this._vulnSort = n))}
+                        ${sortableTh("Confidence", "confidence", this._vulnSort, (n) => (this._vulnSort = n))}
+                        <th>Status</th>
                       </tr>
-                      ${group.findings.map(
-                        (f: any) => html`
-                          <tr>
-                            <td>${f.cve_id ?? "—"}</td>
-                            <td><span class="pill ${f.severity}"><span class="dot"></span>${f.cvss ?? "unscored"}</span></td>
-                            <td>${f.confidence}</td>
-                            <td>${this._renderStatusSelect(f.id, f.status, (s) => this._onVulnStatus(f.id, s))}</td>
-                          </tr>
-                        `
-                      )}
-                    `
-                  )}
-                </tbody>
-              </table>
-            `}
+                    </thead>
+                    <tbody>
+                      ${vulnGroupRows(this._groupedVulnFindingsFrom(open))}
+                    </tbody>
+                  </table>
+                `}
+            ${resolved.length
+              ? html`
+                  <details
+                    ?open=${this._isOpen("vulns-resolved")}
+                    @toggle=${(e: Event) => this._onToggle("vulns-resolved", e)}
+                  >
+                    <summary>Resolved (${resolved.length})</summary>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>CVE</th>
+                          <th>CVSS</th>
+                          <th>Confidence</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        ${vulnGroupRows(this._groupedVulnFindingsFrom(resolved))}
+                      </tbody>
+                    </table>
+                  </details>
+                `
+              : nothing}
+          `;
+        })()}
       </div>
         `,
       },
@@ -1020,7 +1224,10 @@ export class HaSocScannerView extends HaSocCustomizableView {
 
     // Coverage column renders only when known rules exist; an empty column would read as "nothing covered".
     const showRuleCol = !!this._firewall?.known_rules?.length;
-    const colCount = showRuleCol ? 4 : 3;
+    // The "Add firewall rule" action only makes sense when the Firewall Rules builder is
+    // actually on the page below; it's owner-only, same as the builder itself.
+    const showFwActionCol = this._isOwner;
+    const colCount = 3 + (showRuleCol ? 1 : 0) + (showFwActionCol ? 1 : 0);
 
     return html`
       <table>
@@ -1030,6 +1237,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
             ${sortableTh("Protocol", "proto", this._portSort, (n) => (this._portSort = n))}
             ${sortableTh("Interface", "interface", this._portSort, (n) => (this._portSort = n))}
             ${showRuleCol ? html`<th>Covered by rule</th>` : nothing}
+            ${showFwActionCol ? html`<th></th>` : nothing}
           </tr>
         </thead>
         ${ordered.map(([key, groupPorts]) => {
@@ -1062,6 +1270,17 @@ export class HaSocScannerView extends HaSocCustomizableView {
                           : html`<span class="muted">${p.interface ?? "—"}</span>`}
                       </td>
                       ${showRuleCol ? this._renderPortRuleCell(p) : nothing}
+                      ${showFwActionCol
+                        ? html`<td>
+                            <button
+                              class="ha-btn"
+                              title="Add firewall rule for this port"
+                              @click=${() => this._onAddFirewallRuleForPort(p)}
+                            >
+                              Add firewall rule
+                            </button>
+                          </td>`
+                        : nothing}
                     </tr>
                   `
                 )}
@@ -1176,7 +1395,7 @@ export class HaSocScannerView extends HaSocCustomizableView {
     if (!fw) return nothing;
 
     return html`
-      <div class="card">
+      <div class="card" id="fw-rules-card">
         <h3>Firewall Rules</h3>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Reads, and — if you propose a change — writes the host's firewall via the HA
@@ -1467,6 +1686,11 @@ export class HaSocScannerView extends HaSocCustomizableView {
       <datalist id="fw-interface-choices">
         ${interfaceChoices.map((name) => html`<option value=${name}></option>`)}
       </datalist>
+      <datalist id="fw-subnet-choices">
+        ${this._fwNetworks.map(
+          (n) => html`<option value=${n.ip_subnet}>${n.name}${n.name !== n.ip_subnet ? ` (${n.ip_subnet})` : ""}</option>`
+        )}
+      </datalist>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1557,15 +1781,18 @@ export class HaSocScannerView extends HaSocCustomizableView {
                   <td>
                     <input
                       type="text"
+                      list="fw-subnet-choices"
                       placeholder="any, e.g. 192.168.10.0/24"
                       .value=${r.source ?? ""}
                       style="width:160px;"
+                      title=${this._fwNetworks.length ? "Pick a UniFi network or type an address/CIDR." : "Type an address or CIDR."}
                       @input=${onAddress("source")}
                     />
                   </td>
                   <td>
                     <input
                       type="text"
+                      list="fw-subnet-choices"
                       placeholder="any, e.g. 192.168.10.5"
                       .value=${r.destination ?? ""}
                       style="width:150px;"

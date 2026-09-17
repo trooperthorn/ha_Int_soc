@@ -103,6 +103,10 @@ NETSCAN_OPEN_PORT_SCHEMA = vol.Schema(
         vol.Optional("service_guess"): vol.Any(
             None, vol.All(str, vol.Length(max=_SERVICE_GUESS_MAX))
         ),
+        # "high" for a banner-text match, "low" for a port-only heuristic
+        # fallback (see the Probe's PORT_SERVICE_HINTS); absent on older
+        # results recorded before this field existed.
+        vol.Optional("service_confidence"): vol.Any(None, vol.In(("high", "low"))),
         vol.Optional("tls"): vol.Any(None, _TLS_SCHEMA),
     }
 )
@@ -122,6 +126,42 @@ NETSCAN_HOST_SCHEMA = vol.Schema(
 # A whole cycle's worth of hosts; bounded so a misbehaving or hostile Probe
 # cannot use one ingest call to write an unbounded amount of scan data.
 NETSCAN_MAX_HOSTS_PER_RESULT = 1024
+
+
+def candidate_hosts_for_service(
+    netscan_result: Any, service: str
+) -> list[dict[str, Any]]:
+    """Hosts from the most recent stored netscan_result whose open_ports
+    include a service_guess matching ``service`` (e.g. "pihole",
+    "technitium"). Never raises: a missing/disabled/malformed result yields
+    an empty list. One entry per host, de-duplicated, at the host's
+    highest-confidence match ("high" wins over "low").
+
+    ``netscan_result`` is store.py's stored shape: {"hosts": [...], ...}
+    (see store.async_set_netscan_result), so a bare list is also accepted
+    for convenience/testing.
+    """
+    hosts_list: Any = netscan_result
+    if isinstance(netscan_result, dict):
+        hosts_list = netscan_result.get("hosts")
+    if not isinstance(hosts_list, list):
+        return []
+    out: dict[str, str] = {}
+    for host in hosts_list:
+        if not isinstance(host, dict):
+            continue
+        ip = host.get("ip")
+        if not isinstance(ip, str) or not ip:
+            continue
+        for port_entry in host.get("open_ports") or []:
+            if not isinstance(port_entry, dict):
+                continue
+            if port_entry.get("service_guess") != service:
+                continue
+            confidence = port_entry.get("service_confidence") or "low"
+            if ip not in out or (confidence == "high" and out[ip] == "low"):
+                out[ip] = confidence
+    return [{"ip": ip, "confidence": confidence} for ip, confidence in sorted(out.items())]
 
 
 async def async_config_for_probe(settings: dict[str, Any]) -> dict[str, Any]:

@@ -4,13 +4,22 @@ import { sharedStyles } from "../styles";
 import type { HomeAssistant } from "../types";
 import { navigateToHaPath, devicesForIntegrationPath } from "../nav";
 import {
+  ConnectionTestResult,
   DetectionThresholdTable,
+  DiscoveredCandidate,
   HaSocSettings,
   SecurityOverview,
+  discoverContainerCandidates,
   fetchDetectionThresholds,
   fetchSecurityHealth,
   fetchSettings,
+  ProbeRestartResult,
   resetDetectionThresholds,
+  restartProbe,
+  testPiholeConnection,
+  testTechnitiumConnection,
+  testUnifiNetworkConnection,
+  testUnifiProtectConnection,
   updateSettings,
 } from "../data/ha-soc-ws";
 
@@ -112,6 +121,227 @@ export class HaSocSettingsView extends LitElement {
     }
   }
 
+  // Per-card open/closed persistence. Default OPEN for every card; a missing
+  // or unreadable localStorage entry is treated as open, never as closed.
+  @state() private _closedCards: Set<string> = new Set();
+
+  private _cardStorageKey(cardKey: string) {
+    return `ha-soc-settings-card-open:${cardKey}`;
+  }
+
+  private _isOpen(cardKey: string): boolean {
+    if (this._closedCards.has(cardKey)) return false;
+    try {
+      const stored = localStorage.getItem(this._cardStorageKey(cardKey));
+      if (stored === "false") {
+        this._closedCards.add(cardKey);
+        return false;
+      }
+    } catch {
+      // Ignore: private windows, cleared storage, etc. — default stays open.
+    }
+    return true;
+  }
+
+  private _onToggle(cardKey: string, e: Event) {
+    const open = (e.target as HTMLDetailsElement).open;
+    if (open) {
+      this._closedCards.delete(cardKey);
+    } else {
+      this._closedCards.add(cardKey);
+    }
+    try {
+      localStorage.setItem(this._cardStorageKey(cardKey), String(open));
+    } catch {
+      // Ignore: nothing to persist to in this environment.
+    }
+  }
+
+  // Green = configured (host + credential set), and — where a live status
+  // object exists — that it is working. For UniFi Network/Protect, Pi-hole,
+  // and Technitium there is no live status field this phase, so Green there
+  // means only "configured", not "verified reachable".
+  private _statusPill(s: HaSocSettings, kind: "unifi_network" | "unifi_protect" | "pihole" | "technitium" | "snmpv3") {
+    let host = false;
+    let credential = false;
+    let color = "var(--status-critical)";
+    let label = "not configured";
+
+    if (kind === "unifi_network") {
+      host = !!s.unifi_network_host;
+      credential = !!s.unifi_network_api_key_set;
+    } else if (kind === "unifi_protect") {
+      host = !!s.unifi_protect_host;
+      credential = !!s.unifi_protect_api_key_set;
+    } else if (kind === "pihole") {
+      host = !!s.pihole_host;
+      credential = !!s.pihole_api_key_set;
+    } else if (kind === "technitium") {
+      host = !!s.technitium_host;
+      credential = !!s.technitium_api_token_set;
+    } else if (kind === "snmpv3") {
+      host = !!s.snmp_listen_address && !!s.snmp_username;
+      credential = !!s.snmp_auth_passphrase_set && !!s.snmp_priv_passphrase_set;
+    }
+
+    if (host && credential) {
+      color = "var(--status-good)";
+      label = "configured";
+      if (kind === "snmpv3" && s.snmp_status) {
+        if (s.snmp_status.error) {
+          color = "var(--status-critical)";
+          label = "error";
+        } else if (s.snmp_status.running) {
+          color = "var(--status-good)";
+          label = "running";
+        } else {
+          color = "var(--status-warning)";
+          label = s.snmp_status.enabled ? "waiting" : "disabled";
+        }
+      }
+    } else if (host || credential) {
+      color = "var(--status-warning)";
+      label = "partially configured";
+    }
+
+    return html`<span class="pill" style="background:none;" title=${label}
+      ><span class="dot" style="background:${color};"></span>${label}</span
+    >`;
+  }
+
+  // Test Connection buttons: keyed by service name ("unifi_network",
+  // "unifi_protect", "pihole", "technitium"). "pending" while in flight.
+  @state() private _connectionTests: Map<string, ConnectionTestResult | "pending"> = new Map();
+
+  private async _testConnection(
+    service: "unifi_network" | "unifi_protect" | "pihole" | "technitium"
+  ) {
+    this._connectionTests = new Map(this._connectionTests).set(service, "pending");
+    let result: ConnectionTestResult;
+    try {
+      if (service === "unifi_network") result = await testUnifiNetworkConnection(this.hass);
+      else if (service === "unifi_protect") result = await testUnifiProtectConnection(this.hass);
+      else if (service === "pihole") result = await testPiholeConnection(this.hass);
+      else result = await testTechnitiumConnection(this.hass);
+    } catch (e: any) {
+      result = { ok: false, reachable: false, error: e?.message ?? String(e) };
+    }
+    this._connectionTests = new Map(this._connectionTests).set(service, result);
+  }
+
+  private _renderTestConnection(service: "unifi_network" | "unifi_protect" | "pihole" | "technitium") {
+    const state = this._connectionTests.get(service);
+    const pending = state === "pending";
+    let resultHtml = html``;
+    if (state && state !== "pending") {
+      resultHtml = state.reachable
+        ? html`<span style="color:var(--status-good);font-size:12.5px;margin-left:8px;">&#x2713; Reachable</span>`
+        : html`<span style="color:var(--status-critical);font-size:12.5px;margin-left:8px;"
+            >&#x2717; ${state.error ?? "unreachable"}</span
+          >`;
+    }
+    return html`
+      <div class="settings-row">
+        <button class="ha-btn" ?disabled=${pending} @click=${() => this._testConnection(service)}>
+          ${pending ? "Testing…" : "Test connection"}
+        </button>
+        ${resultHtml}
+      </div>
+    `;
+  }
+
+  // Restart Probe add-on: single-key Map ("probe") mirroring the Test
+  // Connection pending/result pattern above.
+  @state() private _probeRestart: Map<string, ProbeRestartResult | "pending"> = new Map();
+
+  private async _restartProbe() {
+    this._probeRestart = new Map(this._probeRestart).set("probe", "pending");
+    let result: ProbeRestartResult;
+    try {
+      result = await restartProbe(this.hass);
+    } catch (e: any) {
+      result = { ok: false, reason: "restart_failed", error: e?.message ?? String(e) };
+    }
+    this._probeRestart = new Map(this._probeRestart).set("probe", result);
+  }
+
+  private _renderProbeRestart() {
+    const state = this._probeRestart.get("probe");
+    const pending = state === "pending";
+    let resultHtml = html``;
+    if (state && state !== "pending") {
+      resultHtml = state.ok
+        ? html`<span style="color:var(--status-good);font-size:12.5px;"
+            >&#x2713; Restart requested</span
+          >`
+        : html`<span style="color:var(--status-critical);font-size:12.5px;"
+            >&#x2717; ${state.error ?? state.reason ?? "restart failed"}</span
+          >`;
+    }
+    return html`
+      <div class="probe-error-actions">
+        <button class="ha-btn" ?disabled=${pending} @click=${() => this._restartProbe()}>
+          ${pending ? "Restarting…" : "Restart Probe add-on"}
+        </button>
+        <span class="muted" style="font-size:12px;"
+          >Or restart it yourself: Settings → Add-ons → HA SOC Probe → Restart.</span
+        >
+        ${resultHtml}
+      </div>
+    `;
+  }
+
+  // Discover candidates: keyed by service name ("pihole", "technitium").
+  @state() private _discoverCandidates: Map<string, DiscoveredCandidate[] | "pending"> = new Map();
+
+  private async _discover(service: "pihole" | "technitium") {
+    this._discoverCandidates = new Map(this._discoverCandidates).set(service, "pending");
+    try {
+      const result = await discoverContainerCandidates(this.hass);
+      this._discoverCandidates = new Map(this._discoverCandidates).set(service, result[service]);
+    } catch {
+      this._discoverCandidates = new Map(this._discoverCandidates).set(service, []);
+    }
+  }
+
+  private _renderDiscover(service: "pihole" | "technitium", hostKey: "pihole_host" | "technitium_host") {
+    const state = this._discoverCandidates.get(service);
+    const pending = state === "pending";
+    let listHtml = html``;
+    if (state && state !== "pending") {
+      if (state.length === 0) {
+        listHtml = html`<div class="muted" style="font-size:11.5px;margin-top:4px;">
+          No candidates found — run a network scan from the Scanner tab first, or make sure
+          Network Scan is enabled in Settings.
+        </div>`;
+      } else {
+        listHtml = html`
+          <div style="margin-top:4px;display:flex;flex-wrap:wrap;gap:6px;">
+            ${state.map(
+              (c) => html`
+                <span
+                  class="pill clickable"
+                  style="background:none;cursor:pointer;"
+                  title="Confidence: ${c.confidence}"
+                  @click=${() => this._update(hostKey, c.ip)}
+                  >${c.ip} <span class="muted" style="font-size:10.5px;">(${c.confidence})</span></span
+                >
+              `
+            )}
+          </div>
+        `;
+      }
+    }
+    return html`
+      <div style="margin-top:4px;">
+        <button class="ha-btn" ?disabled=${pending} @click=${() => this._discover(service)}>
+          ${pending ? "Discovering…" : "Discover"}
+        </button>
+        ${listHtml}
+      </div>
+    `;
+  }
+
   private _updateSecuritySource(domain: string, enabled: boolean) {
     if (!this._settings) return;
     this._update("security_sources_enabled", { ...this._settings.security_sources_enabled, [domain]: enabled });
@@ -176,8 +406,8 @@ export class HaSocSettingsView extends LitElement {
 
   private _renderThresholdsCard(s: HaSocSettings) {
     return html`
-      <div class="card">
-        <h3>Detection Thresholds</h3>
+      <details class="card" ?open=${this._isOpen("detection-thresholds")} @toggle=${(e: Event) => this._onToggle("detection-thresholds", e)}>
+        <summary class="card-summary"><h3>Detection Thresholds</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Every detection rule's tunable parameters, each accepted only within the
           range shown. The secure defaults are the most sensitive values that do not
@@ -255,7 +485,7 @@ export class HaSocSettingsView extends LitElement {
           <span class="spacer"></span>
           <button class="ha-btn" @click=${this._resetThresholds}>Reset to secure defaults</button>
         </div>
-      </div>
+      </details>
     `;
   }
 
@@ -288,8 +518,34 @@ export class HaSocSettingsView extends LitElement {
           `
         : ""}
 
-      <div class="card">
-        <h3>Access Control</h3>
+      <div class="settings-grid">
+        <div class="card" style="grid-column:1/-1;">
+          <div class="settings-row" style="border-bottom:none;padding-top:0;">
+            <span>
+              <h3 style="margin:0;">External Connections</h3>
+              <span class="muted" style="display:block;font-size:11.5px;margin-top:4px;"
+                >Informational master switch for this phase only — it does not gate any
+                integration's runtime behavior yet.
+                ${s.external_connections_changed_at
+                  ? html`${s.external_connections_enabled ? "Enabled" : "Disabled"}
+                    ${formatTimestamp(s.external_connections_changed_at)}`
+                  : "never changed"}</span
+              >
+            </span>
+            <label style="display:flex;align-items:center;gap:6px;">
+              <span>Enable external connections</span>
+              <input
+                type="checkbox"
+                .checked=${s.external_connections_enabled}
+                @change=${(e: Event) =>
+                  this._update("external_connections_enabled", (e.target as HTMLInputElement).checked)}
+              />
+            </label>
+          </div>
+        </div>
+
+      <details class="card" ?open=${this._isOpen("access-control")} @toggle=${(e: Event) => this._onToggle("access-control", e)}>
+        <summary class="card-summary"><h3>Access Control</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           <span class="tag enforced">enforced</span> Checked server-side on every
           <code>ha_soc/*</code> command, not just on whether the panel is visible in the
@@ -308,10 +564,10 @@ export class HaSocSettingsView extends LitElement {
             <option value="owner_and_admins">Owner and all administrators</option>
           </select>
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>MFA Non-Compliance Policy</h3>
+      <details class="card" ?open=${this._isOpen("mfa-policy")} @toggle=${(e: Event) => this._onToggle("mfa-policy", e)}>
+        <summary class="card-summary"><h3>MFA Non-Compliance Policy</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Home Assistant core has no hook to <em>require</em> a second factor at login —
           this can only ever <span class="tag cosmetic">audit</span> that gap, or take the
@@ -343,10 +599,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("mfa_grace_period_days", Number((e.target as HTMLInputElement).value))}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Device Vulnerability Scanning</h3>
+      <details class="card" ?open=${this._isOpen("vulnerability-scanning")} @toggle=${(e: Event) => this._onToggle("vulnerability-scanning", e)}>
+        <summary class="card-summary"><h3>Device Vulnerability Scanning</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           <span class="tag cosmetic">best-effort</span> CVE correlation is a heuristic
           vendor/model match against NVD, not a confirmed exploit — absence of a match is
@@ -373,12 +629,12 @@ export class HaSocSettingsView extends LitElement {
           "nvd_api_key",
           !!s.nvd_api_key_set
         )}
-      </div>
+      </details>
 
       ${this._renderThresholdsCard(s)}
 
-      <div class="card">
-        <h3>Integration Security (Provenance)</h3>
+      <details class="card" ?open=${this._isOpen("integration-security-provenance")} @toggle=${(e: Event) => this._onToggle("integration-security-provenance", e)}>
+        <summary class="card-summary"><h3>Integration Security (Provenance)</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           A <strong>provenance</strong> signal, not a safety verdict — it reflects how much
           is known about where an integration's code comes from, never that the code is safe
@@ -387,10 +643,10 @@ export class HaSocSettingsView extends LitElement {
           popularity, and archived-status signals for integrations with a known GitHub repo.
         </p>
         ${this._renderSecretField("GitHub API token (optional)", "github_token", !!s.github_token_set)}
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>UniFi Network</h3>
+      <details class="card" ?open=${this._isOpen("unifi-network")} @toggle=${(e: Event) => this._onToggle("unifi-network", e)}>
+        <summary class="card-summary"><h3>UniFi Network</h3>${this._statusPill(s, "unifi_network")}</summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Connects directly to a UniFi console over your LAN with a
           <strong>local API key</strong> (UniFi OS → Settings → Control Plane →
@@ -399,6 +655,7 @@ export class HaSocSettingsView extends LitElement {
           changed on the controller unless write-back below is enabled with its own key, and
           no data leaves your network.
         </p>
+        ${this._renderTestConnection("unifi_network")}
         <label class="settings-row">
           <span>Controller host or IP</span>
           <input
@@ -448,15 +705,16 @@ export class HaSocSettingsView extends LitElement {
               this._update("unifi_network_verify_ssl", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>UniFi Protect</h3>
+      <details class="card" ?open=${this._isOpen("unifi-protect")} @toggle=${(e: Event) => this._onToggle("unifi-protect", e)}>
+        <summary class="card-summary"><h3>UniFi Protect</h3>${this._statusPill(s, "unifi_protect")}</summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           A second local API key for a UniFi Protect console, surfaced as a compact
           camera-status card on the Network tab. Same local-only, read-only posture as
           Network above.
         </p>
+        ${this._renderTestConnection("unifi_protect")}
         <label class="settings-row">
           <span>Protect host or IP</span>
           <input
@@ -484,10 +742,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("unifi_protect_verify_ssl", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Pi-hole</h3>
+      <details class="card" ?open=${this._isOpen("pihole")} @toggle=${(e: Event) => this._onToggle("pihole", e)}>
+        <summary class="card-summary"><h3>Pi-hole</h3>${this._statusPill(s, "pihole")}</summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Connects directly to a Pi-hole v6 instance over your LAN with its
           <strong>app password</strong> (Pi-hole → Settings → API → App password) to
@@ -495,6 +753,7 @@ export class HaSocSettingsView extends LitElement {
           status, query totals, and whether the IoT subnet below has its own Pi-hole
           client group. Read-only; nothing is ever toggled or reassigned on Pi-hole.
         </p>
+        ${this._renderTestConnection("pihole")}
         <label class="settings-row">
           <span>Pi-hole host or IP</span>
           <input
@@ -507,6 +766,7 @@ export class HaSocSettingsView extends LitElement {
             }}
           />
         </label>
+        ${this._renderDiscover("pihole", "pihole_host")}
         ${this._renderSecretField("App password", "pihole_api_key", !!s.pihole_api_key_set)}
         <label class="settings-row">
           <span>
@@ -540,10 +800,10 @@ export class HaSocSettingsView extends LitElement {
             }}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Technitium DNS Server</h3>
+      <details class="card" ?open=${this._isOpen("technitium")} @toggle=${(e: Event) => this._onToggle("technitium", e)}>
+        <summary class="card-summary"><h3>Technitium DNS Server</h3>${this._statusPill(s, "technitium")}</summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Connects directly to a Technitium DNS Server instance over your LAN with an
           <strong>API token</strong> (Technitium → Administration → Sessions → Create token) to
@@ -552,6 +812,7 @@ export class HaSocSettingsView extends LitElement {
           toggled or edited on Technitium. Independent of Pi-hole above — configure either,
           both, or neither.
         </p>
+        ${this._renderTestConnection("technitium")}
         <label class="settings-row">
           <span>Technitium host or IP</span>
           <input
@@ -564,6 +825,7 @@ export class HaSocSettingsView extends LitElement {
             }}
           />
         </label>
+        ${this._renderDiscover("technitium", "technitium_host")}
         ${this._renderSecretField("API token", "technitium_api_token", !!s.technitium_api_token_set)}
         <label class="settings-row">
           <span>
@@ -579,10 +841,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("technitium_verify_ssl", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Integration Security Scanner</h3>
+      <details class="card" ?open=${this._isOpen("integration-security-scanner")} @toggle=${(e: Event) => this._onToggle("integration-security-scanner", e)}>
+        <summary class="card-summary"><h3>Integration Security Scanner</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Static analysis of every installed integration's source, run on the weekly
           sweep below or on demand from the Scanner tab.
@@ -610,10 +872,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("scanner_network_checks_enabled", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Unused Installs</h3>
+      <details class="card" ?open=${this._isOpen("unused-installs")} @toggle=${(e: Event) => this._onToggle("unused-installs", e)}>
+        <summary class="card-summary"><h3>Unused Installs</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Informational hygiene checks for code that is present but that nothing uses:
           custom integrations with no config entry, entries with no entities, HACS
@@ -637,10 +899,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("hygiene_scan_yaml_dashboards", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Dashboard Files</h3>
+      <details class="card" ?open=${this._isOpen("dashboard-files")} @toggle=${(e: Event) => this._onToggle("dashboard-files", e)}>
+        <summary class="card-summary"><h3>Dashboard Files</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Lets administrators edit the YAML files under the configuration directory's
           <code>dashboards</code> folder from the Assets workspace. No other directory is
@@ -664,10 +926,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("dashboard_edit_enabled", (e.target as HTMLInputElement).checked)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Device SSH Collection</h3>
+      <details class="card" ?open=${this._isOpen("device-ssh")} @toggle=${(e: Event) => this._onToggle("device-ssh", e)}>
+        <summary class="card-summary"><h3>Device SSH Collection</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Lets HA SOC open read-only SSH sessions to UniFi devices using a keypair the
           controller distributes to every adopted device. Commands come from a fixed
@@ -705,10 +967,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("ssh_username", (e.target as HTMLInputElement).value || null)}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Audit Log</h3>
+      <details class="card" ?open=${this._isOpen("audit-log")} @toggle=${(e: Event) => this._onToggle("audit-log", e)}>
+        <summary class="card-summary"><h3>Audit Log</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           <span class="tag enforced">enforced</span> Hash-chained JSONL, rotated on
           whichever of these two limits is hit first — see the Audit Log tab's
@@ -735,10 +997,10 @@ export class HaSocSettingsView extends LitElement {
               this._update("audit_max_bytes", Math.round(Number((e.target as HTMLInputElement).value) * MB))}
           />
         </label>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>SIEM / Syslog Export</h3>
+      <details class="card" ?open=${this._isOpen("siem-syslog")} @toggle=${(e: Event) => this._onToggle("siem-syslog", e)}>
+        <summary class="card-summary"><h3>SIEM / Syslog Export</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Exports finalized hash-chained audit records as RFC 5424 with JSON or
           CEF 0, or as bare canonical JSON for collectors that explicitly require
@@ -855,10 +1117,63 @@ export class HaSocSettingsView extends LitElement {
               ${s.syslog_status.dropped}. Format ${s.syslog_status.format}.
             </p>`
           : ""}
-      </div>
 
-      <div class="card">
-        <h3>Security Integrations Health</h3>
+        <div class="syslog-subsection-divider" role="separator"></div>
+        <h4 class="syslog-subsection-heading">Syslog Receiver (opposite direction)</h4>
+        <p class="muted" style="margin-top:-4px;font-size:12.5px;">
+          Receives forwarded logs over UDP instead of sending HA SOC's own audit
+          records out — compatible with the "logspout" HA add-on, which forwards
+          every Docker container's stdout/stderr on this host. UDP only this
+          phase; TCP/TLS receive is a documented follow-up. Point logspout's
+          <code>syslog+udp://</code> target at this host and the port below.
+        </p>
+        <label class="settings-row">
+          <span>Enable syslog receiver</span>
+          <input
+            type="checkbox"
+            .checked=${s.syslog_receiver_enabled}
+            @change=${(e: Event) =>
+              this._update("syslog_receiver_enabled", (e.target as HTMLInputElement).checked)}
+          />
+        </label>
+        <label class="settings-row">
+          <span
+            >Listen port
+            <span class="muted" style="display:block;font-size:11.5px;"
+              >Distinct from the exporter's port above and from SNMP's; the HA SOC
+              Probe add-on binds this port (host networking).</span
+            ></span
+          >
+          <input
+            type="number"
+            min="1"
+            max="65535"
+            .value=${String(s.syslog_receiver_port)}
+            @change=${(e: Event) =>
+              this._update("syslog_receiver_port", Number((e.target as HTMLInputElement).value))}
+          />
+        </label>
+        ${s.syslog_receiver_status
+          ? html`<p class="muted" style="font-size:12px;">
+              Status: ${s.syslog_receiver_status.error
+                ? `error — ${s.syslog_receiver_status.error}`
+                : s.syslog_receiver_status.running
+                  ? "listening"
+                  : s.syslog_receiver_status.enabled
+                    ? "starting"
+                    : "disabled"}.
+              ${s.syslog_receiver_status.entry_count != null
+                ? html`Buffered ${s.syslog_receiver_status.entry_count} entries.`
+                : ""}
+              ${s.syslog_receiver_status.last_received_at
+                ? html`Last received ${s.syslog_receiver_status.last_received_at}.`
+                : ""}
+            </p>`
+          : ""}
+      </details>
+
+      <details class="card" ?open=${this._isOpen("security-integrations-health")} @toggle=${(e: Event) => this._onToggle("security-integrations-health", e)}>
+        <summary class="card-summary"><h3>Security Integrations Health</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           What shows up in the always-present Dashboard security card. A source stays on
           by default — a device or integration you haven't installed just reports "not
@@ -882,20 +1197,20 @@ export class HaSocSettingsView extends LitElement {
           Integrations Loaded
         </h4>
         ${NAMED_INTEGRATION_SOURCE_LABELS.map(({ domain, label }) => this._renderIntegrationRow(domain, label))}
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>Host Probe Add-on</h3>
+      <details class="card" ?open=${this._isOpen("host-probe")} @toggle=${(e: Event) => this._onToggle("host-probe", e)}>
+        <summary class="card-summary"><h3>Host Probe Add-on</h3></summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Real socket-level port visibility on the Home Assistant host needs the optional
           <strong>HA SOC Probe</strong> companion add-on — see the Scanner tab's Host
           Probe card for its current status, and the project README for install steps.
           The add-on's own scan interval is set from its add-on Configuration tab.
         </p>
-      </div>
+      </details>
 
-      <div class="card">
-        <h3>SNMPv3 Telemetry</h3>
+      <details class="card" ?open=${this._isOpen("snmpv3")} @toggle=${(e: Event) => this._onToggle("snmpv3", e)}>
+        <summary class="card-summary"><h3>SNMPv3 Telemetry</h3>${this._statusPill(s, "snmpv3")}</summary>
         <p class="muted" style="margin-top:-8px;font-size:12.5px;">
           Optional read-only Net-SNMP service in the HA SOC Probe for monitoring and
           observability tools. Only SNMPv3 USM <strong>AuthPriv</strong> is supported,
@@ -981,6 +1296,21 @@ export class HaSocSettingsView extends LitElement {
               ${s.snmp_status.reported_at ? ` Last report ${formatTimestamp(s.snmp_status.reported_at)}.` : ""}
             </p>`
           : html`<p class="muted" style="font-size:12px;">No SNMP status has been reported by the Probe yet.</p>`}
+        ${s.snmp_status?.error
+          ? html`
+              <div class="probe-error-notice">
+                <div class="probe-error-text">${s.snmp_status.error}</div>
+                <p class="probe-error-hint">
+                  This usually means the Probe add-on hit a startup or permission problem.
+                  Restarting the add-on re-runs its setup; if the error persists after a
+                  restart, check the add-on's log (Settings → Add-ons → HA SOC Probe → Log)
+                  for the full detail.
+                </p>
+                ${this._renderProbeRestart()}
+              </div>
+            `
+          : ""}
+      </details>
       </div>
     `;
   }

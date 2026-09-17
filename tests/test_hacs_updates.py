@@ -49,9 +49,28 @@ async def entry(hass: HomeAssistant) -> MockConfigEntry:
     return config_entry
 
 
-def _repo(repo_id: int, full_name: str, installed: str, available: str, *, category: str = "integration", fail: bool = False) -> Any:
+def _repo(
+    repo_id: int,
+    full_name: str,
+    installed: str,
+    available: str,
+    *,
+    category: str = "integration",
+    fail: bool = False,
+    authors: list[str] | None = None,
+    last_updated: Any = None,
+    last_fetched: Any = None,
+) -> Any:
     repo = SimpleNamespace(
-        data=SimpleNamespace(id=repo_id, full_name=full_name, category=category, installed=True),
+        data=SimpleNamespace(
+            id=repo_id,
+            full_name=full_name,
+            category=category,
+            installed=True,
+            authors=authors,
+            last_updated=last_updated,
+            last_fetched=last_fetched,
+        ),
         display_installed_version=installed,
         display_available_version=available,
         update_repository=AsyncMock(side_effect=RuntimeError("github down") if fail else None),
@@ -214,6 +233,44 @@ async def test_a_failing_install_is_reported_per_repository(
     assert [i["full_name"] for i in result["installed"]] == ["trooperthorn/ha_int_elkm1"]
     assert result["failed"][0]["full_name"] == "someone/broken"
     assert "download failed" in result["failed"][0]["error"]
+
+
+async def test_row_reads_authors_and_last_updated_from_a_valid_epoch(hass: HomeAssistant) -> None:
+    # 2024-01-01T00:00:00+00:00 == 1704067200
+    repo = _repo(201, "trooperthorn/x", "1.0", "1.0", authors=["alice", "bob"], last_updated=1704067200)
+    row = hu._row(hass, repo)
+    assert row["authors"] == ["alice", "bob"]
+    assert row["last_updated"] == "2024-01-01T00:00:00+00:00"
+
+
+async def test_row_defaults_authors_when_missing(hass: HomeAssistant) -> None:
+    repo = _repo(202, "trooperthorn/y", "1.0", "1.0", authors=None)
+    row = hu._row(hass, repo)
+    assert row["authors"] == []
+
+
+async def test_row_falls_back_to_last_fetched_when_last_updated_is_zero(hass: HomeAssistant) -> None:
+    import datetime as dt
+
+    fetched = dt.datetime(2024, 3, 5, 12, 0, 0, tzinfo=dt.timezone.utc)
+    repo = _repo(203, "trooperthorn/z", "1.0", "1.0", last_updated=0, last_fetched=fetched)
+    row = hu._row(hass, repo)
+    assert row["last_updated"] == fetched.isoformat()
+
+
+async def test_row_last_updated_is_none_when_neither_field_is_usable(hass: HomeAssistant) -> None:
+    repo = _repo(204, "trooperthorn/w", "1.0", "1.0", last_updated=None, last_fetched=None)
+    row = hu._row(hass, repo)
+    assert row["last_updated"] is None
+
+
+async def test_row_ignores_negative_last_updated_and_falls_back(hass: HomeAssistant) -> None:
+    import datetime as dt
+
+    fetched = dt.datetime(2024, 6, 1, tzinfo=dt.timezone.utc)
+    repo = _repo(205, "trooperthorn/v", "1.0", "1.0", last_updated=-5, last_fetched=fetched)
+    row = hu._row(hass, repo)
+    assert row["last_updated"] == fetched.isoformat()
 
 
 async def test_the_two_writes_are_owner_only(hass: HomeAssistant, entry: MockConfigEntry, hacs) -> None:

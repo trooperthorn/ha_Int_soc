@@ -1,0 +1,37 @@
+#!/usr/bin/with-contenv bashio
+# Syslog RECEIVER supervisor: starts the long-running Python UDP listener
+# (usr/lib/ha_soc/syslog_receiver.py), which owns polling its own config
+# (poll_syslog_receiver_config) and batching received entries back to Core
+# (ingest_probe_result) on its own cadence. Unlike SNMP's run script, no
+# shell-side config templating is needed here -- there is no credential
+# material and the listener itself is a plain asyncio UDP socket, so the
+# Python process manages its own lifecycle end to end; this script's job is
+# only to keep it running under s6 and hand it the Supervisor secret the
+# other Probe services already establish the same way.
+set -uo pipefail
+
+STATE_DIR="/data"
+SECRET_FILE="${STATE_DIR}/ha_soc_probe_secret"
+POLL_URL="http://supervisor/core/api/services/ha_soc/poll_syslog_receiver_config?return_response"
+INGEST_URL="http://supervisor/core/api/services/ha_soc/ingest_probe_result"
+
+# Shared with the other Probe services via /data; see ensure_probe_secret's twin comments there.
+ensure_probe_secret() {
+    if [ ! -s "${SECRET_FILE}" ]; then
+        ( set -o noclobber
+          umask 077
+          head -c 32 /dev/urandom | sha256sum | cut -d' ' -f1 > "${SECRET_FILE}"
+        ) 2>/dev/null || true
+    fi
+    chmod 600 "${SECRET_FILE}" 2>/dev/null || true
+}
+
+ensure_probe_secret
+PROBE_SECRET="$(cat "${SECRET_FILE}" 2>/dev/null || echo "")"
+
+bashio::log.info "HA SOC Probe syslog receiver starting; it remains off (no UDP bind) until owner-enabled."
+export SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN:-}"
+export PROBE_SECRET="${PROBE_SECRET}"
+exec python3 /usr/lib/ha_soc/syslog_receiver.py \
+    --poll-url "${POLL_URL}" \
+    --ingest-url "${INGEST_URL}"

@@ -88,6 +88,17 @@ CONF_SYSLOG_PORT = "syslog_port"
 CONF_SYSLOG_TLS_VERIFY = "syslog_tls_verify"
 CONF_SYSLOG_FACILITY = "syslog_facility"
 
+CONF_EXTERNAL_CONNECTIONS_ENABLED = "external_connections_enabled"
+CONF_EXTERNAL_CONNECTIONS_CHANGED_AT = "external_connections_changed_at"
+# Phase 1: informational master switch only. It does not gate any
+# integration's runtime behavior yet; it is surfaced for the owner's
+# visibility and stamped with a server-computed timestamp on change.
+DEFAULT_EXTERNAL_CONNECTIONS_ENABLED = True
+
+# Slug of the companion HA SOC Probe add-on (ha_soc_probe/config.yaml), used
+# to target Supervisor add-on operations such as a remote restart.
+PROBE_ADDON_SLUG = "ha_soc_probe"
+
 CONF_SNMP_ENABLED = "snmp_enabled"
 CONF_SNMP_LISTEN_ADDRESS = "snmp_listen_address"
 CONF_SNMP_PORT = "snmp_port"
@@ -111,6 +122,30 @@ NETSCAN_PORT_MAX = 65535
 NETSCAN_MAX_PORT_LIST_ENTRIES = 64
 NETSCAN_MAX_CONCURRENCY_MIN = 1
 NETSCAN_MAX_CONCURRENCY_MAX = 128
+
+CONF_SYSLOG_RECEIVER_ENABLED = "syslog_receiver_enabled"
+CONF_SYSLOG_RECEIVER_PORT = "syslog_receiver_port"
+DEFAULT_SYSLOG_RECEIVER_ENABLED = False
+# Distinct from the exporter's own port (default 514) and from SNMP's 161, to
+# avoid an owner accidentally pointing logspout at HA SOC's own export port.
+DEFAULT_SYSLOG_RECEIVER_PORT = 5514
+# Bounded ring buffer: most recent N entries kept in the Store, oldest dropped
+# first. No rotation-to-disk this phase; see docs/protocol.md's syslog section.
+SYSLOG_RECEIVER_MAX_ENTRIES = 2000
+# Per-ingest-call batch cap and per-field length caps the Probe's relayed
+# batches are bounded to (mirrors NETSCAN_MAX_HOSTS_PER_RESULT's reasoning).
+SYSLOG_RECEIVER_MAX_BATCH = 200
+SYSLOG_RECEIVER_MESSAGE_MAX = 4096
+SYSLOG_RECEIVER_FIELD_MAX = 255
+SYSLOG_RECEIVER_STATUS_ERROR_MAX = 200
+
+# Same shape as poll_snmp_config: the Probe's syslog receiver polls this for
+# its owner-controlled enabled flag and listen port.
+SERVICE_POLL_SYSLOG_RECEIVER_CONFIG = "poll_syslog_receiver_config"
+# Field name carrying a batch of received syslog entries inside
+# ingest_probe_result's payload, matching netscan_result's single-ingest-
+# endpoint shape.
+SERVICE_INGEST_SYSLOG_ENTRIES = "syslog_entries"
 
 CONF_UNIFI_NETWORK_HOST = "unifi_network_host"
 CONF_UNIFI_NETWORK_API_KEY = "unifi_network_api_key"
