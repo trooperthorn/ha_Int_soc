@@ -277,6 +277,11 @@ URL a parser actually needs stays visible.
   floor/label references, `alert`/notify-group/`person`/`group`/
   `proximity` unknown members, registry tidiness), each severity-scaled
   to how directly it can defeat a security-relevant automation.
+- **Entity Map**: draws the instance as a graph. Devices, entities, areas and
+  integrations as nodes; hosting, area, provider and via-device links as typed
+  edges; and an arc of the last 6 to 48 hours of logbook activity. Built entirely
+  from the core registry and logbook websocket commands with the admin's own
+  session, so it adds no backend and no new permission. See `docs/ENTITY-MAP.md`.
 - **Security Integrations Health**: an always-present Dashboard section
   covering the entities a security-focused install cares about most:
   every `lock`/`siren`/`valve` entity regardless of which integration owns

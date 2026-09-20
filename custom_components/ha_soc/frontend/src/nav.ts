@@ -10,6 +10,7 @@ export type SocTab =
   | "logs"
   | "peripherals"
   | "entity_remap"
+  | "entity_map"
   | "dashboard_files"
   | "integration_security"
   | "terminal"
@@ -44,6 +45,7 @@ export const SOC_WORKSPACES: SocWorkspaceDefinition[] = [
       { id: "network", label: "Network" },
       { id: "peripherals", label: "Local Peripherals" },
       { id: "entity_remap", label: "Entity ReMap" },
+      { id: "entity_map", label: "Entity Map" },
       { id: "dashboard_files", label: "Dashboard Files" },
       { id: "integration_security", label: "Integration Security" },
     ],
