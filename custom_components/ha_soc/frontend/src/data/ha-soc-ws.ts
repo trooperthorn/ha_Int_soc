@@ -1992,6 +1992,9 @@ export const closeTerminal = (hass: HomeAssistant, sessionId: string) =>
 export interface HacsRepositoryRow {
   id: string;
   full_name: string;
+  // The GitHub owner (data.full_name split on "/"), always present, unlike
+  // authors below which is manifest codeowners and often empty.
+  owner: string;
   category: string;
   installed_version: string | null;
   available_version: string | null;
@@ -2004,6 +2007,12 @@ export interface HacsRepositoryRow {
   last_updated: string | null;
 }
 
+export interface HacsOwnerSummary {
+  owner: string;
+  count: number;
+  pending: number;
+}
+
 export interface HacsStatus {
   available: boolean;
   // Why HACS could not be read: not installed, disabled, or not shaped as expected.
@@ -2012,13 +2021,23 @@ export interface HacsStatus {
   pending: number;
   last_refresh: string | null;
   last_update: string | null;
+  // Persisted owner filter (server-side, owner-only to change).
+  owner_filter: string[];
+  owners: HacsOwnerSummary[];
+  refresh_in_progress: boolean;
+  refresh_total: number;
+  refresh_done: number;
+  refresh_failed: number;
+  refresh_started_at: string | null;
 }
 
 export interface HacsRefreshResult {
   refreshed: string[];
   failed: { full_name: string; error: string }[];
   pending_after: string[];
-  at: string;
+  at: string | null;
+  selected: number;
+  owners: string[];
 }
 
 export interface HacsUpdateResult {
@@ -2032,11 +2051,25 @@ export interface HacsUpdateResult {
 export const fetchHacsStatus = (hass: HomeAssistant) =>
   ws<HacsStatus>(hass, { type: "ha_soc/hacs/status" });
 
-export const hacsRefreshAll = (hass: HomeAssistant) =>
-  ws<HacsRefreshResult>(hass, { type: "ha_soc/hacs/refresh_all" });
+export const hacsRefreshAll = (
+  hass: HomeAssistant,
+  options?: { owners?: string[]; repositoryIds?: string[] }
+) =>
+  ws<HacsRefreshResult>(hass, {
+    type: "ha_soc/hacs/refresh_all",
+    ...(options?.owners ? { owners: options.owners } : {}),
+    ...(options?.repositoryIds ? { repository_ids: options.repositoryIds } : {}),
+  });
 
-export const hacsUpdateAll = (hass: HomeAssistant, repositoryIds?: string[]) =>
+export const hacsUpdateAll = (
+  hass: HomeAssistant,
+  options?: { owners?: string[]; repositoryIds?: string[] }
+) =>
   ws<HacsUpdateResult>(hass, {
     type: "ha_soc/hacs/update_all",
-    ...(repositoryIds ? { repository_ids: repositoryIds } : {}),
+    ...(options?.owners ? { owners: options.owners } : {}),
+    ...(options?.repositoryIds ? { repository_ids: options.repositoryIds } : {}),
   });
+
+export const hacsSetOwners = (hass: HomeAssistant, owners: string[]) =>
+  ws<HacsStatus>(hass, { type: "ha_soc/hacs/set_owners", owners });
