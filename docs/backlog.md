@@ -4,6 +4,7 @@ Open items moved out of code comments, dated when they were recorded. Larger spr
 
 ## Verification against live systems
 
+- 2026-09-22 hacs_updates.py owner filter and bounded-concurrent refresh: verify wall-clock time on the real 133-repository install (this was built and unit-tested against a fake HACS; the concurrency win is only proven against HACS's own documented `@concurrent(concurrenttasks=10)` limit, not measured live) and confirm the owner chips and live progress line render correctly against the real panel before relying on them for the next multi-minute refresh.
 - 2026-09-03 unifi_core.py `network_snapshot`: verify the `network_table` row id key (`_id`) and the numeric VLAN id key (`vlan`) against a live controller.
 - 2026-09-03 unifi.py `_resolve_site_id`: verify the site identifier key; the Integration API uses `id`, legacy `name` and `_id`.
 - 2026-09-03 unifi.py `_ipv6_of`: verify the IPv6 field name and shape (`ipv6Addresses` list versus a single string).

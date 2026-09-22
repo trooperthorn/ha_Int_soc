@@ -325,6 +325,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_hacs_status,
         ws_hacs_refresh_all,
         ws_hacs_update_all,
+        ws_hacs_set_owners,
         ws_containers_resources,
         ws_watchdog_status,
         ws_watchdog_set,
@@ -2789,16 +2790,30 @@ async def ws_hacs_status(hass: HomeAssistant, connection, msg: dict) -> None:
 
 
 @require_owner
-@websocket_api.websocket_command({vol.Required("type"): "ha_soc/hacs/refresh_all"})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/hacs/refresh_all",
+        vol.Optional("owners"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=50)),
+        vol.Optional("repository_ids"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=200)),
+    }
+)
 @websocket_api.async_response
 async def ws_hacs_refresh_all(hass: HomeAssistant, connection, msg: dict) -> None:
-    from .hacs_updates import HacsUnavailable, async_hacs_refresh_all
+    from .hacs_updates import HacsBusy, HacsUnavailable, async_hacs_refresh_all
 
     runtime = _runtime(hass)
     try:
         result = await async_hacs_refresh_all(
-            hass, runtime.store, runtime.audit, user_id=connection.user.id
+            hass,
+            runtime.store,
+            runtime.audit,
+            user_id=connection.user.id,
+            owners=msg.get("owners"),
+            repository_ids=msg.get("repository_ids"),
         )
+    except HacsBusy as err:
+        connection.send_error(msg["id"], "hacs_busy", str(err))
+        return
     except HacsUnavailable as err:
         connection.send_error(msg["id"], "hacs_unavailable", str(err))
         return
@@ -2809,6 +2824,7 @@ async def ws_hacs_refresh_all(hass: HomeAssistant, connection, msg: dict) -> Non
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/hacs/update_all",
+        vol.Optional("owners"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=50)),
         vol.Optional("repository_ids"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=200)),
     }
 )
@@ -2823,9 +2839,26 @@ async def ws_hacs_update_all(hass: HomeAssistant, connection, msg: dict) -> None
             runtime.store,
             runtime.audit,
             user_id=connection.user.id,
+            owners=msg.get("owners"),
             repository_ids=msg.get("repository_ids"),
         )
     except HacsUnavailable as err:
         connection.send_error(msg["id"], "hacs_unavailable", str(err))
         return
     connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/hacs/set_owners",
+        vol.Required("owners"): vol.All(cv.ensure_list, [cv.string], vol.Length(max=50)),
+    }
+)
+@websocket_api.async_response
+async def ws_hacs_set_owners(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .hacs_updates import async_hacs_set_owners, async_hacs_status
+
+    runtime = _runtime(hass)
+    await async_hacs_set_owners(runtime.store, msg["owners"])
+    connection.send_result(msg["id"], await async_hacs_status(hass, runtime.store))
