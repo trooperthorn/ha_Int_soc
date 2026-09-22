@@ -222,6 +222,7 @@ Dated decisions with the alternative rejected and why. Entries marked "recorded"
 
 ## CI and release
 
+- 2026-09-22. The image scans ignore CVE-2026-85091 (zlib 1.3.2-r0) by advisory and package name in .grype.yaml because no Alpine branch ships a fix; the gate stays `fail-build` at High with `only-fixed: false` so every other finding still blocks. Rejected: `only-fixed: true`, which would silently hide every future unfixed High; rejected: lowering the severity cutoff. Both Dockerfiles already run `apk upgrade`, so the fix lands automatically once published, and the ignore is dated for removal.
 - 2026-08-30. hacs/action and hassfest are pinned to a head commit with the date recorded. Rejected: a floating ref, because upstream publishes no release tags (hacs/action stopped at 22.5.0; home-assistant/actions documents `@master`).
 - 2026-09-03 (recorded; D-16). CI tests only the pinned latest harness version until a minimum-version job is decided. Rejected: a version matrix, in favor of the safe default.
 - 2026-09-11. `registry.devices` is iterated, never read as a mapping, in health.py and vulns.py (three sites), per the 2026-08-24 developer blog post: the mapping surface is a shim for custom integrations that is removed in 2027.9, and the live install logged the deprecation on every sweep. The health module also drops its one-time started-listener handle when the listener fires, because core logs an error when a self-removed one-time listener is removed again at unload.
