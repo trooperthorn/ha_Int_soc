@@ -23,6 +23,9 @@ case "${path}" in
     *) echo "supervisor-api: path must start with /" >&2; exit 2 ;;
 esac
 
+# The single quotes are deliberate: the token must expand inside the
+# with-contenv child, never in this shell, which has it unset.
+# shellcheck disable=SC2016
 exec /usr/bin/with-contenv bash -c '
     curl -sS -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
          -H "Content-Type: application/json" \

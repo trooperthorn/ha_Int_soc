@@ -28,7 +28,9 @@ timeout_seconds="$(printf '%s' "${body}" | jq -r 'try (.timeout_seconds // 30) c
 case "${timeout_seconds}" in
     ''|*[!0-9]*) json_error "timeout_seconds must be a positive integer" ;;
 esac
-[ "${timeout_seconds}" -ge 1 ] && [ "${timeout_seconds}" -le 120 ] || json_error "timeout_seconds must be between 1 and 120"
+if [ "${timeout_seconds}" -lt 1 ] || [ "${timeout_seconds}" -gt 120 ]; then
+    json_error "timeout_seconds must be between 1 and 120"
+fi
 
 mkdir -p "${SESSIONS_DIR}"
 chmod 700 "${SESSIONS_DIR}"

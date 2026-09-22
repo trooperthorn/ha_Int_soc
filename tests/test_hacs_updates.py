@@ -18,17 +18,18 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import homeassistant.util.dt as dt_util
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
-
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.ha_soc import hacs_updates as hu
 from custom_components.ha_soc.const import DOMAIN
 from custom_components.ha_soc.websocket_api import (
     ws_hacs_refresh_all,
+    ws_hacs_set_owners,
     ws_hacs_status,
     ws_hacs_update_all,
 )
@@ -158,8 +159,14 @@ async def test_status_lists_downloaded_repositories_and_pending(hass: HomeAssist
     assert elk["pending_update"] is True
     assert elk["entity_id"] == "update.hacs_101"
     assert elk["entity_state"] == "on"
+    assert elk["owner"] == "trooperthorn"
     assert status["pending"] == 2
     assert status["last_refresh"] is None
+    assert status["owner_filter"] == []
+    assert status["refresh_in_progress"] is False
+    owners = {o["owner"]: o for o in status["owners"]}
+    assert owners["trooperthorn"] == {"owner": "trooperthorn", "count": 2, "pending": 1}
+    assert owners["someone"] == {"owner": "someone", "count": 1, "pending": 1}
 
 
 async def test_disabled_hacs_is_reported(hass: HomeAssistant, entry: MockConfigEntry, hacs) -> None:
@@ -278,8 +285,170 @@ async def test_the_two_writes_are_owner_only(hass: HomeAssistant, entry: MockCon
     for handler, msg in (
         (ws_hacs_refresh_all, {"type": "ha_soc/hacs/refresh_all"}),
         (ws_hacs_update_all, {"type": "ha_soc/hacs/update_all"}),
+        (ws_hacs_set_owners, {"type": "ha_soc/hacs/set_owners", "owners": ["trooperthorn"]}),
     ):
         with pytest.raises(Unauthorized):
             handler(hass, admin, {"id": 1, **msg})
     for repo in hacs.repositories.list_downloaded:
         repo.update_repository.assert_not_awaited()
+    assert "owners" not in (entry.runtime_data.store.data.get("hacs_updates") or {})
+
+
+async def test_owners_narrows_refresh_to_matching_only(
+    hass: HomeAssistant, entry: MockConfigEntry, hacs
+) -> None:
+    connection = await _call(
+        hass,
+        ws_hacs_refresh_all,
+        _connection(),
+        {"id": 1, "type": "ha_soc/hacs/refresh_all", "owners": ["trooperthorn"]},
+    )
+    result = connection.send_result.call_args[0][1]
+    assert sorted(result["refreshed"]) == ["trooperthorn/ha_int_davis", "trooperthorn/ha_int_elkm1"]
+    assert result["selected"] == 2
+    broken = next(r for r in hacs.repositories.list_downloaded if r.data.id == 103)
+    broken.update_repository.assert_not_awaited()
+
+
+async def test_unknown_owner_refreshes_nothing(hass: HomeAssistant, entry: MockConfigEntry, hacs) -> None:
+    connection = await _call(
+        hass,
+        ws_hacs_refresh_all,
+        _connection(),
+        {"id": 1, "type": "ha_soc/hacs/refresh_all", "owners": ["nobody"]},
+    )
+    result = connection.send_result.call_args[0][1]
+    assert result == {"refreshed": [], "failed": [], "pending_after": [], "at": None, "selected": 0, "owners": ["nobody"]}
+    for repo in hacs.repositories.list_downloaded:
+        repo.update_repository.assert_not_awaited()
+
+
+async def test_repository_ids_win_over_owners(hass: HomeAssistant, entry: MockConfigEntry, hacs) -> None:
+    connection = await _call(
+        hass,
+        ws_hacs_refresh_all,
+        _connection(),
+        {
+            "id": 1,
+            "type": "ha_soc/hacs/refresh_all",
+            "owners": ["nobody"],
+            "repository_ids": ["101"],
+        },
+    )
+    result = connection.send_result.call_args[0][1]
+    assert result["refreshed"] == ["trooperthorn/ha_int_elkm1"]
+    assert result["selected"] == 1
+
+
+async def test_owner_match_is_case_insensitive(hass: HomeAssistant, entry: MockConfigEntry, hacs) -> None:
+    connection = await _call(
+        hass,
+        ws_hacs_refresh_all,
+        _connection(),
+        {"id": 1, "type": "ha_soc/hacs/refresh_all", "owners": ["TrooperThorn"]},
+    )
+    result = connection.send_result.call_args[0][1]
+    assert sorted(result["refreshed"]) == ["trooperthorn/ha_int_davis", "trooperthorn/ha_int_elkm1"]
+
+
+async def test_owner_filter_matches_a_repo_with_empty_authors(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    # data.authors is manifest codeowners and is often empty; owner still
+    # comes from full_name, so the filter must not depend on authors.
+    repo = _repo(301, "trooperthorn/no_codeowners", "1.0", "1.1", authors=None)
+    fake = SimpleNamespace(
+        system=SimpleNamespace(disabled=False, disabled_reason=None),
+        repositories=SimpleNamespace(list_downloaded=[repo]),
+        data=SimpleNamespace(async_write=AsyncMock()),
+        coordinators={},
+    )
+    hass.data["hacs"] = fake
+    selected = hu._select([repo], ["trooperthorn"], None)
+    assert selected == [repo]
+
+
+async def test_set_owners_persists_and_status_reports_it(
+    hass: HomeAssistant, entry: MockConfigEntry, hacs
+) -> None:
+    connection = await _call(
+        hass,
+        ws_hacs_set_owners,
+        _connection(),
+        {"id": 1, "type": "ha_soc/hacs/set_owners", "owners": ["TrooperThorn", " trooperthorn ", "Someone"]},
+    )
+    status = connection.send_result.call_args[0][1]
+    assert status["owner_filter"] == ["trooperthorn", "someone"]
+    assert entry.runtime_data.store.data["hacs_updates"]["owners"] == ["trooperthorn", "someone"]
+
+    connection = await _call(hass, ws_hacs_status, _connection(), {"id": 2, "type": "ha_soc/hacs/status"})
+    assert connection.send_result.call_args[0][1]["owner_filter"] == ["trooperthorn", "someone"]
+
+
+async def test_refresh_in_progress_cleared_after_an_exception(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    repo = _repo(401, "trooperthorn/x", "1.0", "1.1")
+
+    async def _boom() -> None:
+        raise RuntimeError("hacs data write exploded")
+
+    fake = SimpleNamespace(
+        system=SimpleNamespace(disabled=False, disabled_reason=None),
+        repositories=SimpleNamespace(list_downloaded=[repo]),
+        data=SimpleNamespace(async_write=AsyncMock(side_effect=RuntimeError("boom"))),
+        coordinators={},
+    )
+    hass.data["hacs"] = fake
+    # hacs.data.async_write failures are swallowed (debug-logged), so force the
+    # exception inside the gather itself via a coordinator that raises.
+    fake.coordinators = {"x": MagicMock(async_update_listeners=MagicMock(side_effect=RuntimeError("boom")))}
+    result = await hu.async_hacs_refresh_all(
+        hass, entry.runtime_data.store, entry.runtime_data.audit, user_id="owner1"
+    )
+    assert result["refreshed"] == ["trooperthorn/x"]
+    status = await hu.async_hacs_status(hass, entry.runtime_data.store)
+    assert status["refresh_in_progress"] is False
+
+
+async def test_second_refresh_refused_while_one_is_in_progress(
+    hass: HomeAssistant, entry: MockConfigEntry, hacs
+) -> None:
+    hu._remember(
+        entry.runtime_data.store,
+        refresh_in_progress=True,
+        refresh_total=3,
+        refresh_done=0,
+        refresh_failed=0,
+        refresh_started_at=dt_util.utcnow().isoformat(),
+    )
+    connection = await _call(hass, ws_hacs_refresh_all, _connection(), {"id": 1, "type": "ha_soc/hacs/refresh_all"})
+    assert connection.send_error.call_args[0][1] == "hacs_busy"
+
+
+async def test_semaphore_caps_in_flight_refreshes(hass: HomeAssistant, entry: MockConfigEntry) -> None:
+    in_flight = 0
+    peak = 0
+
+    async def _slow_update(**_kwargs: Any) -> None:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+
+    repos = []
+    for i in range(12):
+        repo = _repo(500 + i, f"trooperthorn/pkg{i}", "1.0", "1.1")
+        repo.update_repository = AsyncMock(side_effect=_slow_update)
+        repos.append(repo)
+
+    fake = SimpleNamespace(
+        system=SimpleNamespace(disabled=False, disabled_reason=None),
+        repositories=SimpleNamespace(list_downloaded=repos),
+        data=SimpleNamespace(async_write=AsyncMock()),
+        coordinators={},
+    )
+    hass.data["hacs"] = fake
+    await hu.async_hacs_refresh_all(hass, entry.runtime_data.store, entry.runtime_data.audit, user_id="owner1")
+    assert peak <= hu.CONCURRENCY

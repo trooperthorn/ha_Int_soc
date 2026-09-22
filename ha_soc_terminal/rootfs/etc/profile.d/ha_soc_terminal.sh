@@ -93,7 +93,7 @@ if [ -n "${HA_SOC_TERM_SESSION_ID:-}" ]; then
     if [ -e /config ]; then
         printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /homeassistant (also /config, also ~/config) and nothing beyond this server.\n'
     else
-        printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /homeassistant (also ~/config, also $HA_CONFIG; /config could not be created here) and nothing beyond this server.\n'
+        printf 'view <file> reads YAML in colour; nano edits it. This shell reaches /homeassistant (also ~/config, also the HA_CONFIG variable; /config could not be created here) and nothing beyond this server.\n'
     fi
     printf 'corelog, suplog, hostlog, applog <slug> tail the Supervisor logs; supervisor-api <path> is a GET-only wrapper over the Supervisor API.\n'
 fi
