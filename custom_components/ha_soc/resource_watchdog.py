@@ -5,18 +5,19 @@ Docker hard caps applied by the Probe add-on. See docs/RESOURCE-WATCHDOG.md.
 """
 from __future__ import annotations
 
-from collections import deque
-from datetime import timedelta
 import logging
 import time
+from collections import deque
+from datetime import timedelta
 from typing import Any
 
+import homeassistant.util.dt as dt_util
 from homeassistant.components import persistent_notification
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
-import homeassistant.util.dt as dt_util
 
+from .atomic_json import sync_read_json, sync_write_json_atomic
 from .const import (
     DETECTION_OPEN,
     SEVERITY_HIGH,
@@ -36,6 +37,13 @@ _HISTORY_SAMPLES = 60
 
 # Enforced on the WS schema and re-checked by the Probe before any Docker URL is built.
 ADDON_SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+
+HISTORY_FILENAME = "watchdog_history.json"
+# crash_forensics.py copies this file aside as watchdog_history.prev.json
+# BEFORE this module's first save of a new boot, so a bundle collected on
+# an unclean stop can show the ring as it stood before this boot started
+# overwriting it. See crash_forensics.py's module docstring.
+HISTORY_PREV_FILENAME = "watchdog_history.prev.json"
 
 
 def async_installed_addon_slugs(hass: HomeAssistant) -> set[str] | None:
@@ -70,6 +78,53 @@ class ResourceWatchdog:
         self._action_times: dict[str, list[float]] = {}
         # slug -> short human string describing the last watchdog outcome
         self._last_outcome: dict[str, str] = {}
+        self._history_path = hass.config.path("ha_soc", HISTORY_FILENAME)
+        self._history_dirty = False
+        self._history_last_write: str | None = None
+
+    def _sync_load_history(self) -> dict[str, Any] | None:
+        """Copy this boot's starting ring to the .prev file, then load it.
+
+        The copy happens before anything in this boot can have written a
+        newer sample, so a bundle collected for THIS boot's unclean-stop
+        (which can only be about the boot that just ended) reads the ring
+        as it stood at the end of the previous boot, not this boot's own
+        (still nearly-empty) history.
+        """
+        raw = sync_read_json(self._history_path)
+        if isinstance(raw, dict):
+            sync_write_json_atomic(
+                self.hass.config.path("ha_soc", HISTORY_PREV_FILENAME), raw
+            )
+        return raw
+
+    async def async_load_history(self) -> None:
+        """Load the persisted ring before the first sample, so a restart
+        does not lose the last hour of history the crash-forensics suspect
+        ranking depends on. Called once from async_setup_entry.
+        """
+        raw = await self.hass.async_add_executor_job(self._sync_load_history)
+        if not isinstance(raw, dict):
+            return
+        for slug, samples in raw.items():
+            if not isinstance(samples, list):
+                continue
+            history = self._history.setdefault(slug, deque(maxlen=_HISTORY_SAMPLES))
+            history.extend(samples[-_HISTORY_SAMPLES:])
+
+    def _sync_save_history(self) -> None:
+        payload = {slug: list(samples) for slug, samples in self._history.items()}
+        sync_write_json_atomic(self._history_path, payload)
+
+    async def _async_maybe_save_history(self) -> None:
+        """Persist the ring at most once per sample cycle, and only when it
+        actually changed (a config-only pass with no containers touches
+        nothing)."""
+        if not self._history_dirty:
+            return
+        self._history_dirty = False
+        await self.hass.async_add_executor_job(self._sync_save_history)
+        self._history_last_write = _iso_now()
 
     @property
     def config(self) -> dict[str, Any]:
@@ -125,7 +180,7 @@ class ResourceWatchdog:
     async def _async_sample(self, _now=None) -> None:
         try:
             await self.async_run_once()
-        except Exception:  # noqa: BLE001 - the sampling loop must never die
+        except Exception:
             _LOGGER.exception("Resource watchdog sample failed")
 
     async def async_run_once(self) -> None:
@@ -150,6 +205,7 @@ class ResourceWatchdog:
                     "memory_usage": container.get("memory_usage"),
                 }
             )
+            self._history_dirty = True
 
             # A stopped add-on can't breach anything; clear its counter.
             if container.get("kind") == "addon" and container.get("state") != "started":
@@ -175,6 +231,8 @@ class ResourceWatchdog:
             self._breach_counts[slug] = 0
             await self._async_trip(container, action, over_cpu, over_mem, cpu, mem)
             changed = True
+
+        await self._async_maybe_save_history()
 
         if changed:
             async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_dashboard")
@@ -293,6 +351,8 @@ class ResourceWatchdog:
             },
             "hard_limit_state": self.config.get("hard_limit_state") or {},
             "running": self._unsub is not None,
+            "history_file": self._history_path,
+            "history_last_write": self._history_last_write,
             "containers": {
                 slug: {
                     "breach_count": self._breach_counts.get(slug, 0),

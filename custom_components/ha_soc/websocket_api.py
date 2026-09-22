@@ -329,6 +329,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_containers_resources,
         ws_watchdog_status,
         ws_watchdog_set,
+        ws_crash_forensics_status,
+        ws_crash_forensics_bundle,
+        ws_crash_forensics_collect_now,
         ws_network_overview,
         ws_network_security_overview,
         ws_network_security_suggestion_set,
@@ -1913,6 +1916,51 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
             detail={"action": "watchdog_config_changed", "changes": changes},
         )
     connection.send_result(msg["id"], runtime.watchdog.status())
+
+
+@require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/crash_forensics/status"})
+@websocket_api.async_response
+async def ws_crash_forensics_status(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Heartbeat state plus the bundle list (id, classification, gap,
+    top-3 suspects, size, path)."""
+    connection.send_result(msg["id"], _runtime(hass).crash_forensics.status())
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/crash_forensics/bundle",
+        vol.Required("id"): str,
+        vol.Required("file"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_crash_forensics_bundle(hass: HomeAssistant, connection, msg: dict) -> None:
+    """One file's text out of one bundle. Both the bundle id and the file
+    name are validated against a fixed whitelist before any path is built
+    (see crash_forensics.py: BUNDLE_ID_RE, BUNDLE_FILES)."""
+    content = _runtime(hass).crash_forensics.sync_read_bundle_file(msg["id"], msg["file"])
+    if content is None:
+        connection.send_error(msg["id"], "not_found", "No such bundle file.")
+        return
+    connection.send_result(msg["id"], {"content": content})
+
+
+# Owner-only: runs a real (dry-run) collection pass against the CURRENT
+# boot, for testing that the pipeline works before a real event needs it.
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/crash_forensics/collect_now"})
+@websocket_api.async_response
+async def ws_crash_forensics_collect_now(hass: HomeAssistant, connection, msg: dict) -> None:
+    runtime = _runtime(hass)
+    result = await runtime.crash_forensics.async_check_and_collect(force_dry_run=True)
+    runtime.audit.async_log(
+        "crash_forensics",
+        user_id=connection.user.id,
+        detail={"action": "collect_now"},
+    )
+    connection.send_result(msg["id"], result)
 
 
 @require_soc_access

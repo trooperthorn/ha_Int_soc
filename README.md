@@ -129,6 +129,12 @@ URL a parser actually needs stays visible.
   is never misread as misconfiguration, findings you confirmed survive a
   pass that could not see their evidence, and a check that could not
   evaluate says so instead of going quiet.
+- **Crash Forensics**: a heartbeat file plus a clean-stop marker notice
+  when the previous run stopped uncleanly (a silent host hang, not a
+  logged Core crash), and auto-collect the previous boot's journal tail,
+  Supervisor/host status, and container state into a bundle with a ranked
+  list of suspects, before the next boot's log churn rotates the evidence
+  away. See docs/CRASH-FORENSICS.md.
 - **Risk Scoring & Security Posture**: an explainable, additive per-user
   risk score (0–100) and an install-wide posture score/grade, both shown
   with their contributing factors, never as an opaque number. Every
