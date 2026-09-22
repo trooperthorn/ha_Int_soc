@@ -1,0 +1,72 @@
+#!/bin/bash
+# CGI: POST {"command": str, "timeout_seconds": int<=120}; runs it and
+# records it in the same sessions index the interactive shell uses, so the
+# HA SOC panel's session list and audit trail do not need a second shape
+# (docs/TERMINAL-DESIGN.md). busybox httpd sets CONTENT_LENGTH and reads the
+# POST body on stdin (networking/httpd.c, handle_cgi()).
+set -euo pipefail
+
+SESSIONS_DIR="${HA_SOC_TERM_SESSIONS_DIR:-/data/sessions}"
+MAX_OUTPUT_BYTES=$((256 * 1024))
+
+json_error() {
+    local msg="$1"
+    printf 'Status: 400 Bad Request\r\nContent-Type: application/json\r\n\r\n'
+    jq -n --arg error "${msg}" '{error: $error}'
+    exit 0
+}
+
+body=""
+if [ -n "${CONTENT_LENGTH:-}" ] && [ "${CONTENT_LENGTH}" -gt 0 ]; then
+    body="$(head -c "${CONTENT_LENGTH}")"
+fi
+
+command="$(printf '%s' "${body}" | jq -r 'try .command catch empty' 2>/dev/null || true)"
+[ -n "${command}" ] || json_error "command is required"
+
+timeout_seconds="$(printf '%s' "${body}" | jq -r 'try (.timeout_seconds // 30) catch 30' 2>/dev/null || echo 30)"
+case "${timeout_seconds}" in
+    ''|*[!0-9]*) json_error "timeout_seconds must be a positive integer" ;;
+esac
+if [ "${timeout_seconds}" -lt 1 ] || [ "${timeout_seconds}" -gt 120 ]; then
+    json_error "timeout_seconds must be between 1 and 120"
+fi
+
+mkdir -p "${SESSIONS_DIR}"
+chmod 700 "${SESSIONS_DIR}"
+
+id="$(date -u +%Y%m%dT%H%M%SZ)-run-$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+out_file="${SESSIONS_DIR}/${id}.out"
+started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+set +e
+timeout "${timeout_seconds}" bash -lc "${command}" >"${out_file}" 2>&1
+exit_code=$?
+set -e
+
+ended="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+full_bytes="$(stat -c %s "${out_file}")"
+truncated=false
+if [ "${full_bytes}" -gt "${MAX_OUTPUT_BYTES}" ]; then
+    truncated=true
+    head -c "${MAX_OUTPUT_BYTES}" "${out_file}" > "${out_file}.trunc"
+    mv "${out_file}.trunc" "${out_file}"
+fi
+chmod 600 "${out_file}"
+bytes="$(stat -c %s "${out_file}")"
+digest="$(sha256sum "${out_file}" | cut -d' ' -f1)"
+
+jq -cn --arg id "${id}" --arg kind "run" --arg started "${started}" --arg ended "${ended}" \
+    --arg command "${command}" --argjson exit "${exit_code}" --argjson bytes "${bytes}" \
+    --arg sha256 "${digest}" \
+    '{id: $id, kind: $kind, started: $started, ended: $ended, command: $command, exit: $exit, bytes: $bytes, sha256: $sha256}' \
+    >> "${SESSIONS_DIR}/index.jsonl"
+chmod 600 "${SESSIONS_DIR}/index.jsonl"
+
+stdout_text="$(cat "${out_file}")"
+duration_seconds=$(( $(date -u -d "${ended}" +%s) - $(date -u -d "${started}" +%s) ))
+
+printf 'Status: 200 OK\r\nContent-Type: application/json\r\n\r\n'
+jq -n --arg id "${id}" --arg stdout "${stdout_text}" --argjson exit_code "${exit_code}" \
+    --argjson duration_seconds "${duration_seconds}" --argjson truncated "${truncated}" \
+    '{id: $id, stdout: $stdout, exit_code: $exit_code, duration_seconds: $duration_seconds, truncated: $truncated}'

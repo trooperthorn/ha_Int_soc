@@ -1,0 +1,44 @@
+#!/usr/bin/with-contenv bashio
+# HA SOC Terminal: a one-shot run/transcript listener alongside ttyd, for
+# short commands that do not need an interactive shell (docs/TERMINAL-DESIGN.md).
+# busybox httpd, already in this image (base image ships busybox even with
+# the network applets stripped from /usr/bin), serving two CGI scripts under
+# basic auth with the same paired credential ttyd uses.
+set -euo pipefail
+
+SESSIONS_DIR="/data/sessions"
+SECRET_FILE="/data/ha_soc_terminal_secret"
+HTTPD_CONF="/data/httpd.conf"
+DOCROOT="/www"
+
+mkdir -p "${SESSIONS_DIR}"
+chmod 700 "${SESSIONS_DIR}"
+
+# The ttyd service generates this secret; wait for it rather than racing to
+# generate a second one (s6 starts services in parallel).
+for _ in $(seq 1 30); do
+    [ -s "${SECRET_FILE}" ] && break
+    sleep 1
+done
+if [ ! -s "${SECRET_FILE}" ]; then
+    bashio::log.error "No paired secret after 30s; the run/transcript listener is not starting."
+    exit 1
+fi
+chmod 600 "${SECRET_FILE}"
+TERMINAL_SECRET="$(cat "${SECRET_FILE}")"
+
+# busybox httpd.conf: "path:user:pass" restricts everything under path to
+# that basic-auth credential. The file lives under /data because the root
+# filesystem is read-only under this profile, like the paired secret itself (networking/httpd.c, parseconf(), the ':'
+# separated PERMS records read from -c's config file). One line covers the
+# whole CGI directory; there is no other content under the docroot.
+( umask 077; printf '/cgi-bin:%s:%s\n' "hasoc" "${TERMINAL_SECRET}" > "${HTTPD_CONF}" )
+chmod 600 "${HTTPD_CONF}"
+
+export HA_SOC_TERM_SESSIONS_DIR="${SESSIONS_DIR}"
+
+bashio::log.info "HA SOC Terminal run/transcript listener starting on :7682."
+
+# -f: foreground (s6 supervises it). -c: the auth config above. -h: docroot,
+# whose only content is cgi-bin/run and cgi-bin/transcript.
+exec busybox httpd -f -p 0.0.0.0:7682 -c "${HTTPD_CONF}" -h "${DOCROOT}"

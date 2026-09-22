@@ -74,7 +74,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check shell programs
         # with-contenv shebang, so the shell is declared; SC1091 skips the /usr/lib source that only exists in the image.
-        run: find ha_soc_probe/rootfs ha_soc_terminal/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' -o -path '*/usr/local/bin/*' \) -print0 | xargs -0 shellcheck --shell=bash --exclude=SC1091
+        run: find ha_soc_probe/rootfs ha_soc_terminal/rootfs -type f \( -name '*.sh' -o -path '*/services.d/*/run' -o -path '*/usr/local/bin/*' -o -path '*/cgi-bin/*' \) -print0 | xargs -0 shellcheck --shell=bash --exclude=SC1091
 
   terminal-image-security:
     name: Terminal image build and local-only check
@@ -87,7 +87,7 @@ jobs:
       - name: Verify the shell, the recorder, the readers, and the absent network tools
         run: |
           img=local/ha-soc-terminal:${{ github.sha }}
-          for present in ttyd bash script nano less dircolors lscpu lspci ha ha.real sshd ssh-keygen; do
+          for present in ttyd bash script nano less dircolors lscpu lspci ha ha.real sshd ssh-keygen jq supervisor-api busybox; do
             docker run --rm --entrypoint /bin/sh "$img" -c "command -v $present"
           done
           # The CLI binary is the pinned release and runs (it has no --version flag; help exits 0).
@@ -95,7 +95,9 @@ jobs:
           for absent in ssh scp sftp mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
             docker run --rm --entrypoint /bin/sh "$img" -c "! command -v $absent"
           done
-          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha && bash -n /etc/services.d/ha_soc_terminal_sftp/run'
+          docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha && bash -n /usr/local/bin/supervisor-api && bash -n /etc/services.d/ha_soc_terminal/run && bash -n /etc/services.d/ha_soc_terminal_sftp/run && bash -n /etc/services.d/ha_soc_terminal_httpd/run && bash -n /www/cgi-bin/run && bash -n /www/cgi-bin/transcript'
+          # busybox is compiled with the httpd applet; confirmed against this pinned image (docs/TERMINAL-DESIGN.md).
+          docker run --rm --entrypoint /bin/sh "$img" -c 'busybox httpd --help 2>&1 | grep -q "httpd"'
           # The SFTP sshd config passes sshd's own check against a throwaway host key, and resolves to SFTP-only settings.
           docker run --rm --entrypoint /bin/sh "$img" -c 'mkdir -p /data /homeassistant && ssh-keygen -q -t ed25519 -N "" -f /data/ssh_host_ed25519_key && sshd -t -f /etc/ssh/sshd_config && sshd -T -f /etc/ssh/sshd_config | grep -E "^(permitrootlogin prohibit-password|passwordauthentication no|allowtcpforwarding no|permittty no|chrootdirectory /homeassistant|forcecommand internal-sftp)" | wc -l | grep -qx 6'
           # No SSH library either: libssh2 arrived once through bat via libgit2.

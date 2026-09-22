@@ -1,0 +1,40 @@
+#!/bin/bash
+# CGI: GET ?id=<session id>; returns the raw transcript bytes with the
+# recorded hash, so the integration can verify what it downloaded matches
+# what the app wrote. id is checked against a fixed pattern before it ever
+# touches a path, so nothing here can walk outside the sessions directory.
+set -euo pipefail
+
+SESSIONS_DIR="${HA_SOC_TERM_SESSIONS_DIR:-/data/sessions}"
+MAX_BYTES=$((4 * 1024 * 1024))
+
+fail() {
+    local code="$1" msg="$2"
+    printf 'Status: %s\r\nContent-Type: application/json\r\n\r\n' "${code}"
+    jq -n --arg error "${msg}" '{error: $error}'
+    exit 0
+}
+
+id=""
+IFS='&' read -ra pairs <<< "${QUERY_STRING:-}"
+for pair in "${pairs[@]}"; do
+    case "${pair}" in
+        id=*) id="${pair#id=}" ;;
+    esac
+done
+
+case "${id}" in
+    ''|*[!A-Za-z0-9_-]*) fail "400 Bad Request" "id must match ^[A-Za-z0-9_-]+\$" ;;
+esac
+
+out_file="${SESSIONS_DIR}/${id}.out"
+[ -f "${out_file}" ] || fail "404 Not Found" "no such transcript"
+
+digest=""
+if [ -f "${SESSIONS_DIR}/index.jsonl" ]; then
+    digest="$(grep -F "\"id\":\"${id}\"" "${SESSIONS_DIR}/index.jsonl" | tail -n1 | jq -r '.sha256 // empty' 2>/dev/null || true)"
+fi
+[ -n "${digest}" ] || digest="$(sha256sum "${out_file}" | cut -d' ' -f1)"
+
+printf 'Status: 200 OK\r\nContent-Type: text/plain\r\nX-Sha256: %s\r\n\r\n' "${digest}"
+head -c "${MAX_BYTES}" "${out_file}"

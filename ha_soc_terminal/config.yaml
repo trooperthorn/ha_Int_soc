@@ -36,7 +36,10 @@ ports_description:
 options:
   session_recording: true
   history_persist: true
-  idle_timeout_minutes: 30
+  # Raised from 30: an assistant-guided session pauses while the owner reads
+  # or pastes output, and 30 minutes was timing that pause out mid-task. It
+  # is still a courtesy timeout, not a control (docs/DOCS.md).
+  idle_timeout_minutes: 120
   sftp_enabled: false
   sftp_authorized_keys: []
 schema:

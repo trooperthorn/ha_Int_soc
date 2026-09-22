@@ -62,6 +62,10 @@ export HA_SOC_TERM_RECORD HA_SOC_TERM_HISTORY HA_SOC_TERM_IDLE_MINUTES
 export HA_SOC_TERM_VERSION="${TERMINAL_VERSION}"
 export HA_SOC_TERM_SESSIONS_DIR="${SESSIONS_DIR}"
 export HA_SOC_TERM_HISTORY_FILE="${HISTORY_FILE}"
+# Every doc and every assistant-authored command says /config; this
+# container only has /homeassistant. HA_CONFIG is the fallback the profile
+# script points at when the /config symlink below could not be created.
+export HA_CONFIG=/homeassistant
 
 if bashio::var.true "${HA_SOC_TERM_HISTORY}"; then
     touch "${HISTORY_FILE}"
@@ -72,6 +76,20 @@ fi
 # AppArmor profile keeps / read-only, so the convenience link lives in the
 # shell's home instead of at the root.
 [ -e /root/config ] || ln -s /homeassistant /root/config
+
+# Best-effort root-level symlink too, since /config (not /root/config) is
+# the path everyone actually types and every assistant-authored command
+# assumes. This is expected to fail under a hardened AppArmor profile that
+# keeps / read-only (docs/TERMINAL-DESIGN.md); HA_CONFIG and the login
+# banner (rootfs/etc/profile.d/ha_soc_terminal.sh) cover that case.
+if [ -e /config ]; then
+    bashio::log.debug "/config already exists; leaving it alone."
+elif ln -s /homeassistant /config 2>/tmp/config_symlink_error; then
+    bashio::log.info "Linked /config -> /homeassistant."
+else
+    bashio::log.info "Could not create /config ($(cat /tmp/config_symlink_error 2>/dev/null)); the configuration directory is at /homeassistant (also \$HA_CONFIG, also ~/config)."
+fi
+rm -f /tmp/config_symlink_error
 
 bashio::log.info "HA SOC Terminal ${TERMINAL_VERSION}: recording=${HA_SOC_TERM_RECORD}, history=${HA_SOC_TERM_HISTORY}, idle=${HA_SOC_TERM_IDLE_MINUTES}m"
 

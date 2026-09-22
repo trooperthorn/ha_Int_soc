@@ -119,12 +119,31 @@ owner and admins when the access setting says so):
 | `ha_soc/terminal/input` | `{session_id, data}` (base64, at most 64 KiB decoded) | `{ok: true}` |
 | `ha_soc/terminal/resize` | `{session_id, cols, rows}` | `{ok: true}` |
 | `ha_soc/terminal/close` | `{session_id}` | `{closed: true}` |
+| `ha_soc/terminal/app_control` (owner only) | `{action: "start"\|"restart"}` | `{ok: true}` or `{ok: false, reason}` |
+| `ha_soc/terminal/forget_pairing` (owner only) | none | `{ok: true}` |
+| `ha_soc/terminal/export_event` | `{kind, session_id?, lines, bytes, sha256}` | `{ok: true}` |
+
+`ha_soc/terminal/close` lets the owner close any user's session (the panel's
+session list, from `status.sessions`, shows every open session); anyone else
+may only close their own, exactly as before. `app_control` and
+`forget_pairing` answer the app: boot: manual (the app does not start with
+the host) and a session-limit lockout with no server-side way out of them,
+which the panel could previously only describe, not fix. `export_event`
+audits a copy or download the panel already performed client-side: `kind` is
+one of `copy_screen`, `copy_all`, `copy_last`, `download_screen`,
+`download_all`, `download_transcript`, `download_run`, and `sha256` is
+computed over the exact text in the browser (`crypto.subtle.digest`) so the
+audit record identifies what left the panel, not just how much. The audit
+category is `terminal_export`, flushed like open and close. A failed
+`export_event` call does not block the copy or download itself, only the
+audit trail of it, and the panel shows a warning when that happens.
 
 Refusal codes: `not_supervisor`, `app_not_installed`, `app_not_running`,
 `app_not_paired`, `session_limit_user`, `session_limit_total`,
 `unknown_target`, `unknown_session`, `connect_failed`. Close reasons:
-`user_closed`, `remote_closed`, `connection_lost` (the browser unsubscribed
-or its WebSocket dropped), `max_duration`, `unloaded`, `error`.
+`user_closed`, `owner_closed` (the owner closed a session that was not
+theirs), `remote_closed`, `connection_lost` (the browser unsubscribed or its
+WebSocket dropped), `max_duration`, `unloaded`, `error`.
 
 `target` is `self` (the app's own bash) today. `core` (`docker exec -it
 homeassistant /bin/bash`, the shell HAOS itself documents) and `addon:<slug>`
@@ -185,6 +204,106 @@ family against the generic fallbacks, because `document.fonts.check()`
 reports true for any system family. Bundling a woff2 (JetBrains Mono, OFL,
 about 100 KB per weight) would make the look uniform across machines at the
 cost of bundle size; not done.
+
+## App control, session list, and copy-out (phase 4)
+
+The owner's complaint driving this phase: the app is `boot: manual`
+(deliberately: it does not come up with the host), and before this the
+stopped-app panel state only said "start it under Settings, Apps" with no
+button; a lockout from `MAX_SESSIONS_PER_USER = 1` after a browser reload
+left "close it first" with nothing to close it with; and there was no way
+to get terminal output back out of the browser except manual selection.
+
+Shipped this phase, backend and audited:
+
+- `terminal.async_app_control(hass, action)` calls the same Supervisor
+  client `ws_probe_restart` already uses (`get_supervisor_client(...)
+  .addons.{start,restart}_addon(slug)`) so there remains exactly one code
+  path in this integration that starts or restarts an app. Owner-only,
+  audited as `terminal_app_control` with the action and the result; never
+  raises, every failure comes back as `{"ok": false, "reason": ...}`.
+- `terminal.async_forget_pairing` (existed) is now reachable from the panel
+  through `ha_soc/terminal/forget_pairing`, owner-only, audited as
+  `terminal_forget_pairing`.
+- `TerminalSessions.async_close` takes `allow_any`: the owner can close any
+  user's session (the session list is theirs to see, `status.sessions`), a
+  session's own user can still close only their own. The close reason
+  records which happened (`owner_closed` vs `user_closed`).
+- `ha_soc/terminal/export_event` audits every copy or download the panel
+  performs client-side, with a client-computed sha256 so the record names
+  the actual bytes.
+
+Also shipped, closing out this phase (frontend and the one-shot listener):
+
+- `terminal-view.ts` renders Start / Restart (whenever the app is
+  installed) and Forget pairing (owner-only, with a confirm dialog) next to
+  the status line, all three calling the WS commands above.
+- The session list (`status.sessions`) renders under the terminal, with a
+  per-session Close button; the owner sees every session, anyone else sees
+  only their own (`hass.user.id` against each row's `user_id`).
+- Copy screen / Copy all / Copy last output and Download screen / Download
+  all read `term.buffer.active` directly (`translateToString(true)`,
+  trailing whitespace trimmed per row); "last output" uses the OSC 133
+  marks below rather than guessing at prompts. Every copy or download
+  hashes what it sent with `crypto.subtle.digest` and calls
+  `ha_soc/terminal/export_event`; a failed audit call still leaves the
+  copy or download in place, with a warning appended to the feedback line
+  instead of blocking it.
+- OSC 133;A (a new prompt is about to be drawn) and OSC 133;C (output is
+  about to start) are now emitted by the shell itself
+  (`rootfs/etc/profile.d/ha_soc_terminal.sh`: `printf` in the prompt
+  function for A, `PS0` for C) and read by `term.parser.registerOscHandler`
+  in `terminal-view.ts`, which records the absolute buffer row at each mark
+  so "last output" is the previous command's output exactly, independent of
+  scrollback position.
+
+### Transcript download and run mode
+
+Both shipped in this phase, on a second listener rather than the ttyd
+WebSocket (which is a PTY stream, not a file server, and cannot answer a
+one-shot request without a human at the other end):
+
+- A `busybox httpd` service (`ha_soc_terminal_httpd`, port 7682) starts
+  alongside ttyd, waits for the same paired secret ttyd generates, and
+  writes an `httpd.conf` restricting `/cgi-bin` to `hasoc:<secret>` basic
+  auth (`/path:user:pass`, `networking/httpd.c`'s `parseconf()`). Two CGI
+  scripts under `/www/cgi-bin`, both bash:
+  - `run`: `POST {"command", "timeout_seconds"}` (parsed with `jq`), runs
+    `timeout <t> bash -lc "$command" 2>&1`, caps output at 256 KiB, writes
+    the transcript to `/data/sessions/<id>.out` and appends
+    `{"id","kind":"run","started","ended","command","exit","bytes","sha256"}`
+    to the same `/data/sessions/index.jsonl` the interactive shell wrapper
+    (`ha_soc_term_open`) writes, and answers
+    `{id, stdout, exit_code, duration_seconds, truncated}`.
+  - `transcript`: `GET ?id=<id>`, `id` checked against `^[A-Za-z0-9_-]+$`
+    before it ever reaches a path (no `/`, no `..`, so nothing can walk out
+    of the sessions directory), capped at 4 MiB, returns the raw bytes with
+    an `X-Sha256` header taken from the index line.
+- `TerminalSessions.async_run` (`terminal.py`) POSTs to `/cgi-bin/run` with
+  the paired credential, one run at a time per user (`ERR_TERMINAL_BUSY`
+  refuses a second), overall wait `timeout_seconds + 10`, and audits
+  `terminal_run` with the command, exit code, output bytes and sha256, and
+  duration. `TerminalSessions.async_transcript` GETs `/cgi-bin/transcript`,
+  recomputes the sha256 integration-side and compares it against
+  `X-Sha256` (`ERR_TRANSCRIPT_HASH_MISMATCH` on a mismatch, before anything
+  reaches the browser), and audits `terminal_export` / `download_transcript`
+  with the session id, bytes and sha256.
+- The panel's "Run a command" card (`terminal-view.ts`) offers the input,
+  a 30/60/120s timeout select, the exit code and duration, Copy output /
+  Download output (audited as `copy_run` / `download_run`), and the last
+  ten commands as clickable chips (in memory, not persisted). Each
+  session's "Download transcript" button calls `ha_soc/terminal/transcript`
+  and saves it locally, with an optional client-side ANSI strip (the
+  audited hash is always of the raw bytes the app sent, before stripping).
+
+Why a second httpd listener with the same credential, rather than PTY
+sentinel scraping over the existing ttyd connection or a new Supervisor
+privilege: scraping a PTY for command boundaries is exactly the kind of
+fragile screen-scraping this app's design rejects elsewhere (the OSC 133
+approach for copy-out marks boundaries deliberately instead of guessing at
+prompts); a new privilege (`docker_api`, a Core-side exec route) would widen
+the app's reach for a feature that a same-container HTTP listener answers
+without it. `docs/decisions.md` has the dated entry.
 
 ## SFTP (phase 3, shipped)
 
@@ -278,3 +397,19 @@ it resolves to the SFTP-only settings.
       logs "bad ownership or modes for chroot directory"), the mapped port
       answers, and a client can `get` and `put` under the configuration
       directory.
+- [ ] `busybox httpd` on this image is compiled with the `httpd` applet
+      (added to `terminal-image-security` in `security.yml`, unverified
+      without a Docker build in this environment).
+- [ ] The `run` and `transcript` CGI scripts against a live app: basic auth
+      is enforced on `/cgi-bin`, a run's output and index line match, a
+      transcript's `X-Sha256` matches what `async_transcript` recomputes,
+      and a bad `id` (`../etc/passwd` and similar) is refused by the WS
+      schema before it ever reaches the CGI script.
+- [ ] OSC 133 marks on the live shell: `A` fires once per prompt, `C` once
+      per command, and "Copy last output" in the panel bounds exactly the
+      previous command's output after a multi-line command and after a
+      command that scrolls the screen.
+- [ ] The `ha` subcommand names `corelog`/`suplog`/`hostlog`/`applog` call
+      (`ha core logs`, `ha supervisor logs`, `ha host logs`, `ha apps logs
+      <slug>`) against a live Supervisor CLI; not exercised outside the
+      image build.
