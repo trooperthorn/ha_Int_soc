@@ -75,6 +75,10 @@ EXPORT_KINDS = (
     "download_run",
     "copy_logs",
     "download_logs",
+    # Crash-forensics bundle files, copied/downloaded from the panel's
+    # Crash forensics card (see websocket_api.py's ws_crash_forensics_bundle).
+    "copy_forensics",
+    "download_forensics",
 )
 
 MAX_SESSIONS_PER_USER = 1

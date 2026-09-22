@@ -591,6 +591,72 @@ export interface WatchdogSetPayload {
   hard_limit?: { slug: string; memory_mb?: number | null; cpus?: number | null };
 }
 
+// Mirrors crash_forensics.py's _rank_suspects()/summary.json shape.
+export interface CrashForensicsSuspect {
+  kind: string;
+  subject: string;
+  evidence: string;
+  file: string;
+  rank: number;
+}
+
+// Mirrors crash_forensics.py's sync_list_bundles().
+export interface CrashBundle {
+  id: string;
+  ts: string | null;
+  classification: "clean_reboot" | "kernel_fault" | "silent_stop" | null;
+  gap_seconds: number | null;
+  suspects: CrashForensicsSuspect[];
+  size_bytes: number;
+  path: string;
+  files?: string[];
+}
+
+// Mirrors crash_forensics.py's async_check_and_collect()'s self.last_check.
+export interface CrashForensicsLastCheck {
+  checked_at: string;
+  heartbeat: { ts: string; boot_id: string; core_started: string | null } | null;
+  last_stop: { ts: string; reason: string } | null;
+  unclean: boolean;
+  bundle?: Record<string, unknown>;
+}
+
+// Mirrors crash_forensics.py's CrashForensics.status().
+export interface CrashForensicsStatus {
+  enabled: boolean;
+  heartbeat_interval_seconds: number;
+  last_check: CrashForensicsLastCheck | null;
+  bundles: CrashBundle[];
+}
+
+export const fetchCrashForensicsStatus = (hass: HomeAssistant) =>
+  ws<CrashForensicsStatus>(hass, { type: "ha_soc/crash_forensics/status" });
+
+export const fetchCrashBundleFile = (hass: HomeAssistant, id: string, file: string) =>
+  ws<{ content: string }>(hass, { type: "ha_soc/crash_forensics/bundle", id, file }).then(
+    (r) => r.content
+  );
+
+// Owner-only, audited; runs a dry-run collection pass against the current boot.
+export const crashForensicsCollectNow = (hass: HomeAssistant) =>
+  ws<CrashForensicsLastCheck>(hass, { type: "ha_soc/crash_forensics/collect_now" });
+
+// Bundle files this integration ever writes (crash_forensics.py: BUNDLE_FILES).
+export const CRASH_BUNDLE_FILES = [
+  "host-journal-prev-boot.txt",
+  "kernel.txt",
+  "supervisor.txt",
+  "core.txt",
+  "host-info.json",
+  "resolution-info.json",
+  "supervisor-info.json",
+  "os-info.json",
+  "containers.json",
+  "fault-log.txt",
+  "watchdog-history.json",
+  "summary.json",
+] as const;
+
 // Mirrors unifi.py's normalized contract; every per-row field is nullable and renders as a dash when absent.
 export interface UniFiIntegrationMatch {
   domain: string;
@@ -2021,7 +2087,9 @@ export type TerminalExportKind =
   | "copy_run"
   | "download_run"
   | "copy_logs"
-  | "download_logs";
+  | "download_logs"
+  | "copy_forensics"
+  | "download_forensics";
 
 export const sendTerminalExportEvent = (
   hass: HomeAssistant,

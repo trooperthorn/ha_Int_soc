@@ -27,7 +27,16 @@ import {
   hacsUpdateAll,
   hacsSetOwners,
   subscribeTopic,
+  fetchAccessInfo,
+  CrashForensicsStatus,
+  CrashBundle,
+  fetchCrashForensicsStatus,
+  fetchCrashBundleFile,
+  crashForensicsCollectNow,
+  sendTerminalExportEvent,
+  CRASH_BUNDLE_FILES,
 } from "../data/ha-soc-ws";
+import { sha256Hex, byteLength, lineCount, copyText, downloadText, utcStamp } from "../data/export-helpers";
 
 const TIER_LABEL: Record<IntegrationTier, string> = {
   core: "Core",
@@ -89,6 +98,16 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   @state() private _hacsOwnerFilter: string[] = [];
   private _hacsOwnersSeeded = false;
   private _hacsUnsub: (() => Promise<void>) | null = null;
+  @state() private _isOwner = false;
+  @state() private _crash: CrashForensicsStatus | null = null;
+  @state() private _crashLoading = true;
+  @state() private _crashError: string | null = null;
+  @state() private _crashExpanded: string | null = null;
+  @state() private _crashFiles: Record<string, string> = {};
+  @state() private _crashFileError: string | null = null;
+  @state() private _crashCollecting = false;
+  @state() private _crashCollectResult: CrashBundle | null = null;
+  @state() private _crashFeedback: string | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -96,6 +115,14 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     this._loadContainers();
     this._loadWatchdog();
     this._loadHacs();
+    this._loadCrash();
+    fetchAccessInfo(this.hass)
+      .then((access) => {
+        this._isOwner = !!access.is_owner;
+      })
+      .catch(() => {
+        this._isOwner = false;
+      });
     subscribeTopic(this.hass, "hacs", () => {
       this._loadHacs();
     }).then((unsub) => {
@@ -177,6 +204,93 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
       this._watchdog = await fetchWatchdogStatus(this.hass);
     } catch {
       this._watchdog = null;
+    }
+  }
+
+  private async _loadCrash() {
+    this._crashLoading = true;
+    try {
+      this._crash = await fetchCrashForensicsStatus(this.hass);
+      this._crashError = null;
+    } catch (err: any) {
+      this._crash = null;
+      this._crashError = err?.message ?? String(err);
+    } finally {
+      this._crashLoading = false;
+    }
+  }
+
+  private _toggleCrashRow(id: string) {
+    this._crashExpanded = this._crashExpanded === id ? null : id;
+  }
+
+  private async _viewCrashFile(bundleId: string, file: string) {
+    const key = `${bundleId}/${file}`;
+    this._crashFileError = null;
+    try {
+      const content = await fetchCrashBundleFile(this.hass, bundleId, file);
+      this._crashFiles = { ...this._crashFiles, [key]: content };
+    } catch (err: any) {
+      this._crashFileError = err?.message ?? String(err);
+    }
+  }
+
+  private async _exportCrashFile(bundleId: string, file: string, mode: "copy" | "download") {
+    const key = `${bundleId}/${file}`;
+    let text = this._crashFiles[key];
+    this._crashFileError = null;
+    try {
+      if (text === undefined) {
+        text = await fetchCrashBundleFile(this.hass, bundleId, file);
+        this._crashFiles = { ...this._crashFiles, [key]: text };
+      }
+      const lines = lineCount(text);
+      const bytes = byteLength(text);
+      if (mode === "copy") await copyText(text);
+      else downloadText(text, `${bundleId}-${file}-${utcStamp()}.txt`);
+      const sha256 = await sha256Hex(text);
+      await sendTerminalExportEvent(
+        this.hass,
+        mode === "copy" ? "copy_forensics" : "download_forensics",
+        lines,
+        bytes,
+        sha256
+      );
+      this._crashFeedback = `${mode === "copy" ? "Copied" : "Downloaded"} ${file} (${lines} line(s))`;
+    } catch (err: any) {
+      this._crashFileError = err?.message ?? String(err);
+    }
+  }
+
+  private async _crashCollectNow() {
+    const ok = window.confirm(
+      "Run a crash-forensics collection now, as a dry run against the CURRENT boot?\n\n" +
+        "This calls the same Supervisor endpoints a real unclean-stop collection uses, " +
+        "writes a bundle, and is audited. It does not affect a real crash detection."
+    );
+    if (!ok) return;
+    this._crashCollecting = true;
+    this._crashError = null;
+    this._crashCollectResult = null;
+    try {
+      const result = await crashForensicsCollectNow(this.hass);
+      const bundle = (result as any)?.bundle;
+      this._crashCollectResult = bundle
+        ? {
+            id: bundle.bundle_id,
+            ts: bundle.heartbeat?.ts ?? null,
+            classification: bundle.classification ?? null,
+            gap_seconds: bundle.gap_seconds ?? null,
+            suspects: bundle.suspects ?? [],
+            size_bytes: 0,
+            path: "",
+          }
+        : null;
+      await this._loadCrash();
+    } catch (err: any) {
+      this._crashError = err?.message ?? String(err);
+    } finally {
+      this._crashCollecting = false;
     }
   }
 
@@ -400,6 +514,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
       },
       { id: "hacs_updates", title: "HACS Updates", render: () => this._renderHacs() },
       { id: "container_resources", title: "Container Resource Usage", render: () => this._renderContainers() },
+      { id: "crash_forensics", title: "Crash Forensics", render: () => this._renderCrashForensics() },
     ];
     return this._renderSections(sections);
   }
@@ -907,6 +1022,198 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
             </div>
           `
         )}
+      </div>
+    `;
+  }
+
+  private _classificationBadge(classification: string | null) {
+    if (!classification) return html`<span class="muted">—</span>`;
+    const tone =
+      classification === "clean_reboot" ? "good" : classification === "kernel_fault" ? "high" : "medium";
+    const label =
+      classification === "clean_reboot"
+        ? "clean reboot"
+        : classification === "kernel_fault"
+          ? "kernel fault"
+          : "silent stop";
+    return html`<span class="pill ${tone}"><span class="dot"></span>${label}</span>`;
+  }
+
+  private _renderCrashForensics() {
+    const crash = this._crash;
+    return html`
+      <div class="card">
+        <div class="toolbar">
+          <h3 style="margin:0;flex:1;">Crash Forensics</h3>
+          <button class="ha-btn" ?disabled=${this._crashLoading} @click=${() => this._loadCrash()}>
+            ${this._crashLoading ? "Refreshing…" : "Refresh"}
+          </button>
+        </div>
+        <p class="muted" style="margin-top:-4px;font-size:12.5px;">
+          A heartbeat file plus a clean-stop marker notice when the previous run stopped
+          uncleanly — a silent host hang or kernel fault, not a logged Core crash — and
+          auto-collect the previous boot's journal tail, Supervisor/host status, and
+          container state into a bundle before the next boot's log churn rotates the
+          evidence away. See docs/CRASH-FORENSICS.md.
+        </p>
+
+        ${this._crashLoading && !crash
+          ? html`<div class="empty">Loading crash forensics…</div>`
+          : !crash
+            ? html`<div class="empty">
+                ${this._crashError ?? "Crash forensics status isn't available right now."}
+              </div>`
+            : html`
+                <div
+                  style="border:1px solid var(--divider-color);border-radius:10px;padding:10px 14px;margin-bottom:12px;"
+                >
+                  <div class="toolbar" style="margin-bottom:0;">
+                    <span style="font-weight:600;font-size:13.5px;">
+                      Heartbeat ${crash.enabled ? "enabled" : "disabled"}
+                    </span>
+                    <span class="muted" style="font-size:12px;">
+                      ${crash.enabled
+                        ? `every ${crash.heartbeat_interval_seconds}s`
+                        : "no automatic unclean-stop detection (owner-only setting)"}
+                    </span>
+                    <span class="spacer"></span>
+                    ${crash.last_check?.heartbeat?.ts
+                      ? html`<span class="muted" style="font-size:12px;">
+                          last heartbeat ${new Date(crash.last_check.heartbeat.ts).toLocaleString()}
+                        </span>`
+                      : html`<span class="muted" style="font-size:12px;">no heartbeat recorded yet</span>`}
+                  </div>
+                </div>
+
+                <div class="toolbar" style="gap:10px;margin-bottom:10px;">
+                  <button
+                    class="ha-btn"
+                    ?disabled=${!this._isOwner || this._crashCollecting}
+                    @click=${() => this._crashCollectNow()}
+                  >
+                    ${this._crashCollecting ? "Collecting…" : "Collect now (dry run)"}
+                  </button>
+                  ${!this._isOwner
+                    ? html`<span class="muted" style="font-size:12px;">Owner only.</span>`
+                    : nothing}
+                  ${this._crashCollectResult
+                    ? html`<span class="muted" style="font-size:12px;">
+                        Bundle <code>${this._crashCollectResult.id}</code> collected
+                        (${this._classificationBadge(this._crashCollectResult.classification)}).
+                      </span>`
+                    : nothing}
+                </div>
+
+                ${this._crashError
+                  ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;">${this._crashError}</p>`
+                  : nothing}
+                ${this._crashFileError
+                  ? html`<p style="color:var(--error-color,#db4437);font-size:12.5px;">${this._crashFileError}</p>`
+                  : nothing}
+                ${this._crashFeedback
+                  ? html`<p class="muted" style="font-size:12px;">${this._crashFeedback}</p>`
+                  : nothing}
+
+                ${!crash.bundles.length
+                  ? html`<div class="empty">
+                      No unclean stops recorded since crash forensics was enabled.
+                    </div>`
+                  : html`
+                      <div style="overflow-x:auto;">
+                        <table>
+                          <thead>
+                            <tr>
+                              <th></th>
+                              <th>Timestamp</th>
+                              <th>Classification</th>
+                              <th>Gap</th>
+                              <th>Top suspects</th>
+                              <th>Size</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            ${crash.bundles.map((b) => this._renderCrashBundleRow(b))}
+                          </tbody>
+                        </table>
+                      </div>
+                    `}
+              `}
+      </div>
+    `;
+  }
+
+  private _renderCrashBundleRow(b: CrashBundle) {
+    const expanded = this._crashExpanded === b.id;
+    const top3 = b.suspects.slice(0, 3);
+    return html`
+      <tr>
+        <td>
+          <button class="ha-btn" style="padding:2px 8px;font-size:11.5px;" @click=${() => this._toggleCrashRow(b.id)}>
+            ${expanded ? "Close" : "Expand"}
+          </button>
+        </td>
+        <td class="muted" style="font-size:12px;">${b.ts ? new Date(b.ts).toLocaleString() : "—"}</td>
+        <td>${this._classificationBadge(b.classification)}</td>
+        <td class="num">${b.gap_seconds != null ? `${Math.round(b.gap_seconds)}s` : "—"}</td>
+        <td style="font-size:12px;">
+          ${top3.length
+            ? top3.map((s) => html`<div>${s.kind}: ${s.subject}</div>`)
+            : html`<span class="muted">none identified</span>`}
+        </td>
+        <td class="muted" style="font-size:12px;">${this._fmtBytes(b.size_bytes)}</td>
+      </tr>
+      ${expanded
+        ? html`
+            <tr>
+              <td colspan="6">${this._renderCrashBundleFiles(b)}</td>
+            </tr>
+          `
+        : nothing}
+    `;
+  }
+
+  private _renderCrashBundleFiles(b: CrashBundle) {
+    return html`
+      <div style="padding:8px 4px;">
+        ${CRASH_BUNDLE_FILES.map((file) => {
+          const key = `${b.id}/${file}`;
+          const content = this._crashFiles[key];
+          return html`
+            <div style="border:1px solid var(--divider-color);border-radius:8px;padding:8px 10px;margin-bottom:8px;">
+              <div class="toolbar" style="margin-bottom:0;gap:8px;">
+                <span style="font-family:var(--ha-font-family-code, monospace);font-size:12px;flex:1;">
+                  ${file}
+                </span>
+                <button class="ha-btn" style="font-size:11.5px;" @click=${() => this._viewCrashFile(b.id, file)}>
+                  View
+                </button>
+                <button
+                  class="ha-btn"
+                  style="font-size:11.5px;"
+                  @click=${() => this._exportCrashFile(b.id, file, "copy")}
+                >
+                  Copy
+                </button>
+                <button
+                  class="ha-btn"
+                  style="font-size:11.5px;"
+                  @click=${() => this._exportCrashFile(b.id, file, "download")}
+                >
+                  Download
+                </button>
+              </div>
+              ${content !== undefined
+                ? html`
+                    <pre
+                      style="max-height:280px;overflow:auto;font-size:11.5px;font-family:var(--ha-font-family-code, monospace);white-space:pre-wrap;word-break:break-word;margin:8px 0 0;"
+                    >
+${content.slice(0, 50_000)}${content.length > 50_000 ? "\n… (truncated in this view)" : ""}</pre
+                    >
+                  `
+                : nothing}
+            </div>
+          `;
+        })}
       </div>
     `;
   }

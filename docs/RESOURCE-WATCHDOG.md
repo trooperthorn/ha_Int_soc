@@ -36,3 +36,32 @@ never applying one.
 `WATCHDOG_ACTION_ALERT`, `WATCHDOG_ACTION_RESTART`, and
 `WATCHDOG_ACTION_STOP` (`custom_components/ha_soc/const.py`) enumerate the
 soft-path actions above.
+
+## History persistence
+
+The 60-sample ring per container used to live only in
+`ResourceWatchdog._history` (a `dict[slug, deque]`), which meant a Core
+restart lost the last hour of usage history. It is now written to
+`<config>/ha_soc/watchdog_history.json` after every sample cycle that
+actually changed it (an interval tick with no containers to sample writes
+nothing), and reloaded on startup before the first new sample lands, so
+the ring survives a restart with its `maxlen` intact.
+
+The write goes through `atomic_json.sync_write_json_atomic` (temp file +
+`os.replace`, mode 0600) rather than the HA SOC `Store` helper. `Store` is
+right for configuration that changes occasionally and can tolerate a
+debounced, versioned write; this ring changes as often as once a minute
+forever and never needs a migration path, so a plain private JSON file
+with no version envelope is the lighter and more honest fit. See
+`atomic_json.py`'s module docstring and `docs/decisions.md` (2026-09-22).
+
+`ResourceWatchdog.status()` reports `history_file` (the on-disk path) and
+`history_last_write` (ISO timestamp of the last actual write, `None`
+before the first one).
+
+Before this boot's watchdog can overwrite `watchdog_history.json`,
+`async_load_history()` copies whatever was already on disk to
+`watchdog_history.prev.json`. `crash_forensics.py` reads that `.prev` file
+when it collects a bundle, because a bundle about an unclean stop is
+necessarily about the boot that just ended, and by the time the collector
+runs, the live `watchdog_history.json` already belongs to the new boot.

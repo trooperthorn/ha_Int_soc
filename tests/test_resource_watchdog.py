@@ -21,6 +21,7 @@ from homeassistant.const import HASSIO_USER_NAME
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
+from custom_components.ha_soc.atomic_json import sync_read_json
 from custom_components.ha_soc.const import DOMAIN
 from custom_components.ha_soc.resource_watchdog import (
     ResourceWatchdog,
@@ -403,3 +404,67 @@ async def test_watchdog_slug_validation(hass: HomeAssistant, entry: MockConfigEn
         connection.send_error.assert_not_called()
         assert cfg["hard_limits"]["core_mosquitto"] == {"memory_mb": 512, "cpus": None}
     entry.runtime_data.watchdog.async_stop()
+
+
+# -- History persistence (the ring dies with Core unless saved to disk) --
+
+
+async def test_history_persists_across_a_restart(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    wd = _watchdog(entry)
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.async_container_resources",
+        new=AsyncMock(return_value=_overview([_addon("ma", mem=42.0)])),
+    ):
+        await wd.async_run_once()
+
+    # A second watchdog instance (standing in for a fresh restart) loads
+    # what the first one wrote.
+    wd2 = ResourceWatchdog(hass, entry.runtime_data.store, entry.runtime_data.audit)
+    await wd2.async_load_history()
+    assert list(wd2._history["ma"])[-1]["memory_percent"] == 42.0
+
+
+async def test_history_write_is_skipped_when_nothing_changed(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    wd = _watchdog(entry)
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.sync_write_json_atomic"
+    ) as write_mock:
+        # No containers at all: no history mutation, so no write.
+        with patch(
+            "custom_components.ha_soc.resource_watchdog.async_container_resources",
+            new=AsyncMock(return_value=_overview([])),
+        ):
+            await wd.async_run_once()
+        write_mock.assert_not_called()
+
+        with patch(
+            "custom_components.ha_soc.resource_watchdog.async_container_resources",
+            new=AsyncMock(return_value=_overview([_addon("ma", mem=1.0)])),
+        ):
+            await wd.async_run_once()
+        write_mock.assert_called_once()
+    assert wd.status()["history_last_write"] is not None
+
+
+async def test_load_history_preserves_previous_file_before_overwrite(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """crash_forensics.py reads watchdog_history.prev.json for a bundle
+    about the boot that just ended; it must reflect what was on disk
+    BEFORE this boot's watchdog wrote anything."""
+    wd = entry.runtime_data.watchdog
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.async_container_resources",
+        new=AsyncMock(return_value=_overview([_addon("ma", mem=7.0)])),
+    ):
+        await wd.async_run_once()
+
+    wd2 = ResourceWatchdog(hass, entry.runtime_data.store, entry.runtime_data.audit)
+    await wd2.async_load_history()
+    prev_path = hass.config.path("ha_soc", "watchdog_history.prev.json")
+    prev = await hass.async_add_executor_job(sync_read_json, prev_path)
+    assert prev["ma"][-1]["memory_percent"] == 7.0

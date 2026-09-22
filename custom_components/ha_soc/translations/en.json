@@ -72,6 +72,10 @@
     "stale_access_token": {
       "title": "Long-lived access token unused for a long time",
       "description": "The token \"{token_name}\" belonging to \"{user_name}\" hasn't been used since {last_used}. A long-lived access token never expires on its own — an old, forgotten one is standing attack surface if it ever leaked. Revoke it from the HA SOC Users & Access tab if it's no longer needed."
+    },
+    "unclean_stop": {
+      "title": "Home Assistant restarted after an unclean stop",
+      "description": "The previous run ended without a clean-stop marker (classification: {classification}, gap {gap_seconds}s). HA SOC collected a forensics bundle at {bundle_path}. Top suspects: {top_suspects}. Review the bundle in the HA SOC Health view's Crash forensics card, then dismiss this issue."
     }
   },
   "services": {

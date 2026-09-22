@@ -340,6 +340,39 @@ The derived posture is the one thing a run persists. It is category names, CIDR 
 
 `ips_block_log` reads the newest 200 `*_BLOCKED*` rows of the controller's `ace.alert` collection through the gateway's own `mongo` shell, projected to five fields as JSON lines so the parser is not reading the shell's `printjson` dialect. `parse_block_log` classifies each row as a threat block (Suricata) or a firewall-policy hit by key prefix, flattens the source and destination parameters (a client by MAC with hostname, a device by MAC with address, or a bare address) and the policy name, and summarises the last 24 hours. It carries no signature column: the `INITIATOR_ID` on a threat row resolves to nothing persisted on the gateway, so the signature, category and rule name the UI shows are not available to any reader, and a column of dashes would imply otherwise. This read is unverified until its projected output has been seen; the row shapes it parses were captured with `printjson` on 2026-09-10.
 
+## Crash forensics
+
+`crash_forensics.py` answers a question nothing else on the box can: did
+the previous run stop cleanly? A heartbeat file rewritten on an interval,
+plus a marker written once on `EVENT_HOMEASSISTANT_STOP`, is the whole
+detector — heartbeat newer than the marker (or no marker at all) means
+the stop was unclean. See `docs/decisions.md` ("Crash forensics") for why
+this is a file this integration controls rather than a Supervisor-exposed
+flag, and `docs/CRASH-FORENSICS.md` for the full behaviour, classification
+rules, and suspect ranking.
+
+The collector's Supervisor calls all go through `hass.data[DATA_COMPONENT]
+.send_command`, the same transport `logs.py` already uses for the Logs
+tab's container log fetch, rather than opening a second aiohttp path to
+the Supervisor. Every call is wrapped so a failure is recorded in
+`summary.json`'s `errors` map and the collection continues; a partial
+bundle from a struggling Supervisor is more useful than no bundle from one
+failed call aborting the rest.
+
+The resource watchdog's persisted history (`resource_watchdog.py`, see
+`docs/RESOURCE-WATCHDOG.md`) is the one piece of state this module reads
+but does not own. `ResourceWatchdog.async_load_history()` copies whatever
+was on disk from the ending boot to `watchdog_history.prev.json` before
+writing anything of its own, specifically so a bundle collected here (which
+is necessarily about the boot that just ended) reads the ring as it stood
+at that boot's end rather than this boot's own near-empty one.
+
+Suspect ranking (`_rank_suspects`) and journal classification
+(`classify_journal_tail`) are both pure functions over already-fetched
+text and data, so they are unit-tested against synthetic journal tails and
+watchdog history without a Supervisor in the loop at all
+(`tests/test_crash_forensics.py`).
+
 ## UniFi configuration ledger
 
 `config_ledger.py` is the CM-6 baseline: a canonical projection of the controller's security-relevant configuration, compared against the one the owner accepted. It is read-only, and it never talks to the controller itself; it reads `async_network_overview`, which is already the single fetch path.
@@ -524,11 +557,13 @@ Rationale moved out of individual tests:
 - test_resource_watchdog `test_ws_clear_hard_limit` provides no add-on stub and no Supervisor because a clear is exempt from the installed check.
 - test_scanner_extraction_rules confirms that a key in a constant and a Store subclass are invisible to rule (d), the documented evasion avenue; HaSocStore relies on that shape and is not special-cased.
 - test_security_health leaves the elkm1 entry NOT_LOADED because forcing LOADED makes teardown import `elkm1_lib`.
+- test_crash_forensics uses an autouse fixture to `rmtree` `<config>/ha_soc/` before and after every test in the module, because `hass.config.path(...)` in this harness resolves to a fixed directory under the installed `pytest_homeassistant_custom_component` package rather than a fresh per-test `tmp_path`; without the cleanup, bundle directories one test writes (especially the retention test, which deliberately creates eleven) are still on disk for the next test in the same run.
 
 ## Unverified
 
 Design claims carried from code comments that were not re-verified in this pass:
 
+- crash_forensics.py: the Core container's Supervisor log identifier (assumed `homeassistant`) and the Supervisor's own (`hassio_supervisor`) on HAOS 18.1+; the `boots/-1` line-count cap's exact server-side behaviour; whether `home-assistant.log.fault` is guaranteed fully flushed before a SIGKILL/host-stop reaches the generation this module reads it in. See docs/CRASH-FORENSICS.md's own Unverified section.
 - nav.ts (original lines 122-140): "`mainWindow` resolves to `window` itself for a non-iframe panel_custom" and "`/config/devices/dashboard` accepts `?config_entry=<id>` and `?domain=<domain>`", stated as confirmed against frontend source.
 - views/network-view.ts (original lines 38-40): the user asked the Network tab to "look close to identical to Dashboard View", a requirement statement.
 - views/network-security-view.ts (original lines 22-31) and network_security.py module docstring: "Firewall Policies (zone-based) is what current UniFi Network firmware shows by default", a product claim.

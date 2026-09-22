@@ -16,6 +16,7 @@ from homeassistant.loader import async_get_integration
 
 from .audit import AuditLog
 from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
+from .crash_forensics import CrashForensics
 from .detections import DetectionEngine
 from .health import IntegrationHealth
 from .mfa_policy import async_enforce_mfa_policy
@@ -78,6 +79,7 @@ class HaSocRuntimeData:
     watchdog: "ResourceWatchdog"
     syslog: SyslogExporter
     terminal: TerminalSessions
+    crash_forensics: CrashForensics
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -133,6 +135,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     detections = DetectionEngine(hass, store, audit=audit, users=users)
     watchdog = ResourceWatchdog(hass, store, audit)
     terminal = TerminalSessions(hass, audit, secrets)
+    crash_forensics = CrashForensics(hass, store, audit, watchdog)
 
     entry.runtime_data = HaSocRuntimeData(
         store=store,
@@ -149,6 +152,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         watchdog=watchdog,
         syslog=syslog,
         terminal=terminal,
+        crash_forensics=crash_forensics,
     )
 
     await audit.async_start()
@@ -156,7 +160,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     await permissions.async_start()
     await health.async_start()
     scanner.async_start(hass)
+    # Load the persisted ring (and snapshot it to .prev) before the watchdog
+    # can write a sample of its own for this boot.
+    await watchdog.async_load_history()
     watchdog.async_start()
+    crash_forensics.async_start(entry)
 
     async_register_websocket_api(hass)
     async_register_probe_service(hass, store, audit, secrets)
