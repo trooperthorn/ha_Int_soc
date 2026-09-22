@@ -51,8 +51,13 @@ RUN chmod a+x \
     /etc/services.d/ha_soc_terminal/finish \
     /etc/services.d/ha_soc_terminal_sftp/run \
     /etc/services.d/ha_soc_terminal_sftp/finish \
+    /etc/services.d/ha_soc_terminal_httpd/run \
+    /etc/services.d/ha_soc_terminal_httpd/finish \
     /usr/local/bin/ha_soc_term_open \
     /usr/local/bin/ha \
+    /usr/local/bin/supervisor-api \
+    /www/cgi-bin/run \
+    /www/cgi-bin/transcript \
     && chmod 0600 /etc/ssh/sshd_config
 
 LABEL \

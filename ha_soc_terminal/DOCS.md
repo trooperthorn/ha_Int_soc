@@ -36,7 +36,18 @@ the phases, and the accepted limits are in the repository's
   works in the shell: `ha hardware info`, `ha core logs`, `ha apps`, and the
   rest. The app declares the `manager` role the Supervisor documents for
   apps that run CLIs; Protection Mode stays on. `lscpu` and `lspci` are
-  present for hardware questions.
+  present for hardware questions. `jq` (JSON) and `less` (paging, and the
+  default `$PAGER`) are also in the image. `corelog`, `suplog`, `hostlog`
+  and `applog <slug>` are shell functions over `ha ... logs` for the
+  targets asked for most; `supervisor-api <path>` is a GET-only wrapper
+  over the Supervisor API for anything else, mirroring how `ha` re-imports
+  the Supervisor token for its own process only.
+- **`/config`.** The Supervisor maps the configuration directory at
+  `/homeassistant`; the start script also tries a root-level `ln -s
+  /homeassistant /config` so the path every doc and every pasted command
+  actually uses works verbatim. Where the container's read-only root
+  refuses that symlink, the shell falls back to `$HA_CONFIG` and the
+  `~/config` symlink, and says so in the login banner.
 
 ## What it is not
 
@@ -54,7 +65,7 @@ the phases, and the accepted limits are in the repository's
 | --- | --- | --- |
 | `session_recording` | `true` | Write the transcript, timing file, and index line for every session. |
 | `history_persist` | `true` | Keep bash history in `/data/.bash_history` across restarts, with timestamps. |
-| `idle_timeout_minutes` | `30` | Close a shell idle at its prompt for this long; `0` disables. A running program is not interrupted. |
+| `idle_timeout_minutes` | `120` | Close a shell idle at its prompt for this long; `0` disables. A running program is not interrupted. Raised from `30`: a session that pauses while its output is read or pasted elsewhere was timing out mid-task. |
 | `sftp_enabled` | `false` | Start the SFTP server. Also needs a host port mapped to container port 2222 in the app's network settings. |
 | `sftp_authorized_keys` | `[]` | Public keys allowed to log in for SFTP, one per entry, in `authorized_keys` line form. |
 
@@ -96,6 +107,19 @@ the app log says "Paired with HA SOC" when that succeeded. HA SOC keeps the
 first credential it sees. If the app is reinstalled and its data directory
 wiped, it generates a new one and HA SOC refuses it: forget the pairing in HA
 SOC's Settings, then restart the app.
+
+## Run mode and transcript download
+
+Alongside the interactive shell, a second listener (`busybox httpd`, port
+7682, same paired credential as the terminal server) answers two requests
+from HA SOC's panel only; nothing browses to it directly:
+
+- Running a single command with a timeout (no interactive shell needed),
+  through the panel's "Run a command" card. Output is capped at 256 KiB and
+  recorded in the same session index the interactive shell uses.
+- Downloading a session's recorded transcript, verified end to end: HA SOC
+  checks the bytes it received against the hash the app recorded before
+  handing them to the browser.
 
 ## Known limits
 

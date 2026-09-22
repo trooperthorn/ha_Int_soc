@@ -342,6 +342,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_terminal_input,
         ws_terminal_resize,
         ws_terminal_close,
+        ws_terminal_run,
+        ws_terminal_transcript,
+        ws_terminal_app_control,
+        ws_terminal_forget_pairing,
+        ws_terminal_export_event,
     ):
         websocket_api.async_register_command(hass, handler)
 
@@ -2762,13 +2767,159 @@ async def ws_terminal_resize(hass: HomeAssistant, connection, msg: dict) -> None
 )
 @websocket_api.async_response
 async def ws_terminal_close(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Close a session. The owner may close any user's session (the session
+    list shows everyone's sessions); anyone else may only close their own."""
     runtime = _runtime(hass)
+    allow_any = bool(connection.user.is_owner)
+    session = runtime.terminal.sessions.get(msg["session_id"])
+    closing_someone_elses = bool(session and session.user_id != connection.user.id)
     try:
-        await runtime.terminal.async_close(msg["session_id"], connection.user.id, "user_closed")
+        await runtime.terminal.async_close(
+            msg["session_id"],
+            connection.user.id,
+            "owner_closed" if closing_someone_elses else "user_closed",
+            allow_any=allow_any,
+        )
     except terminal.TerminalError as err:
         connection.send_error(msg["id"], err.code, err.message)
         return
     connection.send_result(msg["id"], {"closed": True})
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/run",
+        vol.Required("command"): vol.All(cv.string, vol.Length(min=1, max=4096)),
+        vol.Optional("timeout_seconds", default=terminal.RUN_DEFAULT_TIMEOUT_SECONDS): vol.All(
+            int, vol.Range(min=1, max=terminal.RUN_MAX_TIMEOUT_SECONDS)
+        ),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_run(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Run one command through the app's one-shot listener; no interactive session.
+
+    One run in flight per user (the app enforces nothing of the kind on its
+    own, so this is the only limiter); a second attempt is refused with
+    terminal_busy rather than queued.
+    """
+    runtime = _runtime(hass)
+    try:
+        result = await runtime.terminal.async_run(
+            user_id=connection.user.id,
+            command=msg["command"],
+            timeout_seconds=msg["timeout_seconds"],
+        )
+    except terminal.TerminalError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/transcript",
+        vol.Required("session_id"): vol.Match(r"^[A-Za-z0-9_-]+$"),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_transcript(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Download a recorded transcript, hash-verified against what the app wrote."""
+    runtime = _runtime(hass)
+    try:
+        result = await runtime.terminal.async_transcript(
+            user_id=connection.user.id, session_id=msg["session_id"]
+        )
+    except terminal.TerminalError as err:
+        connection.send_error(msg["id"], err.code, err.message)
+        return
+    connection.send_result(msg["id"], result)
+
+
+@require_soc_access
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/export_event",
+        vol.Required("kind"): vol.In(list(terminal.EXPORT_KINDS)),
+        vol.Optional("session_id"): cv.string,
+        vol.Required("lines"): vol.All(int, vol.Range(min=0)),
+        vol.Required("bytes"): vol.All(int, vol.Range(min=0)),
+        vol.Required("sha256"): vol.All(cv.string, vol.Length(min=64, max=64)),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_export_event(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Record that screen text left the panel by copy or download.
+
+    The panel computes the hash client-side (crypto.subtle.digest) over
+    exactly what it copied or downloaded, before this call, so the audit
+    record identifies the actual bytes rather than trusting a byte count
+    alone. Copying still succeeds even when this call fails; the panel
+    shows a warning in that case rather than blocking the clipboard.
+    """
+    runtime = _runtime(hass)
+    runtime.audit.async_log(
+        terminal.AUDIT_CATEGORY_EXPORT,
+        user_id=connection.user.id,
+        detail={
+            "kind": msg["kind"],
+            "session_id": msg.get("session_id"),
+            "lines": msg["lines"],
+            "bytes": msg["bytes"],
+            "sha256": msg["sha256"],
+        },
+        flush=True,
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/terminal/app_control",
+        vol.Required("action"): vol.In(["start", "restart"]),
+    }
+)
+@websocket_api.async_response
+async def ws_terminal_app_control(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: start or restart the Terminal app via the Supervisor.
+
+    Fixes the boot: manual dead end where a stopped app left the owner with
+    nothing but a pointer to Settings, Apps (docs/TERMINAL-DESIGN.md).
+    """
+    runtime = _runtime(hass)
+    result = await terminal.async_app_control(hass, msg["action"])
+    runtime.audit.async_log(
+        terminal.AUDIT_CATEGORY_APP_CONTROL,
+        user_id=connection.user.id,
+        detail={"action": msg["action"], "result": result},
+        flush=True,
+    )
+    connection.send_result(msg["id"], result)
+
+
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/terminal/forget_pairing"})
+@websocket_api.async_response
+async def ws_terminal_forget_pairing(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: clear the pinned ttyd credential so the app can re-pair.
+
+    The confirmation bar is the panel's own confirm dialog on this
+    destructive-but-recoverable action (the app re-pairs on its own within a
+    minute of the next ``ha_soc.pair_terminal`` call); no server-side
+    propose/confirm round trip is warranted for a single stored secret.
+    """
+    runtime = _runtime(hass)
+    await terminal.async_forget_pairing(runtime.secrets)
+    runtime.audit.async_log(
+        terminal.AUDIT_CATEGORY_FORGET_PAIRING,
+        user_id=connection.user.id,
+        detail={},
+        flush=True,
+    )
+    connection.send_result(msg["id"], {"ok": True})
 
 
 # --- HACS force refresh and update -------------------------------------------

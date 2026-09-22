@@ -11,7 +11,7 @@ export interface HomeAssistant {
   connection: Connection;
   themes?: { darkMode?: boolean };
   language?: string;
-  user?: { is_admin?: boolean; name?: string };
+  user?: { id?: string; is_admin?: boolean; is_owner?: boolean; name?: string };
 }
 
 export interface PanelInfo {

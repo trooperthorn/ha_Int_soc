@@ -1984,6 +1984,62 @@ export const resizeTerminal = (hass: HomeAssistant, sessionId: string, cols: num
 export const closeTerminal = (hass: HomeAssistant, sessionId: string) =>
   ws<{ closed: boolean }>(hass, { type: "ha_soc/terminal/close", session_id: sessionId });
 
+export const controlTerminalApp = (hass: HomeAssistant, action: "start" | "restart") =>
+  ws<{ ok: boolean; reason?: string; error?: string }>(hass, { type: "ha_soc/terminal/app_control", action });
+
+export const forgetTerminalPairing = (hass: HomeAssistant) =>
+  ws<{ ok: boolean }>(hass, { type: "ha_soc/terminal/forget_pairing" });
+
+export interface TerminalRunResult {
+  id: string;
+  stdout: string;
+  exit_code: number;
+  duration_seconds: number;
+  truncated: boolean;
+}
+
+export const runTerminalCommand = (hass: HomeAssistant, command: string, timeoutSeconds: number) =>
+  ws<TerminalRunResult>(hass, { type: "ha_soc/terminal/run", command, timeout_seconds: timeoutSeconds });
+
+export interface TerminalTranscript {
+  session_id: string;
+  text: string;
+  sha256: string;
+  bytes: number;
+}
+
+export const fetchTerminalTranscript = (hass: HomeAssistant, sessionId: string) =>
+  ws<TerminalTranscript>(hass, { type: "ha_soc/terminal/transcript", session_id: sessionId });
+
+export type TerminalExportKind =
+  | "copy_screen"
+  | "copy_all"
+  | "copy_last"
+  | "download_screen"
+  | "download_all"
+  | "download_transcript"
+  | "copy_run"
+  | "download_run"
+  | "copy_logs"
+  | "download_logs";
+
+export const sendTerminalExportEvent = (
+  hass: HomeAssistant,
+  kind: TerminalExportKind,
+  lines: number,
+  bytes: number,
+  sha256: string,
+  sessionId?: string
+) =>
+  ws<{ ok: boolean }>(hass, {
+    type: "ha_soc/terminal/export_event",
+    kind,
+    ...(sessionId ? { session_id: sessionId } : {}),
+    lines,
+    bytes,
+    sha256,
+  });
+
 
 // --- HACS force refresh and update -------------------------------------------
 // Mirrors hacs_updates.py. Reads are panel-tier; refresh_all and update_all

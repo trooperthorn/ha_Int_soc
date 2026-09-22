@@ -76,6 +76,11 @@ profile ha_soc_terminal flags=(attach_disconnected,mediate_deleted) {
   /lib/** rm,
   /usr/share/** r,
   /etc/** r,
+  # The CGI scripts busybox httpd runs for the one-shot run/transcript
+  # listener on :7682; its generated config lives under /data with the
+  # paired secret because the root filesystem is read-only here.
+  /www/ r,
+  /www/** rix,
   /tmp/ r,
   /tmp/** rwk,
 

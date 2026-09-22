@@ -46,3 +46,27 @@ Open items moved out of code comments, dated when they were recorded. Larger spr
 - 2026-09-03 Signed pre-built Probe image: recorded on 2026-08-30 as not implemented; moving to Cosign-signed pre-built images via the official builder actions and an `image:` key remains an option if the locally built mode is ever abandoned (work item 2.5).
 
 No TODO or FIXME comments remained in the integration, frontend, probe, scripts, workflow, or test sources as of 2026-09-03.
+
+- 2026-09-22 Terminal mobile key bar: a row of Ctrl, Esc, Tab, arrow and
+  pipe/redirect keys above the on-screen keyboard for phones and tablets,
+  where those keys are hard or impossible to reach. Not started.
+- 2026-09-22 Terminal phase 4 and the one-shot `busybox httpd` listener
+  (run mode, transcript download) are now built end to end (backend,
+  frontend, CI list updates; see `docs/TERMINAL-DESIGN.md`), but none of it
+  has run against a real Supervisor or a built image in this pass:
+  - `busybox httpd` on this base image compiling with the `httpd` applet
+    (a `security.yml` assertion was added; not run).
+  - The `/cgi-bin/run` and `/cgi-bin/transcript` scripts against a live
+    app: basic auth enforcement, a run's recorded index line, a
+    transcript's `X-Sha256` against what `async_transcript` recomputes.
+  - OSC 133 marks against a live shell: `A` and `C` firing once per
+    prompt/command, and "Copy last output" bounding the right rows after a
+    multi-line or screen-scrolling command.
+  - The `/config` root symlink attempt in the start script (expected to
+    hit the same AppArmor denial the 2026-09-10 note already recorded and
+    fall through to `$HA_CONFIG`, not re-verified against a built image).
+  - `supervisor-api`, `corelog`, `suplog`, `hostlog` and `applog` assume
+    `ha core logs`, `ha supervisor logs`, `ha host logs` and `ha apps logs
+    <slug>` subcommands exist with those exact names, based on the one
+    example DOCS.md already documented; not run against a real Supervisor
+    CLI.

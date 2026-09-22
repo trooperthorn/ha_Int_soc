@@ -15,7 +15,9 @@ import {
   fetchLogTargets,
   fetchSyslogReceiverEntries,
   fetchSystemLog,
+  sendTerminalExportEvent,
 } from "../data/ha-soc-ws";
+import { sha256Hex, byteLength, lineCount, copyText, downloadText, utcStamp } from "../data/export-helpers";
 
 // Same core/custom logger-name convention as health.py; anything else buckets by top-level module name.
 function domainFor(loggerName: string): string {
@@ -134,6 +136,8 @@ export class HaSocLogsView extends HaSocCustomizableView {
   @state() private _source = SOURCE_SYSTEM;
   @state() private _containerLog: ContainerLog | null = null;
   @state() private _containerLoading = false;
+  @state() private _logFeedback: string | null = null;
+  private _logFeedbackTimer: number | undefined;
   @state() private _syslogEntries: SyslogReceiverEntry[] = [];
   @state() private _syslogTotal = 0;
   @state() private _syslogLoading = false;
@@ -309,6 +313,37 @@ export class HaSocLogsView extends HaSocCustomizableView {
     `;
   }
 
+  private async _copyOrDownloadLog(mode: "copy" | "download", source: string) {
+    const text = this._containerLog?.content ?? "";
+    if (!text) return;
+    const lines = lineCount(text);
+    const bytes = byteLength(text);
+    try {
+      if (mode === "copy") await copyText(text);
+      else downloadText(text, `${source}-${utcStamp()}.log`);
+    } catch (e) {
+      this._error = (e as { message?: string }).message ?? String(e);
+      return;
+    }
+    this._logFeedback = `${mode === "copy" ? "Copied" : "Downloaded"} ${lines} line(s)`;
+    window.clearTimeout(this._logFeedbackTimer);
+    this._logFeedbackTimer = window.setTimeout(() => {
+      this._logFeedback = null;
+    }, 3000);
+    try {
+      const sha256 = await sha256Hex(text);
+      await sendTerminalExportEvent(
+        this.hass,
+        mode === "copy" ? "copy_logs" : "download_logs",
+        lines,
+        bytes,
+        sha256
+      );
+    } catch {
+      this._logFeedback += " (audit record failed)";
+    }
+  }
+
   private _renderContainerLog() {
     const log = this._containerLog;
     const name =
@@ -327,6 +362,11 @@ export class HaSocLogsView extends HaSocCustomizableView {
         This is the container's live journald stream via Supervisor, point-in-time, use
         Refresh for new lines.
       </p>
+      <div class="export-row" style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
+        <button class="ha-btn" @click=${() => this._copyOrDownloadLog("copy", name)}>Copy</button>
+        <button class="ha-btn" @click=${() => this._copyOrDownloadLog("download", name)}>Download</button>
+        ${this._logFeedback ? html`<span class="muted">${this._logFeedback}</span>` : nothing}
+      </div>
       <pre class="rawlog">${log.content?.trim() ? log.content : "(log is empty)"}</pre>
     `;
   }

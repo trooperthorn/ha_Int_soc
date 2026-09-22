@@ -9,12 +9,25 @@ import {
   TerminalStatus,
   TerminalOpenResult,
   TerminalEvent,
+  TerminalRunResult,
+  TerminalExportKind,
   fetchTerminalStatus,
   openTerminal,
   sendTerminalInput,
   resizeTerminal,
   closeTerminal,
+  controlTerminalApp,
+  forgetTerminalPairing,
+  runTerminalCommand,
+  fetchTerminalTranscript,
+  sendTerminalExportEvent,
+  fetchAccessInfo,
 } from "../data/ha-soc-ws";
+import { sha256Hex, byteLength, lineCount, copyText, downloadText, utcStamp, stripAnsi } from "../data/export-helpers";
+
+const RUN_TIMEOUTS = [30, 60, 120];
+const MAX_COMMAND_HISTORY = 10;
+const FEEDBACK_MS = 3000;
 
 /**
  * The HA SOC Terminal, rendered in the panel.
@@ -218,6 +231,58 @@ export class HaSocTerminalView extends LitElement {
       .ended {
         margin-top: 6px;
       }
+      .export-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        font-size: 12px;
+      }
+      .session-list ul {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12.5px;
+      }
+      .run-card {
+        margin-top: 4px;
+      }
+      .run-row {
+        display: flex;
+        gap: 8px;
+      }
+      .run-row input[type="text"] {
+        flex: 1;
+        font: inherit;
+        padding: 4px 8px;
+        border: 1px solid var(--divider-color, #ccc);
+        border-radius: 4px;
+        background: var(--card-background-color, #fff);
+        color: var(--primary-text-color);
+      }
+      .chips {
+        display: flex;
+        gap: 6px;
+        flex-wrap: wrap;
+        margin-top: 6px;
+      }
+      .chip {
+        cursor: pointer;
+        font-size: 11.5px;
+        padding: 2px 8px;
+        border-radius: 100px;
+        background: var(--secondary-background-color, #eee);
+        color: var(--secondary-text-color);
+      }
+      .rawlog {
+        white-space: pre-wrap;
+        word-break: break-word;
+        max-height: 300px;
+        overflow: auto;
+      }
     `,
   ];
 
@@ -229,6 +294,17 @@ export class HaSocTerminalView extends LitElement {
   @state() private _ended: { reason: string; duration: number } | null = null;
   @state() private _prefs: FontPrefs = loadPrefs();
   @state() private _busy = false;
+  @state() private _isOwner = false;
+  @state() private _feedback: string | null = null;
+  @state() private _appBusy = false;
+  @state() private _runCommand = "";
+  @state() private _runTimeout = 30;
+  @state() private _runBusy = false;
+  @state() private _runOutput: TerminalRunResult | null = null;
+  @state() private _runError: string | null = null;
+  @state() private _runHistory: string[] = [];
+  @state() private _stripAnsi = true;
+  @state() private _sessionBusy: string | null = null;
 
   @query(".term-box") private _box!: HTMLDivElement;
 
@@ -237,10 +313,22 @@ export class HaSocTerminalView extends LitElement {
   private _unsubscribe: (() => Promise<void>) | null = null;
   private _resizeObserver: ResizeObserver | null = null;
   private _resizeTimer: number | undefined;
+  private _feedbackTimer: number | undefined;
+  // OSC 133 marks (FTCS): 'C' fires right before a command's output starts,
+  // 'A' right before the next prompt; the shell emits both (rootfs/etc/profile.d/ha_soc_terminal.sh).
+  // Tracked as absolute buffer rows (baseY + cursorY) so "last output" survives scrollback.
+  private _lastOutputStartRow: number | null = null;
+  private _lastOutputEndRow: number | null = null;
+  private _pendingOutputStartRow: number | null = null;
 
   connectedCallback() {
     super.connectedCallback();
     void this._refresh();
+    fetchAccessInfo(this.hass)
+      .then((access) => {
+        this._isOwner = !!access.is_owner;
+      })
+      .catch(() => undefined);
   }
 
   disconnectedCallback() {
@@ -328,6 +416,27 @@ export class HaSocTerminalView extends LitElement {
       fit.fit();
       this._term = term;
       this._fit = fit;
+      this._lastOutputStartRow = null;
+      this._lastOutputEndRow = null;
+      this._pendingOutputStartRow = null;
+      // OSC 133;C marks "output is about to start", OSC 133;A marks "a new
+      // prompt is about to be drawn" (the boundary between a command's output
+      // and the next one). Together they bound exactly the previous command's
+      // output, independent of how the shell wrapped or scrolled it.
+      term.parser.registerOscHandler(133, (data: string) => {
+        const mark = data.split(";")[0];
+        const row = term.buffer.active.baseY + term.buffer.active.cursorY;
+        if (mark === "C") {
+          this._pendingOutputStartRow = row;
+        } else if (mark === "A") {
+          if (this._pendingOutputStartRow !== null) {
+            this._lastOutputStartRow = this._pendingOutputStartRow;
+            this._lastOutputEndRow = row;
+            this._pendingOutputStartRow = null;
+          }
+        }
+        return false;
+      });
 
       const open = await openTerminal(this.hass, "self", term.cols, term.rows, (ev) => this._onEvent(ev));
       this._open = open.result;
@@ -467,6 +576,302 @@ export class HaSocTerminalView extends LitElement {
     this._fit = null;
   }
 
+  private _showFeedback(text: string) {
+    window.clearTimeout(this._feedbackTimer);
+    this._feedback = text;
+    this._feedbackTimer = window.setTimeout(() => {
+      this._feedback = null;
+    }, FEEDBACK_MS);
+  }
+
+  /** Every row in `[start, end)`, trailing whitespace trimmed, newline-joined. */
+  private _rowsText(start: number, end: number): string {
+    const term = this._term;
+    if (!term) return "";
+    const buffer = term.buffer.active;
+    const lines: string[] = [];
+    for (let row = start; row < end; row++) {
+      const line = buffer.getLine(row);
+      if (line) lines.push(line.translateToString(true).replace(/\s+$/u, ""));
+    }
+    return lines.join("\n");
+  }
+
+  private _screenText(): string {
+    const term = this._term;
+    if (!term) return "";
+    const base = term.buffer.active.baseY;
+    return this._rowsText(base, base + term.rows);
+  }
+
+  private _allText(): string {
+    const term = this._term;
+    if (!term) return "";
+    return this._rowsText(0, term.buffer.active.baseY + term.rows);
+  }
+
+  private _lastOutputText(): string {
+    if (this._lastOutputStartRow === null || this._lastOutputEndRow === null) return "";
+    return this._rowsText(this._lastOutputStartRow, this._lastOutputEndRow);
+  }
+
+  /**
+   * Copies or downloads `text`, then audits it with export_event; a failed
+   * audit call still leaves the copy/download in place, with a warning line
+   * instead of silently pretending it never happened.
+   */
+  private async _export(kind: TerminalExportKind, text: string, mode: "copy" | "download", filenameBase?: string) {
+    if (!text) {
+      this._showFeedback("Nothing to " + mode);
+      return;
+    }
+    const lines = lineCount(text);
+    const bytes = byteLength(text);
+    try {
+      if (mode === "copy") await copyText(text);
+      else downloadText(text, `${filenameBase ?? "ha-soc-terminal"}-${utcStamp()}.txt`);
+    } catch (e) {
+      this._error = (e as { message?: string }).message || String(e);
+      return;
+    }
+    this._showFeedback(`${mode === "copy" ? "Copied" : "Downloaded"} ${lines} line(s)`);
+    try {
+      const sha256 = await sha256Hex(text);
+      await sendTerminalExportEvent(this.hass, kind, lines, bytes, sha256, this._open?.session_id);
+    } catch {
+      this._showFeedback(`${mode === "copy" ? "Copied" : "Downloaded"} ${lines} line(s) (audit record failed)`);
+    }
+  }
+
+  private async _downloadTranscript(sessionId: string) {
+    try {
+      const transcript = await fetchTerminalTranscript(this.hass, sessionId);
+      const text = this._stripAnsi ? stripAnsi(transcript.text) : transcript.text;
+      downloadText(text, `ha-soc-terminal-transcript-${sessionId}.txt`);
+      this._showFeedback(`Downloaded transcript for ${sessionId}`);
+    } catch (e) {
+      this._error = (e as { message?: string }).message || String(e);
+    }
+  }
+
+  private async _controlApp(action: "start" | "restart") {
+    this._appBusy = true;
+    this._error = null;
+    try {
+      const result = await controlTerminalApp(this.hass, action);
+      if (!result.ok) this._error = result.error || result.reason || "The app did not respond.";
+    } catch (e) {
+      this._error = (e as { message?: string }).message || String(e);
+    } finally {
+      this._appBusy = false;
+      void this._refresh();
+    }
+  }
+
+  private async _forgetPairing() {
+    if (!window.confirm("Forget the Terminal app's pairing? It will re-pair on its own the next time it starts.")) {
+      return;
+    }
+    this._appBusy = true;
+    try {
+      await forgetTerminalPairing(this.hass);
+    } catch (e) {
+      this._error = (e as { message?: string }).message || String(e);
+    } finally {
+      this._appBusy = false;
+      void this._refresh();
+    }
+  }
+
+  private async _closeOtherSession(sessionId: string) {
+    this._sessionBusy = sessionId;
+    try {
+      await closeTerminal(this.hass, sessionId);
+    } catch (e) {
+      this._error = (e as { message?: string }).message || String(e);
+    } finally {
+      this._sessionBusy = null;
+      void this._refresh();
+    }
+  }
+
+  private async _runOnce() {
+    const command = this._runCommand.trim();
+    if (!command || this._runBusy) return;
+    this._runBusy = true;
+    this._runError = null;
+    this._runOutput = null;
+    try {
+      const result = await runTerminalCommand(this.hass, command, this._runTimeout);
+      this._runOutput = result;
+      this._runHistory = [command, ...this._runHistory.filter((c) => c !== command)].slice(
+        0,
+        MAX_COMMAND_HISTORY
+      );
+    } catch (e) {
+      this._runError = (e as { message?: string }).message || String(e);
+    } finally {
+      this._runBusy = false;
+    }
+  }
+
+  private _renderStatusControls() {
+    const s = this._status;
+    if (!s?.installed) return nothing;
+    return html`
+      ${!s.running
+        ? html`<button class="ha-btn" ?disabled=${this._appBusy} @click=${() => this._controlApp("start")}>
+            Start app
+          </button>`
+        : html`<button class="ha-btn" ?disabled=${this._appBusy} @click=${() => this._controlApp("restart")}>
+            Restart app
+          </button>`}
+      ${this._isOwner && s.paired
+        ? html`<button class="ha-btn" ?disabled=${this._appBusy} @click=${() => this._forgetPairing()}>
+            Forget pairing
+          </button>`
+        : nothing}
+    `;
+  }
+
+  private _renderSessionList() {
+    const sessions = this._status?.sessions ?? [];
+    if (!sessions.length) return nothing;
+    const myId = this.hass.user?.id;
+    const visible = sessions.filter((s) => this._isOwner || s.user_id === myId);
+    if (!visible.length) return nothing;
+    return html`
+      <div class="session-list">
+        <h4 style="margin:8px 0 4px;">Open sessions</h4>
+        <ul>
+          ${visible.map(
+            (s) => html`
+              <li>
+                <code>${s.session_id}</code> — ${s.user_id} — started ${new Date(s.started).toLocaleString()}
+                (${s.bytes_in}B in / ${s.bytes_out}B out)
+                <button
+                  class="ha-btn"
+                  ?disabled=${this._sessionBusy === s.session_id}
+                  @click=${() => this._closeOtherSession(s.session_id)}
+                >
+                  Close
+                </button>
+                <button class="ha-btn" @click=${() => this._downloadTranscript(s.session_id)}>
+                  Download transcript
+                </button>
+              </li>
+            `
+          )}
+        </ul>
+      </div>
+    `;
+  }
+
+  private _renderExportButtons() {
+    if (!this._open) return nothing;
+    return html`
+      <div class="export-row">
+        <button class="ha-btn" @click=${() => this._export("copy_screen", this._screenText(), "copy")}>
+          Copy screen
+        </button>
+        <button class="ha-btn" @click=${() => this._export("copy_all", this._allText(), "copy")}>
+          Copy all
+        </button>
+        <button class="ha-btn" @click=${() => this._export("copy_last", this._lastOutputText(), "copy")}>
+          Copy last output
+        </button>
+        <button
+          class="ha-btn"
+          @click=${() =>
+            this._export("download_screen", this._screenText(), "download", `ha-soc-terminal-${this._open?.session_id}`)}
+        >
+          Download screen
+        </button>
+        <button
+          class="ha-btn"
+          @click=${() =>
+            this._export("download_all", this._allText(), "download", `ha-soc-terminal-${this._open?.session_id}`)}
+        >
+          Download all
+        </button>
+        <label class="font-ctl">
+          <input
+            type="checkbox"
+            .checked=${this._stripAnsi}
+            @change=${(e: Event) => (this._stripAnsi = (e.target as HTMLInputElement).checked)}
+          />
+          strip ANSI in transcript downloads
+        </label>
+        ${this._feedback ? html`<span class="muted">${this._feedback}</span>` : nothing}
+      </div>
+    `;
+  }
+
+  private _renderRunCard() {
+    const s = this._status;
+    const target = s?.targets.find((t) => t.id === "self");
+    if (!target?.available) return nothing;
+    return html`
+      <div class="card run-card">
+        <h3 style="margin:0 0 6px;">Run a command</h3>
+        <div class="run-row">
+          <input
+            type="text"
+            .value=${this._runCommand}
+            placeholder="e.g. ha core logs"
+            @input=${(e: Event) => (this._runCommand = (e.target as HTMLInputElement).value)}
+            @keydown=${(e: KeyboardEvent) => {
+              if (e.key === "Enter") void this._runOnce();
+            }}
+          />
+          <select
+            @change=${(e: Event) => (this._runTimeout = Number((e.target as HTMLSelectElement).value))}
+          >
+            ${RUN_TIMEOUTS.map(
+              (t) => html`<option value=${t} ?selected=${t === this._runTimeout}>${t}s</option>`
+            )}
+          </select>
+          <button class="ha-btn" ?disabled=${this._runBusy} @click=${() => this._runOnce()}>
+            ${this._runBusy ? "Running…" : "Run"}
+          </button>
+        </div>
+        ${this._runHistory.length
+          ? html`<div class="chips">
+              ${this._runHistory.map(
+                (c) => html`<span class="chip" @click=${() => (this._runCommand = c)}>${c}</span>`
+              )}
+            </div>`
+          : nothing}
+        ${this._runError ? html`<div class="alert">${this._runError}</div>` : nothing}
+        ${this._runOutput
+          ? html`
+              <p class="muted" style="font-size:12px;margin:6px 0 2px;">
+                exit ${this._runOutput.exit_code} — ${this._runOutput.duration_seconds}s${this._runOutput.truncated
+                  ? " — output truncated at 256 KiB"
+                  : ""}
+              </p>
+              <pre class="rawlog">${this._runOutput.stdout || "(no output)"}</pre>
+              <div class="export-row">
+                <button
+                  class="ha-btn"
+                  @click=${() => this._export("copy_run", this._runOutput!.stdout, "copy")}
+                >
+                  Copy output
+                </button>
+                <button
+                  class="ha-btn"
+                  @click=${() =>
+                    this._export("download_run", this._runOutput!.stdout, "download", "ha-soc-terminal-run")}
+                >
+                  Download output
+                </button>
+              </div>
+            `
+          : nothing}
+      </div>
+    `;
+  }
+
   render() {
     const s = this._status;
     const target = s?.targets.find((t) => t.id === "self");
@@ -494,6 +899,7 @@ export class HaSocTerminalView extends LitElement {
                         : `Ready. ${s.sessions_open} of ${s.max_sessions} sessions open.`}
           </span>
           <span class="spacer"></span>
+          ${this._renderStatusControls()}
           ${this._renderFontControls()}
           ${this._open
             ? html`<button class="ha-btn" @click=${() => this._close("user_closed")}>Close session</button>`
@@ -504,6 +910,7 @@ export class HaSocTerminalView extends LitElement {
         </div>
         ${this._error ? html`<div class="alert">${this._error}</div>` : nothing}
         <div class="term-box" @click=${() => this._term?.focus()}></div>
+        ${this._renderExportButtons()}
         ${this._ended
           ? html`<p class="muted ended">
               ${REASONS[this._ended.reason] ?? this._ended.reason}
@@ -518,6 +925,8 @@ export class HaSocTerminalView extends LitElement {
           Font, size and line spacing are remembered in this browser; a family listed as not
           installed is missing on this machine, not on the server.
         </p>
+        ${this._renderSessionList()}
+        ${this._renderRunCard()}
       </div>
     `;
   }

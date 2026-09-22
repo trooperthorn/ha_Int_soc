@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- Added a second listener, `busybox httpd` on port 7682 (`ha_soc_terminal_httpd`),
+  serving `/cgi-bin/run` (one-shot command execution with a timeout) and
+  `/cgi-bin/transcript` (session transcript download), both under the same
+  paired basic-auth credential as the terminal server. Both are recorded
+  into the same `/data/sessions/index.jsonl` the interactive shell uses.
+- `supervisor-api`, a GET-only wrapper mirroring `ha` (with-contenv, curl
+  with the Supervisor's Authorization header), plus `corelog`, `suplog`,
+  `hostlog` and `applog <slug>` shell functions over the existing `ha ...
+  logs` calls.
+- The start script now tries `ln -s /homeassistant /config` (the config
+  mount's real path) so paths written against `/config` work in the shell;
+  guarded and logged, falling back to an `HA_CONFIG=/homeassistant` export,
+  `CDPATH`, and a login banner line when the symlink cannot be created
+  (read-only root or AppArmor denial).
+- `idle_timeout_minutes` default raised from 30 to 120: an assistant-guided
+  session that pauses while the owner reads output was timing out mid-task.
+- Documented that `jq` and `less` are already in the image (DOCS.md).
 - Added SFTP to the configuration directory (phase 3): OpenSSH sshd with
   the shell removed, forced into internal-sftp inside a chroot of the
   configuration directory, key authentication only, no forwarding or

@@ -1,0 +1,30 @@
+#!/bin/bash
+# GET-only wrapper over the Supervisor's internal API, for the paths `ha`
+# does not cover with a friendly subcommand. Mirrors `ha`: the interactive
+# shell carries no Supervisor token, so this re-imports the container
+# environment for its own process only (with-contenv) and never exports the
+# token into the caller's shell. See docs/TERMINAL-DESIGN.md.
+#
+# GET-only is deliberate: a wrapper that also took POST/DELETE would be a
+# second, less-audited way to change the same things `ha` and the HA SOC
+# panel already change, for a shell that is supposed to read and diagnose,
+# not to grow its own control plane.
+set -euo pipefail
+
+usage() {
+    echo "usage: supervisor-api /path (e.g. supervisor-api /addons/self/info)" >&2
+    exit 2
+}
+
+path="${1:-}"
+[ -n "${path}" ] || usage
+case "${path}" in
+    /*) : ;;
+    *) echo "supervisor-api: path must start with /" >&2; exit 2 ;;
+esac
+
+exec /usr/bin/with-contenv bash -c '
+    curl -sS -H "Authorization: Bearer ${SUPERVISOR_TOKEN}" \
+         -H "Content-Type: application/json" \
+         "http://supervisor$0"
+' "${path}"

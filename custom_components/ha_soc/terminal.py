@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import hmac
 import json
 import logging
@@ -47,10 +48,34 @@ SERVICE_PAIR = "pair_terminal"
 APP_SLUG = "ha_soc_terminal"
 TTYD_PORT = 7681
 TTYD_USER = "hasoc"
+# The one-shot run/transcript listener (busybox httpd), same host and
+# credential as ttyd, a different port so it can be reached without opening
+# an interactive session. See ha_soc_terminal/rootfs/etc/services.d/ha_soc_terminal_httpd.
+TERMINAL_HTTPD_PORT = 7682
+RUN_MAX_TIMEOUT_SECONDS = 120
+RUN_DEFAULT_TIMEOUT_SECONDS = 30
+RUN_HTTP_TIMEOUT_PAD_SECONDS = 10
 
 AUDIT_CATEGORY_OPEN = "terminal_session_open"
 AUDIT_CATEGORY_CLOSE = "terminal_session_close"
 AUDIT_CATEGORY_PAIRING_REJECTED = "terminal_pairing_rejected"
+AUDIT_CATEGORY_APP_CONTROL = "terminal_app_control"
+AUDIT_CATEGORY_FORGET_PAIRING = "terminal_forget_pairing"
+AUDIT_CATEGORY_RUN = "terminal_run"
+AUDIT_CATEGORY_EXPORT = "terminal_export"
+
+EXPORT_KINDS = (
+    "copy_screen",
+    "copy_all",
+    "copy_last",
+    "download_screen",
+    "download_all",
+    "download_transcript",
+    "copy_run",
+    "download_run",
+    "copy_logs",
+    "download_logs",
+)
 
 MAX_SESSIONS_PER_USER = 1
 MAX_SESSIONS_TOTAL = 3
@@ -70,6 +95,8 @@ ERR_LIMIT_TOTAL = "session_limit_total"
 ERR_UNKNOWN_TARGET = "unknown_target"
 ERR_UNKNOWN_SESSION = "unknown_session"
 ERR_CONNECT = "connect_failed"
+ERR_TERMINAL_BUSY = "terminal_busy"
+ERR_TRANSCRIPT_HASH_MISMATCH = "transcript_hash_mismatch"
 
 # ttyd's wire protocol: one command byte then the payload, in both directions.
 _TTYD_INPUT = b"0"
@@ -106,9 +133,10 @@ def _installed_addon(hass: HomeAssistant) -> dict[str, Any] | None:
     """
     try:
         from homeassistant.components.hassio import get_supervisor_info
-    except Exception:  # noqa: BLE001 - not a Supervisor install
+
+        info = get_supervisor_info(hass) or {}
+    except Exception:  # noqa: BLE001 - not a Supervisor install, or hassio not set up yet
         return None
-    info = get_supervisor_info(hass) or {}
     for addon in info.get("addons") or []:
         slug = str(addon.get("slug") or "")
         if slug == APP_SLUG or slug.endswith(f"_{APP_SLUG}"):
@@ -218,6 +246,55 @@ async def async_forget_pairing(secrets: HaSocSecretStore) -> None:
     await secrets.async_set(TERMINAL_SECRET_KEY, None)
 
 
+# --- app control (Supervisor start/restart) ----------------------------------
+#
+# The app boots manual (docs/TERMINAL-DESIGN.md): after a host reboot it is
+# stopped and, before this, the panel could only point the owner at Settings
+# to start it by hand. This reuses the same Supervisor client the Probe
+# restart button already calls (ws_probe_restart in websocket_api.py) so
+# there is exactly one way this integration talks to the Supervisor's addon
+# API, not two.
+
+
+async def async_app_control(hass: HomeAssistant, action: str) -> dict[str, Any]:
+    """Start or restart the Terminal app through the Supervisor. Never raises.
+
+    Every failure mode comes back as {"ok": false, "reason": ...} so the
+    calling websocket command can audit and report it without a try/except
+    of its own.
+    """
+    if action not in ("start", "restart"):
+        return {"ok": False, "reason": "unknown_action"}
+    if not is_hassio(hass):
+        return {"ok": False, "reason": ERR_NOT_SUPERVISOR}
+    try:
+        addon = _installed_addon(hass)
+    except Exception:  # noqa: BLE001 - the cached add-on list may not exist yet
+        addon = None
+    if addon is None:
+        return {"ok": False, "reason": ERR_NOT_INSTALLED}
+    try:
+        from homeassistant.components.hassio import get_supervisor_client
+    except Exception:  # noqa: BLE001 - hassio internals not guaranteed stable
+        return {"ok": False, "reason": "hassio_unavailable"}
+    try:
+        client = get_supervisor_client(hass)
+    except Exception:  # noqa: BLE001
+        return {"ok": False, "reason": "no_supervisor_client"}
+    if client is None:
+        return {"ok": False, "reason": "no_supervisor_client"}
+    slug = str(addon["slug"])
+    try:
+        if action == "start":
+            await client.addons.start_addon(slug)
+        else:
+            await client.addons.restart_addon(slug)
+    except Exception as err:  # noqa: BLE001 - never let a websocket command raise
+        _LOGGER.exception("Failed to %s the %s app", action, APP_SLUG)
+        return {"ok": False, "reason": f"{action}_failed", "error": str(err)}
+    return {"ok": True}
+
+
 # --- sessions ---------------------------------------------------------------
 
 
@@ -247,9 +324,114 @@ class TerminalSessions:
         self._audit = audit
         self._secrets = secrets
         self.sessions: dict[str, TerminalSession] = {}
+        # One-shot runs are not sessions (no reader task, nothing in
+        # self.sessions); this is the only state that stops a second run
+        # while a user's first one is still in flight.
+        self._running_users: set[str] = set()
 
     def _for_user(self, user_id: str) -> list[TerminalSession]:
         return [s for s in self.sessions.values() if s.user_id == user_id]
+
+    async def _target_host_and_secret(self) -> tuple[str, str]:
+        """The app's hostname and paired secret, or the same refusals async_open uses."""
+        if not is_hassio(self._hass):
+            raise TerminalError(ERR_NOT_SUPERVISOR, "The terminal needs a Supervisor-based install")
+        addon = _installed_addon(self._hass)
+        if addon is None:
+            raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+        info = await _addon_info(self._hass, str(addon["slug"]))
+        if not info or info.get("state") != "started":
+            raise TerminalError(ERR_NOT_RUNNING, "The HA SOC Terminal app is not running; start it first")
+        host = str(info.get("hostname") or "")
+        if not host:
+            raise TerminalError(ERR_NOT_RUNNING, "The Supervisor reported no hostname for the Terminal app")
+        secret = await self._secrets.async_get(TERMINAL_SECRET_KEY)
+        if not secret:
+            raise TerminalError(
+                ERR_NOT_PAIRED,
+                "The Terminal app has not paired with HA SOC yet; it does so within a minute of starting",
+            )
+        return host, secret
+
+    async def async_run(self, *, user_id: str, command: str, timeout_seconds: int) -> dict[str, Any]:
+        """POST a command to the app's run/transcript listener; one at a time per user.
+
+        The overall wait is the command's own timeout plus a fixed pad for
+        the HTTP round trip, so a command that runs the app's full
+        ``timeout_seconds`` still gets a response before this call gives up.
+        """
+        if user_id in self._running_users:
+            raise TerminalError(ERR_TERMINAL_BUSY, "A command is already running for you; wait for it to finish")
+        host, secret = await self._target_host_and_secret()
+        self._running_users.add(user_id)
+        started = dt_util.utcnow()
+        try:
+            session = async_get_clientsession(self._hass)
+            url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/run"
+            try:
+                async with asyncio.timeout(timeout_seconds + RUN_HTTP_TIMEOUT_PAD_SECONDS):
+                    async with session.post(
+                        url,
+                        json={"command": command, "timeout_seconds": timeout_seconds},
+                        auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                    ) as resp:
+                        data = await resp.json(content_type=None)
+            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+                raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+        finally:
+            self._running_users.discard(user_id)
+        if not isinstance(data, dict) or "error" in data:
+            message = data.get("error") if isinstance(data, dict) else "malformed response"
+            raise TerminalError(ERR_CONNECT, f"The Terminal app refused the command: {message}")
+        duration = int((dt_util.utcnow() - started).total_seconds())
+        stdout = str(data.get("stdout", ""))
+        output_bytes = len(stdout.encode("utf-8"))
+        digest = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+        self._audit.async_log(
+            AUDIT_CATEGORY_RUN,
+            user_id=user_id,
+            detail={
+                "command": command,
+                "exit_code": data.get("exit_code"),
+                "bytes": output_bytes,
+                "sha256": digest,
+                "duration_seconds": duration,
+            },
+            flush=True,
+        )
+        return data
+
+    async def async_transcript(self, *, user_id: str, session_id: str) -> dict[str, Any]:
+        """GET a recorded transcript from the run/transcript listener, hash-verified."""
+        host, secret = await self._target_host_and_secret()
+        session = async_get_clientsession(self._hass)
+        url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/transcript"
+        try:
+            async with asyncio.timeout(CONNECT_TIMEOUT_SECONDS):
+                async with session.get(
+                    url,
+                    params={"id": session_id},
+                    auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                ) as resp:
+                    if resp.status == 404:
+                        raise TerminalError(ERR_UNKNOWN_SESSION, "No such transcript")
+                    if resp.status != 200:
+                        raise TerminalError(ERR_CONNECT, f"Transcript request failed with HTTP {resp.status}")
+                    text = await resp.text()
+                    expected_sha256 = resp.headers.get("X-Sha256", "")
+        except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        if expected_sha256 and not hmac.compare_digest(expected_sha256, digest):
+            raise TerminalError(ERR_TRANSCRIPT_HASH_MISMATCH, "The transcript's hash did not match what the app recorded")
+        byte_count = len(text.encode("utf-8"))
+        self._audit.async_log(
+            AUDIT_CATEGORY_EXPORT,
+            user_id=user_id,
+            detail={"kind": "download_transcript", "session_id": session_id, "bytes": byte_count, "sha256": digest},
+            flush=True,
+        )
+        return {"session_id": session_id, "text": text, "sha256": digest, "bytes": byte_count}
 
     async def async_open(
         self,
@@ -394,11 +576,17 @@ class TerminalSessions:
         session = self._get(session_id, user_id)
         await session.ws.send_bytes(_TTYD_RESIZE + json.dumps({"columns": cols, "rows": rows}).encode("utf-8"))
 
-    async def async_close(self, session_id: str, user_id: str | None, reason: str = "user_closed") -> None:
+    async def async_close(
+        self, session_id: str, user_id: str | None, reason: str = "user_closed", *, allow_any: bool = False
+    ) -> None:
+        """Close a session. ``allow_any`` lets the owner close someone else's
+        session from the session list; every other caller is restricted to
+        its own sessions (``user_id`` is None only for the internal
+        unload/all-sessions path)."""
         session = self.sessions.get(session_id)
         if session is None:
             raise TerminalError(ERR_UNKNOWN_SESSION, "No such terminal session")
-        if user_id is not None and session.user_id != user_id:
+        if user_id is not None and session.user_id != user_id and not allow_any:
             raise TerminalError(ERR_UNKNOWN_SESSION, "No such terminal session")
         session.close_reason = reason
         if session.reader is not None and not session.reader.done():
