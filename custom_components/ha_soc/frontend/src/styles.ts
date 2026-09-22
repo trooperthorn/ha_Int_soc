@@ -254,6 +254,10 @@ export const sharedStyles = css`
     color: var(--error-color, #db4437);
     border-color: var(--error-color, #db4437);
   }
+  button.ha-btn.ha-btn-active {
+    color: var(--text-primary-color, #fff);
+    background: var(--primary-color);
+  }
   button.ha-btn:disabled {
     opacity: 0.5;
     cursor: default;

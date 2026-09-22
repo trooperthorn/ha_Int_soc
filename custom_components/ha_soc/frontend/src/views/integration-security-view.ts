@@ -19,11 +19,14 @@ import {
   setWatchdog,
   HacsStatus,
   HacsRepositoryRow,
+  HacsOwnerSummary,
   HacsRefreshResult,
   HacsUpdateResult,
   fetchHacsStatus,
   hacsRefreshAll,
   hacsUpdateAll,
+  hacsSetOwners,
+  subscribeTopic,
 } from "../data/ha-soc-ws";
 
 const TIER_LABEL: Record<IntegrationTier, string> = {
@@ -81,7 +84,11 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   @state() private _hacsUpdate: HacsUpdateResult | null = null;
   @state() private _hacsSort: SortState | null = null;
   @state() private _hacsCategoryFilter = "all";
-  @state() private _hacsAuthorFilter = "all";
+  // Selected owners; empty means "no filter, all owners". Seeded from
+  // status.owner_filter on the first load and persisted server-side on change.
+  @state() private _hacsOwnerFilter: string[] = [];
+  private _hacsOwnersSeeded = false;
+  private _hacsUnsub: (() => Promise<void>) | null = null;
 
   connectedCallback(): void {
     super.connectedCallback();
@@ -89,23 +96,51 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     this._loadContainers();
     this._loadWatchdog();
     this._loadHacs();
+    subscribeTopic(this.hass, "hacs", () => {
+      this._loadHacs();
+    }).then((unsub) => {
+      this._hacsUnsub = unsub;
+    });
+  }
+
+  disconnectedCallback(): void {
+    super.disconnectedCallback();
+    void this._hacsUnsub?.();
+    this._hacsUnsub = null;
   }
 
   private async _loadHacs() {
     try {
       this._hacs = await fetchHacsStatus(this.hass);
+      if (!this._hacsOwnersSeeded) {
+        this._hacsOwnerFilter = [...this._hacs.owner_filter];
+        this._hacsOwnersSeeded = true;
+      }
     } catch (err: any) {
       this._hacs = null;
       this._hacsError = err?.message ?? String(err);
     }
   }
 
+  private async _toggleHacsOwner(owner: string) {
+    const next = this._hacsOwnerFilter.includes(owner)
+      ? this._hacsOwnerFilter.filter((o) => o !== owner)
+      : [...this._hacsOwnerFilter, owner];
+    this._hacsOwnerFilter = next;
+    try {
+      this._hacs = await hacsSetOwners(this.hass, next);
+    } catch (err: any) {
+      this._hacsError = err?.message ?? String(err);
+    }
+  }
+
   private async _hacsRefreshAll() {
+    const owners = this._hacsOwnerFilter.length ? this._hacsOwnerFilter : undefined;
     this._hacsBusy = "refresh";
     this._hacsError = null;
     this._hacsRefresh = null;
     try {
-      this._hacsRefresh = await hacsRefreshAll(this.hass);
+      this._hacsRefresh = await hacsRefreshAll(this.hass, { owners });
       await this._loadHacs();
     } catch (err: any) {
       this._hacsError = err?.message ?? String(err);
@@ -115,7 +150,8 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   }
 
   private async _hacsUpdateAll() {
-    const pending = this._hacs?.repositories.filter((r) => r.pending_update) ?? [];
+    const owners = this._hacsOwnerFilter.length ? this._hacsOwnerFilter : undefined;
+    const pending = this._filteredHacs().filter((r) => r.pending_update);
     if (!pending.length) return;
     const names = pending.map((r) => `${r.full_name} (${r.installed_version ?? "?"} \u2192 ${r.available_version ?? "?"})`);
     const ok = window.confirm(
@@ -126,7 +162,7 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     this._hacsError = null;
     this._hacsUpdate = null;
     try {
-      this._hacsUpdate = await hacsUpdateAll(this.hass);
+      this._hacsUpdate = await hacsUpdateAll(this.hass, { owners });
       await this._loadHacs();
       await this._load();
     } catch (err: any) {
@@ -421,9 +457,10 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
 
   private _filteredHacs(): HacsRepositoryRow[] {
     const rows = this._hacs?.repositories ?? [];
+    const owners = this._hacsOwnerFilter;
     const filtered = rows
       .filter((r) => this._hacsCategoryFilter === "all" || r.category === this._hacsCategoryFilter)
-      .filter((r) => this._hacsAuthorFilter === "all" || r.authors.includes(this._hacsAuthorFilter));
+      .filter((r) => !owners.length || owners.includes(r.owner.toLowerCase()));
     if (!this._hacsSort) return filtered;
     return sortRows(filtered, this._hacsSort, HaSocIntegrationSecurityView.HACS_SORT);
   }
@@ -434,7 +471,10 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   // owner-only server-side and audited.
   private _renderHacs() {
     const h = this._hacs;
-    const pending = h?.repositories.filter((r) => r.pending_update) ?? [];
+    const filteredHacs = this._filteredHacs();
+    const pending = filteredHacs.filter((r) => r.pending_update);
+    const filterActive = this._hacsOwnerFilter.length > 0;
+    const busy = this._hacsBusy !== null || Boolean(h?.refresh_in_progress);
     const fmt = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : "never");
     const daysAgo = (iso: string | null) => {
       if (!iso) return "—";
@@ -448,37 +488,64 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
     const categories = h
       ? Array.from(new Set(h.repositories.map((r) => r.category))).sort()
       : [];
-    const authors = h
-      ? Array.from(new Set(h.repositories.flatMap((r) => r.authors))).sort()
-      : [];
+    const owners: HacsOwnerSummary[] = h?.owners ?? [];
     const hs = this._hacsSort;
     const onHacs = (next: SortState) => {
       this._hacsSort = next;
     };
-    const filteredHacs = this._filteredHacs();
+    const refreshLabel = () => {
+      if (h?.refresh_in_progress) {
+        const failedPart = h.refresh_failed ? `, ${h.refresh_failed} failed` : "";
+        return `Refreshing ${h.refresh_done} / ${h.refresh_total}${failedPart}`;
+      }
+      if (this._hacsBusy === "refresh") return "Refreshing…";
+      return filterActive
+        ? `Refresh selected (${filteredHacs.length})`
+        : `Refresh all (${h?.repositories.length ?? 0})`;
+    };
     return html`
       <div class="card">
         <h3>HACS Updates</h3>
         <p class="muted" style="margin-top:-4px;font-size:12.5px;">
-          HACS re-checks each repository on its own schedule. Refresh forces that check for
-          everything downloaded, right now; Install runs the same update as clicking each
-          update entity. Both are owner-only and audited.
+          HACS re-checks each repository on its own schedule. Refresh forces that check, bounded
+          to a few repositories at a time instead of one at a time; Install runs the same update
+          as clicking each update entity. Both are owner-only and audited, and can be narrowed to
+          one or more GitHub owners below.
         </p>
         ${this._hacsError ? html`<div class="alert">${this._hacsError}</div>` : nothing}
         ${!h
-          ? html`<p class="muted">Loading HACS state\u2026</p>`
+          ? html`<p class="muted">Loading HACS state…</p>`
           : !h.available
             ? html`<p class="muted">${h.reason ?? "HACS is not available."}</p>`
             : html`
+                ${owners.length
+                  ? html`
+                      <div class="toolbar" style="flex-wrap:wrap;gap:6px;margin-bottom:8px;">
+                        ${owners.map((o) => {
+                          const active = this._hacsOwnerFilter.includes(o.owner);
+                          return html`
+                            <button
+                              class="ha-btn ${active ? "ha-btn-active" : ""}"
+                              style="font-size:12px;padding:2px 10px;"
+                              ?disabled=${busy}
+                              @click=${() => this._toggleHacsOwner(o.owner)}
+                            >
+                              ${o.owner} (${o.count}, ${o.pending} pending)
+                            </button>
+                          `;
+                        })}
+                      </div>
+                    `
+                  : nothing}
                 <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
-                  <button class="ha-btn" ?disabled=${this._hacsBusy !== null} @click=${() => this._hacsRefreshAll()}>
-                    ${this._hacsBusy === "refresh" ? "Refreshing\u2026" : `Refresh all (${h.repositories.length})`}
+                  <button class="ha-btn" ?disabled=${busy} @click=${() => this._hacsRefreshAll()}>
+                    ${refreshLabel()}
                   </button>
-                  <button class="ha-btn" ?disabled=${this._hacsBusy !== null || !pending.length} @click=${() => this._hacsUpdateAll()}>
-                    ${this._hacsBusy === "update" ? "Installing\u2026" : `Install ${pending.length} pending`}
+                  <button class="ha-btn" ?disabled=${busy || !pending.length} @click=${() => this._hacsUpdateAll()}>
+                    ${this._hacsBusy === "update" ? "Installing…" : `Install ${pending.length} pending`}
                   </button>
                   <span class="muted" style="font-size:12px;">
-                    Last refresh ${fmt(h.last_refresh)} \u00b7 last install ${fmt(h.last_update)}
+                    Last refresh ${fmt(h.last_refresh)} · last install ${fmt(h.last_update)}
                   </span>
                 </div>
                 ${this._hacsRefresh
@@ -505,15 +572,6 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
                   >
                     <option value="all">All categories</option>
                     ${categories.map((c) => html`<option value=${c}>${c}</option>`)}
-                  </select>
-                  <select
-                    .value=${this._hacsAuthorFilter}
-                    @change=${(e: Event) => {
-                      this._hacsAuthorFilter = (e.target as HTMLSelectElement).value;
-                    }}
-                  >
-                    <option value="all">All authors</option>
-                    ${authors.map((a) => html`<option value=${a}>${a}</option>`)}
                   </select>
                 </div>
                 <div class="table-wrap">
