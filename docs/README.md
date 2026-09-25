@@ -21,6 +21,7 @@ One line per document, stating what it is responsible for, so a reader knows whe
 - `ENTITY-MAP.md`: the Assets workspace Entity Map tab (data sources and the core commands they use, the node and edge model, the two views, the vendored graph engine, limits, verification status).
 - `RESOURCE-WATCHDOG.md`: the two-layer container resource watchdog summary (soft Supervisor-native actions, hard Docker caps via the Probe).
 - `THREAT-MODEL.md`: assets, trust boundaries, the principal threat table with controls and residual actions, mechanism notes, and assumptions.
+- `SHOPPING-LIST.md`: hardware to buy for each feature tier (host, UniFi, DNS, physical-security devices) and the order to set it all up in Home Assistant.
 
 ## Plans, reviews, and research
 
