@@ -24,7 +24,7 @@ view on an HA dashboard instead of on a separate Pi screen.
 | Item | Example | Approx. |
 | --- | --- | --- |
 | 24 GHz radar module | Hi-Link **HLK-LD2450** (get one that comes with its 4-pin cable) | $10–15 |
-| Microcontroller | ESP32-S3 DevKitC-1 (N16R8) recommended; a classic ESP32-DevKitC or an ESP32-C6 DevKitC-1 also works (see "Which ESP32 chip" below) | $6–15 |
+| Microcontroller | **ESP32-C5-DevKitC-1** for 5 GHz Wi-Fi (this build's choice: no screen, 2.4 GHz kept free); an ESP32-C6 or classic ESP32 works on 2.4 GHz, an ESP32-S3 if you want a screen (see "Which ESP32 chip" below) | $6–15 |
 | Jumper wires | Female-female Dupont wires, if your LD2450 cable doesn't end in Dupont plugs | $5 |
 | Power | 5 V USB power supply (1 A+) and a USB cable for the ESP32 | $8–10 |
 | Enclosure (optional) | A small project box or a 3D-printed case. Leave the radar face uncovered, or behind thin plastic only (never metal) | $5 |
@@ -79,6 +79,15 @@ own VLAN is the usual setup. To avoid Wi-Fi altogether, use an ESP32
 Ethernet/PoE board (Olimex ESP32-POE-ISO, WT32-ETH01); ESPHome supports
 both through its `ethernet:` component.
 
+To run the C5 on 5 GHz only, give it an SSID that is broadcast on 5 GHz
+only (UniFi: Settings → WiFi → the network → WiFi Band: 5 GHz), rather than
+relying on the device to choose a band. 5 GHz covers less distance through
+walls, so check the sensor's signal strength in ESPHome's logs once it is
+mounted and move it or add an access point if it is below about -75 dBm. The C5
+pins above are a starting point: confirm GPIO4/GPIO5 are free on your board's
+pinout before wiring, and that your ESPHome version lists the C5 as
+supported.
+
 Board settings and UART pins per chip (LD2450 TX goes to the ESP's RX pin):
 
 | Chip | `esp32:` block | ESP RX pin | ESP TX pin |
@@ -87,6 +96,7 @@ Board settings and UART pins per chip (LD2450 TX goes to the ESP's RX pin):
 | ESP32-S3 | `board: esp32-s3-devkitc-1`, `variant: esp32s3` | GPIO16 | GPIO17 |
 | ESP32-C6 | `board: esp32-c6-devkitc-1`, `variant: esp32c6` | GPIO5 | GPIO4 |
 | ESP32-C3 | `board: esp32-c3-devkitm-1`, `variant: esp32c3` | GPIO20 | GPIO21 |
+| ESP32-C5 | `board: esp32-c5-devkitc-1`, `variant: esp32c5` | GPIO5 | GPIO4 |
 
 On the C3, GPIO20/21 are the chip's console UART pins, so keep
 `logger: baud_rate: 0` and flash and log over the board's USB port. Keep
