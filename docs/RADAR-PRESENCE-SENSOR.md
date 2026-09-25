@@ -66,6 +66,19 @@ the C-series (C5, C6) and P4.
 | ESP32-S2 | Yes | Only if you already own one | No Bluetooth, so it can't also be a Bluetooth proxy |
 | ESP32-H2 / P4 | No (alone) | — | No Wi-Fi. The H2 is Thread/Zigbee only; the P4 needs a companion Wi-Fi chip |
 
+### Wi-Fi band
+
+Only the **ESP32-C5** has 5 GHz (dual-band 2.4/5 GHz Wi-Fi 6, e.g. Espressif's
+ESP32-C5-DevKitC-1). No ESP32 supports 6 GHz (Wi-Fi 6E/7). Every other chip
+above is 2.4 GHz only. Wi-Fi 6 on the C6 means the Wi-Fi 6 protocol on
+2.4 GHz, not 5 or 6 GHz.
+
+For a sensor that sends a few bytes a second, 2.4 GHz is the better band: it
+reaches further and gets through walls better. A 2.4 GHz-only IoT SSID on its
+own VLAN is the usual setup. To avoid Wi-Fi altogether, use an ESP32
+Ethernet/PoE board (Olimex ESP32-POE-ISO, WT32-ETH01); ESPHome supports
+both through its `ethernet:` component.
+
 Board settings and UART pins per chip (LD2450 TX goes to the ESP's RX pin):
 
 | Chip | `esp32:` block | ESP RX pin | ESP TX pin |
