@@ -147,8 +147,8 @@ On the C3, GPIO20/21 are the chip's console UART pins, so keep
 `baud_rate: 0` on every chip anyway; the logger doesn't need the UART.
 
 On the ESP32-C5-DevKitC-1, GPIO4 and GPIO5 are header J3 pins 8 and 9. They
-are the JTAG MTCK/MTDO pins, not strapping pins, and are silkscreened with
-the low-power UART's RXD/TXD functions, which is why RX is GPIO4 and TX is
+are the JTAG MTCK/MTDO pins, not strapping pins, and their alternate
+functions are the low-power UART's RXD/TXD, which is why RX is GPIO4 and TX is
 GPIO5. Avoid the strapping pins (GPIO2, 3, 7, 25, 26, 27, 28), GPIO27 (it
 also drives the on-board RGB LED), GPIO13/14 (USB), GPIO11/12 (UART0, wired
 to the USB-to-UART bridge), and GPIO15 (used by the PSRAM on the N8R8).
