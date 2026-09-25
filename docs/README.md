@@ -22,6 +22,7 @@ One line per document, stating what it is responsible for, so a reader knows whe
 - `RESOURCE-WATCHDOG.md`: the two-layer container resource watchdog summary (soft Supervisor-native actions, hard Docker caps via the Probe).
 - `THREAT-MODEL.md`: assets, trust boundaries, the principal threat table with controls and residual actions, mechanism notes, and assumptions.
 - `SHOPPING-LIST.md`: hardware to buy for each feature tier (host, UniFi, DNS, physical-security devices) and the order to set it all up in Home Assistant.
+- `RADAR-PRESENCE-SENSOR.md`: DIY 24 GHz mmWave (HLK-LD2450) presence sensor: parts, ESP32 chip choice, wiring, ESPHome config, radar dashboard card, automations.
 
 ## Plans, reviews, and research
 
