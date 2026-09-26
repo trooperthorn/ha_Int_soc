@@ -18,6 +18,11 @@ RUN apk upgrade --no-cache \
     && apk add --no-cache \
         bash \
         bash-completion \
+        # The httpd applet for the run/transcript listener. The base image's
+        # busybox is built without it (`busybox --list` on base:3.24 has no
+        # httpd); Alpine ships it in busybox-extras, whose client applet
+        # links are removed again below.
+        busybox-extras \
         coreutils \
         less \
         lscpu \
@@ -40,7 +45,10 @@ RUN apk upgrade --no-cache \
     # BusyBox applet names that open connections; the applets stay inside the
     # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools"). nslookup is
     # also a busybox applet, so its link goes here once the package is gone.
-    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp /usr/bin/nslookup
+    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp /usr/bin/nslookup \
+    # busybox-extras adds its own links for the same client applets plus
+    # servers this image does not run; keep only the httpd link.
+    && rm -f /usr/sbin/dnsd /usr/sbin/ftpd /usr/sbin/inetd /usr/sbin/telnetd /usr/sbin/udhcpd
 
 RUN set -eu; \
     case "${BUILD_ARCH}" in \
