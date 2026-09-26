@@ -8,7 +8,12 @@ FROM ${BUILD_FROM}
 # python3 is stdlib-only for netscan.py: no pip, no scapy, no nmap/Angry IP Scanner binary.
 RUN apk upgrade --no-cache \
     && apk add --no-cache iptables iproute2 net-snmp python3 \
-    && rm -f /usr/bin/tempio
+    && rm -f /usr/bin/tempio \
+    # bind-tools (dig, nslookup, host, nsupdate, delv) comes from the Home
+    # Assistant base image and nothing in this add-on or bashio calls it;
+    # dropping it also drops bind-libs, the package behind seven unfixed
+    # High advisories in the image scan (2026-09-26, docs/decisions.md).
+    && apk del bind-tools
 
 # A dedicated account keeps the nobody scanner from reading Net-SNMP's mode-0600 USM key database.
 RUN addgroup -S ha_soc_snmp \

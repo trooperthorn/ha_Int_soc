@@ -25,3 +25,25 @@ ignore:
   - vulnerability: CVE-2026-85091
     package:
       name: zlib
+  # 2026-09-26: net-snmp 5.9.5.2-r0 is flagged High for CVE-2026-89147, a
+  # denial of service in the SMUX subagent module: smux_accept() does a
+  # blocking read on a newly accepted TCP connection before its timeout is
+  # installed, so a client that connects to the SMUX listener and sends
+  # nothing stalls snmpd's main loop (net-snmp/net-snmp#1134, CVSS 7.5, no
+  # code execution or data exposure). The path is reachable only through
+  # the SMUX listener, TCP 199. The Probe's snmpd.conf sets agentAddress
+  # only and never smuxsocket, and on the live install snmpd listens on
+  # UDP 161 alone (netstat, 2026-09-26). No Alpine 3.24 or edge build
+  # carries a fix; apk upgrade picks it up when one ships. Scoped to the
+  # three net-snmp packages in the Probe image only. Review when Alpine
+  # publishes a newer net-snmp or if the SNMP service ever gains a SMUX
+  # or AgentX listener (backlog.md).
+  - vulnerability: CVE-2026-89147
+    package:
+      name: net-snmp
+  - vulnerability: CVE-2026-89147
+    package:
+      name: net-snmp-agent-libs
+  - vulnerability: CVE-2026-89147
+    package:
+      name: net-snmp-libs

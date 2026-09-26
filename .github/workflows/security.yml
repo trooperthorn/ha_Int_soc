@@ -92,7 +92,7 @@ jobs:
           done
           # The CLI binary is the pinned release and runs (it has no --version flag; help exits 0).
           docker run --rm --entrypoint /bin/sh "$img" -c '/usr/bin/ha.real --help >/dev/null'
-          for absent in ssh scp sftp mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio; do
+          for absent in ssh scp sftp mosh nmap ncat nc wget telnet tftp tcpdump rsync git python3 sudo tmux screen tempio dig nslookup host nsupdate delv; do
             docker run --rm --entrypoint /bin/sh "$img" -c "! command -v $absent"
           done
           docker run --rm --entrypoint /bin/sh "$img" -c 'bash -n /etc/profile.d/ha_soc_terminal.sh && bash -n /usr/local/bin/ha_soc_term_open && bash -n /usr/local/bin/ha && bash -n /usr/local/bin/supervisor-api && bash -n /etc/services.d/ha_soc_terminal/run && bash -n /etc/services.d/ha_soc_terminal_sftp/run && bash -n /etc/services.d/ha_soc_terminal_httpd/run && bash -n /www/cgi-bin/run && bash -n /www/cgi-bin/transcript'
