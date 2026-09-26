@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Removed `bind-tools` (and with it `bind-libs`) from the image. Nothing
+  here uses `dig`, `nslookup`, `host`, `nsupdate` or `delv`; they are five
+  more client tools that open connections, which this image promises are
+  absent (CI now asserts it), and the package carried seven unfixed High
+  advisories in the image scan.
 - Added a second listener, `busybox httpd` on port 7682 (`ha_soc_terminal_httpd`),
   serving `/cgi-bin/run` (one-shot command execution with a timeout) and
   `/cgi-bin/transcript` (session transcript download), both under the same

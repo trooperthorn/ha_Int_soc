@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Removed `bind-tools` (and with it `bind-libs`) from the image. The Home
+  Assistant base image installs it and nothing in this add-on uses `dig`,
+  `nslookup`, `host`, `nsupdate` or `delv`; the package carried seven
+  unfixed High advisories in the image scan.
+- The image scan ignores CVE-2026-89147 (net-snmp 5.9.5.2, a denial of
+  service reachable only through the SMUX listener on TCP 199). The Probe
+  never opens that listener: snmpd is configured with `agentAddress` only
+  and listens on UDP 161 alone. Dated and reasoned in `.grype.yaml`;
+  removed when Alpine ships a fixed package.
 - Optional netscan: local-subnet host/port discovery using TCP-connect
   liveness, a banner grab, a TLS certificate read (no verification -- a
   self-signed LAN certificate is expected), and a MAC vendor label from the

@@ -28,10 +28,19 @@ RUN apk upgrade --no-cache \
         pciutils \
         ttyd \
         util-linux-misc \
+    # bind-tools (dig, nslookup, host, nsupdate, delv) comes from the Home
+    # Assistant base image and nothing here calls it; it is also five more
+    # client tools that open connections, which this image promises are
+    # absent, and the package behind seven unfixed High advisories in the
+    # image scan (2026-09-26, docs/decisions.md). It must be the last apk
+    # transaction: every apk run fires the busybox trigger, which recreates
+    # the applet links the rm -f lines below remove.
+    && apk del bind-tools \
     && rm -f /usr/bin/tempio \
     # BusyBox applet names that open connections; the applets stay inside the
-    # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools").
-    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp
+    # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools"). nslookup is
+    # also a busybox applet, so its link goes here once the package is gone.
+    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp /usr/bin/nslookup
 
 RUN set -eu; \
     case "${BUILD_ARCH}" in \
