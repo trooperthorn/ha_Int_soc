@@ -31,7 +31,13 @@ RUN apk upgrade --no-cache \
     && rm -f /usr/bin/tempio \
     # BusyBox applet names that open connections; the applets stay inside the
     # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools").
-    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp
+    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp \
+    # bind-tools (dig, nslookup, host, nsupdate, delv) comes from the Home
+    # Assistant base image and nothing here calls it; it is also five more
+    # client tools that open connections, which this image promises are
+    # absent, and the package behind seven unfixed High advisories in the
+    # image scan (2026-09-26, docs/decisions.md).
+    && apk del bind-tools
 
 RUN set -eu; \
     case "${BUILD_ARCH}" in \

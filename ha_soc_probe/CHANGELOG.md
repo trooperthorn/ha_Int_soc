@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Removed `bind-tools` (and with it `bind-libs`) from the image. The Home
+  Assistant base image installs it and nothing in this add-on uses `dig`,
+  `nslookup`, `host`, `nsupdate` or `delv`; the package carried seven
+  unfixed High advisories in the image scan.
 - Optional netscan: local-subnet host/port discovery using TCP-connect
   liveness, a banner grab, a TLS certificate read (no verification -- a
   self-signed LAN certificate is expected), and a MAC vendor label from the
