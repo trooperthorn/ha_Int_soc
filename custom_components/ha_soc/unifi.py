@@ -357,20 +357,79 @@ def _rows(payload: Any) -> list[dict[str, Any]]:
     return []
 
 
-async def _get_paginated(hass: HomeAssistant, conn: _Conn, path: str) -> list[dict[str, Any]]:
+class _RowList(list):
+    """The rows of one paginated collection plus what the fetch could not
+    deliver. A plain list to every existing caller; the flags let the
+    overview say so when a table is incomplete instead of presenting a
+    capped or partial fetch as the whole picture (2026-09-26 review,
+    findings 1-4).
+
+    truncated: the _MAX_PAGES ceiling was hit with the last page still full,
+      so the controller holds more rows than were read.
+    partial_error: a page after the first failed; the rows read before it
+      are returned rather than discarded, and this says why the rest are
+      missing.
+    detail_truncated: rows past _MAX_DEVICE_DETAILS that kept their raw,
+      un-enriched shape (set by _fetch_device_details).
+    """
+
+    truncated: bool = False
+    partial_error: str | None = None
+    detail_truncated: int = 0
+
+
+def _row_key(row: dict[str, Any]) -> str | None:
+    key = _first(row, "id", "_id")
+    return str(key) if key else None
+
+
+async def _get_paginated(hass: HomeAssistant, conn: _Conn, path: str) -> _RowList:
     """Follow the Integration API's offset/limit pagination. Falls back to a
-    single unpaginated response for surfaces that return a bare list."""
-    out: list[dict[str, Any]] = []
+    single unpaginated response for surfaces that return a bare list.
+
+    Rows are de-duplicated by id across pages, so a controller whose offset
+    semantics overlap cannot double-count, and a page that only repeats
+    rows already seen ends the walk. A failure on a page after the first
+    returns the rows already read with ``partial_error`` set; a failure on
+    the first page still raises, because then there is nothing to show and
+    the callers' availability logic depends on the exception.
+    """
+    out = _RowList()
+    seen: set[str] = set()
     offset = 0
-    for _ in range(_MAX_PAGES):
+    for page in range(_MAX_PAGES):
         sep = "&" if "?" in path else "?"
-        payload = await _get(hass, conn, f"{path}{sep}offset={offset}&limit={_PAGE_LIMIT}")
+        try:
+            payload = await _get(hass, conn, f"{path}{sep}offset={offset}&limit={_PAGE_LIMIT}")
+        except UniFiError as err:
+            if page == 0:
+                raise
+            out.partial_error = f"Page {page + 1} of {path} failed: {err}"
+            _LOGGER.warning(
+                "UniFi pagination of %s stopped after %d row(s): %s", path, len(out), err
+            )
+            return out
         rows = _rows(payload)
-        out.extend(rows)
-        # A bare list (legacy) or a short page means there's no more to fetch.
-        if not isinstance(payload, dict) or len(rows) < _PAGE_LIMIT:
-            break
+        new_rows = 0
+        for row in rows:
+            key = _row_key(row)
+            if key is not None:
+                if key in seen:
+                    continue
+                seen.add(key)
+            out.append(row)
+            new_rows += 1
+        # A bare list (legacy), a short page, or a page of nothing but
+        # repeats means there's no more to fetch.
+        if not isinstance(payload, dict) or len(rows) < _PAGE_LIMIT or new_rows == 0:
+            return out
         offset += _PAGE_LIMIT
+    # Every page was full: the ceiling, not the controller, ended the walk.
+    out.truncated = True
+    _LOGGER.warning(
+        "UniFi pagination of %s stopped at the %d-row ceiling; the table is incomplete",
+        path, _MAX_PAGES * _PAGE_LIMIT,
+    )
     return out
 
 
@@ -814,7 +873,9 @@ async def _fetch_broadcast_rows(
 
     async def _one(row: dict[str, Any]) -> dict[str, Any]:
         bid = _first(row, "id", "_id")
-        if not bid:
+        # The id comes from the controller's own response and is interpolated
+        # into a request path; the same token check the write paths apply.
+        if not bid or not _ID_RE.match(str(bid)):
             return row
         try:
             detail = await _get(hass, conn, f"/sites/{site_id}/wifi/broadcasts/{bid}")
@@ -844,7 +905,9 @@ async def _fetch_device_details(
 
     async def _one(dev: dict[str, Any]) -> dict[str, Any]:
         did = _first(dev, "id", "_id", "deviceId")
-        if not did:
+        # Same token check as the broadcast detail: a response-supplied id
+        # must be a plain token before it becomes part of a request path.
+        if not did or not _ID_RE.match(str(did)):
             return dev
         merged = dict(dev)
         try:
@@ -876,7 +939,17 @@ async def _fetch_device_details(
 
     head = devices[:_MAX_DEVICE_DETAILS]
     enriched = await asyncio.gather(*[_one(d) for d in head])
-    return list(enriched) + devices[_MAX_DEVICE_DETAILS:]
+    out = _RowList(list(enriched) + devices[_MAX_DEVICE_DETAILS:])
+    if isinstance(devices, _RowList):
+        out.truncated = devices.truncated
+        out.partial_error = devices.partial_error
+    out.detail_truncated = max(0, len(devices) - _MAX_DEVICE_DETAILS)
+    if out.detail_truncated:
+        _LOGGER.info(
+            "UniFi device detail enrichment capped at %d of %d devices; the rest keep the collection shape",
+            _MAX_DEVICE_DETAILS, len(devices),
+        )
+    return out
 
 
 async def _fetch_network_map(
@@ -1049,6 +1122,11 @@ async def _fetch_acl_rules(
         # None means the ordering route did not answer; an empty list means it
         # answered with no user-defined rules. Not the same thing.
         "ordering": None,
+        # True when the controller holds more rules than the pagination
+        # ceiling allowed; partial_error names the page that failed when the
+        # list stops short for that reason.
+        "truncated": False,
+        "partial_error": None,
     }
     last_err: str | None = None
     for suffix in _ACL_ENDPOINT_SUFFIXES:
@@ -1062,6 +1140,8 @@ async def _fetch_acl_rules(
             continue
         result["available"] = True
         result["endpoint"] = suffix
+        result["truncated"] = bool(getattr(rows, "truncated", False))
+        result["partial_error"] = getattr(rows, "partial_error", None)
         rules = [_normalize_acl_rule(r, i, network_map) for i, r in enumerate(rows)]
         rules.sort(key=lambda r: r["order"])
         result["rules"] = rules
@@ -1422,6 +1502,8 @@ async def _fetch_firewall_policies(
         # None means the ordering route did not answer, which is not the same
         # as an empty ordering; the panel must not read one as the other.
         "ordering": None,
+        "truncated": False,
+        "partial_error": None,
     }
     zones = await _fetch_firewall_zones(hass, conn, site_id, network_map)
     result["zones"] = zones
@@ -1438,6 +1520,8 @@ async def _fetch_firewall_policies(
     rules = [_normalize_firewall_policy(r, i, network_map, zone_name_map) for i, r in enumerate(rows)]
     rules.sort(key=lambda r: r["order"])
     result["available"] = True
+    result["truncated"] = bool(getattr(rows, "truncated", False))
+    result["partial_error"] = getattr(rows, "partial_error", None)
     result["rules"] = rules
     return result
 
@@ -1574,6 +1658,8 @@ async def async_network_overview(
             "endpoints_tried": [],
             "rules": [],
             "ordering": None,
+            "truncated": False,
+            "partial_error": None,
         },
         "firewall_policies": {
             "available": False,
@@ -1581,6 +1667,18 @@ async def async_network_overview(
             "rules": [],
             "zones": [],
             "ordering": None,
+            "truncated": False,
+            "partial_error": None,
+        },
+        # What the clients and devices tables could not deliver. A capped or
+        # partially fetched table is labelled rather than passed off as the
+        # whole site (2026-09-26 review, findings 2-4).
+        "data_limits": {
+            "clients_truncated": False,
+            "clients_partial_error": None,
+            "devices_truncated": False,
+            "devices_partial_error": None,
+            "device_details_skipped": 0,
         },
         # The controller version that answered this snapshot; None when the
         # console did not answer or is not configured.
@@ -1673,6 +1771,13 @@ async def _fill_network_from_api(
     if not broadcast_map and core_snap is not None:
         broadcast_map = unifi_core.wlan_ssid_map(core_snap)
     devices_raw = await _fetch_device_details(hass, conn, site_id, devices_raw)
+    result["data_limits"] = {
+        "clients_truncated": bool(getattr(clients_raw, "truncated", False)),
+        "clients_partial_error": getattr(clients_raw, "partial_error", None),
+        "devices_truncated": bool(getattr(devices_raw, "truncated", False)),
+        "devices_partial_error": getattr(devices_raw, "partial_error", None),
+        "device_details_skipped": int(getattr(devices_raw, "detail_truncated", 0)),
+    }
     network_map = await _fetch_network_map(hass, conn, site_id)
     if not network_map and core_snap is not None:
         network_map = unifi_core.network_name_map(core_snap["networks"])
@@ -2047,9 +2152,18 @@ def _enrich_wan_from_core(result: dict[str, Any], snap: dict[str, Any]) -> None:
             result["internet_connected"] = core_wan["internet"]
         elif wan.get("up") is not None:
             result["internet_connected"] = wan["up"]
-    if result.get("status") == "unknown" and gateway.get("state"):
-        offline = str(gateway["state"]).upper() in unifi_core.OFFLINE_DEVICE_STATES
-        result["status"] = "offline" if offline else "online"
+    # The direct API counts a listed gateway as online unless it says
+    # otherwise; the core integration's device state is the controller's
+    # own live verdict (DISCONNECTED, HEARTBEAT_MISSED, ISOLATED). The
+    # stricter signal wins: an offline core state overrides "online", while
+    # a healthy core state only fills in "unknown", never upgrades an
+    # explicit API "offline".
+    state = gateway.get("state")
+    if state:
+        if str(state).upper() in unifi_core.OFFLINE_DEVICE_STATES:
+            result["status"] = "offline"
+        elif result.get("status") == "unknown":
+            result["status"] = "online"
 
 
 def _is_online_state(value: Any) -> bool:
