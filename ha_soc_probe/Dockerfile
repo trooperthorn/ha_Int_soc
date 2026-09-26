@@ -29,7 +29,9 @@ RUN chmod a+x \
     /etc/services.d/ha_soc_probe_snmp/run \
     /etc/services.d/ha_soc_probe_snmp/finish \
     /etc/services.d/ha_soc_probe_netscan/run \
-    /etc/services.d/ha_soc_probe_netscan/finish
+    /etc/services.d/ha_soc_probe_netscan/finish \
+    /etc/services.d/ha_soc_probe_syslog_receiver/run \
+    /etc/services.d/ha_soc_probe_syslog_receiver/finish
 
 LABEL \
     org.opencontainers.image.title="HA SOC Probe" \

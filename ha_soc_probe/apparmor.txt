@@ -146,6 +146,19 @@ profile ha_soc_probe flags=(attach_disconnected,mediate_deleted) {
   # /proc/self and per-pid entries of this container's own processes).
   @{PROC}/@{pid}/** r,
   @{PROC}/sys/kernel/** r,
+  # Net-SNMP's interface and IP MIB walks read the per-interface sysctls
+  # under /proc/sys/net (ipv6/conf/<if>/forwarding and
+  # ipv6/neigh/<if>/{base_reachable_time_ms,retrans_time_ms}) for every
+  # interface, including each Docker veth. Without this rule every walk
+  # raised AppArmor denials at roughly 100 per second; with auditd on
+  # the host each denial is three audit records (AVC, SYSCALL,
+  # PROCTITLE), which flooded journald at 5,700-9,000 entries a minute,
+  # rotated a 32 MB journal file every six minutes, and pushed the
+  # previous boot's kernel messages out of the journal before the
+  # crash-forensics collector could read them (2026-09-26, HAOS 18.1).
+  # Read-only, and no broader than the /proc/net grant above.
+  @{PROC}/sys/net/ r,
+  @{PROC}/sys/net/** r,
 
   # The add-on's own persistent volume: state files, the pinned probe
   # secret, per-test rule backups, options.json. This and /tmp (plus the
