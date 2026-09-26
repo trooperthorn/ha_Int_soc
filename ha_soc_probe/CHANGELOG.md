@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Fixed the AppArmor profile denying snmpd's reads of the per-interface
+  sysctls under `/proc/sys/net` (`ipv6/conf/<if>/forwarding`,
+  `ipv6/neigh/<if>/base_reachable_time_ms` and `retrans_time_ms`). Every
+  MIB walk raised those denials for every interface, including each Docker
+  veth, at roughly 100 per second; with auditd on the host each denial is
+  three audit records, which flooded the host journal at 5,700-9,000
+  entries a minute, rotated a 32 MB journal file every six minutes, and
+  pushed the previous boot's kernel messages out of the journal before the
+  HA SOC crash-forensics collector could read them (`kernel.txt` in the
+  bundles came back empty). The profile now grants read-only access to
+  `/proc/sys/net/**`, no wider than its existing `/proc/net` grant.
+- Fixed the syslog receiver service never starting: its `run` and `finish`
+  scripts were not in the Dockerfile's `chmod a+x` list (and were checked in
+  without the executable bit), so s6 logged `unable to spawn ./run
+  (waiting 60 seconds): Permission denied` once a minute for the life of
+  the container.
 - Optional netscan: local-subnet host/port discovery using TCP-connect
   liveness, a banner grab, a TLS certificate read (no verification -- a
   self-signed LAN certificate is expected), and a MAC vendor label from the

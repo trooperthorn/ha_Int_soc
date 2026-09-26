@@ -16,10 +16,11 @@ ARG HA_CLI_SHA256_AARCH64=af390ab7f91a8135668ace7b1425d8e53800b6a1fc3b36fc588df7
 # the absent binaries (docs/TERMINAL-DESIGN.md, "Client tools").
 RUN apk upgrade --no-cache \
     && apk add --no-cache \
-        bash \
-        bash-completion \
-        coreutils \
-        less \
+        bash \n        bash-completion \n        # The httpd applet for the run/transcript listener. The base image's
+        # busybox is built without it (`busybox --list` on base:3.24 has no
+        # httpd); Alpine ships it in busybox-extras, whose client applet
+        # links are removed again below.
+        busybox-extras \n        coreutils \n        less \
         lscpu \
         nano \
         nano-syntax \
@@ -31,7 +32,9 @@ RUN apk upgrade --no-cache \
     && rm -f /usr/bin/tempio \
     # BusyBox applet names that open connections; the applets stay inside the
     # busybox binary (docs/TERMINAL-DESIGN.md, "Client tools").
-    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp
+    && rm -f /usr/bin/nc /usr/bin/wget /usr/bin/telnet /usr/bin/ftpget /usr/bin/ftpput /usr/bin/tftp \n    # busybox-extras adds its own links for the same client applets plus
+    # servers this image does not run; keep only the httpd link.
+    && rm -f /usr/sbin/dnsd /usr/sbin/ftpd /usr/sbin/inetd /usr/sbin/telnetd /usr/sbin/udhcpd
 
 RUN set -eu; \
     case "${BUILD_ARCH}" in \

@@ -1136,18 +1136,33 @@ async def ws_logs_targets(hass: HomeAssistant, connection, msg: dict) -> None:
 
 
 @require_soc_access
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/logs/boots"})
+@websocket_api.async_response
+async def ws_logs_boots(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Boot offsets the host journal still holds (0, -1, -2, ...), for the
+    Logs tab's boot selector. Metadata only, so it is not audited."""
+    from .logs import async_list_boots
+
+    connection.send_result(msg["id"], await async_list_boots(hass))
+
+
+@require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/logs/container",
         vol.Required("target"): str,
+        vol.Optional("boot", default=0): vol.All(int, vol.Range(min=-20, max=0)),
     }
 )
 @websocket_api.async_response
 async def ws_logs_container(hass: HomeAssistant, connection, msg: dict) -> None:
-    """Current log text of one container. The target string is validated in
-    logs.py against the Supervisor's own add-on list, never interpolated raw."""
+    """Log text of one container for the running boot or, with a negative
+    boot offset, an earlier one. The target string is validated in logs.py
+    against the Supervisor's own add-on list, never interpolated raw."""
     from .logs import async_fetch_container_log
 
+    # The schema defaults boot to 0; .get keeps a direct call without it working too.
+    boot = msg.get("boot", 0)
     # Privileged read; audited before the fetch, add-on targets as the bare slug.
     runtime = _runtime(hass)
     runtime.audit.async_log(
@@ -1156,9 +1171,12 @@ async def ws_logs_container(hass: HomeAssistant, connection, msg: dict) -> None:
         detail={
             "target": msg["target"].removeprefix("addon:"),
             "read": "container_log",
+            "boot": boot,
         },
     )
-    connection.send_result(msg["id"], await async_fetch_container_log(hass, msg["target"]))
+    connection.send_result(
+        msg["id"], await async_fetch_container_log(hass, msg["target"], boot=boot)
+    )
 
 
 @require_soc_access

@@ -1,9 +1,9 @@
 #!/usr/bin/with-contenv bashio
 # HA SOC Terminal: a one-shot run/transcript listener alongside ttyd, for
 # short commands that do not need an interactive shell (docs/TERMINAL-DESIGN.md).
-# busybox httpd, already in this image (base image ships busybox even with
-# the network applets stripped from /usr/bin), serving two CGI scripts under
-# basic auth with the same paired credential ttyd uses.
+# busybox httpd from the busybox-extras package (the base image's busybox is
+# built without the httpd applet; see the Dockerfile), serving two CGI
+# scripts under basic auth with the same paired credential ttyd uses.
 set -euo pipefail
 
 SESSIONS_DIR="/data/sessions"
@@ -41,4 +41,4 @@ bashio::log.info "HA SOC Terminal run/transcript listener starting on :7682."
 
 # -f: foreground (s6 supervises it). -c: the auth config above. -h: docroot,
 # whose only content is cgi-bin/run and cgi-bin/transcript.
-exec busybox httpd -f -p 0.0.0.0:7682 -c "${HTTPD_CONF}" -h "${DOCROOT}"
+exec busybox-extras httpd -f -p 0.0.0.0:7682 -c "${HTTPD_CONF}" -h "${DOCROOT}"

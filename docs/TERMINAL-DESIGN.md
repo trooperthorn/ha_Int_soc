@@ -263,7 +263,9 @@ Both shipped in this phase, on a second listener rather than the ttyd
 WebSocket (which is a PTY stream, not a file server, and cannot answer a
 one-shot request without a human at the other end):
 
-- A `busybox httpd` service (`ha_soc_terminal_httpd`, port 7682) starts
+- A `busybox httpd` service (`ha_soc_terminal_httpd`, port 7682; the applet
+  comes from Alpine's `busybox-extras` package, since the base image's own
+  busybox is built without it) starts
   alongside ttyd, waits for the same paired secret ttyd generates, and
   writes an `httpd.conf` restricting `/cgi-bin` to `hasoc:<secret>` basic
   auth (`/path:user:pass`, `networking/httpd.c`'s `parseconf()`). Two CGI
@@ -397,9 +399,13 @@ it resolves to the SFTP-only settings.
       logs "bad ownership or modes for chroot directory"), the mapped port
       answers, and a client can `get` and `put` under the configuration
       directory.
-- [ ] `busybox httpd` on this image is compiled with the `httpd` applet
-      (added to `terminal-image-security` in `security.yml`, unverified
-      without a Docker build in this environment).
+- [x] `busybox httpd` on this image: NOT compiled in. Verified 2026-09-26
+      against the live install (`httpd: applet not found`, the listener in a
+      one-second restart loop, 6,117 restart warnings in the journal) and
+      against `ghcr.io/home-assistant/base:3.24` (`busybox --list` has no
+      `httpd`). The image now installs `busybox-extras` and the service runs
+      `busybox-extras httpd`; `security.yml` checks the applet's own usage
+      text instead of the word "httpd", which the error message also contains.
 - [ ] The `run` and `transcript` CGI scripts against a live app: basic auth
       is enforced on `/cgi-bin`, a run's output and index line match, a
       transcript's `X-Sha256` matches what `async_transcript` recomputes,

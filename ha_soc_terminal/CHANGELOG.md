@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed the run/transcript listener (`ha_soc_terminal_httpd`, port 7682)
+  never starting: the base image's busybox is built without the `httpd`
+  applet, so the service died with `httpd: applet not found` and s6
+  restarted it every second (6,117 restart warnings in one host journal).
+  The image now installs Alpine's `busybox-extras`, which carries the
+  applet, and removes the client and server applet links that package adds
+  (`telnet`, `ftpget`, `ftpput`, `tftp`, `dnsd`, `ftpd`, `inetd`, `telnetd`,
+  `udhcpd`), keeping the "no client tools" contract. The CI check that was
+  meant to catch this matched the word "httpd" inside the error message
+  itself; it now checks for the applet's usage text.
 - Added a second listener, `busybox httpd` on port 7682 (`ha_soc_terminal_httpd`),
   serving `/cgi-bin/run` (one-shot command execution with a timeout) and
   `/cgi-bin/transcript` (session transcript download), both under the same
