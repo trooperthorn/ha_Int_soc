@@ -1271,3 +1271,142 @@ async def test_wifi_join_detail_failure_costs_only_that_ssids_findings(
     assert by_ssid["IoT"]["findings"] == []
     guest_codes = {f["code"] for f in by_ssid["Guest"]["findings"]}
     assert guest_codes == {"ssid_disabled", "hidden_ssid"}
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-26 review findings 1-6: pagination, caps, id validation, gateway status.
+
+
+def _pages_get(pages, fail_from=None):
+    """AsyncMock side effect serving /x?offset=N&limit=200 from a list of
+    pages; raises UniFiError for page indexes >= fail_from."""
+
+    async def _side_effect(hass, conn, path):
+        offset = int(path.split("offset=")[1].split("&")[0])
+        index = offset // unifi._PAGE_LIMIT
+        if fail_from is not None and index >= fail_from:
+            raise UniFiError(f"page {index} failed")
+        return {"data": pages[index] if index < len(pages) else []}
+
+    return _side_effect
+
+
+def _page(start, count):
+    return [{"id": f"row-{i}"} for i in range(start, start + count)]
+
+
+async def test_get_paginated_dedups_overlapping_pages(hass: HomeAssistant) -> None:
+    """A controller whose second page repeats rows from the first must not
+    double-count them, and a page of nothing but repeats ends the walk."""
+    full = unifi._PAGE_LIMIT
+    pages = [_page(0, full), _page(full - 10, full), _page(0, full)]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_pages_get(pages))) as get:
+        rows = await unifi._get_paginated(hass, None, "/sites/default/clients")
+    assert len(rows) == 2 * full - 10
+    assert len({r["id"] for r in rows}) == len(rows)
+    # Page 3 repeated page 1 entirely, so the walk stopped there.
+    assert get.await_count == 3
+    assert rows.truncated is False
+    assert rows.partial_error is None
+
+
+async def test_get_paginated_returns_partial_rows_when_a_later_page_fails(
+    hass: HomeAssistant,
+) -> None:
+    full = unifi._PAGE_LIMIT
+    pages = [_page(0, full), _page(full, full), _page(2 * full, 5)]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_pages_get(pages, fail_from=2))):
+        rows = await unifi._get_paginated(hass, None, "/sites/default/clients")
+    assert len(rows) == 2 * full
+    assert "Page 3" in rows.partial_error
+    assert rows.truncated is False
+
+
+async def test_get_paginated_first_page_failure_still_raises(hass: HomeAssistant) -> None:
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_pages_get([], fail_from=0))):
+        with pytest.raises(UniFiError):
+            await unifi._get_paginated(hass, None, "/sites/default/clients")
+
+
+async def test_get_paginated_flags_the_page_ceiling(hass: HomeAssistant) -> None:
+    full = unifi._PAGE_LIMIT
+    pages = [_page(i * full, full) for i in range(unifi._MAX_PAGES + 2)]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_pages_get(pages))) as get:
+        rows = await unifi._get_paginated(hass, None, "/sites/default/clients")
+    assert len(rows) == unifi._MAX_PAGES * full
+    assert rows.truncated is True
+    assert get.await_count == unifi._MAX_PAGES
+
+
+async def test_device_details_cap_is_reported_and_bad_ids_skipped(hass: HomeAssistant) -> None:
+    cap = unifi._MAX_DEVICE_DETAILS
+    devices = [{"id": f"dev-{i}", "name": f"d{i}"} for i in range(cap + 3)]
+    # A response-supplied id that is not a plain token never reaches a URL.
+    devices[0] = {"id": "../../other-site/x", "name": "evil"}
+    devices[1] = {"id": "abc?foo=bar", "name": "query"}
+
+    async def _detail(hass, conn, path):
+        return {"data": {"firmwareUpdatable": True}}
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_detail)) as get:
+        out = await unifi._fetch_device_details(hass, None, "default", devices)
+
+    requested = " ".join(str(c.args[2]) for c in get.await_args_list)
+    assert "../../" not in requested and "?foo" not in requested
+    assert out.detail_truncated == 3
+    assert "firmwareUpdatable" in out[2]
+    assert "firmwareUpdatable" not in out[0]
+    assert "firmwareUpdatable" not in out[-1]  # past the cap, raw shape kept
+
+
+async def test_broadcast_details_skip_bad_ids(hass: HomeAssistant) -> None:
+    rows = [{"id": "good-1", "name": "Home"}, {"id": "bad id/../x", "name": "Evil"}]
+
+    async def _get(hass, conn, path):
+        if "offset=" in path:
+            return {"data": rows}
+        return {"hideName": True}
+
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_get)) as get:
+        out = await unifi._fetch_broadcast_rows(hass, None, "default")
+    paths = [str(c.args[2]) for c in get.await_args_list]
+    assert any(p.endswith("/wifi/broadcasts/good-1") for p in paths)
+    assert not any("bad id" in p for p in paths)
+    assert out[0]["hideName"] is True
+    assert "hideName" not in out[1]
+
+
+def test_core_offline_gateway_state_overrides_api_online() -> None:
+    """The direct API defaults a listed gateway to online; the core
+    integration's HEARTBEAT_MISSED is the controller's own verdict and wins."""
+    result = {"status": "online", "internet_connected": True, "wan": unifi._derive_wan(None)}
+    snap = {"gateway": {"state": "HEARTBEAT_MISSED", "uplink": {}}}
+    unifi._enrich_wan_from_core(result, snap)
+    assert result["status"] == "offline"
+
+    # A healthy core state fills in "unknown" but never upgrades an explicit
+    # API "offline".
+    result = {"status": "unknown", "internet_connected": None, "wan": unifi._derive_wan(None)}
+    unifi._enrich_wan_from_core(result, {"gateway": {"state": "CONNECTED", "uplink": {}}})
+    assert result["status"] == "online"
+    result = {"status": "offline", "internet_connected": False, "wan": unifi._derive_wan(None)}
+    unifi._enrich_wan_from_core(result, {"gateway": {"state": "CONNECTED", "uplink": {}}})
+    assert result["status"] == "offline"
+
+
+async def test_overview_reports_data_limits(
+    hass: HomeAssistant, store: HaSocData, secrets: HaSocSecretStore
+) -> None:
+    store.async_update_settings(unifi_network_host="10.0.0.1")
+    await secrets.async_set("unifi_network_api_key", "k")
+    devices = [{"id": f"dev-{i}", "name": f"sw{i}", "state": "ONLINE"} for i in range(unifi._MAX_DEVICE_DETAILS + 2)]
+    with patch.object(unifi, "_get", new=AsyncMock(side_effect=_dispatch_get([], devices))):
+        o = await async_network_overview(hass, store, secrets)
+    assert o["data_limits"] == {
+        "clients_truncated": False,
+        "clients_partial_error": None,
+        "devices_truncated": False,
+        "devices_partial_error": None,
+        "device_details_skipped": 2,
+    }
+    assert o["acl"]["truncated"] is False
