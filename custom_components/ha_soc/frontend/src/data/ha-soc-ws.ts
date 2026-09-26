@@ -1360,17 +1360,28 @@ export interface ContainerLogTargets {
 export interface ContainerLog {
   available: boolean;
   target: string;
+  // 0 is the running boot; -1 the boot before it, and so on.
+  boot: number;
   content: string | null;
   truncated: boolean;
   error: string | null;
   fetched_at: string;
 }
 
+export interface LogBoots {
+  available: boolean;
+  boots: number[];
+  error: string | null;
+}
+
 export const fetchLogTargets = (hass: HomeAssistant) =>
   ws<ContainerLogTargets>(hass, { type: "ha_soc/logs/targets" });
 
-export const fetchContainerLog = (hass: HomeAssistant, target: string) =>
-  ws<ContainerLog>(hass, { type: "ha_soc/logs/container", target });
+export const fetchLogBoots = (hass: HomeAssistant) =>
+  ws<LogBoots>(hass, { type: "ha_soc/logs/boots" });
+
+export const fetchContainerLog = (hass: HomeAssistant, target: string, boot = 0) =>
+  ws<ContainerLog>(hass, { type: "ha_soc/logs/container", target, boot });
 
 // Real core command, called directly for the same reason fetchSystemLog is.
 export interface EntityRegistryEntry {

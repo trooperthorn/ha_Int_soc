@@ -11,6 +11,7 @@ import {
   HaLogEntry,
   SyslogReceiverEntry,
   fetchContainerLog,
+  fetchLogBoots,
   fetchFaultLog,
   fetchLogTargets,
   fetchSyslogReceiverEntries,
@@ -135,6 +136,8 @@ export class HaSocLogsView extends HaSocCustomizableView {
   @state() private _targets: ContainerLogTargets | null = null;
   @state() private _source = SOURCE_SYSTEM;
   @state() private _containerLog: ContainerLog | null = null;
+  @state() private _boots: number[] = [0];
+  @state() private _boot = 0;
   @state() private _containerLoading = false;
   @state() private _logFeedback: string | null = null;
   private _logFeedbackTimer: number | undefined;
@@ -175,15 +178,17 @@ export class HaSocLogsView extends HaSocCustomizableView {
     this._loading = true;
     this._error = null;
     try {
-      const [entries, fault, targets] = await Promise.all([
+      const [entries, fault, targets, boots] = await Promise.all([
         fetchSystemLog(this.hass),
         fetchFaultLog(this.hass),
         // Best-effort: a selector failure must not take down the Logs tab.
         fetchLogTargets(this.hass).catch(() => null),
+        fetchLogBoots(this.hass).catch(() => null),
       ]);
       this._entries = entries;
       this._fault = fault;
       this._targets = targets;
+      this._boots = boots?.available && boots.boots.length ? boots.boots : [0];
     } catch (err: any) {
       // A failed fetch must not read as "no log entries"; fault card and table stay hidden.
       this._error = err?.message ?? String(err);
@@ -195,11 +200,12 @@ export class HaSocLogsView extends HaSocCustomizableView {
   private async _loadContainer(target: string) {
     this._containerLoading = true;
     try {
-      this._containerLog = await fetchContainerLog(this.hass, target);
+      this._containerLog = await fetchContainerLog(this.hass, target, this._boot);
     } catch (err) {
       this._containerLog = {
         available: false,
         target,
+        boot: this._boot,
         content: null,
         truncated: false,
         error: String(err),
@@ -230,6 +236,19 @@ export class HaSocLogsView extends HaSocCustomizableView {
     this._containerLog = null;
     if (value === SOURCE_SYSLOG_RECEIVER) this._loadSyslogReceiver();
     else if (value !== SOURCE_SYSTEM) this._loadContainer(value);
+  }
+
+  private _onBootChange(e: Event) {
+    this._boot = Number((e.target as HTMLSelectElement).value) || 0;
+    this._containerLog = null;
+    if (this._source !== SOURCE_SYSTEM && this._source !== SOURCE_SYSLOG_RECEIVER)
+      this._loadContainer(this._source);
+  }
+
+  private _bootLabel(boot: number): string {
+    if (boot === 0) return "Current boot";
+    if (boot === -1) return "Previous boot (-1)";
+    return `${-boot} boots ago (${boot})`;
   }
 
   private _refresh() {
@@ -356,11 +375,14 @@ export class HaSocLogsView extends HaSocCustomizableView {
       </div>`;
     return html`
       <p class="muted" style="font-size:12px;">
-        Fetched ${new Date(log.fetched_at).toLocaleString()}${log.truncated
-          ? ", showing the most recent 128 KB (older lines are in the add-on's own Log tab)"
+        ${this._bootLabel(log.boot ?? 0)}, fetched ${new Date(log.fetched_at).toLocaleString()}${log.truncated
+          ? ", showing the most recent 128 KB"
           : ""}.
-        This is the container's live journald stream via Supervisor, point-in-time, use
-        Refresh for new lines.
+        ${log.boot
+          ? html`The last lines of an earlier boot are what the host wrote before it
+              stopped; a boot that ends without a shutdown message ended uncleanly.`
+          : html`This is the container's live journald stream via Supervisor, point-in-time,
+              use Refresh for new lines.`}
       </p>
       <div class="export-row" style="display:flex;gap:8px;align-items:center;margin-bottom:6px;">
         <button class="ha-btn" @click=${() => this._copyOrDownloadLog("copy", name)}>Copy</button>
@@ -472,6 +494,15 @@ export class HaSocLogsView extends HaSocCustomizableView {
                     (t) => html`<option value=${t.id} ?selected=${t.id === this._source}>${t.name}</option>`
                   )}
                 </select>
+                ${!showingSystem && !showingSyslogReceiver && this._boots.length > 1
+                  ? html`
+                      <select @change=${this._onBootChange} aria-label="Boot" title="Which boot's journal to read">
+                        ${this._boots.map(
+                          (b) => html`<option value=${b} ?selected=${b === this._boot}>${this._bootLabel(b)}</option>`
+                        )}
+                      </select>
+                    `
+                  : nothing}
               `
             : nothing}
           ${showingSystem
