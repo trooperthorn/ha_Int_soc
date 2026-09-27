@@ -1029,13 +1029,19 @@ export class HaSocIntegrationSecurityView extends HaSocCustomizableView {
   private _classificationBadge(classification: string | null) {
     if (!classification) return html`<span class="muted">—</span>`;
     const tone =
-      classification === "clean_reboot" ? "good" : classification === "kernel_fault" ? "high" : "medium";
+      classification === "clean_reboot"
+        ? "good"
+        : classification === "kernel_fault"
+          ? "high"
+          : "medium";
     const label =
       classification === "clean_reboot"
         ? "clean reboot"
         : classification === "kernel_fault"
           ? "kernel fault"
-          : "silent stop";
+          : classification === "core_restart"
+            ? "core restart"
+            : "silent stop";
     return html`<span class="pill ${tone}"><span class="dot"></span>${label}</span>`;
   }
 

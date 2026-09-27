@@ -14,16 +14,25 @@ persistence change this module depends on.
   timestamp, a per-boot id, and when this boot's Core started.
 - A clean-stop marker, `<config>/ha_soc/last_stop.json`, written once on
   `EVENT_HOMEASSISTANT_STOP`.
+- At setup, before this run writes its first heartbeat, both files are
+  read once and kept as the previous run's snapshot. The order matters:
+  the first heartbeat lands seconds after setup, and a check that read the
+  files later would see this run's own heartbeat, newer than any stop
+  marker, and call every restart unclean. That was the 2026-09-27 false
+  positive (ten bundles on the live host, every one a clean Core restart).
+  As a second guard, a heartbeat whose `boot_id` is this run's own is
+  treated as absent.
 - On the next start, after `EVENT_HOMEASSISTANT_STARTED` (so the `hassio`
-  component the Supervisor calls need is loaded): if the heartbeat file is
-  newer than the clean-stop marker (or there is no marker at all), the
-  previous run did not stop cleanly, and a forensics bundle is collected.
+  component the Supervisor calls need is loaded): if the snapshot's
+  heartbeat is newer than the clean-stop marker (or there is no marker at
+  all), the previous run did not stop cleanly, and a forensics bundle is
+  collected.
 - The bundle lands in `<config>/ha_soc/crash-<heartbeat timestamp>/`:
 
   | File | Source |
   | --- | --- |
-  | `host-journal-prev-boot.txt` | `GET /host/logs/boots/-1?lines=5000` |
-  | `kernel.txt` / `supervisor.txt` / `core.txt` | `GET /host/logs/boots/-1/identifiers/<id>?lines=3000` |
+  | `host-journal-prev-boot.txt` | `GET /host/logs/boots/-1?lines=5000` (`boots/0` for a `core_restart`, see below) |
+  | `kernel.txt` / `supervisor.txt` / `core.txt` | `GET /host/logs/boots/-1/identifiers/<id>?lines=3000` (same boot rule) |
   | `host-info.json` | `GET /host/info` |
   | `resolution-info.json` | `GET /resolution/info` |
   | `supervisor-info.json` | `GET /supervisor/info` |
@@ -40,8 +49,18 @@ persistence change this module depends on.
 
 ## Classification
 
-`classify_journal_tail()` reads the previous boot's journal tail and
-returns one of:
+The gap is decided first: `/host/info`'s `boot_timestamp` minus the last
+heartbeat. A negative gap means the host booted before that heartbeat, so
+the host never rebooted and Core alone stopped and came back inside the
+running host boot. That case is classified `core_restart` without reading
+the journal tail, and every journal file in the bundle is pulled from the
+current boot (`boots/0`), because that is where the previous Core run's
+last lines are; the previous host boot's journal says nothing about the
+event. `summary.json` records which boot was used as `journal_boot`. The
+owner-only dry run never takes this path.
+
+Otherwise `classify_journal_tail()` reads the previous boot's journal tail
+and returns one of:
 
 - `clean_reboot`: a shutdown sequence is present (`Stopping`, `Reached
   target Reboot`, `Power-Off`).
@@ -58,7 +77,8 @@ returns one of:
 severity score — each entry names its own kind and evidence):
 
 1. The unclean-stop window itself (heartbeat timestamp, `/host/info`'s
-   `boot_timestamp`, the gap between them).
+   `boot_timestamp`, the gap between them). For a negative gap the subject
+   is `core` and the evidence says the host did not reboot.
 2. The journal classification above.
 3. Any container the snapshot shows OOM-killed or exited 137/139/134/132.
 4. Any container whose watchdog history shows CPU or memory rising, or
@@ -98,8 +118,13 @@ power cut.
   plus the bundle list (id, classification, gap, top-3 suspects, size,
   path).
 - WS `ha_soc/crash_forensics/bundle` (soc-access gated): one file's text
-  from one bundle; both the bundle id and file name are validated against
-  a fixed allow-list before any path is built.
+  from one bundle, addressed by `bundle_id` and `file`; both are validated
+  against a fixed allow-list before any path is built. The parameter is
+  not called `id` because the WebSocket protocol reserves that key for the
+  integer message id and the frontend client overwrites it; the first
+  release shipped it under `id` and no bundle file could ever be viewed.
+  Both this command and the status listing do their file I/O in the
+  executor, not on the event loop.
 - WS `ha_soc/crash_forensics/collect_now` (owner-only, audited): runs the
   same collector against the CURRENT boot (`boots/0`) as a dry run, for
   testing that the pipeline reaches the Supervisor correctly before a real
@@ -117,7 +142,7 @@ commands above:
 - Heartbeat state: enabled/disabled, the configured interval, and the
   last recorded heartbeat timestamp.
 - A bundle table: timestamp, classification badge (`silent_stop` /
-  `kernel_fault` / `clean_reboot`), gap in seconds, the top three
+  `kernel_fault` / `clean_reboot` / `core_restart`), gap in seconds, the top three
   suspects (`kind: subject`), and total size. Expanding a row lists
   every file the bundle can hold (`crash_forensics.py`'s `BUNDLE_FILES`)
   with View (renders the text in a capped monospace `<pre>`), Copy and

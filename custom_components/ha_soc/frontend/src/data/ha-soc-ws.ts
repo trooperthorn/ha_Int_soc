@@ -604,7 +604,7 @@ export interface CrashForensicsSuspect {
 export interface CrashBundle {
   id: string;
   ts: string | null;
-  classification: "clean_reboot" | "kernel_fault" | "silent_stop" | null;
+  classification: "clean_reboot" | "kernel_fault" | "silent_stop" | "core_restart" | null;
   gap_seconds: number | null;
   suspects: CrashForensicsSuspect[];
   size_bytes: number;
@@ -632,8 +632,14 @@ export interface CrashForensicsStatus {
 export const fetchCrashForensicsStatus = (hass: HomeAssistant) =>
   ws<CrashForensicsStatus>(hass, { type: "ha_soc/crash_forensics/status" });
 
-export const fetchCrashBundleFile = (hass: HomeAssistant, id: string, file: string) =>
-  ws<{ content: string }>(hass, { type: "ha_soc/crash_forensics/bundle", id, file }).then(
+// The bundle id travels as bundle_id: "id" is the protocol's message id and
+// hass.callWS overwrites it.
+export const fetchCrashBundleFile = (hass: HomeAssistant, bundleId: string, file: string) =>
+  ws<{ content: string }>(hass, {
+    type: "ha_soc/crash_forensics/bundle",
+    bundle_id: bundleId,
+    file,
+  }).then(
     (r) => r.content
   );
 
