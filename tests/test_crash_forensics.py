@@ -13,7 +13,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
-from custom_components.ha_soc.atomic_json import sync_write_json_atomic
+from custom_components.ha_soc.atomic_json import sync_read_json, sync_write_json_atomic
 from custom_components.ha_soc.const import DOMAIN
 from custom_components.ha_soc.crash_forensics import (
     BUNDLE_ID_RE,
@@ -173,6 +173,63 @@ async def test_unclean_detected_when_heartbeat_newer_than_stop(
     assert result["unclean"] is True
 
 
+async def test_heartbeat_from_this_run_is_not_evidence(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """A heartbeat carrying this run's own boot_id was written by this run,
+    so it says nothing about the previous one, even when it is newer than
+    the stop marker."""
+    cf: CrashForensics = entry.runtime_data.crash_forensics
+    await hass.async_add_executor_job(
+        sync_write_json_atomic, cf._last_stop_path,
+        {"ts": "2026-09-27T19:41:58+00:00", "reason": "clean"},
+    )
+    await hass.async_add_executor_job(
+        sync_write_json_atomic, cf._heartbeat_path,
+        {"ts": "2026-09-27T19:43:30+00:00", "boot_id": cf._boot_id, "core_started": "x"},
+    )
+    with patch.object(cf, "async_collect_bundle", new=AsyncMock()) as collect:
+        result = await cf.async_check_and_collect()
+    assert result["unclean"] is False
+    collect.assert_not_called()
+
+
+async def test_prior_state_is_read_before_the_first_heartbeat(
+    hass: HomeAssistant, _clean_ha_soc_dir
+) -> None:
+    """Setup snapshots the previous run's files before overwriting the
+    heartbeat, and the startup check uses that snapshot."""
+    ha_soc_dir = hass.config.path("ha_soc")
+    os.makedirs(ha_soc_dir, exist_ok=True)
+    await hass.async_add_executor_job(
+        sync_write_json_atomic, os.path.join(ha_soc_dir, "heartbeat.json"),
+        {"ts": "2026-09-27T19:43:30+00:00", "boot_id": "previous-run", "core_started": "x"},
+    )
+    await hass.async_add_executor_job(
+        sync_write_json_atomic, os.path.join(ha_soc_dir, "last_stop.json"),
+        {"ts": "2026-09-27T19:41:58+00:00", "reason": "clean"},
+    )
+    config_entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    config_entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(config_entry.entry_id)
+    await hass.async_block_till_done()
+
+    cf: CrashForensics = config_entry.runtime_data.crash_forensics
+    assert cf._prior_state is not None
+    prior_heartbeat, prior_stop = cf._prior_state
+    assert prior_heartbeat["boot_id"] == "previous-run"
+    assert prior_stop["reason"] == "clean"
+    on_disk = await hass.async_add_executor_job(
+        sync_read_json, os.path.join(ha_soc_dir, "heartbeat.json")
+    )
+    assert on_disk["boot_id"] == cf._boot_id
+
+    with patch.object(cf, "async_collect_bundle", new=AsyncMock()) as collect:
+        result = await cf.async_check_and_collect(prior=cf._prior_state)
+    assert result["unclean"] is True  # the previous run's heartbeat outlived its stop marker
+    collect.assert_called_once()
+
+
 async def test_clean_detected_when_stop_newer_than_heartbeat(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
@@ -205,7 +262,8 @@ async def test_collect_bundle_writes_files_and_raises_repair(
             "/host/logs/boots/-1/identifiers/hassio_supervisor": "",
             "/host/logs/boots/-1/identifiers/homeassistant": "core log line\n",
             "/host/logs/boots/-1": SILENT_TAIL,
-            "/host/info": {"boot_timestamp": 1_758_558_888_000_000},
+            # 2026-09-22T15:54:48Z, the host boot after the 15:31 heartbeat.
+            "/host/info": {"boot_timestamp": 1_790_092_488_000_000},
             "/resolution/info": {},
             "/supervisor/info": {},
             "/os/info": {},
@@ -226,6 +284,40 @@ async def test_collect_bundle_writes_files_and_raises_repair(
     registry = ir.async_get(hass)
     issue_id = f"unclean_stop_{summary['bundle_id'].removeprefix('crash-')}"
     assert (DOMAIN, issue_id) in registry.issues
+
+
+async def test_core_restart_when_the_host_did_not_reboot(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """boot_timestamp earlier than the heartbeat: the host never rebooted,
+    so the event is a Core restart and the journal comes from boots/0."""
+    cf: CrashForensics = entry.runtime_data.crash_forensics
+    # 2026-09-27T19:29:16Z, 854 s before the 19:43:30Z heartbeat.
+    boot_timestamp_us = 1_790_537_356_000_000
+    fake = _install_fake_supervisor(
+        hass,
+        {
+            "/host/logs/identifiers": {"identifiers": ["homeassistant", "hassio_supervisor", "kernel"]},
+            "/host/logs/boots/0": CLEAN_TAIL,
+            "/host/logs/boots/-1": PANIC_TAIL,
+            "/host/info": {"boot_timestamp": boot_timestamp_us},
+        },
+    )
+    with patch(
+        "custom_components.ha_soc.containers.async_container_resources",
+        new=AsyncMock(return_value={"available": False, "containers": []}),
+    ):
+        summary = await cf.async_collect_bundle(
+            {"ts": "2026-09-27T19:43:30+00:00", "boot_id": "previous-run"}, boot="-1"
+        )
+    assert summary["gap_seconds"] < 0
+    assert summary["classification"] == "core_restart"
+    assert summary["journal_boot"] == "0"
+    assert any(c.startswith("/host/logs/boots/0") for c in fake.calls)
+    assert not any(c.startswith("/host/logs/boots/-1") for c in fake.calls)
+    window = summary["suspects"][0]
+    assert window["kind"] == "unclean_stop_window" and window["subject"] == "core"
+    assert "did not reboot" in window["evidence"]
 
 
 async def test_supervisor_failures_are_recorded_not_raised(
@@ -310,8 +402,48 @@ async def test_ws_bundle_returns_not_found_for_unknown_bundle(
     hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     connection = _connection(owner=True)
-    msg = {"id": 3, "id": "crash-nope", "file": "summary.json"}
+    msg = {"id": 3, "bundle_id": "crash-nope", "file": "summary.json"}
     ws_crash_forensics_bundle(hass, connection, msg)
     await hass.async_block_till_done(wait_background_tasks=True)
     connection.send_error.assert_called_once()
     assert connection.send_error.call_args[0][1] == "not_found"
+
+
+async def test_ws_bundle_returns_file_content(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The happy path, addressed by bundle_id (never "id", which the
+    protocol reserves for the integer message id)."""
+    cf: CrashForensics = entry.runtime_data.crash_forensics
+    bundle_id = "crash-2026-09-27T194330.320249Z0000"
+    await hass.async_add_executor_job(
+        cf._sync_write_bundle, os.path.join(cf._config_dir, bundle_id), {"summary.json": {"a": 1}}
+    )
+    connection = _connection(owner=True)
+    ws_crash_forensics_bundle(
+        hass, connection, {"id": 4, "bundle_id": bundle_id, "file": "summary.json"}
+    )
+    await hass.async_block_till_done(wait_background_tasks=True)
+    connection.send_error.assert_not_called()
+    connection.send_result.assert_called_once()
+    assert connection.send_result.call_args[0][0] == 4
+    assert '"a": 1' in connection.send_result.call_args[0][1]["content"]
+
+
+async def test_ws_status_lists_bundles(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    cf: CrashForensics = entry.runtime_data.crash_forensics
+    bundle_id = "crash-2026-09-27T194330.320249Z0000"
+    await hass.async_add_executor_job(
+        cf._sync_write_bundle,
+        os.path.join(cf._config_dir, bundle_id),
+        {"summary.json": {"classification": "core_restart", "gap_seconds": -854.0, "suspects": []}},
+    )
+    connection = _connection(owner=True)
+    ws_crash_forensics_status(hass, connection, {"id": 5})
+    await hass.async_block_till_done(wait_background_tasks=True)
+    connection.send_result.assert_called_once()
+    status = connection.send_result.call_args[0][1]
+    assert status["bundles"][0]["id"] == bundle_id
+    assert status["bundles"][0]["classification"] == "core_restart"

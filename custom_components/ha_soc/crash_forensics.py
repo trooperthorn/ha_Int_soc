@@ -152,7 +152,19 @@ def _rank_suspects(
 ) -> list[dict[str, Any]]:
     suspects: list[dict[str, Any]] = []
 
-    if gap_seconds is not None:
+    if gap_seconds is not None and gap_seconds < 0:
+        suspects.append(
+            {
+                "kind": "unclean_stop_window",
+                "subject": "core",
+                "evidence": (
+                    f"host booted {-gap_seconds:.0f}s before the last heartbeat: "
+                    "the host did not reboot, Core alone stopped and restarted"
+                ),
+                "file": "summary.json",
+            }
+        )
+    elif gap_seconds is not None:
         suspects.append(
             {
                 "kind": "unclean_stop_window",
@@ -165,7 +177,11 @@ def _rank_suspects(
     suspects.append(
         {
             "kind": "journal_classification",
-            "subject": "previous boot journal tail",
+            "subject": (
+                "current boot journal (host did not reboot)"
+                if classification == "core_restart"
+                else "previous boot journal tail"
+            ),
             "evidence": classification,
             "file": "host-journal-prev-boot.txt",
         }
@@ -275,6 +291,12 @@ class CrashForensics:
         self._last_stop_path = os.path.join(self._config_dir, LAST_STOP_FILENAME)
         self.last_check: dict[str, Any] | None = None
         self._core_started: str | None = None
+        # The previous run's heartbeat and clean-stop marker, read from disk
+        # BEFORE this run writes its first heartbeat. Without this snapshot
+        # the startup check reads the heartbeat this run just wrote, finds
+        # it newer than the stop marker, and calls every restart unclean
+        # (the 2026-09-27 false positives).
+        self._prior_state: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None
 
     @property
     def _settings(self) -> dict[str, Any]:
@@ -293,10 +315,11 @@ class CrashForensics:
             self.hass, self._async_write_heartbeat, timedelta(seconds=interval)
         )
         entry.async_on_unload(self._async_stop_interval)
-        # Write immediately so a fast restart still gets a fresh heartbeat
-        # rather than waiting a full interval.
+        # Snapshot the previous run's files, then write the first heartbeat
+        # immediately so a fast restart still gets a fresh one rather than
+        # waiting a full interval. The order matters: see _prior_state.
         entry.async_create_task(
-            self.hass, self._async_write_heartbeat(), "HA SOC crash forensics initial heartbeat"
+            self.hass, self._async_initial_heartbeat(), "HA SOC crash forensics initial heartbeat"
         )
         entry.async_on_unload(
             self.hass.bus.async_listen_once(
@@ -315,6 +338,16 @@ class CrashForensics:
             self._heartbeat_path,
             {"ts": _iso_now(), "boot_id": self._boot_id, "core_started": self._core_started},
         )
+
+    async def _async_initial_heartbeat(self) -> None:
+        try:
+            self._prior_state = await self.hass.async_add_executor_job(self._sync_read_prior_state)
+        except OSError:
+            _LOGGER.warning(
+                "HA SOC crash forensics: could not read the previous run's state", exc_info=True
+            )
+            self._prior_state = (None, None)
+        await self._async_write_heartbeat()
 
     async def _async_write_heartbeat(self, _now=None) -> None:
         if self._core_started is None:
@@ -337,7 +370,7 @@ class CrashForensics:
         """Runs after EVENT_HOMEASSISTANT_STARTED, so hassio (needed for
         the Supervisor calls the collector makes) is loaded."""
         try:
-            await self.async_check_and_collect()
+            await self.async_check_and_collect(prior=self._prior_state)
         except Exception:
             _LOGGER.exception("HA SOC crash forensics: startup check failed")
 
@@ -347,13 +380,25 @@ class CrashForensics:
             sync_read_json(self._last_stop_path),
         )
 
-    async def async_check_and_collect(self, *, force_dry_run: bool = False) -> dict[str, Any]:
-        """Compare the previous boot's heartbeat/last-stop files. Collect a
+    async def async_check_and_collect(
+        self,
+        *,
+        force_dry_run: bool = False,
+        prior: tuple[dict[str, Any] | None, dict[str, Any] | None] | None = None,
+    ) -> dict[str, Any]:
+        """Compare the previous run's heartbeat/last-stop files. Collect a
         bundle when the stop looks unclean (or always, for the owner-only
-        "collect now" dry run against the current boot)."""
-        heartbeat, last_stop = await self.hass.async_add_executor_job(
-            self._sync_read_prior_state
-        )
+        "collect now" dry run against the current boot).
+
+        `prior` is the snapshot taken before this run's first heartbeat
+        write; without it the files are read now. Either way a heartbeat
+        carrying this run's own boot_id says nothing about the previous run
+        and is treated as absent."""
+        if prior is None:
+            prior = await self.hass.async_add_executor_job(self._sync_read_prior_state)
+        heartbeat, last_stop = prior
+        if heartbeat is not None and heartbeat.get("boot_id") == self._boot_id:
+            heartbeat = None
         heartbeat_ts = _parse((heartbeat or {}).get("ts")) if heartbeat else None
         stop_ts = _parse((last_stop or {}).get("ts")) if last_stop else None
 
@@ -432,34 +477,55 @@ class CrashForensics:
 
         identifiers = await self._resolve_identifiers(summary_errors)
 
+        host_info = await self._best_effort(
+            summary_errors, "host_info", self._hassio_get("/host/info", text=False)
+        ) or {}
+        heartbeat_ts = _parse(heartbeat.get("ts"))
+        boot_timestamp = (
+            host_info.get("data", host_info).get("boot_timestamp")
+            if isinstance(host_info, dict)
+            else None
+        )
+        gap_seconds = None
+        if heartbeat_ts and boot_timestamp:
+            try:
+                boot_dt = dt_util.utc_from_timestamp(float(boot_timestamp) / 1_000_000)
+                gap_seconds = (boot_dt - heartbeat_ts).total_seconds()
+            except (TypeError, ValueError):
+                pass
+        # A host boot that predates the last heartbeat means the host never
+        # rebooted: Core alone stopped and came back inside this host boot.
+        # The previous Core run's last lines are then in the CURRENT boot's
+        # journal, and the previous host boot's journal says nothing about
+        # this event.
+        core_restart = gap_seconds is not None and gap_seconds < 0 and not dry_run
+        journal_boot = "0" if core_restart else boot
+
         journal_prev = await self._best_effort(
             summary_errors, "host_journal",
-            self._hassio_get(f"/host/logs/boots/{boot}", text=True, lines=JOURNAL_LINES),
+            self._hassio_get(f"/host/logs/boots/{journal_boot}", text=True, lines=JOURNAL_LINES),
         ) or ""
         kernel_text = await self._best_effort(
             summary_errors, "kernel_identifier",
             self._hassio_get(
-                f"/host/logs/boots/{boot}/identifiers/{identifiers['kernel']}",
+                f"/host/logs/boots/{journal_boot}/identifiers/{identifiers['kernel']}",
                 text=True, lines=IDENTIFIER_LINES,
             ),
         ) or ""
         supervisor_text = await self._best_effort(
             summary_errors, "supervisor_identifier",
             self._hassio_get(
-                f"/host/logs/boots/{boot}/identifiers/{identifiers['supervisor']}",
+                f"/host/logs/boots/{journal_boot}/identifiers/{identifiers['supervisor']}",
                 text=True, lines=IDENTIFIER_LINES,
             ),
         ) or ""
         core_text = await self._best_effort(
             summary_errors, "core_identifier",
             self._hassio_get(
-                f"/host/logs/boots/{boot}/identifiers/{identifiers['core']}",
+                f"/host/logs/boots/{journal_boot}/identifiers/{identifiers['core']}",
                 text=True, lines=IDENTIFIER_LINES,
             ),
         ) or ""
-        host_info = await self._best_effort(
-            summary_errors, "host_info", self._hassio_get("/host/info", text=False)
-        ) or {}
         resolution_info = await self._best_effort(
             summary_errors, "resolution_info", self._hassio_get("/resolution/info", text=False)
         ) or {}
@@ -498,17 +564,7 @@ class CrashForensics:
             sync_read_json, os.path.join(self._config_dir, "watchdog_history.prev.json")
         ) or {}
 
-        heartbeat_ts = _parse(heartbeat.get("ts"))
-        boot_timestamp = host_info.get("data", host_info).get("boot_timestamp") if isinstance(host_info, dict) else None
-        gap_seconds = None
-        if heartbeat_ts and boot_timestamp:
-            try:
-                boot_dt = dt_util.utc_from_timestamp(float(boot_timestamp) / 1_000_000)
-                gap_seconds = (boot_dt - heartbeat_ts).total_seconds()
-            except (TypeError, ValueError):
-                pass
-
-        classification = classify_journal_tail(journal_prev)
+        classification = "core_restart" if core_restart else classify_journal_tail(journal_prev)
         suspects = _rank_suspects(
             gap_seconds=gap_seconds,
             classification=classification,
@@ -523,6 +579,7 @@ class CrashForensics:
             "bundle_id": bundle_id,
             "heartbeat": heartbeat,
             "boot": boot,
+            "journal_boot": journal_boot,
             "dry_run": dry_run,
             "identifiers_used": identifiers,
             "classification": classification,
@@ -669,10 +726,19 @@ class CrashForensics:
             data = data[:MAX_FILE_READ_BYTES]
         return data.decode("utf-8", errors="replace")
 
-    def status(self) -> dict[str, Any]:
+    async def async_read_bundle_file(self, bundle_id: str, file_name: str) -> str | None:
+        return await self.hass.async_add_executor_job(
+            self.sync_read_bundle_file, bundle_id, file_name
+        )
+
+    async def async_status(self) -> dict[str, Any]:
+        """Heartbeat state plus the bundle list. The directory walk runs in
+        the executor; on the event loop it tripped homeassistant.util.loop's
+        blocking-call detector on the live host."""
+        bundles = await self.hass.async_add_executor_job(self.sync_list_bundles)
         return {
             "enabled": self._settings.get("crash_forensics_enabled", True),
             "heartbeat_interval_seconds": self._settings.get("heartbeat_interval_seconds", 30),
             "last_check": self.last_check,
-            "bundles": self.sync_list_bundles(),
+            "bundles": bundles,
         }

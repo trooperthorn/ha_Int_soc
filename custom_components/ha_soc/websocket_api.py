@@ -1942,14 +1942,17 @@ async def ws_watchdog_set(hass: HomeAssistant, connection, msg: dict) -> None:
 async def ws_crash_forensics_status(hass: HomeAssistant, connection, msg: dict) -> None:
     """Heartbeat state plus the bundle list (id, classification, gap,
     top-3 suspects, size, path)."""
-    connection.send_result(msg["id"], _runtime(hass).crash_forensics.status())
+    connection.send_result(msg["id"], await _runtime(hass).crash_forensics.async_status())
 
 
 @require_soc_access
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/crash_forensics/bundle",
-        vol.Required("id"): str,
+        # Not "id": the WebSocket protocol reserves that key for the integer
+        # message id (core's BASE_COMMAND_MESSAGE_SCHEMA) and the frontend
+        # client overwrites it, so a string under that name can never arrive.
+        vol.Required("bundle_id"): str,
         vol.Required("file"): str,
     }
 )
@@ -1958,7 +1961,9 @@ async def ws_crash_forensics_bundle(hass: HomeAssistant, connection, msg: dict) 
     """One file's text out of one bundle. Both the bundle id and the file
     name are validated against a fixed whitelist before any path is built
     (see crash_forensics.py: BUNDLE_ID_RE, BUNDLE_FILES)."""
-    content = _runtime(hass).crash_forensics.sync_read_bundle_file(msg["id"], msg["file"])
+    content = await _runtime(hass).crash_forensics.async_read_bundle_file(
+        msg["bundle_id"], msg["file"]
+    )
     if content is None:
         connection.send_error(msg["id"], "not_found", "No such bundle file.")
         return
