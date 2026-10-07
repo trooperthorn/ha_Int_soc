@@ -13,7 +13,9 @@ Delivery rules:
 - Retry-After is honoured. Without it a failed send backs off exponentially. Waiting is a
   stored "not before" time checked on the next tick, never a sleep.
 - 401 and 403 raise a Repairs issue and drop that payload; any accepted push removes it.
-  Other 4xx answers mean the payload itself is wrong, so it is dropped and counted.
+  Other 4xx answers mean the payload itself is wrong, so it is dropped and counted. After
+  REJECT_THRESHOLD of them in a row sending backs off exponentially and a Repairs issue
+  names the status; any accepted push clears both.
 - The ingest key is only ever placed in the Authorization header. It is removed from every
   log line and never appears in diagnostics or the status dict.
 """
@@ -56,7 +58,12 @@ from .const import (
     MIN_OBSERVE_INTERVAL,
     REDACTED_PLACEHOLDER,
 )
-from .repairs import async_create_observe_key_issue, async_delete_observe_key_issue
+from .repairs import (
+    async_create_observe_key_issue,
+    async_create_observe_rejected_issue,
+    async_delete_observe_key_issue,
+    async_delete_observe_rejected_issue,
+)
 from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
@@ -73,6 +80,9 @@ BACKOFF_BASE_SECONDS = 10
 BACKOFF_MAX_SECONDS = 900
 # A rejected key is probed again no sooner than this, so a wrong key is not hammered.
 AUTH_BACKOFF_SECONDS = 300
+# Consecutive payload rejections (4xx other than 401/403/408/429) before the push backs off and
+# raises a Repairs issue. Fewer than this are treated as one bad payload and just dropped.
+REJECT_THRESHOLD = 3
 # Container samples younger than this are taken from the resource watchdog.
 WATCHDOG_SAMPLE_MAX_AGE_SECONDS = 90
 # Crash bundles and the Supervisor resolution state change rarely; refreshed this often.
@@ -95,10 +105,21 @@ ERROR_INVALID_INTERVAL = "invalid_interval"
 # ---------------------------------------------------------------------------
 
 
-def _is_private_host(host: str) -> bool:
-    """True for localhost and for IP literals in a private, loopback or link-local range.
+_RFC1918_NETWORKS = tuple(
+    ipaddress.ip_network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_ULA_NETWORK = ipaddress.ip_network("fc00::/7")
+_BROADCAST_NETS = (ipaddress.ip_network("240.0.0.0/4"), ipaddress.ip_network("0.0.0.0/8"))
 
-    A DNS name is never accepted for plain http because it can resolve anywhere.
+
+def _is_private_host(host: str) -> bool:
+    """True for localhost and for IP literals on a local network.
+
+    Accepted: RFC1918, IPv6 unique local (fc00::/7), loopback and link-local (169.254.0.0/16,
+    fe80::/10; see docs/decisions.md). Everything else is refused, including the unspecified
+    address, 240.0.0.0/4, broadcast, shared address space and 6to4 or other IPv6 forms that
+    embed an IPv4 address. A DNS name is never accepted for plain http because it can resolve
+    anywhere.
     """
     if host.lower() == "localhost":
         return True
@@ -106,7 +127,19 @@ def _is_private_host(host: str) -> bool:
         address = ipaddress.ip_address(host)
     except ValueError:
         return False
-    return address.is_private or address.is_loopback or address.is_link_local
+    if isinstance(address, ipaddress.IPv6Address):
+        # IPv4-mapped (::ffff:a.b.c.d) is judged as the IPv4 address it carries. Every other
+        # transition form (6to4 2002::/16, Teredo, NAT64, IPv4-compatible) can route to a
+        # public host, so only native fc00::/7, fe80::/10 and ::1 pass.
+        if address.ipv4_mapped is not None:
+            address = address.ipv4_mapped
+        else:
+            return address.is_loopback or address.is_link_local or address in _ULA_NETWORK
+    if address.is_unspecified or address.is_multicast or any(address in net for net in _BROADCAST_NETS):
+        return False
+    return (
+        any(address in net for net in _RFC1918_NETWORKS) or address.is_loopback or address.is_link_local
+    )
 
 
 def validate_url(raw: Any) -> tuple[str | None, str | None]:
@@ -391,6 +424,8 @@ class ObservePusher:
         self._failures = 0
         self._sent_log_keys: set[str] = set()
         self._auth_rejected = False
+        self._reject_streak = 0
+        self._rejected_issue = False
         # Counters reported by status; none of them hold a secret.
         self.dropped_overflow = 0
         self.dropped_rejected = 0
@@ -450,6 +485,9 @@ class ObservePusher:
         self._retry_at = 0.0
         self._failures = 0
         self._auth_rejected = False
+        self._reject_streak = 0
+        self._rejected_issue = False
+        async_delete_observe_rejected_issue(self.hass)
 
     async def _async_identity(self, host_name: str) -> otlp_mapper.Identity:
         from homeassistant.helpers import instance_id
@@ -480,6 +518,7 @@ class ObservePusher:
             "dropped_rejected": self.dropped_rejected,
             "rejected_items": self.rejected_items,
             "auth_rejected": self._auth_rejected,
+            "rejected_streak": self._reject_streak,
             "last_success": self.last_success,
             "last_status": self.last_status,
         }
@@ -565,6 +604,7 @@ class ObservePusher:
                 self._queue.popleft()
             if outcome == _OK:
                 self._failures = 0
+                self._reject_streak = 0
                 self._retry_at = 0.0
                 self.sent_ok += 1
                 self.last_success = dt_util.utcnow().isoformat()
@@ -574,8 +614,20 @@ class ObservePusher:
                 if self._auth_rejected:
                     self._auth_rejected = False
                     async_delete_observe_key_issue(self.hass)
+                if self._rejected_issue:
+                    self._rejected_issue = False
+                    async_delete_observe_rejected_issue(self.hass)
             elif outcome == _DROP:
                 self.dropped_rejected += 1
+                self._reject_streak += 1
+                if self._reject_streak >= REJECT_THRESHOLD:
+                    self._rejected_issue = True
+                    async_create_observe_rejected_issue(self.hass, int(self.last_status or 0))
+                    self._retry_at = self._clock() + min(
+                        BACKOFF_BASE_SECONDS * 2 ** (self._reject_streak - REJECT_THRESHOLD),
+                        BACKOFF_MAX_SECONDS,
+                    )
+                    return
             elif outcome == _AUTH:
                 self.dropped_rejected += 1
                 self._auth_rejected = True

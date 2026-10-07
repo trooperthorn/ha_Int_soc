@@ -150,6 +150,21 @@ async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings)
         ("http://127.0.0.1:9", True),
         ("http://localhost:8000", True),
         ("http://[fd00::1]:8000", True),
+        ("http://[fc00::1]", True),
+        ("http://[::1]:8000", True),
+        ("http://[::ffff:192.168.1.5]", True),
+        ("http://169.254.10.10", True),
+        ("http://[2002:0808:0808::1]", False),
+        ("http://[2002:c0a8:0101::1]", False),
+        ("http://[::ffff:8.8.8.8]", False),
+        ("http://[2001:db8::1]", False),
+        ("http://0.0.0.0", False),
+        ("http://0.0.0.0:8000", False),
+        ("http://240.0.0.1", False),
+        ("http://255.255.255.255", False),
+        ("http://100.64.0.1", False),
+        ("http://224.0.0.1", False),
+        ("http://[::]", False),
         ("http://observe.example.com", False),
         ("http://8.8.8.8", False),
         ("http://192.168.1.20.example.com", False),
@@ -481,6 +496,66 @@ async def test_413_drops_the_payload_without_retrying(hass, entry, observe, capl
         assert pusher.status["queue_length"] == 0
         assert "payload too large" in caplog.text
         assert ir.async_get(hass).async_get_issue(DOMAIN, "observe_key_rejected") is None
+    finally:
+        pusher.async_stop()
+
+
+async def test_persistent_404_backs_off_raises_one_issue_and_clears_on_success(
+    hass, entry, observe
+) -> None:
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        registry = ir.async_get(hass)
+        observe.requests.clear()
+        observe.script = [(404, {}, "")] * 500
+        for _ in range(60):
+            await pusher.async_push_once()
+        # Bounded: three rejections reach the threshold, then the clock-based back-off holds.
+        assert len(observe.requests) == op.REJECT_THRESHOLD
+        assert pusher.status["queue_length"] <= op.MAX_QUEUE
+        issues = [i for i in registry.issues.values() if i.domain == DOMAIN]
+        rejected = [i for i in issues if i.issue_id == "observe_rejected"]
+        assert len(rejected) == 1
+        assert rejected[0].translation_placeholders == {"status": "404"}
+        assert registry.async_get_issue(DOMAIN, "observe_key_rejected") is None
+
+        # Back-off grows: the next probe is allowed after the base delay, then twice that.
+        clock.now += op.BACKOFF_BASE_SECONDS + 1
+        await pusher.async_push_once()
+        assert len(observe.requests) == op.REJECT_THRESHOLD + 1
+        await pusher.async_push_once()
+        assert len(observe.requests) == op.REJECT_THRESHOLD + 1
+
+        observe.script = []
+        clock.now += op.BACKOFF_MAX_SECONDS + 1
+        await pusher.async_push_once()
+        assert registry.async_get_issue(DOMAIN, "observe_rejected") is None
+        assert pusher.status["rejected_streak"] == 0
+        assert pusher.status["queue_length"] == 0
+    finally:
+        pusher.async_stop()
+
+
+@pytest.mark.parametrize("status", [400, 409, 413, 415, 422])
+async def test_persistent_payload_errors_name_the_status(hass, entry, observe, status) -> None:
+    pusher, _ = await _pusher(hass, entry, observe.url)
+    try:
+        observe.script = [(status, {}, "")] * 20
+        for _ in range(5):
+            await pusher.async_push_once()
+        issue = ir.async_get(hass).async_get_issue(DOMAIN, "observe_rejected")
+        assert issue is not None
+        assert issue.translation_placeholders == {"status": str(status)}
+    finally:
+        pusher.async_stop()
+
+
+async def test_one_stray_rejection_raises_no_issue(hass, entry, observe) -> None:
+    pusher, _ = await _pusher(hass, entry, observe.url)
+    try:
+        observe.script = [(422, {}, "")]
+        await pusher.async_push_once()
+        assert ir.async_get(hass).async_get_issue(DOMAIN, "observe_rejected") is None
     finally:
         pusher.async_stop()
 

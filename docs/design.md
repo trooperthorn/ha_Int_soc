@@ -444,7 +444,13 @@ that payload and pause sending for five minutes; 408, 429, any 5xx and any
 connection error or timeout (15 seconds) keep the payload and retry, after
 `Retry-After` (capped at an hour) or an exponential back-off from 10 seconds
 to 15 minutes; every other status, 413 included, drops the payload because a
-retry cannot change the answer. Redirects are not followed, so the key is
+retry cannot change the answer. Three such drops in a row (400, 404, 409, 413,
+415, 422 or any other 4xx) raise the Repairs issue "Observe keeps rejecting the
+HA SOC push", which names the last status, and sending then backs off
+exponentially (10 seconds doubling to 15 minutes) instead of dropping a payload
+every tick; an accepted push clears both. Plain `http` is accepted only for
+localhost, loopback, RFC1918, IPv6 unique local, link-local and IPv4-mapped
+addresses of those kinds. Redirects are not followed, so the key is
 never sent anywhere but the configured address. Waiting is a stored "not
 before" time compared against a monotonic clock, never a sleep. Log records
 that were accepted are remembered by their dedup key (in memory) so a later

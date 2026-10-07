@@ -710,7 +710,7 @@ in the form:
 | Field | Meaning |
 |---|---|
 | Push to Observe | Off by default. |
-| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private IP address or `localhost`. No user name, password, query or fragment. |
+| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private or link-local IP address or `localhost`. No user name, password, query or fragment. |
 | Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key. Tick "Remove the stored ingest key" to delete it. |
 | Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
 | Push interval | 30 to 3600 seconds, 60 by default. |
@@ -722,7 +722,9 @@ own HTTP session, gzip compressed, with the key as a bearer token and one
 `Idempotency-Key` per payload. A payload that cannot be delivered is kept in
 a bounded in-memory queue of 60 payloads and retried with back-off,
 honouring `Retry-After`; when the queue is full the oldest payload is
-dropped and a warning with the count is logged. Observe answering 401 or 403
+dropped and a warning with the count is logged. Observe answering 404, 400,
+409, 413, 415 or 422 three times in a row raises a Repairs issue that names the
+status and slows sending down until a push is accepted. Observe answering 401 or 403
 raises a Repairs issue ("Observe refused the ingest key") that clears itself
 on the next accepted push. Diagnostics show counters and presence flags
 only, never the key, URL or host name. The mapping and its check against

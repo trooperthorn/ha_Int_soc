@@ -107,6 +107,10 @@
     "observe_key_rejected": {
       "title": "Observe refused the ingest key",
       "description": "Observe answered 401 or 403 to the HA SOC push, so the ingest key is wrong, was revoked, or is bound to a different host name than the one configured. Nothing is being delivered. Open the HA SOC options, enter a valid key and the host name it is bound to, and submit. The issue clears itself on the next accepted push."
+    },
+    "observe_rejected": {
+      "title": "Observe keeps rejecting the HA SOC push",
+      "description": "Observe answered HTTP {status} to several HA SOC pushes in a row. This usually means the Observe URL points at the wrong place (404), the payload is refused (400, 415 or 422), or it is too large (413). The rejected payloads are dropped and sending slows down to at most one attempt every fifteen minutes. Check the Observe URL in the HA SOC options and the Observe server log. The issue clears itself on the next accepted push."
     }
   },
   "services": {
