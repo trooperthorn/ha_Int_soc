@@ -196,6 +196,18 @@ CONF_TECHNITIUM_VERIFY_SSL = "technitium_verify_ssl"
 DEFAULT_TECHNITIUM_VERIFY_SSL = False
 TECHNITIUM_API_PATH = "/api"
 
+# Observe push (docs/design.md, "Observe push"). Off by default; the options flow writes
+# these. The URL, host name and interval live in the store; the ingest key is a secret.
+CONF_OBSERVE_ENABLED = "observe_enabled"
+CONF_OBSERVE_URL = "observe_url"
+CONF_OBSERVE_INGEST_KEY = "observe_ingest_key"
+CONF_OBSERVE_HOST_NAME = "observe_host_name"
+CONF_OBSERVE_INTERVAL = "observe_interval_seconds"
+DEFAULT_OBSERVE_ENABLED = False
+DEFAULT_OBSERVE_INTERVAL = 60
+MIN_OBSERVE_INTERVAL = 30
+MAX_OBSERVE_INTERVAL = 3600
+
 # Every credential-shaped setting belongs here; async_log and ws_settings_get redact by it.
 SECRET_SETTING_KEYS: frozenset[str] = frozenset(
     {
@@ -208,6 +220,7 @@ SECRET_SETTING_KEYS: frozenset[str] = frozenset(
         CONF_TECHNITIUM_API_TOKEN,
         CONF_SNMP_AUTH_PASSPHRASE,
         CONF_SNMP_PRIV_PASSPHRASE,
+        CONF_OBSERVE_INGEST_KEY,
         # Generated, never accepted from the client; listed here so it is
         # masked in every settings representation like any other secret.
         "ssh_private_key",

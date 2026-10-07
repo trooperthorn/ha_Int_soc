@@ -694,6 +694,52 @@ Both live on the Integration Security tab's Container Resource Usage card;
 all configuration is owner-only and audit-logged. See
 [`custom_components/ha_soc/resource_watchdog.py`](custom_components/ha_soc/resource_watchdog.py).
 
+### Observe push (optional, off by default)
+
+HA SOC can describe its system detail as OpenTelemetry (OTLP JSON) for the
+Observe monitoring server: per-container CPU and memory for Core, the
+Supervisor and every add-on, watchdog breaches and crash forensics
+classifications as log records, integration health categories, the open
+Repairs count, the unprotected-backup finding and the Supervisor
+resolution state. The push is off by default and sends nothing until you
+turn it on. Several entries of one integration are summed into one error
+series per category, a crash forensics dry run is never sent, and a watchdog
+breach that lasts is one log record until the container recovers, at which
+point the breach gauge returns to 0.
+
+When the resource watchdog is off, the push asks the Supervisor for container
+stats itself, at most once per watchdog interval (60 seconds by default), and
+covers up to 300 add-ons. Add-ons past that limit are counted and logged as a
+warning.
+
+To enable it, open Settings, Devices and services, HA SOC, Configure, and fill
+in the form:
+
+| Field | Meaning |
+|---|---|
+| Push to Observe | Off by default. |
+| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private or link-local IP address or `localhost`. No user name, password, query or fragment. |
+| Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key. Tick "Remove the stored ingest key" to delete it. |
+| Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
+| Push interval | 30 to 3600 seconds, 60 by default. |
+
+Every interval HA SOC gathers what it already holds, builds the two OTLP
+JSON requests ([`otlp_mapper.py`](custom_components/ha_soc/otlp_mapper.py))
+and sends them to `POST /v1/metrics` and `POST /v1/logs` on Home Assistant's
+own HTTP session, gzip compressed, with the key as a bearer token and one
+`Idempotency-Key` per payload. A payload that cannot be delivered is kept in
+a bounded in-memory queue of 60 payloads and retried with back-off,
+honouring `Retry-After`; when the queue is full the oldest payload is
+dropped and a warning with the count is logged. Observe answering 404, 400,
+409, 413, 415 or 422 three times in a row raises a Repairs issue that names the
+status and slows sending down until a push is accepted. Observe answering 401 or 403
+raises a Repairs issue ("Observe refused the ingest key") that clears itself
+on the next accepted push. Diagnostics show counters and presence flags
+only, never the key, URL or host name. The mapping and its check against
+Observe's own decoder are recorded in
+[`docs/OBSERVE-VALIDATION.md`](docs/OBSERVE-VALIDATION.md); the design is in
+[`docs/design.md`](docs/design.md) under "Observe push".
+
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a

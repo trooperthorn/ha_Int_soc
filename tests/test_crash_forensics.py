@@ -27,6 +27,10 @@ from custom_components.ha_soc.websocket_api import (
     ws_crash_forensics_status,
 )
 
+# Private config directory per test; see tests/conftest.py. These tests read back
+# the state files they write, which other xdist workers overwrite in the shared one.
+ISOLATED_CONFIG_DIR = True
+
 CLEAN_TAIL = "Sep 22 15:31:40 home systemd[1]: Stopping ...\nSep 22 15:31:44 home systemd[1]: Reached target Reboot.\n"
 PANIC_TAIL = "Sep 22 15:31:40 home kernel: Kernel panic - not syncing: VFS\n"
 SILENT_TAIL = "Sep 22 15:31:40 home homeassistant[1]: some ordinary line\n"

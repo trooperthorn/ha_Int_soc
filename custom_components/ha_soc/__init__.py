@@ -41,6 +41,7 @@ from .risk import RiskEngine
 from .scanner import IntegrationScanner
 from .secrets_store import HaSocSecretStore, async_migrate_legacy_secrets
 from .resource_watchdog import ResourceWatchdog
+from .observe_push import ObservePusher, SnapshotCollector
 from .store import HaSocData
 from .syslog_export import SyslogExporter
 from .users import LiveSessionRegistry, UsersManager
@@ -80,6 +81,7 @@ class HaSocRuntimeData:
     syslog: SyslogExporter
     terminal: TerminalSessions
     crash_forensics: CrashForensics
+    observe: ObservePusher
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -136,6 +138,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog = ResourceWatchdog(hass, store, audit)
     terminal = TerminalSessions(hass, audit, secrets)
     crash_forensics = CrashForensics(hass, store, audit, watchdog)
+    observe = ObservePusher(
+        hass,
+        store,
+        secrets,
+        SnapshotCollector(
+            hass, store, health=health, watchdog=watchdog, crash_forensics=crash_forensics
+        ).async_collect,
+    )
 
     entry.runtime_data = HaSocRuntimeData(
         store=store,
@@ -153,6 +163,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         syslog=syslog,
         terminal=terminal,
         crash_forensics=crash_forensics,
+        observe=observe,
     )
 
     await audit.async_start()
@@ -165,6 +176,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     await watchdog.async_load_history()
     watchdog.async_start()
     crash_forensics.async_start(entry)
+    # Off by default: a no-op unless the owner enabled it and filled in the options.
+    # Registered first so a setup that fails after the push started (for example with
+    # ConfigEntryNotReady) cancels the timer; core runs these callbacks on a failed setup.
+    entry.async_on_unload(observe.async_stop)
+    await observe.async_start(entry)
 
     async_register_websocket_api(hass)
     async_register_probe_service(hass, store, audit, secrets)
@@ -279,6 +295,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
         await runtime.health.async_stop()
         runtime.scanner.async_stop()
         runtime.watchdog.async_stop()
+        runtime.observe.async_stop()
 
     async_unregister_probe_service(hass)
     async_unregister_external_audit_service(hass)

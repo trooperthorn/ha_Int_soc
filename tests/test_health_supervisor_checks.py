@@ -589,6 +589,7 @@ async def test_broken_entity_references_empty_when_nothing_broken(
     assert findings == []
 
 
+@pytest.mark.isolated_config_dir
 async def test_broken_entity_references_flags_dangling_automation_entity(
     hass: HomeAssistant, health: IntegrationHealth
 ) -> None:

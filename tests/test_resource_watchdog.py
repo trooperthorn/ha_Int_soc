@@ -32,6 +32,10 @@ from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 from custom_components.ha_soc.store import HaSocData
 
 
+# Private config directory per test; see tests/conftest.py. These tests read back
+# the state files they write, which other xdist workers overwrite in the shared one.
+ISOLATED_CONFIG_DIR = True
+
 @pytest.fixture
 async def supervisor_user(hass: HomeAssistant):
     """The Supervisor system user, needed because the two Probe callback
@@ -468,3 +472,80 @@ async def test_load_history_preserves_previous_file_before_overwrite(
     prev_path = hass.config.path("ha_soc", "watchdog_history.prev.json")
     prev = await hass.async_add_executor_job(sync_read_json, prev_path)
     assert prev["ma"][-1]["memory_percent"] == 7.0
+
+
+async def _run_samples(wd, samples, on_sample=None):
+    with patch(
+        "custom_components.ha_soc.resource_watchdog.async_container_resources",
+        new=AsyncMock(side_effect=samples),
+    ):
+        for _ in samples:
+            await wd.async_run_once()
+            if on_sample is not None:
+                on_sample()
+
+
+def _breach_gauge(entry) -> float:
+    from custom_components.ha_soc import otlp_mapper
+
+    snapshot = {"detections": list(entry.runtime_data.store.data["detections"].values())}
+    request = otlp_mapper.build_metrics(otlp_mapper.Identity(host_name="h"), snapshot, 1.0)
+    return next(
+        dp["asDouble"]
+        for rm in request["resourceMetrics"]
+        for sm in rm["scopeMetrics"]
+        for m in sm["metrics"]
+        if m["name"] == "observe.ha.watchdog.breaches"
+        for dp in m["gauge"]["dataPoints"]
+    )
+
+
+async def test_breach_gauge_is_one_during_breach_and_zero_after_recovery(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    wd = _watchdog(entry, default_action="alert")
+    seen = []
+    samples = [_overview([_addon("a", mem=99.0)])] * 2 + [_overview([_addon("a", mem=10.0)])]
+    await _run_samples(wd, samples, lambda: seen.append(_breach_gauge(entry)))
+    assert seen == [0.0, 1.0, 0.0]
+    detection = entry.runtime_data.store.data["detections"]["watchdog_a"]
+    assert detection["status"] == "resolved"
+
+
+async def test_second_episode_after_recovery_opens_again(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    wd = _watchdog(entry, default_action="alert")
+    breach, calm = _overview([_addon("a", mem=99.0)]), _overview([_addon("a", mem=10.0)])
+    seen = []
+    await _run_samples(wd, [breach, breach, calm, breach, breach],
+                       lambda: seen.append(_breach_gauge(entry)))
+    assert seen == [0.0, 1.0, 0.0, 0.0, 1.0]
+
+
+async def test_thirty_minutes_of_breach_is_one_log_record(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    from custom_components.ha_soc import otlp_mapper
+
+    wd = _watchdog(entry, default_action="alert", sustained_samples=3)
+    keys: set[str] = set()
+    trips = []
+
+    def collect():
+        # Other detection passes may add rows to the shared store; only ours counts.
+        dets = [d for d in entry.runtime_data.store.data["detections"].values()
+                if d["id"] == "watchdog_a"]
+        trips.append(dets[0]["recurrence_count"] if dets else 0)
+        request = otlp_mapper.build_logs(otlp_mapper.Identity(host_name="h"),
+                                         {"detections": dets}, 1.0)
+        for rl in request.get("resourceLogs", []):
+            for sl in rl["scopeLogs"]:
+                for rec in sl["logRecords"]:
+                    keys.update(kv["value"]["stringValue"] for kv in rec["attributes"]
+                                if kv["key"] == "observe.dedup_key")
+
+    # 30 one-minute samples; the detection re-trips every third sample.
+    await _run_samples(wd, [_overview([_addon("a", mem=99.0)])] * 30, collect)
+    assert trips[-1] == 10
+    assert len(keys) == 1

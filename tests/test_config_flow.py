@@ -30,6 +30,8 @@ async def test_options_flow_submit_reloads_entry(hass: HomeAssistant) -> None:
     """Options stay empty, so core would never reload on its own; the flow schedules it."""
     entry = MockConfigEntry(domain=DOMAIN, title="HA SOC", data={})
     entry.add_to_hass(hass)
+    assert await hass.config_entries.async_setup(entry.entry_id)
+    await hass.async_block_till_done()
 
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == "form"
@@ -41,3 +43,5 @@ async def test_options_flow_submit_reloads_entry(hass: HomeAssistant) -> None:
     assert result2["data"] == {}
     assert entry.options == {}
     schedule_reload.assert_called_once_with(entry.entry_id)
+    # The push stays off unless the owner turns it on (docs/design.md, "Observe push").
+    assert entry.runtime_data.store.settings["observe_enabled"] is False

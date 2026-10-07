@@ -28,6 +28,10 @@ import homeassistant.util.yaml as ha_yaml
 from custom_components.ha_soc import entity_remap as remap
 
 
+# Private config directory per test; see tests/conftest.py.
+ISOLATED_CONFIG_DIR = True
+
+
 @pytest.fixture(autouse=True)
 async def _flush_delayed_store_writes(hass: HomeAssistant):
     """Fire the config-entry store's delayed save before teardown.

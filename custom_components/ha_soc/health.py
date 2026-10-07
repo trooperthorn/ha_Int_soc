@@ -215,6 +215,8 @@ class IntegrationHealth:
         self._retry_buckets: dict[str, dict[int, int]] = {}
         self._unavail_samples: dict[str, list[tuple[float, float]]] = {}
         self._started_at: datetime | None = None
+        # True once a full misconfiguration sweep has run, so a finding that is absent means clean.
+        self.misconfig_sweep_ran = False
         # In-memory only; resets on every reload for a fresh grace window, like _started_at.
         self._probe_unreported_since: datetime | None = None
 
@@ -620,6 +622,7 @@ class IntegrationHealth:
                 results.extend(await check())
             except Exception:  # noqa: BLE001 - one bad check must not stop the rest
                 _LOGGER.warning("HA SOC misconfig check %s failed", check.__name__, exc_info=True)
+        self.misconfig_sweep_ran = True
         return results
 
     async def async_run_config_check(self) -> list[dict]:

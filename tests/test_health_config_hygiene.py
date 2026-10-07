@@ -15,6 +15,10 @@ from custom_components.ha_soc.health import IntegrationHealth
 from custom_components.ha_soc.store import HaSocData
 
 
+# Private config directory per test; see tests/conftest.py.
+ISOLATED_CONFIG_DIR = True
+
+
 @pytest.fixture
 async def health(hass: HomeAssistant) -> IntegrationHealth:
     store = HaSocData(hass)

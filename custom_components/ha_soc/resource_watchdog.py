@@ -19,7 +19,9 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .atomic_json import sync_read_json, sync_write_json_atomic
 from .const import (
+    DETECTION_ACK,
     DETECTION_OPEN,
+    DETECTION_RESOLVED,
     SEVERITY_HIGH,
     SIGNAL_UPDATE,
     WATCHDOG_ACTION_ALERT,
@@ -72,6 +74,9 @@ class ResourceWatchdog:
         self._unsub = None
         # slug -> consecutive samples over threshold
         self._breach_counts: dict[str, int] = {}
+        # slug -> start time of the breach episode in progress. An episode runs from the
+        # first trip until a sample shows the container back under its limits.
+        self._episodes: dict[str, str] = {}
         # slug -> deque of {"ts", "cpu_percent", "memory_percent", "memory_usage"}
         self._history: dict[str, deque] = {}
         # slug -> list of monotonic timestamps of enforcement actions taken
@@ -81,6 +86,9 @@ class ResourceWatchdog:
         self._history_path = hass.config.path("ha_soc", HISTORY_FILENAME)
         self._history_dirty = False
         self._history_last_write: str | None = None
+        # The latest successful sample and its monotonic time; the Observe push reads it.
+        self.last_overview: dict[str, Any] | None = None
+        self.last_overview_at: float | None = None
 
     def _sync_load_history(self) -> dict[str, Any] | None:
         """Copy this boot's starting ring to the .prev file, then load it.
@@ -188,6 +196,9 @@ class ResourceWatchdog:
         overview = await async_container_resources(self.hass)
         if not overview.get("available"):
             return
+        # Kept so the Observe push reuses this sample instead of asking the Supervisor again.
+        self.last_overview = overview
+        self.last_overview_at = time.monotonic()
 
         sustained = max(1, int(self.config.get("sustained_samples") or 3))
         changed = False
@@ -210,6 +221,7 @@ class ResourceWatchdog:
             # A stopped add-on can't breach anything; clear its counter.
             if container.get("kind") == "addon" and container.get("state") != "started":
                 self._breach_counts.pop(slug, None)
+                changed |= self._end_episode(slug)
                 continue
 
             cpu_limit, mem_limit, action = self._limits_for(slug, container.get("kind"))
@@ -220,6 +232,7 @@ class ResourceWatchdog:
 
             if not (over_cpu or over_mem):
                 self._breach_counts.pop(slug, None)
+                changed |= self._end_episode(slug)
                 continue
 
             count = self._breach_counts.get(slug, 0) + 1
@@ -232,10 +245,33 @@ class ResourceWatchdog:
             await self._async_trip(container, action, over_cpu, over_mem, cpu, mem)
             changed = True
 
+        # A container that vanished from the overview can no longer be breaching.
+        seen = {c.get("slug") for c in overview["containers"]}
+        for slug in [s for s in self._episodes if s not in seen]:
+            self._breach_counts.pop(slug, None)
+            changed |= self._end_episode(slug)
+
         await self._async_maybe_save_history()
 
         if changed:
             async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_dashboard")
+
+    def _end_episode(self, slug: str) -> bool:
+        """Close the breach episode for `slug` and resolve its open detection.
+
+        Returns True when a detection changed. Without this a detection stayed open
+        forever after the first trip, so the Observe breach gauge never returned to 0.
+        """
+        if self._episodes.pop(slug, None) is None:
+            return False
+        detection = self.store.data["detections"].get(f"watchdog_{slug}")
+        if detection is None or detection.get("status") not in (DETECTION_OPEN, DETECTION_ACK):
+            return False
+        self.store.async_set_detection_status(
+            f"watchdog_{slug}", DETECTION_RESOLVED, at=_iso_now()
+        )
+        async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_detections")
+        return True
 
     async def _async_trip(
         self,
@@ -277,6 +313,11 @@ class ResourceWatchdog:
         now_iso = _iso_now()
         existing = self.store.data["detections"].get(detection_id)
         recurrence = (existing.get("recurrence_count", 0) + 1) if existing else 1
+        # A re-trip inside one continuous breach keeps the episode start, so Observe sees
+        # one log record for the whole episode; a trip after recovery starts a new one.
+        new_episode = slug not in self._episodes
+        episode_start = now_iso if new_episode else self._episodes[slug]
+        self._episodes[slug] = episode_start
         self.store.async_upsert_detection(
             detection_id,
             {
@@ -297,9 +338,14 @@ class ResourceWatchdog:
                     "memory_percent": mem,
                     "action_taken": outcome,
                     "restart_loop_suspected": looped,
+                    "episode_start": episode_start,
                 },
             },
         )
+        if new_episode:
+            # The analyst-state rule in the store keeps a resolved row resolved, which is
+            # right inside an episode but wrong for a fresh one.
+            self.store.data["detections"][detection_id]["status"] = DETECTION_OPEN
         persistent_notification.async_create(
             self.hass,
             f"**{name}** sustained {what} over its watchdog threshold — {outcome}."

@@ -314,7 +314,7 @@ peripherals.py reuses core's own USB discovery data instead of adding host-level
 
 ### Resource watchdog
 
-The Supervisor exposes no API to cap an add-on's CPU or memory, so by default any add-on can eat the host until the kernel OOM-kills something, often the wrong container. `RESOURCE-WATCHDOG.md` holds the two-layer summary; the mechanics: `ResourceWatchdog` samples per-container stats on an interval and tracks consecutive-breach counts per container against its threshold, so only a sustained breach trips it. On a trip it always records a detection, a notification, and an audit entry, then takes the configured action. Guard rails that are not configurable: Core and the Supervisor are clamped to alert-only (an automated response killing the thing that hosts the automation is a footgun), and after `WATCHDOG_MAX_ACTIONS_PER_HOUR` actions a container is downgraded to alert-only for the rest of the hour, because re-breaching right after every restart is a restart loop. After a trip the counter resets; a stopped add-on's counter is cleared. Hard caps are stored here and applied by the Probe over the firewall poll channel (`async_resource_limits_for_probe`); the module stores intent and result and never touches Docker. Runtime state (`_breach_counts`, `_history`, `_action_times`, `_last_outcome`) is memory-only. `async_installed_addon_slugs` reuses logs.py's cache-backed lookup (work item 2.2).
+The Supervisor exposes no API to cap an add-on's CPU or memory, so by default any add-on can eat the host until the kernel OOM-kills something, often the wrong container. `RESOURCE-WATCHDOG.md` holds the two-layer summary; the mechanics: `ResourceWatchdog` samples per-container stats on an interval and tracks consecutive-breach counts per container against its threshold, so only a sustained breach trips it. On a trip it always records a detection, a notification, and an audit entry, then takes the configured action. Guard rails that are not configurable: Core and the Supervisor are clamped to alert-only (an automated response killing the thing that hosts the automation is a footgun), and after `WATCHDOG_MAX_ACTIONS_PER_HOUR` actions a container is downgraded to alert-only for the rest of the hour, because re-breaching right after every restart is a restart loop. After a trip the counter resets; a stopped add-on's counter is cleared. A breach episode (`_episodes`, memory-only) lasts from the first trip until a sample shows the container under its limits, stopped or absent; the detection is resolved then and carries `episode_start` in its detail, and the first trip of a new episode forces the row back to open even if it was resolved. Hard caps are stored here and applied by the Probe over the firewall poll channel (`async_resource_limits_for_probe`); the module stores intent and result and never touches Docker. Runtime state (`_breach_counts`, `_history`, `_action_times`, `_last_outcome`) is memory-only. `async_installed_addon_slugs` reuses logs.py's cache-backed lookup (work item 2.2).
 
 ## Device SSH collection
 
@@ -372,6 +372,115 @@ Suspect ranking (`_rank_suspects`) and journal classification
 text and data, so they are unit-tested against synthetic journal tails and
 watchdog history without a Supervisor in the loop at all
 (`tests/test_crash_forensics.py`).
+
+## Observe push
+
+`otlp_mapper.py` turns data HA SOC already holds into the two OTLP JSON
+requests Observe accepts (`POST /v1/metrics` and `/v1/logs`). It is pure:
+no Home Assistant import, no I/O and no clock, so the caller passes a
+snapshot dict and the time. The snapshot keys are `containers` (the
+`async_container_resources` result), `detections` (the store's detection
+rows), `crash_bundles` (`sync_list_bundles`), `integration_overview`,
+`repairs` (issue dicts with a `domain`), `backup_checked` with
+`backup_finding` (the `backup_unprotected` health finding or None) and
+`resolution` (the Supervisor `/resolution/info` body). A missing key means
+"not collected" and yields no points, so a Core install without a
+Supervisor sends no container or Supervisor series.
+
+Names, units and attributes follow section 3.4 of Observe's
+`DATA-API-DESIGN.md`. The resource carries `host.name`, `service.name`
+`home-assistant`, `observe.producer` `ha_Int_soc` and, when known, the
+instance id, Core version and installation type. The scope name is
+`ha_soc.collector.<source>`, which Observe stores as the source. Every
+metric is a gauge with `asDouble` and the snapshot time. CPU and memory
+percentages are divided by 100 because Observe stores ratios. Log records
+carry `event.name`, a stable `observe.dedup_key` (a re-send is a no-op in
+Observe) and a severity of 9, 13 or 17: crash classifications
+`silent_stop` and `kernel_fault` are 17, `core_restart` is 13 and
+`clean_reboot` is 9; a watchdog breach is 13. Row counts are capped (100
+containers, integration rows and repair domains; 500 log records per
+request; 5,000 points) so a request stays inside Observe's limits.
+
+Series must stay distinct, because Observe keeps one value per series. The
+per-integration error gauge is therefore summed per domain and issue
+category, so three ESPHome entries produce one `esphome` point. Bundles
+marked `dry_run` (the panel's drill) are never sent as crashes;
+`sync_list_bundles` exposes the flag. The watchdog stores an `episode_start`
+in each breach detection's detail: a re-trip inside one continuous breach
+keeps it, so the log record's dedup key is stable for the whole episode. The
+watchdog resolves the detection when a sample shows the container back
+under its limits (or stopped, or gone), which is what returns
+`observe.ha.watchdog.breaches` to 0, and a trip after that starts a new
+episode and reopens the row.
+
+Container stats come from the watchdog's latest sample when it is under 90
+seconds old. With the watchdog off the collector calls
+`async_container_resources` itself and caches the result for the watchdog's
+configured interval (default 60 seconds), so the Supervisor sees at most two
+calls plus one per started add-on per interval, the same as the watchdog.
+The pass covers up to 300 add-ons; the rest are counted in `truncated` and
+logged as a warning.
+
+Golden files in `tests/fixtures/observe_otlp/` pin the output;
+`docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
+routes accepted them with no rejects.
+
+### The push client
+
+`observe_push.py` holds three things. `SnapshotCollector` gathers the
+snapshot from data HA SOC already holds: the resource watchdog's latest
+container sample (a fresh Supervisor call only when that sample is older than
+90 seconds), the stored detections, the integration overview, the issue
+registry's open issues, the unprotected-backup finding, and, refreshed at
+most every ten minutes because they change rarely, the crash bundle list and
+the Supervisor `/resolution/info` body. A part that cannot be collected is
+left out. `ObservePusher` owns the timer and the delivery rules.
+`validate_url`, `validate_host_name`, `validate_ingest_key` and
+`validate_options` are the pure checks the options flow and the pusher share.
+
+The settings are `observe_enabled`, `observe_url`, `observe_host_name` and
+`observe_interval_seconds` in the HA SOC store and the ingest key in the
+secret store (`observe_ingest_key`, in `SECRET_SETTING_KEYS`, so every
+masking path covers it). `entry.options` stays `{}`; the options flow writes
+the store, flushes it to disk with `async_save_now` (the store normally
+debounces writes and the reload builds a fresh store that reads the file),
+and only then schedules the reload, which restarts the push with the new
+values. Setup registers `observe.async_stop` with `entry.async_on_unload`
+before starting the push, so a setup that fails afterwards (for example with
+`ConfigEntryNotReady`) cancels the timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
+configuration, the pusher arms no timer and opens no connection.
+
+Each tick runs under one lock, so a slow cycle makes the next tick skip
+instead of overlapping. A tick builds the metrics request and, when it holds
+records Observe has not yet accepted, the logs request, gzips them in the
+executor, queues them and sends from the head of the queue. The queue holds
+at most 60 payloads; overflow drops the oldest and counts it. Each payload
+has one `Idempotency-Key` for its whole life, so a retry after a lost
+response is recognised by Observe.
+
+Outcomes by response: 200 is accepted (a `partialSuccess` rejected count is
+counted and logged, not retried); 401 and 403 raise the Repairs issue, drop
+that payload and pause sending for five minutes; 408, 429, any 5xx and any
+connection error or timeout (15 seconds) keep the payload and retry, after
+`Retry-After` (capped at an hour) or an exponential back-off from 10 seconds
+to 15 minutes; every other status, 413 included, drops the payload because a
+retry cannot change the answer. Three such drops in a row (400, 404, 409, 413,
+415, 422 or any other 4xx) raise the Repairs issue "Observe keeps rejecting the
+HA SOC push", which names the last status, and sending then backs off
+exponentially (10 seconds doubling to 15 minutes) instead of dropping a payload
+every tick; an accepted push clears both. Plain `http` is accepted only for
+localhost, loopback, RFC1918, IPv6 unique local, link-local and IPv4-mapped
+addresses of those kinds. Redirects are not followed, so the key is
+never sent anywhere but the configured address. Waiting is a stored "not
+before" time compared against a monotonic clock, never a sleep. Log records
+that were accepted are remembered by their dedup key (in memory) so a later
+logs request is only sent when it carries something new.
+
+The key is placed only in the `Authorization` header. Log lines name the
+status and the payload kind, never the URL or headers, and pass any server
+supplied text through a redaction of the key. Diagnostics report
+`ObservePusher.status` (counters, queue length, last status) and show the
+URL and host name as presence flags like the UniFi hosts.
 
 ## UniFi configuration ledger
 

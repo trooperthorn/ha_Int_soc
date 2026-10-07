@@ -706,6 +706,7 @@ class CrashForensics:
                     "ts": summary.get("heartbeat", {}).get("ts"),
                     "classification": summary.get("classification"),
                     "gap_seconds": summary.get("gap_seconds"),
+                    "dry_run": bool(summary.get("dry_run")),
                     "suspects": summary.get("suspects", [])[:3],
                     "size_bytes": size,
                     "path": bundle_dir,

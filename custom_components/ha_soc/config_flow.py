@@ -1,8 +1,10 @@
 """Config flow for HA SOC: single instance, no user input required at setup.
 
-The options flow carries no settings (they live in the owner-only panel
-Settings tab, see docs/security.md); submitting it reloads the entry so the
-panel re-registers with the bundle currently on disk (see docs/operations.md).
+The options flow holds the optional Observe push settings (docs/design.md, "Observe
+push"). Like every other HA SOC setting they are stored in the HA SOC store and the
+private secret store, never in entry.options, so options stay {} (docs/security.md).
+Submitting it also reloads the entry, which restarts the push with the new values and
+re-registers the panel with the bundle currently on disk (see docs/operations.md).
 """
 from __future__ import annotations
 
@@ -11,8 +13,22 @@ from typing import Any
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
-from .const import DOMAIN
+from .const import (
+    CONF_OBSERVE_ENABLED,
+    CONF_OBSERVE_HOST_NAME,
+    CONF_OBSERVE_INGEST_KEY,
+    CONF_OBSERVE_INTERVAL,
+    CONF_OBSERVE_URL,
+    DEFAULT_OBSERVE_ENABLED,
+    DEFAULT_OBSERVE_INTERVAL,
+    DOMAIN,
+    MAX_OBSERVE_INTERVAL,
+    MIN_OBSERVE_INTERVAL,
+    REDACTED_PLACEHOLDER,
+)
+from .observe_push import validate_options
 
 NAME = "HA SOC"
 
@@ -37,23 +53,93 @@ class HaSocConfigFlow(ConfigFlow, domain=DOMAIN):
         return HaSocOptionsFlow()
 
 
+CONF_CLEAR_KEY = "observe_clear_key"
+
+
 class HaSocOptionsFlow(OptionsFlow):
-    """No settings here; submitting reloads the entry and re-registers the panel."""
+    """Observe push settings. Everything else lives in the panel Settings tab.
+
+    Not OptionsFlowWithReload: options stay {} on purpose, so core would never see a
+    change and never reload. The flow schedules the reload itself.
+    """
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> Any:
-        if user_input is not None:
-            # Options stay {} so core's change-triggered reload never fires; reload explicitly.
-            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
-            return self.async_create_entry(title="", data={})
+        runtime = getattr(self.config_entry, "runtime_data", None)
+        if runtime is None:
+            return self.async_abort(reason="not_loaded")
 
+        settings = runtime.store.settings
+        key_set = bool(await runtime.secrets.async_get(CONF_OBSERVE_INGEST_KEY))
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            clear_key = bool(user_input.get(CONF_CLEAR_KEY))
+            errors, changes, new_key = validate_options(
+                user_input, key_already_set=key_set and not clear_key
+            )
+            if not errors:
+                runtime.store.async_update_settings(**changes)
+                audited: dict[str, Any] = dict(changes)
+                if new_key:
+                    await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, new_key)
+                    audited[CONF_OBSERVE_INGEST_KEY] = REDACTED_PLACEHOLDER
+                elif clear_key:
+                    await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, None)
+                    audited[CONF_OBSERVE_INGEST_KEY] = None
+                runtime.audit.async_log(
+                    "soc_config_change",
+                    detail={"action": "observe_push_changed", "changes": audited},
+                )
+                # The reload builds a fresh store that reads the file, and the store
+                # normally debounces its writes, so flush before scheduling the reload.
+                await runtime.store.async_save_now()
+                self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
+                return self.async_create_entry(title="", data={})
+
+        current = user_input or {
+            CONF_OBSERVE_ENABLED: settings.get(CONF_OBSERVE_ENABLED, DEFAULT_OBSERVE_ENABLED),
+            CONF_OBSERVE_URL: settings.get(CONF_OBSERVE_URL) or "",
+            CONF_OBSERVE_HOST_NAME: settings.get(CONF_OBSERVE_HOST_NAME) or "",
+            CONF_OBSERVE_INTERVAL: settings.get(CONF_OBSERVE_INTERVAL, DEFAULT_OBSERVE_INTERVAL),
+        }
+        schema = vol.Schema(
+            {
+                vol.Optional(
+                    CONF_OBSERVE_ENABLED,
+                    default=bool(current.get(CONF_OBSERVE_ENABLED, DEFAULT_OBSERVE_ENABLED)),
+                ): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_OBSERVE_URL,
+                    description={"suggested_value": current.get(CONF_OBSERVE_URL) or ""},
+                ): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.URL)
+                ),
+                # Never pre-filled: a blank field keeps the stored key.
+                vol.Optional(CONF_OBSERVE_INGEST_KEY): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)
+                ),
+                vol.Optional(CONF_CLEAR_KEY, default=False): selector.BooleanSelector(),
+                vol.Optional(
+                    CONF_OBSERVE_HOST_NAME,
+                    description={"suggested_value": current.get(CONF_OBSERVE_HOST_NAME) or ""},
+                ): selector.TextSelector(),
+                vol.Optional(
+                    CONF_OBSERVE_INTERVAL,
+                    default=int(current.get(CONF_OBSERVE_INTERVAL) or DEFAULT_OBSERVE_INTERVAL),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=MIN_OBSERVE_INTERVAL,
+                        max=MAX_OBSERVE_INTERVAL,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="s",
+                    )
+                ),
+            }
+        )
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema({}),
-            description_placeholders={
-                "where": "Open the HA SOC panel from the sidebar and go to the "
-                "Settings tab. All settings live there and are available to the "
-                "account owner only. Submitting this dialog reloads HA SOC and "
-                "re-registers the panel with the bundle currently installed; "
-                "reload the browser afterwards to load it."
-            },
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"key_state": "set" if key_set else "not set"},
         )

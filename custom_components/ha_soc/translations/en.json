@@ -14,8 +14,35 @@
     "step": {
       "init": {
         "title": "HA SOC settings",
-        "description": "All HA SOC settings live in the panel's Settings tab, which is available to the account owner only. {where}"
+        "description": "Optionally push Home Assistant system detail (container CPU and memory, watchdog breaches, crash classifications, integration health, repairs, backup protection and Supervisor state) to Observe on an interval you choose. It is off by default and sends nothing until enabled. The ingest key is currently {key_state}; leave the key field blank to keep it. All other HA SOC settings live in the panel Settings tab, available to the account owner only. Submitting this dialog reloads HA SOC and re-registers the panel; reload the browser afterwards to load it.",
+        "data": {
+          "observe_enabled": "Push to Observe",
+          "observe_url": "Observe URL",
+          "observe_ingest_key": "Ingest key",
+          "observe_clear_key": "Remove the stored ingest key",
+          "observe_host_name": "Host name",
+          "observe_interval_seconds": "Push interval"
+        },
+        "data_description": {
+          "observe_enabled": "Off by default. Nothing leaves Home Assistant until this is on.",
+          "observe_url": "The base address of your Observe server. https works for any address; plain http is accepted only for a private IP address or localhost.",
+          "observe_ingest_key": "A host-bound ingest key that starts with wpi_. It is stored privately and never shown again.",
+          "observe_clear_key": "Tick to delete the stored key. Leaving the key field blank keeps it.",
+          "observe_host_name": "The host name the ingest key is bound to. Observe refuses data whose host name differs.",
+          "observe_interval_seconds": "Seconds between pushes, from 30 to 3600. The default is 60."
+        }
       }
+    },
+    "error": {
+      "invalid_url": "Enter a full http or https address without a user name, password, query or fragment.",
+      "insecure_url": "Plain http is accepted only for a private IP address or localhost. Use https for any other address.",
+      "key_required": "Enter the ingest key.",
+      "invalid_key": "The ingest key must start with wpi_ and contain no spaces.",
+      "invalid_host_name": "Enter the host name the ingest key is bound to, without spaces.",
+      "invalid_interval": "The interval must be between 30 and 3600 seconds."
+    },
+    "abort": {
+      "not_loaded": "HA SOC is not loaded, so its options cannot be changed. Reload the integration and try again."
     }
   },
   "entity": {
@@ -76,6 +103,14 @@
     "unclean_stop": {
       "title": "Home Assistant restarted after an unclean stop",
       "description": "The previous run ended without a clean-stop marker (classification: {classification}, gap {gap_seconds}s). HA SOC collected a forensics bundle at {bundle_path}. Top suspects: {top_suspects}. Review the bundle in the HA SOC Health view's Crash forensics card, then dismiss this issue."
+    },
+    "observe_key_rejected": {
+      "title": "Observe refused the ingest key",
+      "description": "Observe answered 401 or 403 to the HA SOC push, so the ingest key is wrong, was revoked, or is bound to a different host name than the one configured. Nothing is being delivered. Open the HA SOC options, enter a valid key and the host name it is bound to, and submit. The issue clears itself on the next accepted push."
+    },
+    "observe_rejected": {
+      "title": "Observe keeps rejecting the HA SOC push",
+      "description": "Observe answered HTTP {status} to several HA SOC pushes in a row. This usually means the Observe URL points at the wrong place (404), the payload is refused (400, 415 or 422), or it is too large (413). The rejected payloads are dropped and sending slows down to at most one attempt every fifteen minutes. Check the Observe URL in the HA SOC options and the Observe server log. The issue clears itself on the next accepted push."
     }
   },
   "services": {
