@@ -32,6 +32,10 @@ from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 from custom_components.ha_soc.store import HaSocData
 
 
+# Private config directory per test; see tests/conftest.py. These tests read back
+# the state files they write, which other xdist workers overwrite in the shared one.
+ISOLATED_CONFIG_DIR = True
+
 @pytest.fixture
 async def supervisor_user(hass: HomeAssistant):
     """The Supervisor system user, needed because the two Probe callback
