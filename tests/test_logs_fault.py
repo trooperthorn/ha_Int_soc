@@ -7,6 +7,10 @@ from homeassistant.core import HomeAssistant
 
 from custom_components.ha_soc.logs import async_fault_log_overview
 
+# Private config directory per test; see tests/conftest.py. These tests read back
+# files they write, which other xdist workers can change in the shared one.
+ISOLATED_CONFIG_DIR = True
+
 
 @pytest.fixture(autouse=True)
 def _no_fault_log_leaks_between_tests(hass: HomeAssistant):

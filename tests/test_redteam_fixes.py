@@ -15,6 +15,10 @@ from custom_components.ha_soc.audit import AuditLog
 from custom_components.ha_soc.const import AUDIT_STORAGE_SUBDIR
 from custom_components.ha_soc.store import HaSocData
 
+# Private config directory per test; see tests/conftest.py. These tests read back
+# files they write, which other xdist workers can change in the shared one.
+ISOLATED_CONFIG_DIR = True
+
 
 @pytest.fixture(autouse=True)
 def _clean_audit_dir(hass: HomeAssistant):
