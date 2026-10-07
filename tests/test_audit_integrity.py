@@ -411,3 +411,39 @@ def test_more_credential_shapes_are_secret(key):
 @pytest.mark.parametrize("key", ["auth_type", "session_id", "token_count", "auth_method", "revoke_sessions", "sessions_revoked"])
 def test_credential_metadata_stays_visible(key):
     assert not _is_secret_key(key)
+
+
+async def test_own_record_fields_are_not_pattern_redacted(hass, tmp_path):
+    """login_ok keeps its boolean new_token and user_updated keeps its token count."""
+    audit = await _make_audit(hass, tmp_path)
+    audit.async_log("login_ok", user_id="u1", detail={"new_token": False})
+    audit.async_log("login_ok", user_id="u1", detail={"new_token": True})
+    audit.async_log(
+        "user_updated",
+        detail={"revoked": {"sessions": 2, "long_lived_tokens": 3}},
+    )
+    # The exact-key list still applies to every category.
+    audit.async_log("login_ok", detail={"password": "hunter2hunter2"})
+    await audit._async_flush()
+    records = _records_on_disk(audit)
+    assert records[0]["detail"] == {"new_token": False}
+    assert records[1]["detail"] == {"new_token": True}
+    assert records[2]["detail"]["revoked"] == {"sessions": 2, "long_lived_tokens": 3}
+    assert records[3]["detail"] == {"password": "[redacted]"}
+
+
+async def test_failed_head_write_does_not_advance_store_mirror(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    _log(audit, 0)
+    await audit._async_flush()
+    assert _mirror_seq(audit) == 1
+    _log(audit, 1)
+    with patch.object(audit, "_sync_open_private", side_effect=OSError(28, "full")):
+        await audit._async_flush()
+    # The record is on disk and committed, but the mirror stays behind the unwritten head.
+    assert audit._seq == 2
+    assert _mirror_seq(audit) == 1
+    _log(audit, 2)
+    await audit._async_flush()
+    assert _mirror_seq(audit) == 3
+    assert (await audit.async_verify_chain())["ok"]

@@ -347,18 +347,27 @@ def _normalize_entity_ids(value: Any) -> list[str]:
 
 
 def _redact_service_data(
-    domain: str | None, service: str | None, value: Any
+    domain: str | None,
+    service: str | None,
+    value: Any,
+    patterns: bool = True,
 ) -> Any:
     """Recursively mask credential-shaped keys in a detail payload.
 
     Values are replaced even when empty so the log never reveals whether a
-    credential field was filled in. Rules are in docs/security.md.
+    credential field was filled in. With ``patterns`` False only the exact key
+    list applies, which is what HA SOC's own records (login_ok ``new_token``,
+    the revoked ``long_lived_tokens`` count) need. Rules are in docs/security.md.
     """
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         for key, val in value.items():
             key_lower = key.lower() if isinstance(key, str) else None
-            if isinstance(key, str) and _is_secret_key(key):
+            if isinstance(key, str) and (
+                _is_secret_key(key)
+                if patterns
+                else key_lower in _REDACTED_SERVICE_DATA_KEYS
+            ):
                 redacted[key] = REDACTED_PLACEHOLDER
             elif (
                 key_lower in ("message", "title")
@@ -369,10 +378,12 @@ def _redact_service_data(
             elif key_lower == "payload" and domain == "mqtt" and service == "publish":
                 redacted[key] = REDACTED_PLACEHOLDER
             else:
-                redacted[key] = _redact_service_data(domain, service, val)
+                redacted[key] = _redact_service_data(domain, service, val, patterns)
         return redacted
     if isinstance(value, (list, tuple)):
-        return [_redact_service_data(domain, service, item) for item in value]
+        return [
+            _redact_service_data(domain, service, item, patterns) for item in value
+        ]
     return value
 
 
@@ -453,6 +464,7 @@ class AuditLog:
         self._seq = 0
         # (seq, hash) of the records written by the flush in progress; executor-side only.
         self._flush_head: tuple[int, str] | None = None
+        self._head_file_written = False
         self._prev_hash = _GENESIS_PREV_HASH
         # Retention anchor: newest expired record's seq/hash; None until retention deletes something.
         self._anchor: dict[str, Any] | None = None
@@ -987,8 +999,12 @@ class AuditLog:
         one regardless.
         """
         if detail is not None:
+            # Key-pattern masking is for caller-controlled service data only; HA SOC's
+            # own records keep names such as new_token and long_lived_tokens readable.
             detail_value = _redact_secrets_deep(
-                _redact_service_data(domain, service, detail)
+                _redact_service_data(
+                    domain, service, detail, patterns=category == "service_call"
+                )
             )
         else:
             detail_value = {}
@@ -1116,7 +1132,11 @@ class AuditLog:
             self._commit_written(written)
             if self._syslog_exporter is not None:
                 self._syslog_exporter.async_enqueue(written)
-            # Mirror on the loop after the executor returns; only a successful flush advances it.
+            # Mirror on the loop after the executor returns. Only a flush whose head file
+            # also reached disk advances it, so a failed head write cannot make the next
+            # start read a stale head as a wiped directory.
+            if not self._head_file_written:
+                return
             self._store.async_set_audit_head(
                 {
                     "seq": self._seq,
@@ -1209,7 +1229,8 @@ class AuditLog:
 
     def _sync_write_chain_head(
         self, seq: int | None = None, prev_hash: str | None = None
-    ) -> None:
+    ) -> bool:
+        """Write chain_head.json; return whether it reached disk."""
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         tmp_path = f"{path}.tmp"
         if seq is None and self._flush_head is not None:
@@ -1238,6 +1259,8 @@ class AuditLog:
             _LOGGER.warning(
                 "HA SOC audit log: failed writing %s", path, exc_info=True
             )
+            return False
+        return True
 
     def _sync_flush(self, records: list[dict[str, Any]]) -> int:
         """Append prepared records and maintain the head.
@@ -1247,6 +1270,7 @@ class AuditLog:
         were written. The rest stay buffered and are retried unchanged.
         """
         written = 0
+        self._head_file_written = False
         try:
             os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
             by_day: list[tuple[str, list[dict[str, Any]]]] = []
@@ -1284,7 +1308,7 @@ class AuditLog:
             self._last_flush_error_log = None
             last = records[written - 1]
             self._flush_head = (last["seq"], last["hash"])
-            self._sync_write_chain_head()
+            self._head_file_written = self._sync_write_chain_head()
         try:
             self._sync_apply_retention()
         except OSError:
