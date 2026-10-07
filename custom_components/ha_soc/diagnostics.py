@@ -14,7 +14,9 @@ from .const import REDACTED_PLACEHOLDER, SECRET_SETTING_KEYS
 from .secrets_store import PROBE_PAIRING_SECRET_KEY, HaSocSecretStore
 
 # Not credentials, but they identify the installation; redacted to a presence flag.
-_PRIVATE_SETTING_KEYS = frozenset({"unifi_network_host", "unifi_protect_host"})
+_PRIVATE_SETTING_KEYS = frozenset(
+    {"unifi_network_host", "unifi_protect_host", "observe_url", "observe_host_name"}
+)
 
 
 async def _safe_settings(
@@ -86,6 +88,8 @@ async def async_get_config_entry_diagnostics(
             # Presence only, never the value.
             "addon_paired": bool(await secrets.async_get(PROBE_PAIRING_SECRET_KEY)),
         },
+        # Counters and state only; the URL, host name and key are in the settings block as flags.
+        "observe_push": runtime.observe.status,
         "resource_watchdog": {
             # Thresholds are configuration, not installation data.
             key: watchdog.get(key)

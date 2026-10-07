@@ -166,3 +166,23 @@ async def async_sync_vuln_issues(hass: HomeAssistant, findings: list[dict]) -> N
 
     for issue_id in current_ids - still_open:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
+
+
+# One fixed issue id; it is deleted as soon as a push is accepted or the push is turned off.
+OBSERVE_KEY_ISSUE_ID = "observe_key_rejected"
+
+
+def async_create_observe_key_issue(hass: HomeAssistant) -> None:
+    """Raise the Repairs issue for an ingest key (or host name) Observe refuses."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        OBSERVE_KEY_ISSUE_ID,
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key=OBSERVE_KEY_ISSUE_ID,
+    )
+
+
+def async_delete_observe_key_issue(hass: HomeAssistant) -> None:
+    ir.async_delete_issue(hass, DOMAIN, OBSERVE_KEY_ISSUE_ID)

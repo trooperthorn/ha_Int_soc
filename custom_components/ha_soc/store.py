@@ -38,6 +38,8 @@ from .const import (
     DEFAULT_SYSLOG_FACILITY,
     DEFAULT_SYSLOG_FORMAT,
     DEFAULT_SYSLOG_PORT,
+    DEFAULT_OBSERVE_ENABLED,
+    DEFAULT_OBSERVE_INTERVAL,
     DEFAULT_SYSLOG_RECEIVER_ENABLED,
     DEFAULT_SYSLOG_RECEIVER_PORT,
     DEFAULT_SYSLOG_TLS_VERIFY,
@@ -76,6 +78,11 @@ class SettingsData(TypedDict):
     # Syslog RECEIVER (opposite direction, e.g. logspout forwarding container
     # logs to HA SOC over UDP): off by default, distinct port from the exporter.
     syslog_receiver_enabled: bool
+    # Observe push; the ingest key is a secret and lives in secrets_store.py.
+    observe_enabled: bool
+    observe_url: str | None
+    observe_host_name: str | None
+    observe_interval_seconds: int
     syslog_receiver_port: int
     evidence_retention_days: int
     scanner_enabled: bool
@@ -208,6 +215,10 @@ def default_store_data() -> StoreData:
             syslog_tls_verify=DEFAULT_SYSLOG_TLS_VERIFY,
             syslog_facility=DEFAULT_SYSLOG_FACILITY,
             syslog_receiver_enabled=DEFAULT_SYSLOG_RECEIVER_ENABLED,
+            observe_enabled=DEFAULT_OBSERVE_ENABLED,
+            observe_url=None,
+            observe_host_name=None,
+            observe_interval_seconds=DEFAULT_OBSERVE_INTERVAL,
             syslog_receiver_port=DEFAULT_SYSLOG_RECEIVER_PORT,
             evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,

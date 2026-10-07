@@ -81,6 +81,9 @@ class ResourceWatchdog:
         self._history_path = hass.config.path("ha_soc", HISTORY_FILENAME)
         self._history_dirty = False
         self._history_last_write: str | None = None
+        # The latest successful sample and its monotonic time; the Observe push reads it.
+        self.last_overview: dict[str, Any] | None = None
+        self.last_overview_at: float | None = None
 
     def _sync_load_history(self) -> dict[str, Any] | None:
         """Copy this boot's starting ring to the .prev file, then load it.
@@ -188,6 +191,9 @@ class ResourceWatchdog:
         overview = await async_container_resources(self.hass)
         if not overview.get("available"):
             return
+        # Kept so the Observe push reuses this sample instead of asking the Supervisor again.
+        self.last_overview = overview
+        self.last_overview_at = time.monotonic()
 
         sustained = max(1, int(self.config.get("sustained_samples") or 3))
         changed = False

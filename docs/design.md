@@ -403,8 +403,54 @@ request; 5,000 points) so a request stays inside Observe's limits.
 
 Golden files in `tests/fixtures/observe_otlp/` pin the output;
 `docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
-routes accepted them with no rejects. The sender, retry and options flow
-are separate slices.
+routes accepted them with no rejects.
+
+### The push client
+
+`observe_push.py` holds three things. `SnapshotCollector` gathers the
+snapshot from data HA SOC already holds: the resource watchdog's latest
+container sample (a fresh Supervisor call only when that sample is older than
+90 seconds), the stored detections, the integration overview, the issue
+registry's open issues, the unprotected-backup finding, and, refreshed at
+most every ten minutes because they change rarely, the crash bundle list and
+the Supervisor `/resolution/info` body. A part that cannot be collected is
+left out. `ObservePusher` owns the timer and the delivery rules.
+`validate_url`, `validate_host_name`, `validate_ingest_key` and
+`validate_options` are the pure checks the options flow and the pusher share.
+
+The settings are `observe_enabled`, `observe_url`, `observe_host_name` and
+`observe_interval_seconds` in the HA SOC store and the ingest key in the
+secret store (`observe_ingest_key`, in `SECRET_SETTING_KEYS`, so every
+masking path covers it). `entry.options` stays `{}`; the options flow writes
+the store and schedules the reload itself, and the reload restarts the push
+with the new values. Disabled, or enabled with an incomplete or invalid
+configuration, the pusher arms no timer and opens no connection.
+
+Each tick runs under one lock, so a slow cycle makes the next tick skip
+instead of overlapping. A tick builds the metrics request and, when it holds
+records Observe has not yet accepted, the logs request, gzips them in the
+executor, queues them and sends from the head of the queue. The queue holds
+at most 60 payloads; overflow drops the oldest and counts it. Each payload
+has one `Idempotency-Key` for its whole life, so a retry after a lost
+response is recognised by Observe.
+
+Outcomes by response: 200 is accepted (a `partialSuccess` rejected count is
+counted and logged, not retried); 401 and 403 raise the Repairs issue, drop
+that payload and pause sending for five minutes; 408, 429, any 5xx and any
+connection error or timeout (15 seconds) keep the payload and retry, after
+`Retry-After` (capped at an hour) or an exponential back-off from 10 seconds
+to 15 minutes; every other status, 413 included, drops the payload because a
+retry cannot change the answer. Redirects are not followed, so the key is
+never sent anywhere but the configured address. Waiting is a stored "not
+before" time compared against a monotonic clock, never a sleep. Log records
+that were accepted are remembered by their dedup key (in memory) so a later
+logs request is only sent when it carries something new.
+
+The key is placed only in the `Authorization` header. Log lines name the
+status and the payload kind, never the URL or headers, and pass any server
+supplied text through a redaction of the key. Diagnostics report
+`ObservePusher.status` (counters, queue length, last status) and show the
+URL and host name as presence flags like the UniFi hosts.
 
 ## UniFi configuration ledger
 
