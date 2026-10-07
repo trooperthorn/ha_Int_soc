@@ -29,7 +29,8 @@
        "ts": "2026-09-21T13:50:00+00:00", "last_seen": "2026-09-21T14:10:00+00:00", "status": "open",
        "recurrence_count": 2, "title": "Container 'HA SOC Probe' sustained CPU 91% and memory 88%",
        "detail": {"slug": "a0d7b954_probe", "kind": "addon", "cpu_percent": 91.0, "memory_percent": 87.5,
-                  "action_taken": "alerted", "restart_loop_suspected": false}},
+                  "action_taken": "alerted", "restart_loop_suspected": false,
+                  "episode_start": "2026-09-21T13:50:00+00:00"}},
       {"id": "watchdog_core_samba", "rule_id": "container_resource_breach", "severity": "high",
        "ts": "2026-09-20T08:00:00+00:00", "last_seen": "2026-09-20T08:03:00+00:00", "status": "resolved",
        "recurrence_count": 1, "title": "Container 'Samba share' sustained memory 90%",
@@ -48,14 +49,19 @@
       {"id": "crash-2026-09-20T101000Z", "ts": "2026-09-20T10:10:00+00:00", "classification": "core_restart",
        "gap_seconds": -35.5, "suspects": [], "size_bytes": 2048, "path": "/config/ha_soc/crash-y"},
       {"id": "crash-2026-09-21T000000Z", "ts": "2026-09-21T00:00:00+00:00", "classification": "clean_reboot",
-       "gap_seconds": 90.0, "suspects": [], "size_bytes": 2048, "path": "/config/ha_soc/crash-z"}
+       "gap_seconds": 90.0, "suspects": [], "size_bytes": 2048, "path": "/config/ha_soc/crash-z"},
+      {"id": "crash-2026-09-21T120000Z", "ts": "2026-09-21T12:00:00+00:00", "classification": "silent_stop",
+       "gap_seconds": 0.0, "dry_run": true, "suspects": [], "size_bytes": 2048, "path": "/config/ha_soc/crash-dry"}
     ],
     "integration_overview": {
-      "category_counts": {"credential": 1, "failing": 0, "communication": 1, "collection": 0, "errors": 1, "debug_logging": 0, "disabled": 0},
+      "category_counts": {"credential": 1, "failing": 0, "communication": 1, "collection": 0, "errors": 4, "debug_logging": 0, "disabled": 0},
       "integrations": [
         {"entry_id": "e1", "domain": "unifi", "title": "UniFi", "state": "loaded", "error_count_24h": 41, "issue_category": "errors"},
         {"entry_id": "e2", "domain": "elkm1", "title": "Elk", "state": "setup_retry", "error_count_24h": 3, "issue_category": "communication"},
-        {"entry_id": "e3", "domain": "ecobee", "title": "ecobee", "state": "loaded", "error_count_24h": 0, "issue_category": "credential"}
+        {"entry_id": "e3", "domain": "ecobee", "title": "ecobee", "state": "loaded", "error_count_24h": 0, "issue_category": "credential"},
+        {"entry_id": "es1", "domain": "esphome", "title": "Sensor node 1", "state": "loaded", "error_count_24h": 12, "issue_category": "errors"},
+        {"entry_id": "es2", "domain": "esphome", "title": "Sensor node 2", "state": "loaded", "error_count_24h": 7, "issue_category": "errors"},
+        {"entry_id": "es3", "domain": "esphome", "title": "Sensor node 3", "state": "loaded", "error_count_24h": 5, "issue_category": "errors"}
       ]
     },
     "repairs": [

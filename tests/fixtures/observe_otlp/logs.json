@@ -55,7 +55,7 @@
                 {
                   "key": "observe.dedup_key",
                   "value": {
-                    "stringValue": "watchdog:a0d7b954_probe:2026-09-21T14:10:00+00:00"
+                    "stringValue": "watchdog:a0d7b954_probe:2026-09-21T13:50:00+00:00"
                   }
                 },
                 {
@@ -106,7 +106,7 @@
               },
               "severityNumber": 13,
               "severityText": "WARN",
-              "timeUnixNano": "1789999800000000000"
+              "timeUnixNano": "1789998600000000000"
             },
             {
               "attributes": [

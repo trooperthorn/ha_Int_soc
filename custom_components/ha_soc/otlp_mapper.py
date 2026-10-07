@@ -200,13 +200,18 @@ def _integrations(m: _Metrics, overview: Any) -> None:
         for category in sorted(counts):
             m.gauge("integrations", "observe.ha.integration.count", "{integration}",
                     counts[category], observe__ha__integration__category=str(category))
-    rows = _capped(m, "integrations", _rows(overview.get("integrations")))
-    for row in rows:
+    # Several config entries of one domain (three ESPHome devices) would otherwise write
+    # identical series, which Observe keeps only one of. Sum them per domain and category.
+    grouped: dict[tuple[str, str], float] = {}
+    for row in _rows(overview.get("integrations")):
         domain = row.get("domain")
         if isinstance(domain, str) and domain:
-            m.gauge("integrations", "observe.ha.integration.errors", "{error}",
-                    row.get("error_count_24h"), observe__ha__integration=domain,
-                    observe__ha__integration__category=str(row.get("issue_category", "")))
+            key = (domain, str(row.get("issue_category", "")))
+            grouped[key] = grouped.get(key, 0) + (_number(row.get("error_count_24h")) or 0)
+    for domain, category in _capped(m, "integrations", sorted(grouped)):
+        m.gauge("integrations", "observe.ha.integration.errors", "{error}",
+                grouped[(domain, category)], observe__ha__integration=domain,
+                observe__ha__integration__category=category)
 
 
 def _repairs(m: _Metrics, issues: Any) -> None:
@@ -302,13 +307,16 @@ def _watchdog_records(detections: Any, now: float) -> list[dict[str, Any]]:
         if det.get("rule_id") != WATCHDOG_RULE:
             continue
         detail = det.get("detail") if isinstance(det.get("detail"), dict) else {}
-        last_seen = _iso_to_ts(det.get("last_seen"), now)
         slug = str(detail.get("slug") or det.get("id") or "unknown")
-        # One record per breach episode: the dedup key carries the last-seen time, so a
-        # re-trip is a new record and a resend of the same trip is a no-op in Observe.
+        # One record per breach episode: the dedup key carries the episode start, which
+        # stays the same across re-trips inside one continuous breach, so they and any
+        # resend are no-ops in Observe. Rows from before the field existed fall back to
+        # the last-seen time.
+        episode = detail.get("episode_start") or det.get("last_seen")
+        last_seen = _iso_to_ts(episode, now)
         out.append(_record(
             last_seen, SEVERITY_WARN, str(det.get("title") or f"Container {slug} breach"),
-            "observe.ha.watchdog.breach", f"watchdog:{slug}:{det.get('last_seen')}",
+            "observe.ha.watchdog.breach", f"watchdog:{slug}:{episode}",
             observe__source="watchdog",
             container__name=slug,
             observe__ha__watchdog__rule=WATCHDOG_RULE,
@@ -327,6 +335,8 @@ def _crash_records(bundles: Any, now: float) -> list[dict[str, Any]]:
         classification = bundle.get("classification")
         if not isinstance(bundle_id, str) or not isinstance(classification, str):
             continue
+        if bundle.get("dry_run"):
+            continue  # A dry run is a drill triggered from the panel, not a host stop.
         severity = CRASH_SEVERITY.get(classification, SEVERITY_WARN)
         suspects = [
             f"{s.get('kind')}:{s.get('subject')}"

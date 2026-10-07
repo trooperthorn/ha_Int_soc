@@ -702,7 +702,10 @@ Supervisor and every add-on, watchdog breaches and crash forensics
 classifications as log records, integration health categories, the open
 Repairs count, the unprotected-backup finding and the Supervisor
 resolution state. The push is off by default and sends nothing until you
-turn it on.
+turn it on. Several entries of one integration are summed into one error
+series per category, a crash forensics dry run is never sent, and a watchdog
+breach that lasts is one log record until the container recovers, at which
+point the breach gauge returns to 0.
 
 To enable it, open Settings, Devices and services, HA SOC, Configure, and fill
 in the form:

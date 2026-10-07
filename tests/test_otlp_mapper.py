@@ -240,3 +240,51 @@ def test_row_cap_drops_are_reported():
     om.build_metrics(om.Identity(host_name="h"),
                      {"containers": {"available": True, "containers": rows}}, 1.0, dropped)
     assert dropped == {"containers": 3}
+
+
+def _series_keys(request):
+    return [(m["name"], tuple(sorted((k, str(v)) for k, v in _attr_map(dp).items())))
+            for _s, m, dp in _points(request)]
+
+
+def test_entries_of_one_integration_make_one_distinct_series():
+    identity, snap, now = _load()
+    out = om.build_metrics(identity, snap, now)
+    esphome = [(a, v) for a, v in _by_name(out, "observe.ha.integration.errors")
+               if a["observe.ha.integration"] == "esphome"]
+    assert esphome == [({"observe.ha.integration": "esphome",
+                         "observe.ha.integration.category": "errors"}, 24.0)]
+    keys = _series_keys(out)
+    assert len(keys) == len(set(keys)), "two points share a series; Observe would keep one"
+
+
+def test_a_domain_in_two_categories_keeps_both_series():
+    rows = [{"domain": "esphome", "error_count_24h": 4, "issue_category": "errors"},
+            {"domain": "esphome", "error_count_24h": 1, "issue_category": "communication"}]
+    out = om.build_metrics(om.Identity(host_name="h"),
+                           {"integration_overview": {"integrations": rows}}, 1.0)
+    got = {a["observe.ha.integration.category"]: v
+           for a, v in _by_name(out, "observe.ha.integration.errors")}
+    assert got == {"errors": 4.0, "communication": 1.0}
+
+
+def test_dry_run_bundle_is_never_sent_as_a_crash():
+    identity, snap, now = _load()
+    ids = {_attr_map(r)["observe.boot_id"] for r in _records(om.build_logs(identity, snap, now))
+           if _attr_map(r)["event.name"] == "observe.ha.crash"}
+    assert "crash-2026-09-21T120000Z" not in ids and len(ids) == 3
+    only = om.build_logs(om.Identity(host_name="h"), {"crash_bundles": [
+        {"id": "crash-x", "classification": "silent_stop", "dry_run": True}]}, 1.0)
+    assert _records(only) == []
+
+
+def test_watchdog_record_key_is_the_episode_start_not_the_last_seen_time():
+    def det(last_seen):
+        return {"rule_id": om.WATCHDOG_RULE, "id": "watchdog_c", "status": "open",
+                "last_seen": last_seen,
+                "detail": {"slug": "c", "episode_start": "2026-01-01T00:00:00+00:00"}}
+    keys = {_attr_map(r)["observe.dedup_key"] for t in ("2026-01-01T00:03:00+00:00",
+                                                         "2026-01-01T00:06:00+00:00")
+            for r in _records(om.build_logs(om.Identity(host_name="h"),
+                                            {"detections": [det(t)]}, 1.0))}
+    assert len(keys) == 1

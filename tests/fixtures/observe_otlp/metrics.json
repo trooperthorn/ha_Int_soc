@@ -378,7 +378,7 @@
                     "timeUnixNano": "1790000000000000000"
                   },
                   {
-                    "asDouble": 1.0,
+                    "asDouble": 4.0,
                     "attributes": [
                       {
                         "key": "observe.ha.integration.category",
@@ -410,18 +410,18 @@
               "gauge": {
                 "dataPoints": [
                   {
-                    "asDouble": 41.0,
+                    "asDouble": 0.0,
                     "attributes": [
                       {
                         "key": "observe.ha.integration",
                         "value": {
-                          "stringValue": "unifi"
+                          "stringValue": "ecobee"
                         }
                       },
                       {
                         "key": "observe.ha.integration.category",
                         "value": {
-                          "stringValue": "errors"
+                          "stringValue": "credential"
                         }
                       }
                     ],
@@ -446,18 +446,36 @@
                     "timeUnixNano": "1790000000000000000"
                   },
                   {
-                    "asDouble": 0.0,
+                    "asDouble": 24.0,
                     "attributes": [
                       {
                         "key": "observe.ha.integration",
                         "value": {
-                          "stringValue": "ecobee"
+                          "stringValue": "esphome"
                         }
                       },
                       {
                         "key": "observe.ha.integration.category",
                         "value": {
-                          "stringValue": "credential"
+                          "stringValue": "errors"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  },
+                  {
+                    "asDouble": 41.0,
+                    "attributes": [
+                      {
+                        "key": "observe.ha.integration",
+                        "value": {
+                          "stringValue": "unifi"
+                        }
+                      },
+                      {
+                        "key": "observe.ha.integration.category",
+                        "value": {
+                          "stringValue": "errors"
                         }
                       }
                     ],

@@ -314,7 +314,7 @@ peripherals.py reuses core's own USB discovery data instead of adding host-level
 
 ### Resource watchdog
 
-The Supervisor exposes no API to cap an add-on's CPU or memory, so by default any add-on can eat the host until the kernel OOM-kills something, often the wrong container. `RESOURCE-WATCHDOG.md` holds the two-layer summary; the mechanics: `ResourceWatchdog` samples per-container stats on an interval and tracks consecutive-breach counts per container against its threshold, so only a sustained breach trips it. On a trip it always records a detection, a notification, and an audit entry, then takes the configured action. Guard rails that are not configurable: Core and the Supervisor are clamped to alert-only (an automated response killing the thing that hosts the automation is a footgun), and after `WATCHDOG_MAX_ACTIONS_PER_HOUR` actions a container is downgraded to alert-only for the rest of the hour, because re-breaching right after every restart is a restart loop. After a trip the counter resets; a stopped add-on's counter is cleared. Hard caps are stored here and applied by the Probe over the firewall poll channel (`async_resource_limits_for_probe`); the module stores intent and result and never touches Docker. Runtime state (`_breach_counts`, `_history`, `_action_times`, `_last_outcome`) is memory-only. `async_installed_addon_slugs` reuses logs.py's cache-backed lookup (work item 2.2).
+The Supervisor exposes no API to cap an add-on's CPU or memory, so by default any add-on can eat the host until the kernel OOM-kills something, often the wrong container. `RESOURCE-WATCHDOG.md` holds the two-layer summary; the mechanics: `ResourceWatchdog` samples per-container stats on an interval and tracks consecutive-breach counts per container against its threshold, so only a sustained breach trips it. On a trip it always records a detection, a notification, and an audit entry, then takes the configured action. Guard rails that are not configurable: Core and the Supervisor are clamped to alert-only (an automated response killing the thing that hosts the automation is a footgun), and after `WATCHDOG_MAX_ACTIONS_PER_HOUR` actions a container is downgraded to alert-only for the rest of the hour, because re-breaching right after every restart is a restart loop. After a trip the counter resets; a stopped add-on's counter is cleared. A breach episode (`_episodes`, memory-only) lasts from the first trip until a sample shows the container under its limits, stopped or absent; the detection is resolved then and carries `episode_start` in its detail, and the first trip of a new episode forces the row back to open even if it was resolved. Hard caps are stored here and applied by the Probe over the firewall poll channel (`async_resource_limits_for_probe`); the module stores intent and result and never touches Docker. Runtime state (`_breach_counts`, `_history`, `_action_times`, `_last_outcome`) is memory-only. `async_installed_addon_slugs` reuses logs.py's cache-backed lookup (work item 2.2).
 
 ## Device SSH collection
 
@@ -400,6 +400,18 @@ Observe) and a severity of 9, 13 or 17: crash classifications
 `clean_reboot` is 9; a watchdog breach is 13. Row counts are capped (100
 containers, integration rows and repair domains; 500 log records per
 request; 5,000 points) so a request stays inside Observe's limits.
+
+Series must stay distinct, because Observe keeps one value per series. The
+per-integration error gauge is therefore summed per domain and issue
+category, so three ESPHome entries produce one `esphome` point. Bundles
+marked `dry_run` (the panel's drill) are never sent as crashes;
+`sync_list_bundles` exposes the flag. The watchdog stores an `episode_start`
+in each breach detection's detail: a re-trip inside one continuous breach
+keeps it, so the log record's dedup key is stable for the whole episode. The
+watchdog resolves the detection when a sample shows the container back
+under its limits (or stopped, or gone), which is what returns
+`observe.ha.watchdog.breaches` to 0, and a trip after that starts a new
+episode and reopens the row.
 
 Golden files in `tests/fixtures/observe_otlp/` pin the output;
 `docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
