@@ -45,10 +45,10 @@ def sync_write_json_atomic(path: str, payload: Any, *, durable: bool = False) ->
         raise
     os.replace(tmp_path, path)
     if durable:
-        _fsync_directory(directory)
+        fsync_directory(directory)
 
 
-def _fsync_directory(directory: str) -> None:
+def fsync_directory(directory: str) -> None:
     """Flush a directory entry to disk; best effort, skipped where unsupported."""
     try:
         dir_fd = os.open(directory, os.O_RDONLY)

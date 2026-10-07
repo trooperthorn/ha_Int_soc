@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from typing import Any, Callable
 
@@ -32,6 +33,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
 import homeassistant.util.dt as dt_util
 
+from .atomic_json import fsync_directory
 from .const import AUDIT_STORAGE_SUBDIR, REDACTED_PLACEHOLDER, SECRET_SETTING_KEYS
 from .store import HaSocData
 
@@ -115,6 +117,14 @@ _SEGMENT_MAX_BYTES = 32 * 1024 * 1024
 
 _DEFAULT_QUERY_LOOKBACK = timedelta(days=7)
 
+# Upper bound on records held in memory while the audit directory cannot be written.
+# Past it new records are counted, not stored; the first flush after recovery writes one
+# chained "audit_records_dropped" record saying how many, so the loss is visible.
+_BUFFER_MAX_RECORDS = 20000
+# A repeating flush failure logs its traceback at most this often (seconds).
+_FLUSH_ERROR_LOG_INTERVAL = 600.0
+DROPPED_CATEGORY = "audit_records_dropped"
+
 # Exact key match, case-insensitive, any depth: "token_id" stays visible, "token" does not.
 _REDACTED_SERVICE_DATA_KEYS = frozenset(
     {
@@ -151,10 +161,56 @@ _SECRET_ANY_WORD = frozenset(
         "psk",
         "authorization",
         "bearer",
+        "otp",
+        "totp",
+        "hotp",
+        "cookie",
+        "cookies",
+    }
+)
+# These words mark a credential anywhere in the key (token_value, auth_header) unless the
+# key ends in a word that says it is metadata about it (token_id, auth_type).
+_SECRET_CONTEXT_WORDS = frozenset({"token", "tokens", "auth"})
+_SECRET_CONTEXT_METADATA = frozenset(
+    {
+        "id",
+        "ids",
+        "type",
+        "types",
+        "count",
+        "name",
+        "names",
+        "method",
+        "methods",
+        "provider",
+        "mode",
+        "status",
+        "state",
+        "result",
+        "enabled",
+        "required",
+        "expires",
+        "expiry",
+        "ttl",
+        "length",
+        "index",
+        "slot",
+        "timeout",
+        "duration",
+        "time",
+        "ts",
+        "age",
+        "valid",
+        "limit",
+        "url",
+        "user",
+        "client",
     }
 )
 # Only when the word ends the key, so "token_id" and "pin_count" stay visible.
-_SECRET_LAST_WORD = frozenset({"token", "tokens", "pass", "pin", "pincode", "key"})
+_SECRET_LAST_WORD = frozenset(
+    {"token", "tokens", "pass", "pin", "pincode", "key", "session"}
+)
 _SECRET_JOINED_FRAGMENTS = (
     "apikey",
     "privatekey",
@@ -212,6 +268,8 @@ def _is_secret_key(key: str) -> bool:
     last = words[-1]
     if last in _SECRET_LAST_WORD:
         return True
+    if any(word in _SECRET_CONTEXT_WORDS for word in words):
+        return last not in _SECRET_CONTEXT_METADATA
     if last.endswith("code"):
         return not (len(words) > 1 and words[-2] in _CODE_NON_SECRET_PREFIXES)
     return False
@@ -382,6 +440,15 @@ class AuditLog:
         self._dir_path = hass.config.path(".storage", AUDIT_STORAGE_SUBDIR)
 
         self._buffer: deque[dict[str, Any]] = deque()
+        # Prepared copies (with seq, prev_hash, hash) of the leading buffered records, so a
+        # retry after a failed flush only hashes records that arrived since the last attempt.
+        self._prepared: deque[dict[str, Any]] = deque()
+        # Records refused because the buffer was full: count, and first/last time.
+        self._dropped_count = 0
+        self._dropped_first_ts: str | None = None
+        self._dropped_last_ts: str | None = None
+        # time.monotonic() of the last logged flush traceback; executor-side only.
+        self._last_flush_error_log: float | None = None
         self._flush_lock = asyncio.Lock()
         self._seq = 0
         # (seq, hash) of the records written by the flush in progress; executor-side only.
@@ -938,6 +1005,19 @@ class AuditLog:
             "attempted_user": attempted_user,
             "detail": detail_value,
         }
+        if len(self._buffer) >= _BUFFER_MAX_RECORDS:
+            # The audit directory has been unwritable long enough to fill the buffer.
+            # Memory stays bounded; the loss is recorded after the next good flush.
+            if self._dropped_count == 0:
+                self._dropped_first_ts = record["ts"]
+                _LOGGER.error(
+                    "HA SOC audit log: %d records are waiting for a failing disk; "
+                    "newer records are counted and dropped until a flush succeeds",
+                    len(self._buffer),
+                )
+            self._dropped_count += 1
+            self._dropped_last_ts = record["ts"]
+            return
         # Coerce after redaction so no value can make json.dumps fail later in the flush.
         self._buffer.append(_json_safe(record))
         if (
@@ -963,18 +1043,23 @@ class AuditLog:
         )
 
     def _prepare_buffered(self) -> list[dict[str, Any]]:
-        """Return copies of the buffered records with seq, prev_hash and hash set.
+        """Return the buffered records with seq, prev_hash and hash set.
 
         Nothing is consumed: the buffer, ``_seq`` and ``_prev_hash`` only move in
         ``_commit_written`` after the records reached disk, so a failed write
-        leaves no gap in the chain and loses no record. Synchronous and
+        leaves no gap in the chain and loses no record. The prepared copies are
+        cached, so each attempt hashes only records that were not prepared yet
+        and an outage does not make every retry slower. Synchronous and
         event-loop-only (no I/O), so the chain state never races a flush.
         """
-        prepared: list[dict[str, Any]] = []
-        seq = self._seq
-        prev_hash = self._prev_hash
-        for buffered in self._buffer:
-            record = dict(buffered)
+        if self._prepared:
+            seq = self._prepared[-1]["seq"]
+            prev_hash = self._prepared[-1]["hash"]
+        else:
+            seq = self._seq
+            prev_hash = self._prev_hash
+        for index in range(len(self._prepared), len(self._buffer)):
+            record = dict(self._buffer[index])
             seq += 1
             record["seq"] = seq
             record["prev_hash"] = prev_hash
@@ -983,15 +1068,41 @@ class AuditLog:
                 (prev_hash + canonical).encode("utf-8")
             ).hexdigest()
             record["hash"] = prev_hash
-            prepared.append(record)
-        return prepared
+            self._prepared.append(record)
+        return list(self._prepared)
 
     def _commit_written(self, written: list[dict[str, Any]]) -> None:
         """Drop the first ``len(written)`` buffered records and advance the chain."""
         for _ in written:
             self._buffer.popleft()
+            self._prepared.popleft()
         self._seq = written[-1]["seq"]
         self._prev_hash = written[-1]["hash"]
+        if self._dropped_count and len(self._buffer) < _BUFFER_MAX_RECORDS:
+            self._buffer.append(
+                _json_safe(
+                    {
+                        "ts": dt_util.utcnow().isoformat(),
+                        "user_id": None,
+                        "category": DROPPED_CATEGORY,
+                        "domain": None,
+                        "service": None,
+                        "entity_ids": [],
+                        "context_id": None,
+                        "context_parent_id": None,
+                        "ip": None,
+                        "attempted_user": None,
+                        "detail": {
+                            "dropped": self._dropped_count,
+                            "first_ts": self._dropped_first_ts,
+                            "last_ts": self._dropped_last_ts,
+                        },
+                    }
+                )
+            )
+            self._dropped_count = 0
+            self._dropped_first_ts = None
+            self._dropped_last_ts = None
 
     async def _async_flush(self, _now: Any = None) -> None:
         async with self._flush_lock:
@@ -1122,6 +1233,7 @@ class AuditLog:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(tmp_path, path)
+            fsync_directory(self._dir_path)
         except OSError:
             _LOGGER.warning(
                 "HA SOC audit log: failed writing %s", path, exc_info=True
@@ -1151,12 +1263,25 @@ class AuditLog:
                 )
                 self._sync_append_durable(file_path, text)
                 written += len(day_records)
-        except OSError:
-            _LOGGER.exception(
-                "HA SOC audit log: flush to disk failed, %d record(s) stay buffered",
-                len(records) - written,
-            )
+        except OSError as err:
+            # An outage repeats this every attempt, often on the full disk itself, so the
+            # traceback is rate limited and the other attempts log one short line.
+            now = time.monotonic()
+            last = self._last_flush_error_log
+            if last is None or now - last >= _FLUSH_ERROR_LOG_INTERVAL:
+                self._last_flush_error_log = now
+                _LOGGER.exception(
+                    "HA SOC audit log: flush to disk failed, %d record(s) stay buffered",
+                    len(records) - written,
+                )
+            else:
+                _LOGGER.debug(
+                    "HA SOC audit log: flush still failing (%s), %d record(s) stay buffered",
+                    err,
+                    len(records) - written,
+                )
         if written:
+            self._last_flush_error_log = None
             last = records[written - 1]
             self._flush_head = (last["seq"], last["hash"])
             self._sync_write_chain_head()
@@ -1172,14 +1297,20 @@ class AuditLog:
     def _sync_append_durable(file_path: str, text: str) -> None:
         """Append ``text`` and fsync it; on failure cut off any partial tail."""
         # O_APPEND with mode 0o600: a brand-new day file is born private.
-        fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        fd = os.open(file_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        synced = False
         try:
             size = os.fstat(fd).st_size
             try:
                 data = text.encode("utf-8")
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    # A torn line from an earlier failed write that could not be trimmed:
+                    # end it so the first new record starts on its own line.
+                    data = b"\n" + data
                 while data:
                     data = data[os.write(fd, data):]
                 os.fsync(fd)
+                synced = True
             except OSError:
                 try:
                     os.ftruncate(fd, size)
@@ -1191,7 +1322,21 @@ class AuditLog:
                     )
                 raise
         finally:
-            os.close(fd)
+            try:
+                os.close(fd)
+            except OSError:
+                # The data is already on disk; reporting the batch as unwritten would
+                # make the retry append duplicate sequence numbers.
+                if not synced:
+                    raise
+                _LOGGER.warning(
+                    "HA SOC audit log: close failed after a durable write to %s",
+                    file_path,
+                    exc_info=True,
+                )
+        if not size:
+            # A new day or segment file: make its directory entry durable too.
+            fsync_directory(os.path.dirname(file_path))
 
     def _sync_list_day_files(self) -> list[tuple[date, str]]:
         if not os.path.isdir(self._dir_path):

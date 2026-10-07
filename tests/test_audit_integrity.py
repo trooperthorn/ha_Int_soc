@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import json
+import logging
 import os
 from typing import Any
 from unittest.mock import patch
@@ -293,3 +295,119 @@ async def test_crash_forensics_markers_are_written_durably(hass, tmp_path):
         forensics._sync_write_heartbeat()
         await forensics._async_on_stop(None)
     assert calls == [True, True]
+
+
+async def test_retry_after_failed_flush_hashes_only_new_records(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    for i in range(50):
+        _log(audit, i)
+    with patch(
+        "custom_components.ha_soc.audit.os.open", side_effect=OSError(28, "full")
+    ):
+        await audit._async_flush()
+    for i in range(50, 55):
+        _log(audit, i)
+    with patch(
+        "custom_components.ha_soc.audit.hashlib.sha256", wraps=hashlib.sha256
+    ) as sha:
+        with patch(
+            "custom_components.ha_soc.audit.os.open", side_effect=OSError(28, "full")
+        ):
+            await audit._async_flush()
+    assert sha.call_count == 5
+    await audit._async_flush()
+    assert [r["seq"] for r in _records_on_disk(audit)] == list(range(1, 56))
+
+
+async def test_buffer_is_bounded_and_the_loss_is_recorded(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with patch("custom_components.ha_soc.audit._BUFFER_MAX_RECORDS", 5):
+        for i in range(9):
+            _log(audit, i)
+        assert len(audit._buffer) == 5
+        await audit._async_flush()
+        await audit._async_flush()
+    records = _records_on_disk(audit)
+    assert [r["seq"] for r in records] == list(range(1, 7))
+    assert records[-1]["category"] == "audit_records_dropped"
+    assert records[-1]["detail"]["dropped"] == 4
+    assert (await audit.async_verify_chain())["ok"] is True
+
+
+async def test_failure_traceback_is_rate_limited(hass, tmp_path, caplog):
+    audit = await _make_audit(hass, tmp_path)
+    _log(audit, 0)
+    with patch(
+        "custom_components.ha_soc.audit.os.open", side_effect=OSError(28, "full")
+    ):
+        for _ in range(3):
+            await audit._async_flush()
+    errors = [r for r in caplog.records if r.levelno >= logging.ERROR]
+    assert len(errors) == 1
+
+
+async def test_unrecoverable_torn_tail_does_not_corrupt_the_next_record(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    _log(audit, 0)
+    real_write = os.write
+    calls = {"n": 0}
+
+    def torn_write(fd, data):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return real_write(fd, data[:10])
+        raise OSError(5, "io")
+
+    with (
+        patch("custom_components.ha_soc.audit.os.write", side_effect=torn_write),
+        patch("custom_components.ha_soc.audit.os.ftruncate", side_effect=OSError(5, "io")),
+    ):
+        await audit._async_flush()
+    assert len(audit._buffer) == 1
+    await audit._async_flush()
+    day_file = os.path.join(
+        audit._dir_path, next(n for n in os.listdir(audit._dir_path) if n.startswith("audit-"))
+    )
+    lines = [ln for ln in open(day_file, encoding="utf-8").read().split(chr(10)) if ln]
+    assert json.loads(lines[-1])["seq"] == 1
+    assert len(audit._buffer) == 0
+
+
+async def test_close_failure_after_durable_write_is_not_a_lost_batch(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    _log(audit, 0)
+    real_close = os.close
+    state = {"failed": False}
+
+    def close(fd):
+        real_close(fd)
+        if not state["failed"]:
+            state["failed"] = True
+            raise OSError(5, "io")
+
+    with patch("custom_components.ha_soc.audit.os.close", side_effect=close):
+        await audit._async_flush()
+    assert len(audit._buffer) == 0
+    assert [r["seq"] for r in _records_on_disk(audit)] == [1]
+
+
+async def test_directories_are_fsynced_for_new_day_file_and_chain_head(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    _log(audit, 0)
+    with patch("custom_components.ha_soc.audit.fsync_directory") as fsd:
+        await audit._async_flush()
+    assert fsd.call_count >= 2
+    assert all(call.args[0] == audit._dir_path for call in fsd.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["token_value", "token_data", "otp", "totp_secret", "auth_header", "cookie", "session", "session_cookie"],
+)
+def test_more_credential_shapes_are_secret(key):
+    assert _is_secret_key(key)
+
+
+@pytest.mark.parametrize("key", ["auth_type", "session_id", "token_count", "auth_method", "revoke_sessions", "sessions_revoked"])
+def test_credential_metadata_stays_visible(key):
+    assert not _is_secret_key(key)

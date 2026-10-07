@@ -1,3 +1,6 @@
+import pathlib
+import shutil
+
 import pytest
 
 pytest_plugins = "pytest_homeassistant_custom_component"
@@ -26,3 +29,27 @@ def hass_config_dir(request) -> str:
     from pytest_homeassistant_custom_component.common import get_test_config_dir
 
     return get_test_config_dir()
+
+
+@pytest.fixture
+def hass_tmp_config_dir(tmp_path: pathlib.Path) -> str:
+    """Copy the shared test config directory, leaving out what other tests write into it.
+
+    Non-isolated modules run the integration against the shared directory, so HA SOC's own
+    runtime files (``ha_soc`` with the crash forensics heartbeat and its temp file, and
+    ``.storage``) appear and disappear there while another worker copies it. The copy only
+    needs the static files the harness ships, so the runtime entries are skipped.
+    """
+    from pytest_homeassistant_custom_component.common import get_test_config_dir
+
+    source = get_test_config_dir()
+
+    def _skip_runtime(directory: str, names: list[str]) -> list[str]:
+        if pathlib.Path(directory) != pathlib.Path(source):
+            return []
+        return [name for name in names if name in (".storage", "ha_soc") or name.endswith(".tmp")]
+
+    shutil.copytree(
+        source, tmp_path, symlinks=True, dirs_exist_ok=True, ignore=_skip_runtime
+    )
+    return str(tmp_path)
