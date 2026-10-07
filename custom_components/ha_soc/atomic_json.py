@@ -17,8 +17,13 @@ import os
 from typing import Any
 
 
-def sync_write_json_atomic(path: str, payload: Any) -> None:
+def sync_write_json_atomic(path: str, payload: Any, *, durable: bool = False) -> None:
     """Write ``payload`` as JSON to ``path``, atomically, mode 0600.
+
+    With ``durable`` the temp file is fsynced before the rename and the
+    directory after it, so a power loss leaves either the old or the new
+    content and never an empty file. Off by default because the resource ring
+    writes every sampling interval and does not need that guarantee.
 
     Sync; the caller must run this in an executor. The temp file is created
     with os.open so the mode is pinned at creation (open() honors the
@@ -31,11 +36,30 @@ def sync_write_json_atomic(path: str, payload: Any) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
             json.dump(payload, handle)
+            if durable:
+                handle.flush()
+                os.fsync(handle.fileno())
     except BaseException:
         with contextlib.suppress(OSError):
             os.remove(tmp_path)
         raise
     os.replace(tmp_path, path)
+    if durable:
+        _fsync_directory(directory)
+
+
+def _fsync_directory(directory: str) -> None:
+    """Flush a directory entry to disk; best effort, skipped where unsupported."""
+    try:
+        dir_fd = os.open(directory, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(dir_fd)
+    except OSError:
+        pass
+    finally:
+        os.close(dir_fd)
 
 
 def sync_read_json(path: str) -> Any | None:

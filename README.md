@@ -69,6 +69,8 @@ URL a parser actually needs stays visible.
   logs an attempted username anywhere. High-value records (user
   changes, firewall actions, rejected probe calls, privileged reads)
   flush to disk immediately rather than waiting for the periodic timer,
+  a failed write keeps the records buffered so the chain never gaps,
+  credential-like service data keys are masked by pattern,
   and deleting or rolling back the on-disk chain is detected against a
   head mirrored in the main store, raising a Repairs issue and chaining
   the discontinuity itself.

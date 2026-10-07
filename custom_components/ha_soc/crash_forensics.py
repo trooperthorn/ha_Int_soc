@@ -337,6 +337,7 @@ class CrashForensics:
         sync_write_json_atomic(
             self._heartbeat_path,
             {"ts": _iso_now(), "boot_id": self._boot_id, "core_started": self._core_started},
+            durable=True,
         )
 
     async def _async_initial_heartbeat(self) -> None:
@@ -359,7 +360,9 @@ class CrashForensics:
 
     async def _async_on_stop(self, _event: Event) -> None:
         def _write() -> None:
-            sync_write_json_atomic(self._last_stop_path, {"ts": _iso_now(), "reason": "clean"})
+            sync_write_json_atomic(
+                self._last_stop_path, {"ts": _iso_now(), "reason": "clean"}, durable=True
+            )
 
         try:
             await self.hass.async_add_executor_job(_write)

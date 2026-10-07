@@ -134,6 +134,115 @@ _REDACTED_SERVICE_DATA_KEYS = frozenset(
         "probe_secret",
     }
 )
+# Pattern-based redaction on top of the exact list above, so wifi_password, usercode,
+# bearer_token, private_key and similar names are masked too. The key is split into
+# lower-case words (underscores, dashes, spaces and camelCase boundaries).
+_SECRET_ANY_WORD = frozenset(
+    {
+        "password",
+        "passwd",
+        "passphrase",
+        "passcode",
+        "pwd",
+        "secret",
+        "secrets",
+        "credential",
+        "credentials",
+        "psk",
+        "authorization",
+        "bearer",
+    }
+)
+# Only when the word ends the key, so "token_id" and "pin_count" stay visible.
+_SECRET_LAST_WORD = frozenset({"token", "tokens", "pass", "pin", "pincode", "key"})
+_SECRET_JOINED_FRAGMENTS = (
+    "apikey",
+    "privatekey",
+    "secretkey",
+    "accesskey",
+    "authkey",
+    "encryptionkey",
+    "signingkey",
+    "sshkey",
+    "sessionkey",
+    "masterkey",
+    "sharedkey",
+    "usercode",
+)
+# "status_code" and friends are outcomes, not credentials.
+_CODE_NON_SECRET_PREFIXES = frozenset(
+    {
+        "status",
+        "error",
+        "exit",
+        "return",
+        "http",
+        "response",
+        "country",
+        "language",
+        "color",
+        "hex",
+        "zip",
+        "area",
+        "reason",
+        "result",
+    }
+)
+_WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _is_secret_key(key: str) -> bool:
+    """Return whether a service-data key name looks like it holds a credential."""
+    lowered = key.lower()
+    if lowered in _REDACTED_SERVICE_DATA_KEYS:
+        return True
+    words = [
+        word
+        for word in _WORD_SPLIT_RE.split(_CAMEL_SPLIT_RE.sub("_", key).lower())
+        if word
+    ]
+    if not words:
+        return False
+    if any(word in _SECRET_ANY_WORD for word in words):
+        return True
+    joined = "".join(words)
+    if any(fragment in joined for fragment in _SECRET_JOINED_FRAGMENTS):
+        return True
+    last = words[-1]
+    if last in _SECRET_LAST_WORD:
+        return True
+    if last.endswith("code"):
+        return not (len(words) > 1 and words[-2] in _CODE_NON_SECRET_PREFIXES)
+    return False
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce a payload to plain JSON types so hashing and writing never raise.
+
+    Datetimes become ISO strings, sets become sorted lists, dict keys become
+    strings, and anything else without a JSON form becomes its ``str()``.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, deque)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_json_safe(item) for item in value), key=str)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 - a hostile __str__ must not break the chain
+        return f"<unprintable {type(value).__name__}>"
+
+
 # What a notification said is personal; only that one was sent is audited.
 _REDACTED_MESSAGE_DOMAINS = frozenset({"notify", "tts", "persistent_notification"})
 
@@ -191,7 +300,7 @@ def _redact_service_data(
         redacted: dict[Any, Any] = {}
         for key, val in value.items():
             key_lower = key.lower() if isinstance(key, str) else None
-            if key_lower in _REDACTED_SERVICE_DATA_KEYS:
+            if isinstance(key, str) and _is_secret_key(key):
                 redacted[key] = REDACTED_PLACEHOLDER
             elif (
                 key_lower in ("message", "title")
@@ -204,7 +313,7 @@ def _redact_service_data(
             else:
                 redacted[key] = _redact_service_data(domain, service, val)
         return redacted
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact_service_data(domain, service, item) for item in value]
     return value
 
@@ -220,7 +329,7 @@ def _redact_secrets_deep(value: Any) -> Any:
             )
             for key, val in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact_secrets_deep(item) for item in value]
     return value
 
@@ -275,6 +384,8 @@ class AuditLog:
         self._buffer: deque[dict[str, Any]] = deque()
         self._flush_lock = asyncio.Lock()
         self._seq = 0
+        # (seq, hash) of the records written by the flush in progress; executor-side only.
+        self._flush_head: tuple[int, str] | None = None
         self._prev_hash = _GENESIS_PREV_HASH
         # Retention anchor: newest expired record's seq/hash; None until retention deletes something.
         self._anchor: dict[str, Any] | None = None
@@ -827,7 +938,8 @@ class AuditLog:
             "attempted_user": attempted_user,
             "detail": detail_value,
         }
-        self._buffer.append(record)
+        # Coerce after redaction so no value can make json.dumps fail later in the flush.
+        self._buffer.append(_json_safe(record))
         if (
             flush
             or category in IMMEDIATE_FLUSH_CATEGORIES
@@ -850,44 +962,57 @@ class AuditLog:
             self._async_flush(), eager_start=False
         )
 
-    def _drain_and_prepare(self) -> list[dict[str, Any]]:
-        """Pop everything currently buffered and assign seq/prev_hash/hash.
+    def _prepare_buffered(self) -> list[dict[str, Any]]:
+        """Return copies of the buffered records with seq, prev_hash and hash set.
 
-        Synchronous and event-loop-only (no I/O) so the chain's seq/
-        prev_hash mutation never races with a concurrent flush.
+        Nothing is consumed: the buffer, ``_seq`` and ``_prev_hash`` only move in
+        ``_commit_written`` after the records reached disk, so a failed write
+        leaves no gap in the chain and loses no record. Synchronous and
+        event-loop-only (no I/O), so the chain state never races a flush.
         """
         prepared: list[dict[str, Any]] = []
-        while self._buffer:
-            record = self._buffer.popleft()
-            self._seq += 1
-            record["seq"] = self._seq
-            record["prev_hash"] = self._prev_hash
+        seq = self._seq
+        prev_hash = self._prev_hash
+        for buffered in self._buffer:
+            record = dict(buffered)
+            seq += 1
+            record["seq"] = seq
+            record["prev_hash"] = prev_hash
             canonical = json.dumps(record, sort_keys=True)
-            record_hash = hashlib.sha256(
-                (self._prev_hash + canonical).encode("utf-8")
+            prev_hash = hashlib.sha256(
+                (prev_hash + canonical).encode("utf-8")
             ).hexdigest()
-            record["hash"] = record_hash
-            self._prev_hash = record_hash
+            record["hash"] = prev_hash
             prepared.append(record)
         return prepared
 
+    def _commit_written(self, written: list[dict[str, Any]]) -> None:
+        """Drop the first ``len(written)`` buffered records and advance the chain."""
+        for _ in written:
+            self._buffer.popleft()
+        self._seq = written[-1]["seq"]
+        self._prev_hash = written[-1]["hash"]
+
     async def _async_flush(self, _now: Any = None) -> None:
         async with self._flush_lock:
-            records = self._drain_and_prepare()
-            flushed_ok = await self.hass.async_add_executor_job(
+            records = self._prepare_buffered()
+            written_count = await self.hass.async_add_executor_job(
                 self._sync_flush, records
             )
-            if flushed_ok and records:
-                if self._syslog_exporter is not None:
-                    self._syslog_exporter.async_enqueue(records)
-                # Mirror on the loop after the executor returns; only a successful flush advances it.
-                self._store.async_set_audit_head(
-                    {
-                        "seq": self._seq,
-                        "hash": self._prev_hash,
-                        "at": dt_util.utcnow().isoformat(),
-                    }
-                )
+            written = records[:written_count]
+            if not written:
+                return
+            self._commit_written(written)
+            if self._syslog_exporter is not None:
+                self._syslog_exporter.async_enqueue(written)
+            # Mirror on the loop after the executor returns; only a successful flush advances it.
+            self._store.async_set_audit_head(
+                {
+                    "seq": self._seq,
+                    "hash": self._prev_hash,
+                    "at": dt_util.utcnow().isoformat(),
+                }
+            )
 
     def _sync_ensure_dir(self) -> None:
         """Create the audit directory 0o700 and tighten what already exists.
@@ -971,10 +1096,18 @@ class AuditLog:
         self._anchor = None
         self._reset = None
 
-    def _sync_write_chain_head(self) -> None:
+    def _sync_write_chain_head(
+        self, seq: int | None = None, prev_hash: str | None = None
+    ) -> None:
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         tmp_path = f"{path}.tmp"
-        payload: dict[str, Any] = {"prev_hash": self._prev_hash, "seq": self._seq}
+        if seq is None and self._flush_head is not None:
+            # Retention rewrites the head mid-flush, before _commit_written has run.
+            seq, prev_hash = self._flush_head
+        payload: dict[str, Any] = {
+            "prev_hash": self._prev_hash if prev_hash is None else prev_hash,
+            "seq": self._seq if seq is None else seq,
+        }
         # Every head rewrite must carry the anchor and reset marker forward.
         if self._anchor is not None:
             payload["anchor"] = self._anchor
@@ -986,41 +1119,79 @@ class AuditLog:
                 tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
             ) as handle:
                 json.dump(payload, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp_path, path)
         except OSError:
             _LOGGER.warning(
                 "HA SOC audit log: failed writing %s", path, exc_info=True
             )
 
-    def _sync_flush(self, records: list[dict[str, Any]]) -> bool:
+    def _sync_flush(self, records: list[dict[str, Any]]) -> int:
         """Append prepared records and maintain the head.
 
-        Returns whether the write succeeded, so the caller only advances
-        the store's head mirror over records that reached disk.
+        Returns how many leading records are durably on disk, so the caller
+        only advances the chain and the store's head mirror over records that
+        were written. The rest stay buffered and are retried unchanged.
         """
+        written = 0
         try:
             os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
-            if records:
-                by_day: dict[str, list[str]] = {}
-                for record in records:
-                    day = record["ts"][:10]
-                    by_day.setdefault(day, []).append(
-                        json.dumps(record, sort_keys=True)
-                    )
-                for day, lines in by_day.items():
-                    file_path = self._sync_target_day_file(day)
-                    # O_APPEND with mode 0o600: a brand-new day file is born private.
-                    fd = os.open(
-                        file_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
-                    )
-                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                        handle.write("\n".join(lines) + "\n")
-                self._sync_write_chain_head()
+            by_day: list[tuple[str, list[dict[str, Any]]]] = []
+            for record in records:
+                day = record["ts"][:10]
+                if by_day and by_day[-1][0] == day:
+                    by_day[-1][1].append(record)
+                else:
+                    by_day.append((day, [record]))
+            for day, day_records in by_day:
+                file_path = self._sync_target_day_file(day)
+                text = "".join(
+                    json.dumps(r, sort_keys=True) + chr(10) for r in day_records
+                )
+                self._sync_append_durable(file_path, text)
+                written += len(day_records)
+        except OSError:
+            _LOGGER.exception(
+                "HA SOC audit log: flush to disk failed, %d record(s) stay buffered",
+                len(records) - written,
+            )
+        if written:
+            last = records[written - 1]
+            self._flush_head = (last["seq"], last["hash"])
+            self._sync_write_chain_head()
+        try:
             self._sync_apply_retention()
         except OSError:
-            _LOGGER.exception("HA SOC audit log: flush to disk failed")
-            return False
-        return True
+            _LOGGER.exception("HA SOC audit log: retention failed")
+        finally:
+            self._flush_head = None
+        return written
+
+    @staticmethod
+    def _sync_append_durable(file_path: str, text: str) -> None:
+        """Append ``text`` and fsync it; on failure cut off any partial tail."""
+        # O_APPEND with mode 0o600: a brand-new day file is born private.
+        fd = os.open(file_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        try:
+            size = os.fstat(fd).st_size
+            try:
+                data = text.encode("utf-8")
+                while data:
+                    data = data[os.write(fd, data):]
+                os.fsync(fd)
+            except OSError:
+                try:
+                    os.ftruncate(fd, size)
+                except OSError:
+                    _LOGGER.warning(
+                        "HA SOC audit log: could not trim a partial write to %s",
+                        file_path,
+                        exc_info=True,
+                    )
+                raise
+        finally:
+            os.close(fd)
 
     def _sync_list_day_files(self) -> list[tuple[date, str]]:
         if not os.path.isdir(self._dir_path):
