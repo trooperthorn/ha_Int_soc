@@ -35,6 +35,7 @@ def _golden(name: str, actual: dict) -> dict:
     text = json.dumps(actual, indent=2, sort_keys=True) + "\n"
     if os.environ.get("UPDATE_GOLDEN"):
         path.write_text(text, encoding="utf-8", newline="\n")
+        pytest.fail(f"UPDATE_GOLDEN wrote {path.name}; review the diff and re-run without it")
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -212,3 +213,30 @@ def test_large_install_payload_is_within_observe_limits(compressed):
             body = gzip.compress(body)
         assert len(body) <= MAX_BODY, len(body)
     assert len(_records(logs)) == MAX_RECORDS
+
+
+def test_resolution_with_null_lists_does_not_raise():
+    req = om.build_metrics(om.Identity(host_name="h"),
+                           {"resolution": {"unhealthy": None, "unsupported": 5}}, 1.0)
+    assert om.has_points(req)
+
+
+def test_crash_records_survive_a_watchdog_flood_and_drops_are_reported():
+    dets = [{"rule_id": om.WATCHDOG_RULE, "id": str(i), "last_seen": f"2026-01-01T00:{i // 60:02d}:{i % 60:02d}+00:00",
+             "detail": {"slug": f"c{i}"}} for i in range(600)]
+    crashes = [{"id": "boot1", "classification": "kernel_fault", "ts": "2026-01-01T00:00:00+00:00"}]
+    dropped = {}
+    req = om.build_logs(om.Identity(host_name="h"),
+                        {"detections": dets, "crash_bundles": crashes}, 1.0, dropped)
+    recs = _records(req)
+    assert len(recs) == om.MAX_RECORDS
+    assert any(_attr_map(r)["event.name"] == "observe.ha.crash" for r in recs)
+    assert dropped == {"watchdog": 101}
+
+
+def test_row_cap_drops_are_reported():
+    rows = [{"slug": f"c{i}", "cpu_percent": 1.0} for i in range(om.MAX_ROWS + 3)]
+    dropped = {}
+    om.build_metrics(om.Identity(host_name="h"),
+                     {"containers": {"available": True, "containers": rows}}, 1.0, dropped)
+    assert dropped == {"containers": 3}

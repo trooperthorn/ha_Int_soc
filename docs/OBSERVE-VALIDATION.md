@@ -9,6 +9,10 @@ This record states how the golden files in `tests/fixtures/observe_otlp/` were c
 - Method: a throwaway script outside both repositories imported Observe's own `observe.otlp.normalize`, `observe.otlp.wire`, `observe.otlp.encode` and the FastAPI application from `observe.web`, with a temporary SQLite database. The `argon2` module is not installed on the build host and is not used by the ingest routes, so the script replaced it with an empty stand-in. No network host was contacted and no Home Assistant instance was involved.
 - Input: `tests/fixtures/observe_otlp/metrics.json` and `logs.json`, sent with a host-bound ingest key for the host `haos-lab`, which equals the resource `host.name`.
 
+## Provenance
+
+The throwaway script and its output were not kept, so the results below are an attestation by the person who ran it, not an artifact this repository can replay. Nothing here can be re-checked without the Observe checkout at `c4bb7e1`. The limit checks in `tests/test_otlp_mapper.py` are the part verified on every run. An UPDATE_GOLDEN run fails on purpose after writing the files, so it can never pass in CI by accident.
+
 ## Results
 
 | Check | Result |

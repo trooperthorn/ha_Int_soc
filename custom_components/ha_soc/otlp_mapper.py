@@ -106,8 +106,9 @@ def _resource(identity: Identity) -> dict[str, Any]:
 class _Metrics:
     """Collects gauge points grouped by scope and metric, in insertion order."""
 
-    def __init__(self, now: float) -> None:
+    def __init__(self, now: float, dropped: dict[str, int] | None = None) -> None:
         self._time = _ns(now)
+        self.dropped = dropped if dropped is not None else {}
         self._scopes: dict[str, dict[tuple[str, str], list[dict[str, Any]]]] = {}
         self.count = 0
 
@@ -115,7 +116,10 @@ class _Metrics:
         self, source: str, name: str, unit: str, value: Any, **attrs: Any
     ) -> None:
         number = _number(value)
-        if number is None or self.count >= MAX_POINTS:
+        if number is None:
+            return
+        if self.count >= MAX_POINTS:
+            self.drop("points")
             return
         point = {
             "attributes": _attrs({k.replace("__", "."): v for k, v in attrs.items()}),
@@ -124,6 +128,10 @@ class _Metrics:
         }
         self._scopes.setdefault(source, {}).setdefault((name, unit), []).append(point)
         self.count += 1
+
+    def drop(self, what: str, n: int = 1) -> None:
+        if n > 0:
+            self.dropped[what] = self.dropped.get(what, 0) + n
 
     def scope_metrics(self) -> list[dict[str, Any]]:
         return [
@@ -142,10 +150,20 @@ def _rows(items: Any) -> list[dict[str, Any]]:
     return [i for i in items if isinstance(i, dict)] if isinstance(items, Iterable) else []
 
 
+def _strings(items: Any) -> list[str]:
+    """The string members of a list; anything else (null, a scalar) is an empty list."""
+    return [i for i in items if isinstance(i, str)] if isinstance(items, (list, tuple)) else []
+
+
+def _capped(m: _Metrics, what: str, items: list[Any]) -> list[Any]:
+    m.drop(what, len(items) - MAX_ROWS)
+    return items[:MAX_ROWS]
+
+
 def _containers(m: _Metrics, overview: Any) -> None:
     if not isinstance(overview, dict) or not overview.get("available"):
         return
-    for row in _rows(overview.get("containers"))[:MAX_ROWS]:
+    for row in _capped(m, "containers", _rows(overview.get("containers"))):
         slug = row.get("slug")
         if not isinstance(slug, str) or not slug:
             continue
@@ -182,7 +200,7 @@ def _integrations(m: _Metrics, overview: Any) -> None:
         for category in sorted(counts):
             m.gauge("integrations", "observe.ha.integration.count", "{integration}",
                     counts[category], observe__ha__integration__category=str(category))
-    rows = _rows(overview.get("integrations"))[:MAX_ROWS]
+    rows = _capped(m, "integrations", _rows(overview.get("integrations")))
     for row in rows:
         domain = row.get("domain")
         if isinstance(domain, str) and domain:
@@ -201,7 +219,7 @@ def _repairs(m: _Metrics, issues: Any) -> None:
         by_domain[key] = by_domain.get(key, 0) + 1
     m.gauge("repairs", "observe.ha.repair.issues", "{issue}", sum(by_domain.values()),
             observe__ha__repair__state="open")
-    for domain in sorted(by_domain)[:MAX_ROWS]:
+    for domain in _capped(m, "repair_domains", sorted(by_domain)):
         m.gauge("repairs", "observe.ha.repair.issues", "{issue}", by_domain[domain],
                 observe__ha__repair__state="open", observe__ha__repair__domain=domain)
 
@@ -220,19 +238,27 @@ def _supervisor(m: _Metrics, resolution: Any) -> None:
     if not isinstance(resolution, dict):
         return
     data = resolution.get("data") if isinstance(resolution.get("data"), dict) else resolution
-    unhealthy = [r for r in data.get("unhealthy", []) if isinstance(r, str)]
-    unsupported = [r for r in data.get("unsupported", []) if isinstance(r, str)]
+    unhealthy = _strings(data.get("unhealthy"))
+    unsupported = _strings(data.get("unsupported"))
     m.gauge("supervisor", "observe.ha.supervisor.healthy", "1", int(not unhealthy))
     m.gauge("supervisor", "observe.ha.supervisor.supported", "1", int(not unsupported))
     m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reasons", "{reason}", len(unhealthy))
-    for reason in sorted(unhealthy)[:MAX_ROWS]:
+    for reason in _capped(m, "unhealthy_reasons", sorted(unhealthy)):
         m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reasons", "{reason}", 1,
                 observe__ha__supervisor__reason=reason)
 
 
-def build_metrics(identity: Identity, snapshot: dict[str, Any], now: float) -> dict[str, Any]:
-    """The ExportMetricsServiceRequest for one snapshot taken at `now` (unix seconds)."""
-    m = _Metrics(now)
+def build_metrics(
+    identity: Identity, snapshot: dict[str, Any], now: float,
+    dropped: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """The ExportMetricsServiceRequest for one snapshot taken at `now` (unix seconds).
+
+    Rows and points past the caps are left out; if `dropped` is given, it receives the
+    count left out per kind ("containers", "integrations", "repair_domains",
+    "unhealthy_reasons", "points") so the sender can log it.
+    """
+    m = _Metrics(now, dropped)
     _containers(m, snapshot.get("containers"))
     _watchdog(m, snapshot.get("detections"))
     _integrations(m, snapshot.get("integration_overview"))
@@ -319,11 +345,26 @@ def _crash_records(bundles: Any, now: float) -> list[dict[str, Any]]:
     return out
 
 
-def build_logs(identity: Identity, snapshot: dict[str, Any], now: float) -> dict[str, Any]:
-    """The ExportLogsServiceRequest for one snapshot: watchdog breaches and crash bundles."""
-    records = _watchdog_records(snapshot.get("detections"), now)
-    records += _crash_records(snapshot.get("crash_bundles"), now)
-    records = records[:MAX_RECORDS]
+def build_logs(
+    identity: Identity, snapshot: dict[str, Any], now: float,
+    dropped: dict[str, int] | None = None,
+) -> dict[str, Any]:
+    """The ExportLogsServiceRequest for one snapshot: watchdog breaches and crash bundles.
+
+    Crash records are rare and the more serious, so they are kept first and watchdog
+    records fill the rest of the cap. If `dropped` is given, it receives the count of
+    records left out per source ("watchdog", "crash_forensics").
+    """
+    crashes = _crash_records(snapshot.get("crash_bundles"), now)
+    keep_crashes = crashes[:MAX_RECORDS]
+    watchdog = _watchdog_records(snapshot.get("detections"), now)
+    keep_watchdog = watchdog[: MAX_RECORDS - len(keep_crashes)]
+    if dropped is not None:
+        for source, all_, kept in (("watchdog", watchdog, keep_watchdog),
+                                   ("crash_forensics", crashes, keep_crashes)):
+            if len(all_) > len(kept):
+                dropped[source] = dropped.get(source, 0) + len(all_) - len(kept)
+    records = keep_watchdog + keep_crashes
     scopes = []
     for source, event in (("watchdog", "observe.ha.watchdog.breach"),
                           ("crash_forensics", "observe.ha.crash")):
