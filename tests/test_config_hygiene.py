@@ -15,6 +15,10 @@ from homeassistant.setup import async_setup_component
 from custom_components.ha_soc import config_hygiene as ch
 
 
+# Private config directory per test; see tests/conftest.py.
+ISOLATED_CONFIG_DIR = True
+
+
 async def test_unknown_service_reference_is_found(hass: HomeAssistant) -> None:
     config = [
         {

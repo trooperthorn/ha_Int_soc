@@ -689,6 +689,33 @@ async def test_no_log_line_at_any_level_holds_the_key(hass, entry, observe, capl
         pusher.async_stop()
 
 
+async def test_unexpected_cycle_error_is_logged_without_traceback_or_key(
+    hass, entry, observe, caplog
+) -> None:
+    caplog.set_level(logging.DEBUG)
+    pusher, _clock = await _pusher(hass, entry, observe.url)
+    try:
+        async def boom() -> dict[str, Any]:
+            raise RuntimeError(f"collector failed for {KEY}")
+
+        pusher._collector = boom
+        await pusher.async_push_once()
+        records = [r for r in caplog.records if r.name.startswith("custom_components.ha_soc")]
+        assert any("cycle failed" in r.getMessage() for r in records)
+        assert all(r.exc_info is None for r in records)
+        assert KEY not in _own_log(caplog)
+    finally:
+        pusher.async_stop()
+
+
+def test_websocket_settings_schema_rejects_observe_keys() -> None:
+    from custom_components.ha_soc.websocket_api import ws_settings_set
+
+    for key in (CONF_OBSERVE_URL, CONF_OBSERVE_ENABLED, CONF_OBSERVE_HOST_NAME):
+        with pytest.raises(Exception):
+            ws_settings_set._ws_schema({"id": 1, "type": "ha_soc/settings/set", key: "http://x"})
+
+
 # --------------------------------------------------------------------------- collector
 
 

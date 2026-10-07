@@ -504,8 +504,13 @@ class ObservePusher:
                 await self._async_drain()
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - the timer must keep running
-                _LOGGER.exception("Observe push cycle failed")
+            except Exception as err:  # noqa: BLE001 - the timer must keep running
+                # No traceback: a collector or mapper error message could carry the key.
+                _LOGGER.error(
+                    "Observe push cycle failed (%s): %s",
+                    type(err).__name__,
+                    self._redact(str(err)),
+                )
 
     async def _async_collect_and_enqueue(self) -> None:
         assert self._identity is not None
