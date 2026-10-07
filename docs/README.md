@@ -16,6 +16,7 @@ One line per document, stating what it is responsible for, so a reader knows whe
 - `CEF-SCHEMA.md`: the CEF 0 payload format for syslog export (header, extension mapping, severity policy, encoding bounds, SolarWinds SEM validation boundary).
 - `SNMPV3.md`: the SNMPv3 telemetry export served by the Probe (security contract, exposed MIB objects, scope boundary, configuration and validation steps, agent and wire facts).
 - `UNIFI-LOCAL-API-CONTRACT.md`: the verified UniFi Network and Protect Local Integration API contract (artifact hashes, bases, corrected calls, Firewall Policies versus ACL Rules, verified response shapes).
+- `OBSERVE-VALIDATION.md`: the record of checking the OTLP mapper's golden files against Observe's decoder, normaliser and ingest routes, and the limits the tests repeat.
 - `OPERATIONS-NOTES.md`: Supervisor transport quirks discovered during integration (the journald log gateway's missing Range header and ANSI output).
 - `TERMINAL-DESIGN.md`: the HA SOC Terminal app and its planned panel integration (why not app-ssh, goals and non-goals, the phase 1 app's choices and residuals, the phase 2 WebSocket contract and target model, phase 3 SFTP, verification list).
 - `ENTITY-MAP.md`: the Assets workspace Entity Map tab (data sources and the core commands they use, the node and edge model, the two views, the vendored graph engine, limits, verification status).

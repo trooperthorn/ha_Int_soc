@@ -694,6 +694,21 @@ Both live on the Integration Security tab's Container Resource Usage card;
 all configuration is owner-only and audit-logged. See
 [`custom_components/ha_soc/resource_watchdog.py`](custom_components/ha_soc/resource_watchdog.py).
 
+### Observe push (mapper only so far)
+
+HA SOC can describe its system detail as OpenTelemetry (OTLP JSON) for the
+Observe monitoring server: per-container CPU and memory for Core, the
+Supervisor and every add-on, watchdog breaches and crash forensics
+classifications as log records, integration health categories, the open
+Repairs count, the unprotected-backup finding and the Supervisor
+resolution state. This release contains only the pure mapper
+([`otlp_mapper.py`](custom_components/ha_soc/otlp_mapper.py)); nothing is
+sent anywhere yet and there is no option to turn it on. The sender and the
+options flow (Observe URL, ingest key, host name, interval) follow in
+later slices and will be off by default. The mapping and its check against
+Observe's own decoder are recorded in
+[`docs/OBSERVE-VALIDATION.md`](docs/OBSERVE-VALIDATION.md).
+
 ## Firewall Rules (read and write)
 
 Everything else in this project observes and reports; it never mutates a

@@ -373,6 +373,39 @@ text and data, so they are unit-tested against synthetic journal tails and
 watchdog history without a Supervisor in the loop at all
 (`tests/test_crash_forensics.py`).
 
+## Observe push
+
+`otlp_mapper.py` turns data HA SOC already holds into the two OTLP JSON
+requests Observe accepts (`POST /v1/metrics` and `/v1/logs`). It is pure:
+no Home Assistant import, no I/O and no clock, so the caller passes a
+snapshot dict and the time. The snapshot keys are `containers` (the
+`async_container_resources` result), `detections` (the store's detection
+rows), `crash_bundles` (`sync_list_bundles`), `integration_overview`,
+`repairs` (issue dicts with a `domain`), `backup_checked` with
+`backup_finding` (the `backup_unprotected` health finding or None) and
+`resolution` (the Supervisor `/resolution/info` body). A missing key means
+"not collected" and yields no points, so a Core install without a
+Supervisor sends no container or Supervisor series.
+
+Names, units and attributes follow section 3.4 of Observe's
+`DATA-API-DESIGN.md`. The resource carries `host.name`, `service.name`
+`home-assistant`, `observe.producer` `ha_Int_soc` and, when known, the
+instance id, Core version and installation type. The scope name is
+`ha_soc.collector.<source>`, which Observe stores as the source. Every
+metric is a gauge with `asDouble` and the snapshot time. CPU and memory
+percentages are divided by 100 because Observe stores ratios. Log records
+carry `event.name`, a stable `observe.dedup_key` (a re-send is a no-op in
+Observe) and a severity of 9, 13 or 17: crash classifications
+`silent_stop` and `kernel_fault` are 17, `core_restart` is 13 and
+`clean_reboot` is 9; a watchdog breach is 13. Row counts are capped (100
+containers, integration rows and repair domains; 500 log records per
+request; 5,000 points) so a request stays inside Observe's limits.
+
+Golden files in `tests/fixtures/observe_otlp/` pin the output;
+`docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
+routes accepted them with no rejects. The sender, retry and options flow
+are separate slices.
+
 ## UniFi configuration ledger
 
 `config_ledger.py` is the CM-6 baseline: a canonical projection of the controller's security-relevant configuration, compared against the one the owner accepted. It is read-only, and it never talks to the controller itself; it reads `async_network_overview`, which is already the single fetch path.
