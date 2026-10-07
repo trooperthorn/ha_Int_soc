@@ -422,8 +422,12 @@ The settings are `observe_enabled`, `observe_url`, `observe_host_name` and
 `observe_interval_seconds` in the HA SOC store and the ingest key in the
 secret store (`observe_ingest_key`, in `SECRET_SETTING_KEYS`, so every
 masking path covers it). `entry.options` stays `{}`; the options flow writes
-the store and schedules the reload itself, and the reload restarts the push
-with the new values. Disabled, or enabled with an incomplete or invalid
+the store, flushes it to disk with `async_save_now` (the store normally
+debounces writes and the reload builds a fresh store that reads the file),
+and only then schedules the reload, which restarts the push with the new
+values. Setup registers `observe.async_stop` with `entry.async_on_unload`
+before starting the push, so a setup that fails afterwards (for example with
+`ConfigEntryNotReady`) cancels the timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
 configuration, the pusher arms no timer and opens no connection.
 
 Each tick runs under one lock, so a slow cycle makes the next tick skip

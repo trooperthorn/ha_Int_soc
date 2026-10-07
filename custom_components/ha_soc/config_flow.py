@@ -90,6 +90,9 @@ class HaSocOptionsFlow(OptionsFlow):
                     "soc_config_change",
                     detail={"action": "observe_push_changed", "changes": audited},
                 )
+                # The reload builds a fresh store that reads the file, and the store
+                # normally debounces its writes, so flush before scheduling the reload.
+                await runtime.store.async_save_now()
                 self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
                 return self.async_create_entry(title="", data={})
 

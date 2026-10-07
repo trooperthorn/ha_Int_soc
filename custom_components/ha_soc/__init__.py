@@ -177,6 +177,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
     crash_forensics.async_start(entry)
     # Off by default: a no-op unless the owner enabled it and filled in the options.
+    # Registered first so a setup that fails after the push started (for example with
+    # ConfigEntryNotReady) cancels the timer; core runs these callbacks on a failed setup.
+    entry.async_on_unload(observe.async_stop)
     await observe.async_start(entry)
 
     async_register_websocket_api(hass)
