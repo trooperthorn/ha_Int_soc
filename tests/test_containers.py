@@ -88,3 +88,46 @@ async def test_ws_handler_returns_result(hass: HomeAssistant) -> None:
     connection.send_error.assert_not_called()
     result = connection.send_result.call_args[0][1]
     assert "available" in result and "containers" in result
+
+
+async def test_add_ons_beyond_the_cap_are_counted_and_warned(hass: HomeAssistant, caplog) -> None:
+    from custom_components.ha_soc import containers
+
+    hass.config.components.add("hassio")
+    total = containers.MAX_ADDONS + 5
+    supervisor_info = {
+        "addons": [
+            {"slug": f"a{i}", "name": f"A{i}", "state": "started"} for i in range(total)
+        ]
+    }
+    client = MagicMock()
+    client.addons.addon_stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    client.homeassistant.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    client.supervisor.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    with (
+        patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
+        patch("homeassistant.components.hassio.get_supervisor_info", return_value=supervisor_info),
+    ):
+        out = await async_container_resources(hass)
+    assert out["truncated"] == 5
+    assert len(out["containers"]) == containers.MAX_ADDONS + 2
+    assert "were not sampled" in caplog.text
+
+
+async def test_100_add_ons_are_all_sampled(hass: HomeAssistant) -> None:
+    hass.config.components.add("hassio")
+    supervisor_info = {
+        "addons": [{"slug": f"a{i}", "name": f"A{i}", "state": "started"} for i in range(100)]
+    }
+    client = MagicMock()
+    client.addons.addon_stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    client.homeassistant.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    client.supervisor.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
+    with (
+        patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
+        patch("homeassistant.components.hassio.get_supervisor_info", return_value=supervisor_info),
+    ):
+        out = await async_container_resources(hass)
+    assert out["truncated"] == 0
+    assert len(out["containers"]) == 102
+    assert client.addons.addon_stats.await_count == 100

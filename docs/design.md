@@ -413,6 +413,14 @@ under its limits (or stopped, or gone), which is what returns
 `observe.ha.watchdog.breaches` to 0, and a trip after that starts a new
 episode and reopens the row.
 
+Container stats come from the watchdog's latest sample when it is under 90
+seconds old. With the watchdog off the collector calls
+`async_container_resources` itself and caches the result for the watchdog's
+configured interval (default 60 seconds), so the Supervisor sees at most two
+calls plus one per started add-on per interval, the same as the watchdog.
+The pass covers up to 300 add-ons; the rest are counted in `truncated` and
+logged as a warning.
+
 Golden files in `tests/fixtures/observe_otlp/` pin the output;
 `docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
 routes accepted them with no rejects.

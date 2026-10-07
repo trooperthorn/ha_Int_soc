@@ -85,6 +85,9 @@ AUTH_BACKOFF_SECONDS = 300
 REJECT_THRESHOLD = 3
 # Container samples younger than this are taken from the resource watchdog.
 WATCHDOG_SAMPLE_MAX_AGE_SECONDS = 90
+# With the watchdog off the push fetches container stats itself, and no more often than the
+# watchdog would sample (its configured interval, clamped the way the watchdog clamps it).
+DEFAULT_FETCH_INTERVAL_SECONDS = 60
 # Crash bundles and the Supervisor resolution state change rarely; refreshed this often.
 SLOW_REFRESH_SECONDS = 600
 SUPERVISOR_TIMEOUT_SECONDS = 10
@@ -266,6 +269,8 @@ class SnapshotCollector:
         self._clock = clock
         self._slow: dict[str, Any] = {}
         self._slow_at: float | None = None
+        self._fetched: dict[str, Any] | None = None
+        self._fetched_at: float | None = None
 
     async def async_collect(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {}
@@ -293,10 +298,23 @@ class SnapshotCollector:
             and self._clock() - sampled_at < WATCHDOG_SAMPLE_MAX_AGE_SECONDS
         ):
             return overview
+        now = self._clock()
+        if self._fetched_at is not None and now - self._fetched_at < self._fetch_interval():
+            return self._fetched
         from .containers import async_container_resources
 
         fresh = await async_container_resources(self.hass)
-        return fresh if fresh.get("available") else None
+        self._fetched = fresh if fresh.get("available") else None
+        self._fetched_at = now
+        return self._fetched
+
+    def _fetch_interval(self) -> int:
+        try:
+            raw = self._store.data["resource_watchdog"].get("interval_seconds")
+            interval = int(raw or DEFAULT_FETCH_INTERVAL_SECONDS)
+        except (KeyError, TypeError, ValueError):
+            interval = DEFAULT_FETCH_INTERVAL_SECONDS
+        return max(30, min(3600, interval))
 
     def _repairs(self) -> list[dict[str, Any]]:
         return [

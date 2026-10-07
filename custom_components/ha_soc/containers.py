@@ -15,7 +15,9 @@ _LOGGER = logging.getLogger(__name__)
 _HIGH_CPU_PERCENT = 85.0
 _HIGH_MEMORY_PERCENT = 85.0
 
-_MAX_ADDONS = 80
+# Upper bound on add-ons sampled in one pass. Add-ons beyond it are counted in the result
+# ("truncated") and logged as a warning, never dropped silently.
+MAX_ADDONS = 300
 _CONCURRENCY = 6
 
 # Field names match aiohasupervisor ContainerStats; a value the Supervisor omits stays None.
@@ -59,6 +61,7 @@ async def async_container_resources(hass: HomeAssistant) -> dict[str, Any]:
         "available": False,
         "reason": None,
         "containers": [],
+        "truncated": 0,
         "generated_at": dt_util.utcnow().isoformat(),
     }
 
@@ -84,7 +87,17 @@ async def async_container_resources(hass: HomeAssistant) -> dict[str, Any]:
         return result
 
     supervisor_info = get_supervisor_info(hass) or {}
-    addons = (supervisor_info.get("addons") or [])[:_MAX_ADDONS]
+    all_addons = supervisor_info.get("addons") or []
+    addons = all_addons[:MAX_ADDONS]
+    result["truncated"] = len(all_addons) - len(addons)
+    if result["truncated"]:
+        _LOGGER.warning(
+            "Container stats cover %s of %s add-ons; %s were not sampled (limit %s)",
+            len(addons),
+            len(all_addons),
+            result["truncated"],
+            MAX_ADDONS,
+        )
 
     sem = asyncio.Semaphore(_CONCURRENCY)
 

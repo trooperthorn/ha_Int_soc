@@ -10,7 +10,8 @@ import json
 import logging
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant.helpers.issue_registry as ir
 import pytest
@@ -836,6 +837,69 @@ async def test_collector_reuses_a_fresh_watchdog_sample(hass, entry) -> None:
         fresh.return_value = {"available": False}
         assert "containers" not in await collector.async_collect()
         fresh.assert_called_once()
+
+
+async def test_watchdog_off_push_fetches_at_most_once_per_watchdog_interval(hass, entry) -> None:
+    """Audit push-polls-supervisor-when-watchdog-off: 100 add-ons, watchdog off."""
+    runtime = entry.runtime_data
+    clock = Clock()
+    runtime.watchdog.last_overview = None
+    runtime.watchdog.last_overview_at = None
+    runtime.store.data["resource_watchdog"]["interval_seconds"] = 60
+    collector = op.SnapshotCollector(
+        hass,
+        runtime.store,
+        health=runtime.health,
+        watchdog=runtime.watchdog,
+        crash_forensics=runtime.crash_forensics,
+        clock=clock,
+    )
+    sample = {"available": True, "containers": [], "reason": None, "truncated": 0}
+    with patch(
+        "custom_components.ha_soc.containers.async_container_resources", return_value=sample
+    ) as fresh:
+        for _ in range(5):
+            assert (await collector.async_collect())["containers"] is sample
+            clock.now += 10
+        assert fresh.call_count == 1
+        clock.now += 60
+        await collector.async_collect()
+        assert fresh.call_count == 2
+
+
+async def test_watchdog_off_100_add_ons_call_count_is_bounded(hass, entry) -> None:
+    runtime = entry.runtime_data
+    clock = Clock()
+    runtime.watchdog.last_overview = None
+    runtime.watchdog.last_overview_at = None
+    hass.config.components.add("hassio")
+    info = {"addons": [{"slug": f"a{i}", "name": f"A{i}", "state": "started"} for i in range(100)]}
+    stat = SimpleNamespace(
+        cpu_percent=1.0, memory_usage=1, memory_limit=2, memory_percent=50.0,
+        network_rx=1, network_tx=1, blk_read=1, blk_write=1,
+    )
+    client = MagicMock()
+    client.addons.addon_stats = AsyncMock(return_value=stat)
+    client.homeassistant.stats = AsyncMock(return_value=stat)
+    client.supervisor.stats = AsyncMock(return_value=stat)
+    collector = op.SnapshotCollector(
+        hass,
+        runtime.store,
+        health=runtime.health,
+        watchdog=runtime.watchdog,
+        crash_forensics=runtime.crash_forensics,
+        clock=clock,
+    )
+    with (
+        patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
+        patch("homeassistant.components.hassio.get_supervisor_info", return_value=info),
+    ):
+        for _ in range(3):
+            snap = await collector.async_collect()
+            clock.now += 10
+    assert len(snap["containers"]["containers"]) == 102
+    assert client.addons.addon_stats.await_count == 100
+    assert client.homeassistant.stats.await_count == 1
 
 
 async def test_collector_reports_backup_state(hass, entry) -> None:

@@ -707,6 +707,11 @@ series per category, a crash forensics dry run is never sent, and a watchdog
 breach that lasts is one log record until the container recovers, at which
 point the breach gauge returns to 0.
 
+When the resource watchdog is off, the push asks the Supervisor for container
+stats itself, at most once per watchdog interval (60 seconds by default), and
+covers up to 300 add-ons. Add-ons past that limit are counted and logged as a
+warning.
+
 To enable it, open Settings, Devices and services, HA SOC, Configure, and fill
 in the form:
 
