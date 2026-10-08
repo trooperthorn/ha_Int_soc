@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util.file import WriteError
+from homeassistant.util.json import SerializationError
 
 from .const import (
     DEFAULT_ACCESS_LEVEL,
@@ -322,7 +323,7 @@ class HaSocStore(Store[StoreData]):
     async def _async_write_data(self, data: dict[str, Any]) -> None:
         try:
             await super()._async_write_data(data)
-        except (WriteError, OSError) as err:
+        except (WriteError, SerializationError, OSError) as err:
             self.save_failures += 1
             self.last_save_error = str(err)
             raise

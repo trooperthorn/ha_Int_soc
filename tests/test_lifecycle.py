@@ -417,13 +417,170 @@ async def test_stop_services_bounds_a_stalled_stop_and_still_flushes_the_store(
             flushed.append(True)
             await real_flush()
 
+        audit_finished = []
+        real_audit_stop = runtime.audit.async_stop
+
+        async def slow_audit_stop() -> None:
+            # Longer than every budget: the audit stop must still run to the end.
+            await asyncio.sleep(0.5)
+            await real_audit_stop()
+            audit_finished.append(True)
+
+        real_syslog_stop = runtime.syslog.async_stop
         with (
             patch("custom_components.ha_soc.SERVICE_STOP_BUDGET", 0.2),
+            patch("custom_components.ha_soc.TERMINAL_CLOSE_BUDGET", 0.2),
+            patch.object(runtime.terminal, "async_close_all", stalled),
+            patch.object(runtime.audit, "async_stop", slow_audit_stop),
             patch.object(runtime.syslog, "async_stop", stalled),
             patch.object(runtime.store, "async_flush", recording_flush),
         ):
             await asyncio.wait_for(runtime.async_stop_services(), timeout=5)
         assert flushed == [True]
+        assert audit_finished == [True]
+        assert "gave up waiting for terminal sessions" in caplog.text
         assert "gave up waiting for syslog exporter" in caplog.text
+        # A cancelled stop is not retried by the unload below, so finish it here.
+        await real_syslog_stop(drain=False)
         await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()
+
+
+async def test_terminal_close_record_survives_a_hung_or_cancelled_socket_close(
+    hass,
+) -> None:
+    """A Terminal app that never answers the close must not lose the CLOSE record."""
+    from types import SimpleNamespace
+
+    from custom_components.ha_soc import terminal as terminal_mod
+    from custom_components.ha_soc.terminal import (
+        AUDIT_CATEGORY_CLOSE,
+        TerminalSession,
+        TerminalSessions,
+    )
+    from homeassistant.util import dt as dt_util
+
+    audit = MagicMock()
+    sessions = TerminalSessions(hass, audit, MagicMock())
+
+    async def hang() -> None:
+        await asyncio.sleep(3600)
+
+    def make(session_id: str) -> TerminalSession:
+        session = TerminalSession(
+            session_id=session_id,
+            user_id="u",
+            target="t",
+            host="h",
+            started=dt_util.utcnow(),
+            send=lambda _msg: None,
+            ws=SimpleNamespace(close=hang),
+        )
+        sessions.sessions[session_id] = session
+        return session
+
+    with patch.object(terminal_mod, "WS_CLOSE_TIMEOUT", 0.05):
+        await asyncio.wait_for(sessions._finish(make("a"), "unloaded"), timeout=5)
+    assert audit.async_log.call_count == 1
+    assert audit.async_log.call_args.args[0] == AUDIT_CATEGORY_CLOSE
+
+    # Cancelled from outside (an enclosing budget) while the socket close hangs.
+    task = asyncio.ensure_future(sessions._finish(make("b"), "unloaded"))
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert audit.async_log.call_count == 2
+
+
+async def test_serialisation_failure_counts_as_a_failed_save(hass, hass_storage) -> None:
+    from homeassistant.util.json import SerializationError
+
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    entry.add_to_hass(hass)
+    with patch.object(ObservePusher, "async_push_once", return_value=None):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        store = entry.runtime_data.store
+        with patch.object(
+            Store, "_async_write_data", side_effect=SerializationError("bad data")
+        ):
+            with pytest.raises(StoreSaveError):
+                await store.async_save_now()
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_failed_options_save_keeps_settings_changed_meanwhile(
+    hass, hass_storage
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    entry.add_to_hass(hass)
+    with patch.object(ObservePusher, "async_push_once", return_value=None):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        runtime = entry.runtime_data
+        result = await hass.config_entries.options.async_init(entry.entry_id)
+
+        def fail_after_panel_change(_data) -> None:
+            # The panel Settings tab changes another key while the write is in flight.
+            runtime.store.settings["audit_retention_days"] = 77
+            raise WriteError("disk full")
+
+        with patch.object(
+            Store, "_async_write_data", side_effect=fail_after_panel_change
+        ):
+            failed = await hass.config_entries.options.async_configure(
+                result["flow_id"],
+                {
+                    CONF_OBSERVE_ENABLED: True,
+                    CONF_OBSERVE_URL: "https://observe.example.com",
+                    CONF_OBSERVE_INGEST_KEY: "wpi_" + "a" * 32,
+                    CONF_OBSERVE_HOST_NAME: "haos-lab",
+                    CONF_OBSERVE_INTERVAL: 60,
+                },
+            )
+        assert failed["errors"] == {"base": "save_failed"}
+        assert runtime.store.settings["audit_retention_days"] == 77
+        assert not runtime.store.settings.get(CONF_OBSERVE_ENABLED)
+        assert not runtime.store.settings.get(CONF_OBSERVE_URL)
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_failed_migration_save_then_failed_setup_leaves_no_delayed_save(
+    hass, hass_storage
+) -> None:
+    from custom_components.ha_soc.store import HaSocData
+
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 0,
+        "key": STORAGE_KEY,
+        "data": {"settings": {"nvd_api_key": "OLD-NVD"}},
+    }
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    entry.add_to_hass(hass)
+    created: list[HaSocData] = []
+    real_init = HaSocData.__init__
+
+    def recording_init(self, *args, **kwargs) -> None:
+        real_init(self, *args, **kwargs)
+        created.append(self)
+
+    with (
+        patch.object(HaSocData, "__init__", recording_init),
+        patch.object(Store, "_async_write_data", side_effect=WriteError("disk full")),
+        patch(
+            "custom_components.ha_soc.async_get_integration",
+            side_effect=RuntimeError("boom"),
+        ),
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    assert created
+    inner = created[0]._store
+    assert inner._delay_handle is None
+    assert inner._unsub_final_write_listener is None

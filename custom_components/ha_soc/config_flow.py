@@ -80,7 +80,11 @@ class HaSocOptionsFlow(OptionsFlow):
                 user_input, key_already_set=key_set and not clear_key
             )
             if not errors:
-                before = deepcopy(runtime.store.data["settings"])
+                missing = object()
+                before = {
+                    key: deepcopy(settings[key]) if key in settings else missing
+                    for key in changes
+                }
                 runtime.store.async_update_settings(**changes)
                 # The reload builds a fresh store that reads the file, and the store
                 # normally debounces its writes, so write now. A write that fails
@@ -88,8 +92,13 @@ class HaSocOptionsFlow(OptionsFlow):
                 try:
                     await runtime.store.async_save_now()
                 except HomeAssistantError:
-                    settings.clear()
-                    settings.update(before)
+                    # Only the keys this form changed: the panel may have changed
+                    # others while the write was in flight.
+                    for key, value in before.items():
+                        if value is missing:
+                            settings.pop(key, None)
+                        else:
+                            settings[key] = value
                     errors["base"] = "save_failed"
             if not errors:
                 audited: dict[str, Any] = dict(changes)

@@ -57,9 +57,12 @@ ANALYSIS_INTERVAL = timedelta(minutes=5)
 VULN_SCAN_INTERVAL = timedelta(hours=24)
 SCANNER_SWEEP_INTERVAL = timedelta(days=7)
 CONFIG_CHECK_INTERVAL = timedelta(hours=6)
-# Core waits at most 10 seconds for a failed setup's unload tasks. The stops before
-# the store write share this budget so the write always starts inside that window.
+# Core waits at most 10 seconds for a failed setup's unload tasks. The stops after
+# the audit log and before the store write share this budget so the write starts
+# inside that window. Terminal sessions have a budget of their own, and the audit
+# log stop has none: cancelling it would lose records, so it is never starved.
 SERVICE_STOP_BUDGET = 7.0
+TERMINAL_CLOSE_BUDGET = 3.0
 # The ledger records transitions, not samples, so a slow cadence loses
 # nothing: a change that persists is still caught on the next pass.
 UNIFI_LEDGER_INTERVAL = timedelta(hours=6)
@@ -106,30 +109,42 @@ class HaSocRuntimeData:
         # the exporter's drain; the store is written last because the stops above
         # (the audit head mirror, the health records) change it.
         loop = asyncio.get_running_loop()
+        await self._stop_one("terminal sessions", self.terminal.async_close_all, TERMINAL_CLOSE_BUDGET)
+        # No time limit: the stop flushes buffered records, and a cancelled flush
+        # drops them and leaves a writer thread running that the next AuditLog
+        # could race. Its own work is bounded by the disk write.
+        await self._stop_one("audit log", self.audit.async_stop, None)
         deadline = loop.time() + SERVICE_STOP_BUDGET
         for label, stop in (
-            ("terminal sessions", self.terminal.async_close_all),
-            ("audit log", self.audit.async_stop),
             ("syslog exporter", partial(self.syslog.async_stop, drain=True)),
             ("permissions", self.permissions.async_stop),
             ("health", self.health.async_stop),
             ("scanner", self.scanner.async_stop),
             ("resource watchdog", self.watchdog.async_stop),
             ("Observe push", self.observe.async_stop),
-            ("store", self.store.async_flush),
         ):
-            try:
-                result = stop()
-                if inspect.isawaitable(result):
-                    if label == "store":
+            await self._stop_one(label, stop, max(deadline - loop.time(), 0.1))
+        await self._stop_one("store", self.store.async_flush, None)
+
+    @staticmethod
+    async def _stop_one(label: str, stop, budget: float | None) -> None:
+        """Run one stop, bounded by ``budget`` seconds when given, logging any failure.
+
+        A stop cancelled by its budget is not retried (the runtime is already
+        marked stopped), so that service may be left half-stopped.
+        """
+        try:
+            result = stop()
+            if inspect.isawaitable(result):
+                if budget is None:
+                    await result
+                else:
+                    async with asyncio.timeout(budget):
                         await result
-                    else:
-                        async with asyncio.timeout(max(deadline - loop.time(), 0.1)):
-                            await result
-            except TimeoutError:
-                _LOGGER.error("HA SOC gave up waiting for %s to stop", label)
-            except Exception:  # noqa: BLE001 - one failed stop must not strand the others
-                _LOGGER.exception("HA SOC could not stop %s", label)
+        except TimeoutError:
+            _LOGGER.error("HA SOC gave up waiting for %s to stop", label)
+        except Exception:  # noqa: BLE001 - one failed stop must not strand the others
+            _LOGGER.exception("HA SOC could not stop %s", label)
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -166,6 +181,10 @@ def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> N
 async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     store = HaSocData(hass)
     await store.async_load()
+    # Before anything can arm a delayed save (the secret migration re-arms one when
+    # its write fails): a setup that fails from here on writes it out and clears
+    # its timer instead of leaving it to overwrite the retry's data.
+    entry.async_on_unload(store.async_flush)
 
     # Loaded before anything else can want a credential.
     secrets = HaSocSecretStore(hass)
@@ -222,7 +241,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     # Registered before anything starts: core runs these callbacks when this setup
     # fails or is retried as well as on unload, so no service outlives a failed
-    # attempt. They run in reverse order: unregister, stop, then drop the runtime.
+    # attempt. Core starts them in reverse order as eager tasks, so the synchronous
+    # runtime drop completes before the stop finishes awaiting.
     entry.async_on_unload(lambda: _async_forget_runtime(entry))
     entry.async_on_unload(entry.runtime_data.async_stop_services)
     entry.async_on_unload(lambda: _async_unregister_everything(hass))

@@ -320,6 +320,10 @@ class TerminalSession:
     extra: dict[str, Any] = field(default_factory=dict)
 
 
+# Longer than the browser-side close needs; shorter than aiohttp's 10 second default.
+WS_CLOSE_TIMEOUT = 2.0
+
+
 class TerminalSessions:
     """Every open terminal session, and the one place they are opened and closed."""
 
@@ -622,24 +626,28 @@ class TerminalSessions:
         session.close_reason = session.close_reason or reason
         self.sessions.pop(session.session_id, None)
         try:
-            await session.ws.close()
-        except Exception:  # noqa: BLE001
-            pass
-        duration = int((dt_util.utcnow() - session.started).total_seconds())
-        self._audit.async_log(
-            AUDIT_CATEGORY_CLOSE,
-            user_id=session.user_id,
-            detail={
-                "session_id": session.session_id,
-                "target": session.target,
-                "host": session.host,
-                "duration_seconds": duration,
-                "bytes_in": session.bytes_in,
-                "bytes_out": session.bytes_out,
-                "reason": session.close_reason,
-            },
-            flush=True,
-        )
+            try:
+                async with asyncio.timeout(WS_CLOSE_TIMEOUT):
+                    await session.ws.close()
+            except Exception:  # noqa: BLE001 - includes the timeout; the record below still matters
+                pass
+        finally:
+            # Written even if this task is cancelled while the socket closes.
+            duration = int((dt_util.utcnow() - session.started).total_seconds())
+            self._audit.async_log(
+                AUDIT_CATEGORY_CLOSE,
+                user_id=session.user_id,
+                detail={
+                    "session_id": session.session_id,
+                    "target": session.target,
+                    "host": session.host,
+                    "duration_seconds": duration,
+                    "bytes_in": session.bytes_in,
+                    "bytes_out": session.bytes_out,
+                    "reason": session.close_reason,
+                },
+                flush=True,
+            )
         try:
             session.send({"kind": "closed", "reason": session.close_reason, "duration_seconds": duration})
         except Exception:  # noqa: BLE001 - the browser may already be gone
