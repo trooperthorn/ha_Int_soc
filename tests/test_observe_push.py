@@ -62,13 +62,14 @@ class FakeObserve:
         status, headers, text = reply
         return web.Response(status=status, headers=headers, text=text)
 
-    async def start(self) -> str:
+    async def start(self, ssl_context=None) -> str:
         app = web.Application()
         app.router.add_post("/v1/metrics", self._handle)
         app.router.add_post("/v1/logs", self._handle)
         self.server = TestServer(app)
-        await self.server.start_server()
-        return f"http://127.0.0.1:{self.server.port}"
+        await self.server.start_server(ssl=ssl_context)
+        scheme = "https" if ssl_context else "http"
+        return f"{scheme}://127.0.0.1:{self.server.port}"
 
     async def close(self) -> None:
         if self.server is not None:
@@ -111,8 +112,10 @@ def _snapshot() -> dict[str, Any]:
     return json.loads((FIXTURES / "snapshot.json").read_text(encoding="utf-8"))["snapshot"]
 
 
-async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings):
-    """A pusher with the fixture snapshot, started the way setup starts it."""
+async def _pusher(
+    hass, entry, url: str, clock: Clock | None = None, collect=None, wall=None, **settings
+):
+    """A pusher with the fixture snapshot (or ``collect``), started the way setup starts it."""
     runtime = entry.runtime_data
     runtime.store.async_update_settings(
         **{
@@ -125,12 +128,19 @@ async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings)
     )
     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, KEY)
 
-    async def collect() -> dict[str, Any]:
-        return _snapshot()
+    if collect is None:
+
+        async def collect() -> dict[str, Any]:
+            return _snapshot()
 
     clock = clock or Clock()
     pusher = op.ObservePusher(
-        hass, runtime.store, runtime.secrets, collect, wall=lambda: 1_790_000_000.0, clock=clock
+        hass,
+        runtime.store,
+        runtime.secrets,
+        collect,
+        wall=wall or (lambda: 1_790_000_000.0),
+        clock=clock,
     )
     await pusher.async_start(entry)
     await hass.async_block_till_done()  # the initial push
@@ -163,7 +173,12 @@ async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings)
         ("http://0.0.0.0:8000", False),
         ("http://240.0.0.1", False),
         ("http://255.255.255.255", False),
-        ("http://100.64.0.1", False),
+        ("http://100.64.0.1", True),
+        ("http://100.64.1.1:8000", True),
+        ("http://100.127.255.254", True),
+        ("http://[::ffff:100.100.100.100]", True),
+        ("http://100.63.255.255", False),
+        ("http://100.128.0.1", False),
         ("http://224.0.0.1", False),
         ("http://[::]", False),
         ("http://observe.example.com", False),
@@ -763,8 +778,31 @@ async def test_redirects_are_not_followed(hass, entry, observe) -> None:
 # --------------------------------------------------------------------------- bounded queue
 
 
+def _new_record_collector():
+    """A collector whose snapshot carries one crash record that was never seen before.
+
+    Every cycle then queues a logs payload, which cannot be merged the way metrics can, so
+    the queue really reaches its payload bound.
+    """
+    counter = {"n": 0}
+
+    async def collect() -> dict[str, Any]:
+        counter["n"] += 1
+        snapshot = _snapshot()
+        snapshot["crash_bundles"] = [
+            {
+                "id": f"crash-new-{counter['n']}",
+                "ts": "2026-09-19T03:15:00+00:00",
+                "classification": "silent_stop",
+            }
+        ]
+        return snapshot
+
+    return collect
+
+
 async def test_queue_is_bounded_drops_oldest_and_counts(hass, entry, observe, caplog) -> None:
-    pusher, clock = await _pusher(hass, entry, observe.url)
+    pusher, clock = await _pusher(hass, entry, observe.url, collect=_new_record_collector())
     try:
         observe.script = [(503, {"Retry-After": "3600"}, "")]
         await pusher.async_push_once()
@@ -787,19 +825,25 @@ async def test_queue_is_bounded_drops_oldest_and_counts(hass, entry, observe, ca
 
 
 async def test_queue_overflow_keeps_the_newest(hass, entry, observe) -> None:
-    pusher, _ = await _pusher(hass, entry, observe.url)
+    pusher, _ = await _pusher(hass, entry, observe.url, collect=_new_record_collector())
     try:
         observe.script = [(503, {"Retry-After": "3600"}, "")]
         await pusher.async_push_once()
         for _ in range(op.MAX_QUEUE + 5):
             await pusher.async_push_once()
-        before = [p.idempotency_key for p in pusher._queue]
+        def logs() -> list[str]:
+            return [p.idempotency_key for p in pusher._queue if p.signal == "logs"]
+
+        before = logs()
         await pusher.async_push_once()
-        after = [p.idempotency_key for p in pusher._queue]
+        after = logs()
         added = [k for k in after if k not in before]
-        # Oldest out, newest in: the survivors are the tail of everything queued so far.
-        assert after == (before + added)[-op.MAX_QUEUE :]
-        assert len(added) >= 1
+        # Oldest out, newest in: the logs payloads, which are never merged, keep their order and
+        # the survivors are the tail of everything queued so far.
+        assert len(added) == 1
+        assert after == (before + added)[-len(after) :]
+        assert after[-1] == added[0]
+        assert len(pusher._queue) <= op.MAX_QUEUE
     finally:
         pusher.async_stop()
 

@@ -8,6 +8,7 @@ re-registers the panel with the bundle currently on disk (see docs/operations.md
 """
 from __future__ import annotations
 
+import ssl
 from copy import deepcopy
 from typing import Any
 
@@ -20,7 +21,9 @@ from homeassistant.helpers import selector
 from .const import (
     ACCESS_LEVEL_OWNER_AND_ADMINS,
     DEFAULT_ACCESS_LEVEL,
+    CONF_OBSERVE_CA_PEM,
     CONF_OBSERVE_ENABLED,
+    CONF_OBSERVE_FINGERPRINT,
     CONF_OBSERVE_HOST_NAME,
     CONF_OBSERVE_INGEST_KEY,
     CONF_OBSERVE_INTERVAL,
@@ -32,7 +35,7 @@ from .const import (
     MIN_OBSERVE_INTERVAL,
     REDACTED_PLACEHOLDER,
 )
-from .observe_push import validate_options
+from .observe_push import ERROR_INVALID_CA, build_trust, validate_options
 
 NAME = "HA SOC"
 
@@ -103,6 +106,14 @@ class HaSocOptionsFlow(OptionsFlow):
                 key_already_set=key_set and not clear_key,
                 stored_url=settings.get(CONF_OBSERVE_URL),
             )
+            if not errors and changes[CONF_OBSERVE_CA_PEM]:
+                # The certificates parse as PEM; make sure the TLS library accepts them too.
+                try:
+                    await self.hass.async_add_executor_job(
+                        build_trust, changes[CONF_OBSERVE_CA_PEM], None
+                    )
+                except (ssl.SSLError, ValueError):
+                    errors[CONF_OBSERVE_CA_PEM] = ERROR_INVALID_CA
             if not errors:
                 missing = object()
                 before = {
@@ -126,6 +137,8 @@ class HaSocOptionsFlow(OptionsFlow):
                     errors["base"] = "save_failed"
             if not errors:
                 audited: dict[str, Any] = dict(changes)
+                # The certificate text is long and public; the audit record names only that it is set.
+                audited[CONF_OBSERVE_CA_PEM] = "set" if changes[CONF_OBSERVE_CA_PEM] else None
                 if new_key:
                     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, new_key)
                     audited[CONF_OBSERVE_INGEST_KEY] = REDACTED_PLACEHOLDER
@@ -145,6 +158,8 @@ class HaSocOptionsFlow(OptionsFlow):
             CONF_OBSERVE_URL: settings.get(CONF_OBSERVE_URL) or "",
             CONF_OBSERVE_HOST_NAME: settings.get(CONF_OBSERVE_HOST_NAME) or "",
             CONF_OBSERVE_INTERVAL: settings.get(CONF_OBSERVE_INTERVAL, DEFAULT_OBSERVE_INTERVAL),
+            CONF_OBSERVE_CA_PEM: settings.get(CONF_OBSERVE_CA_PEM) or "",
+            CONF_OBSERVE_FINGERPRINT: settings.get(CONF_OBSERVE_FINGERPRINT) or "",
         }
         schema = vol.Schema(
             {
@@ -166,6 +181,14 @@ class HaSocOptionsFlow(OptionsFlow):
                 vol.Optional(
                     CONF_OBSERVE_HOST_NAME,
                     description={"suggested_value": current.get(CONF_OBSERVE_HOST_NAME) or ""},
+                ): selector.TextSelector(),
+                vol.Optional(
+                    CONF_OBSERVE_CA_PEM,
+                    description={"suggested_value": current.get(CONF_OBSERVE_CA_PEM) or ""},
+                ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
+                vol.Optional(
+                    CONF_OBSERVE_FINGERPRINT,
+                    description={"suggested_value": current.get(CONF_OBSERVE_FINGERPRINT) or ""},
                 ): selector.TextSelector(),
                 vol.Optional(
                     CONF_OBSERVE_INTERVAL,

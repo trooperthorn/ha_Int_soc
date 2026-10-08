@@ -497,8 +497,8 @@ and logged, because every gauge is sent again on the next cycle.
 `validate_url`, `validate_host_name`, `validate_ingest_key` and
 `validate_options` are the pure checks the options flow and the pusher share.
 
-The settings are `observe_enabled`, `observe_url`, `observe_host_name` and
-`observe_interval_seconds` in the HA SOC store and the ingest key in the
+The settings are `observe_enabled`, `observe_url`, `observe_host_name`,
+`observe_interval_seconds`, `observe_ca_pem` and `observe_cert_sha256` in the HA SOC store and the ingest key in the
 secret store (`observe_ingest_key`, in `SECRET_SETTING_KEYS`, so every
 masking path covers it). `entry.options` stays `{}`; the options flow writes
 the store, flushes it to disk with `async_save_now` (the store normally
@@ -521,9 +521,54 @@ Each tick runs under one lock, so a slow cycle makes the next tick skip
 instead of overlapping. A tick builds the metrics request and, when it holds
 records Observe has not yet accepted, the logs request, gzips them in the
 executor, queues them and sends from the head of the queue. The queue holds
-at most 60 payloads; overflow drops the oldest and counts it. Each payload
-has one `Idempotency-Key` for its whole life, so a retry after a lost
-response is recognised by Observe.
+at most 60 payloads and 4 MiB of compressed body (`MAX_QUEUE`,
+`MAX_QUEUE_BYTES`). Each payload has one `Idempotency-Key` for its whole life,
+so a retry after a lost response is recognised by Observe.
+
+Long outages. When an enqueue takes the queue over either bound,
+`_async_enforce_bounds` first merges the queued metrics payloads, except the
+head of the queue (which may have been sent once already and must keep its key),
+into one new payload (`compact_metrics`, in the executor). The merged payload
+keeps, for each series (scope, metric name, unit, attribute set), the newest
+point of every interval of 300 seconds, judged by the point's own timestamp, and
+uses the resource of the newest request. All points are gauges, so the newest
+value of an interval stands for it. If the queue is still over its byte bound, or the
+merged payload is over 512 KiB (Observe caps a request at 1 MiB), the merge is
+repeated with 600, 1200, 2400 and 3600 seconds. A merge cannot reduce the
+number of log payloads; only if the queue is still over a bound is the oldest
+payload dropped and counted in `dropped_overflow`. With one push a minute the
+queue therefore holds the whole outage as roughly one point per five minutes
+per series and a few tens of kilobytes, instead of the last 30 minutes at full
+resolution (measured in docs/decisions.md).
+
+Log records are queued once. A logs request is cut down to the records whose
+dedup key is neither remembered as accepted nor already waiting in a queued
+payload (`_queued_log_keys`, computed from the queue so it cannot drift), and a
+payload carries exactly the keys of the records it holds. A record whose payload
+leaves the queue without being accepted (dropped on overflow or rejected) is
+offered again the next cycle, because its key is neither sent nor queued.
+
+Reloads. `async_stop` hands the queue, the sent-key memory, the partial-retry
+memory and the integration series to a carry-over in `hass.data`
+(`DATA_QUEUE_CARRY`, by config entry id), and the next pusher of the entry
+adopts it in `async_start` when the URL and host name are unchanged. Otherwise,
+or when the push is disabled or its settings are invalid, the old payloads are
+discarded, because they name the old host and were meant for the old server.
+The queue is not written to disk, so a restart of Home Assistant still loses it.
+Removing the entry clears the carry-over (`async_remove_entry`).
+
+Trust for a private certificate. `observe_ca_pem` and `observe_cert_sha256`
+are settings in the store (public data, not secrets), at most one of them set.
+`build_trust` turns them into the `ssl` argument of the request: a pasted CA
+becomes a TLS 1.2 or newer client context that trusts only those certificates
+(the system store is not added, and the host name is still checked), and a
+fingerprint becomes an `aiohttp.Fingerprint` that pins the one certificate. It
+runs in the executor because it parses certificates, and again in the options
+flow so a certificate the TLS library refuses is reported as `invalid_ca`. With
+neither set the request uses Home Assistant's default trust, so a self-signed
+server is refused. `validate_ca_pem` keeps only certificate blocks (at most 10,
+64 KiB), so a pasted private key is refused, never stored.
+The audit record of the options flow notes only that a CA is set.
 
 Outcomes by response: 200 is accepted (a `partialSuccess` rejected count is
 counted and logged, not retried); 401 and 403 raise the Repairs issue, drop
@@ -536,12 +581,12 @@ retry cannot change the answer. Three such drops in a row (400, 404, 409, 413,
 HA SOC push", which names the last status, and sending then backs off
 exponentially (10 seconds doubling to 15 minutes) instead of dropping a payload
 every tick; an accepted push clears both. Plain `http` is accepted only for
-localhost, loopback, RFC1918, IPv6 unique local, link-local and IPv4-mapped
-addresses of those kinds. Redirects are not followed, so the key is
+localhost, loopback, RFC1918, the shared address space 100.64.0.0/10 (Tailscale),
+IPv6 unique local, link-local and IPv4-mapped addresses of those kinds. Redirects are not followed, so the key is
 never sent anywhere but the configured address. Waiting is a stored "not
 before" time compared against a monotonic clock, never a sleep. Log records
-that were accepted are remembered by their dedup key (in memory) so a later
-logs request is only sent when it carries something new.
+that were accepted are remembered by their dedup key (in memory, at most 5,000
+keys) so a later logs request is only sent when it carries something new.
 
 The key is placed only in the `Authorization` header. Log lines name the
 status and the payload kind, never the URL or headers, and pass any server

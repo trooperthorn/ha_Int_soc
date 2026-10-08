@@ -44,7 +44,7 @@ from .risk import RiskEngine
 from .scanner import IntegrationScanner
 from .secrets_store import HaSocSecretStore, async_migrate_legacy_secrets
 from .resource_watchdog import ResourceWatchdog
-from .observe_push import ObservePusher, SnapshotCollector
+from .observe_push import DATA_QUEUE_CARRY, ObservePusher, SnapshotCollector
 from .store import HaSocData
 from .syslog_export import SyslogExporter
 from .users import LiveSessionRegistry, UsersManager
@@ -388,3 +388,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
 
     await _async_unregister_everything(hass)
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
+    """Forget the Observe queue a stopped push left for a reload; the entry is gone for good."""
+    hass.data.get(DATA_QUEUE_CARRY, {}).pop(entry.entry_id, None)

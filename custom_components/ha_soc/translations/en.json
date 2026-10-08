@@ -21,7 +21,9 @@
           "observe_ingest_key": "Ingest key",
           "observe_clear_key": "Remove the stored ingest key",
           "observe_host_name": "Host name",
-          "observe_interval_seconds": "Push interval"
+          "observe_interval_seconds": "Push interval",
+          "observe_ca_pem": "Certificate authority (PEM)",
+          "observe_cert_sha256": "Certificate fingerprint (SHA-256)"
         },
         "data_description": {
           "observe_enabled": "Off by default. Nothing leaves Home Assistant until this is on.",
@@ -29,7 +31,9 @@
           "observe_ingest_key": "A host-bound ingest key that starts with wpi_. It is stored privately and never shown again.",
           "observe_clear_key": "Tick to delete the stored key. Leaving the key field blank keeps it.",
           "observe_host_name": "The host name the ingest key is bound to. Observe refuses data whose host name differs.",
-          "observe_interval_seconds": "Seconds between pushes, from 30 to 3600. The default is 60."
+          "observe_interval_seconds": "Seconds between pushes, from 30 to 3600. The default is 60.",
+          "observe_ca_pem": "Optional. Paste the PEM certificate of the authority that signed your Observe server, or its own certificate when it is self-signed. When set, only that certificate is trusted for Observe. Leave blank to use the normal public authorities.",
+          "observe_cert_sha256": "Optional alternative to the certificate above: the SHA-256 fingerprint of the one certificate your Observe server presents, as printed by openssl x509 -fingerprint -sha256. Set only one of the two."
         }
       }
     },
@@ -41,6 +45,9 @@
       "invalid_key": "The ingest key must start with wpi_ and contain no spaces.",
       "invalid_host_name": "Enter the host name the ingest key is bound to, without spaces.",
       "invalid_interval": "The interval must be between 30 and 3600 seconds.",
+      "invalid_ca": "Paste one or more certificates in PEM form, from BEGIN CERTIFICATE to END CERTIFICATE. A private key is refused.",
+      "invalid_fingerprint": "Enter the SHA-256 fingerprint as 64 hexadecimal characters. Colons are allowed.",
+      "trust_conflict": "Set either the certificate or the fingerprint, not both.",
       "save_failed": "The settings could not be written to disk, so nothing was changed. Check the free space and permissions of the Home Assistant storage folder and the log, then submit again."
     },
     "abort": {

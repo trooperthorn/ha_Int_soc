@@ -735,10 +735,12 @@ in the form:
 | Field | Meaning |
 |---|---|
 | Push to Observe | Off by default. |
-| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private or link-local IP address or `localhost`. No user name, password, query or fragment. |
+| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private, link-local or Tailscale (100.64.0.0/10) IP address or `localhost`. No user name, password, query or fragment. |
 | Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key unless you change the Observe URL, in which case the key must be typed again. Tick "Remove the stored ingest key" to delete it. |
 | Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
 | Push interval | 30 to 3600 seconds, 60 by default. |
+| Certificate authority (PEM) | Optional. For an Observe server whose certificate no public authority signed, paste the PEM certificate of the authority that signed it, or its own certificate when it is self-signed. While it is set, only that certificate is trusted for Observe, and the address in the URL must still be named in the certificate. A private key is refused. |
+| Certificate fingerprint (SHA-256) | Optional alternative to the certificate above: pin the one certificate the server presents by its SHA-256 fingerprint (64 hexadecimal characters, colons allowed). Set only one of the two. |
 
 If the settings cannot be written to disk, the form stays open with the error "The settings could not be written to disk" and nothing is changed; check the free space and permissions of the `.storage` folder. HA SOC also writes its store when it unloads or reloads, so a setting changed in the last 15 seconds before a reload is kept.
 
@@ -747,9 +749,15 @@ JSON requests ([`otlp_mapper.py`](custom_components/ha_soc/otlp_mapper.py))
 and sends them to `POST /v1/metrics` and `POST /v1/logs` on Home Assistant's
 own HTTP session, gzip compressed, with the key as a bearer token and one
 `Idempotency-Key` per payload. A payload that cannot be delivered is kept in
-a bounded in-memory queue of 60 payloads and retried with back-off,
-honouring `Retry-After`; when the queue is full the oldest payload is
-dropped and a warning with the count is logged. Observe answering 404, 400,
+a bounded in-memory queue (60 payloads and 4 MiB) and retried with back-off,
+honouring `Retry-After`. The queue is kept when you save the Configure dialog
+or reload the integration, as long as the URL and host name did not change. A
+log record is queued once, so an outage does not repeat it in every payload.
+When the queue fills up during a long outage the queued metric payloads are
+merged into one that keeps the newest point per series for every five minutes
+(the interval widens if the result is still too large), so hours of outage
+are kept at a coarser resolution; only when merging cannot make room is the
+oldest payload dropped, and a warning with the count is logged. Observe answering 404, 400,
 409, 413, 415 or 422 three times in a row raises a Repairs issue that names the
 status and slows sending down until a push is accepted. Observe answering 401 or 403
 raises a Repairs issue ("Observe refused the ingest key") that clears itself

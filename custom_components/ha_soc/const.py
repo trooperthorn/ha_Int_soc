@@ -203,6 +203,10 @@ CONF_OBSERVE_URL = "observe_url"
 CONF_OBSERVE_INGEST_KEY = "observe_ingest_key"
 CONF_OBSERVE_HOST_NAME = "observe_host_name"
 CONF_OBSERVE_INTERVAL = "observe_interval_seconds"
+# How to trust an Observe server whose certificate no public CA signed (docs/design.md,
+# "Observe push"). Both are public data, so both live in the store; at most one is set.
+CONF_OBSERVE_CA_PEM = "observe_ca_pem"
+CONF_OBSERVE_FINGERPRINT = "observe_cert_sha256"
 DEFAULT_OBSERVE_ENABLED = False
 DEFAULT_OBSERVE_INTERVAL = 60
 MIN_OBSERVE_INTERVAL = 30

@@ -86,6 +86,8 @@ class SettingsData(TypedDict):
     observe_url: str | None
     observe_host_name: str | None
     observe_interval_seconds: int
+    observe_ca_pem: str | None
+    observe_cert_sha256: str | None
     syslog_receiver_port: int
     evidence_retention_days: int
     scanner_enabled: bool
@@ -222,6 +224,8 @@ def default_store_data() -> StoreData:
             observe_url=None,
             observe_host_name=None,
             observe_interval_seconds=DEFAULT_OBSERVE_INTERVAL,
+            observe_ca_pem=None,
+            observe_cert_sha256=None,
             syslog_receiver_port=DEFAULT_SYSLOG_RECEIVER_PORT,
             evidence_retention_days=DEFAULT_EVIDENCE_RETENTION_DAYS,
             scanner_enabled=DEFAULT_SCANNER_ENABLED,
