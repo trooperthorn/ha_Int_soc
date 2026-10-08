@@ -99,6 +99,7 @@ from .dashboard_files import (
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
 from .netscan import validate_max_concurrency as validate_netscan_max_concurrency
 from .netscan import validate_port_list as validate_netscan_port_list
+from .repairs import async_sync_tls_verify_issue
 from .resource_watchdog import ADDON_SLUG_PATTERN
 from .snmp import (
     snmp_ip_address,
@@ -184,6 +185,27 @@ def _runtime(hass: HomeAssistant):
     return get_runtime_data(hass)
 
 
+ERR_NOT_LOADED = "not_loaded"
+
+
+def _reject_if_not_loaded(hass: HomeAssistant, connection, msg: dict) -> bool:
+    """Send the documented ``not_loaded`` error and return True when the entry has no runtime.
+
+    The panel and any other client can still hold a connection after the entry
+    is unloaded, failed its setup, or is being reloaded. With no HA SOC entry at
+    all the command runs as before: handlers that need the runtime raise, and the
+    rest do not need it.
+    """
+    if not hass.config_entries.async_entries(DOMAIN):
+        return False
+    try:
+        _runtime(hass)
+    except RuntimeError:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "HA SOC is not set up")
+        return True
+    return False
+
+
 def require_soc_access(func):
     """Admin-gate every ha_soc/* command, then apply HA SOC's own access_level.
 
@@ -204,6 +226,8 @@ def require_soc_access(func):
                 access_level = DEFAULT_ACCESS_LEVEL
             if access_level != ACCESS_LEVEL_OWNER_AND_ADMINS:
                 raise Unauthorized
+        if _reject_if_not_loaded(hass, connection, msg):
+            return
         func(hass, connection, msg)
 
     return with_soc_access
@@ -217,9 +241,18 @@ def require_owner(func):
         user = connection.user
         if user is None or not user.is_owner:
             raise Unauthorized
+        if _reject_if_not_loaded(hass, connection, msg):
+            return
         func(hass, connection, msg)
 
     return with_owner
+
+
+def _grants_admin_group(group_ids: list[str] | None) -> bool:
+    """True when a create or update request would put the user in the admin group."""
+    from homeassistant.auth.const import GROUP_ID_ADMIN
+
+    return GROUP_ID_ADMIN in (group_ids or [])
 
 
 async def _async_target_is_admin(hass: HomeAssistant, user_id: str) -> bool:
@@ -361,8 +394,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
 async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
     """Tell the frontend (and a blocked admin) exactly where it stands.
 
-    Stays on plain require_admin so a blocked admin can learn why.
+    Stays on plain require_admin so a blocked admin can learn why, but still
+    answers ``not_loaded`` when the entry has no runtime.
     """
+    if _reject_if_not_loaded(hass, connection, msg):
+        return
     runtime = _runtime(hass)
     user = connection.user
     access_level = runtime.store.settings.get("access_level", DEFAULT_ACCESS_LEVEL)
@@ -433,6 +469,9 @@ async def ws_users_detail(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_create(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # Only the owner creates administrators; an admin could otherwise mint a peer.
+    if not connection.user.is_owner and _grants_admin_group(msg.get("group_ids")):
+        raise Unauthorized
     record = await runtime.users.async_create_user(
         msg["name"], group_ids=msg.get("group_ids"), local_only=msg.get("local_only")
     )
@@ -462,9 +501,11 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
         if k in ("name", "is_active", "group_ids", "local_only")
     }
 
-    # Admin-group targets are owner-only, as for deactivate/delete/revoke.
-    if not connection.user.is_owner and await _async_target_is_admin(
-        hass, msg["user_id"]
+    # Admin-group targets are owner-only, as for deactivate/delete/revoke, and so is
+    # putting anyone into the admin group.
+    if not connection.user.is_owner and (
+        _grants_admin_group(msg.get("group_ids"))
+        or await _async_target_is_admin(hass, msg["user_id"])
     ):
         raise Unauthorized
 
@@ -2279,6 +2320,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
 
     if changes:
         runtime.store.async_update_settings(**changes)
+        async_sync_tls_verify_issue(hass, runtime.store.settings)
 
     if any(
         key in changes
@@ -2721,8 +2763,10 @@ async def ws_ssh_run(hass: HomeAssistant, connection, msg: dict) -> None:
 
 # --- Terminal app -----------------------------------------------------------
 #
-# The same owner-or-admins tier as the rest of the panel, applied per
-# command. A session is a subscription: output arrives as events on the open
+# Opening a session, sending input, resizing and running a command are
+# owner-only whatever access_level says, because they are a root shell on the
+# host (the same bar as ha_soc/ssh/run). Status, close, transcript and export
+# events follow the owner-or-admins tier of the rest of the panel. A session is a subscription: output arrives as events on the open
 # command's id until either side closes it, and the browser going away closes
 # it too. Bytes ride as base64 in both directions because a terminal stream is
 # not text. Shapes: docs/protocol.md; design: docs/TERMINAL-DESIGN.md.
@@ -2738,7 +2782,7 @@ async def ws_terminal_status(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], status)
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/open",
@@ -2783,7 +2827,7 @@ async def ws_terminal_open(hass: HomeAssistant, connection, msg: dict) -> None:
         "target": session.target,
         "host": session.host,
         "started": session.started.isoformat(),
-        "recorded": True,
+        "recorded": session.recorded,
         "max_session_seconds": terminal.MAX_SESSION_SECONDS,
     }
     connection.send_result(msg_id, opened)
@@ -2792,7 +2836,7 @@ async def ws_terminal_open(hass: HomeAssistant, connection, msg: dict) -> None:
     _send({"kind": "opened", **opened})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/input",
@@ -2811,7 +2855,7 @@ async def ws_terminal_input(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"ok": True})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/resize",
@@ -2858,7 +2902,7 @@ async def ws_terminal_close(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"closed": True})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/run",
@@ -2902,7 +2946,9 @@ async def ws_terminal_transcript(hass: HomeAssistant, connection, msg: dict) -> 
     runtime = _runtime(hass)
     try:
         result = await runtime.terminal.async_transcript(
-            user_id=connection.user.id, session_id=msg["session_id"]
+            user_id=connection.user.id,
+            session_id=msg["session_id"],
+            allow_any=bool(connection.user.is_owner),
         )
     except terminal.TerminalError as err:
         connection.send_error(msg["id"], err.code, err.message)
@@ -2926,9 +2972,10 @@ async def ws_terminal_export_event(hass: HomeAssistant, connection, msg: dict) -
     """Record that screen text left the panel by copy or download.
 
     The panel computes the hash client-side (crypto.subtle.digest) over
-    exactly what it copied or downloaded, before this call, so the audit
-    record identifies the actual bytes rather than trusting a byte count
-    alone. Copying still succeeds even when this call fails; the panel
+    what it copied or downloaded, before this call. Core cannot see those
+    bytes, so the audit record stores the hash marked ``client_asserted``:
+    it identifies what the browser claims it exported, not something Core
+    verified. Copying still succeeds even when this call fails; the panel
     shows a warning in that case rather than blocking the clipboard.
     """
     runtime = _runtime(hass)
@@ -2941,6 +2988,7 @@ async def ws_terminal_export_event(hass: HomeAssistant, connection, msg: dict) -
             "lines": msg["lines"],
             "bytes": msg["bytes"],
             "sha256": msg["sha256"],
+            "hash_source": terminal.HASH_SOURCE_CLIENT,
         },
         flush=True,
     )

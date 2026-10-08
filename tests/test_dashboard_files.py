@@ -28,6 +28,8 @@ from custom_components.ha_soc.websocket_api import (
     ws_dashboards_write,
 )
 
+ISOLATED_CONFIG_DIR = True
+
 OVERVIEW = "title: Overview\nviews:\n  - title: Home\n    cards: []\n"
 
 

@@ -13,7 +13,11 @@ persistence change this module depends on.
   `heartbeat_interval_seconds` (default 30, 10-300) with the current
   timestamp, a per-boot id, and when this boot's Core started.
 - A clean-stop marker, `<config>/ha_soc/last_stop.json`, written once on
-  `EVENT_HOMEASSISTANT_STOP`.
+  `EVENT_HOMEASSISTANT_STOP`. Once the stop begins no further heartbeat is
+  written: the interval timer keeps ticking during shutdown, and a late
+  heartbeat would be newer than the marker and make the next start look
+  unclean. A heartbeat write already in flight finishes before the marker
+  is written.
 - At setup, before this run writes its first heartbeat, both files are
   read once and kept as the previous run's snapshot. The order matters:
   the first heartbeat lands seconds after setup, and a check that read the

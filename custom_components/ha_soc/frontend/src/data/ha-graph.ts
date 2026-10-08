@@ -36,7 +36,8 @@ export interface DeviceRegistryEntry {
   model: string | null;
   area_id: string | null;
   via_device_id: string | null;
-  config_entries: string[];
+  // A device belongs to one config entry as of core 2026.8. Child devices carry none.
+  config_entry_id?: string | null;
   disabled_by: string | null;
   entry_type: string | null;
 }
@@ -184,17 +185,15 @@ export async function fetchEntityMap(
         "Connected through",
       );
     }
-    for (const entryId of d.config_entries) {
-      const domain = domainOfEntry(entryId);
-      if (domain) {
-        link(
-          `id:${d.id}:${domain}`,
-          `integration:${domain}`,
-          `device:${d.id}`,
-          "integration_device",
-          "Provides",
-        );
-      }
+    const domain = domainOfEntry(d.config_entry_id);
+    if (domain) {
+      link(
+        `id:${d.id}:${domain}`,
+        `integration:${domain}`,
+        `device:${d.id}`,
+        "integration_device",
+        "Provides",
+      );
     }
   }
 

@@ -63,10 +63,13 @@ jq -cn --arg id "${id}" --arg kind "run" --arg started "${started}" --arg ended 
     >> "${SESSIONS_DIR}/index.jsonl"
 chmod 600 "${SESSIONS_DIR}/index.jsonl"
 
-stdout_text="$(cat "${out_file}")"
 duration_seconds=$(( $(date -u -d "${ended}" +%s) - $(date -u -d "${started}" +%s) ))
 
 printf 'Status: 200 OK\r\nContent-Type: application/json\r\n\r\n'
-jq -n --arg id "${id}" --arg stdout "${stdout_text}" --argjson exit_code "${exit_code}" \
+# --rawfile reads the output file as it is, so a trailing newline survives.
+# "$(cat file)" would strip it, and the hash the integration computes over
+# stdout would then differ from the sha256 of the file recorded above.
+jq -n --arg id "${id}" --rawfile stdout "${out_file}" --argjson exit_code "${exit_code}" \
     --argjson duration_seconds "${duration_seconds}" --argjson truncated "${truncated}" \
-    '{id: $id, stdout: $stdout, exit_code: $exit_code, duration_seconds: $duration_seconds, truncated: $truncated}'
+    --arg sha256 "${digest}" --argjson bytes "${bytes}" \
+    '{id: $id, stdout: $stdout, exit_code: $exit_code, duration_seconds: $duration_seconds, truncated: $truncated, sha256: $sha256, bytes: $bytes}'

@@ -5,6 +5,7 @@ Docker hard caps applied by the Probe add-on. See docs/RESOURCE-WATCHDOG.md.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -39,6 +40,12 @@ _HISTORY_SAMPLES = 60
 
 # Enforced on the WS schema and re-checked by the Probe before any Docker URL is built.
 ADDON_SLUG_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+
+# The Supervisor is asked for container stats no more often than this, unless the watchdog
+# interval is shorter. One sample is shared by the watchdog and the Observe push.
+STATS_MIN_INTERVAL_SECONDS = 180
+# The history ring is written to flash at most this often, plus once when the entry stops.
+HISTORY_SAVE_INTERVAL_SECONDS = 600
 
 HISTORY_FILENAME = "watchdog_history.json"
 # crash_forensics.py copies this file aside as watchdog_history.prev.json
@@ -86,9 +93,16 @@ class ResourceWatchdog:
         self._history_path = hass.config.path("ha_soc", HISTORY_FILENAME)
         self._history_dirty = False
         self._history_last_write: str | None = None
-        # The latest successful sample and its monotonic time; the Observe push reads it.
+        # Monotonic time of the last history write attempt. Starts at boot so the first write
+        # comes one interval after startup, not at the first sample.
+        self._history_saved_at = time.monotonic()
+        # The latest successful sample and its monotonic time, shared with the Observe push.
         self.last_overview: dict[str, Any] | None = None
         self.last_overview_at: float | None = None
+        # last_overview_at of the sample the watchdog last evaluated, so a sample taken for
+        # the push is evaluated once and never twice.
+        self._evaluated_at: float | None = None
+        self._sample_lock = asyncio.Lock()
 
     def _sync_load_history(self) -> dict[str, Any] | None:
         """Copy this boot's starting ring to the .prev file, then load it.
@@ -124,19 +138,82 @@ class ResourceWatchdog:
         payload = {slug: list(samples) for slug, samples in self._history.items()}
         sync_write_json_atomic(self._history_path, payload)
 
-    async def _async_maybe_save_history(self) -> None:
-        """Persist the ring at most once per sample cycle, and only when it
-        actually changed (a config-only pass with no containers touches
-        nothing)."""
+    async def _async_maybe_save_history(self, *, force: bool = False) -> None:
+        """Persist the ring at most once per HISTORY_SAVE_INTERVAL_SECONDS, and only
+        when it changed (a config-only pass with no containers touches nothing).
+
+        The ring changes every sample, so writing it each time rewrote the same file
+        dozens of times an hour. A crash loses at most the last interval of samples;
+        the previous boot's ring is kept in the .prev file for the crash bundle.
+        """
         if not self._history_dirty:
             return
+        now = time.monotonic()
+        if not force and now - self._history_saved_at < HISTORY_SAVE_INTERVAL_SECONDS:
+            return
         self._history_dirty = False
+        self._history_saved_at = now
         await self.hass.async_add_executor_job(self._sync_save_history)
         self._history_last_write = _iso_now()
+
+    async def async_flush_history(self) -> None:
+        """Write the ring now if it changed. Called when the entry stops."""
+        await self._async_maybe_save_history(force=True)
+
+    def _prune_history(self, installed: set[str]) -> None:
+        """Forget the history of add-ons that are no longer installed.
+
+        Core and the Supervisor are always in the overview and a stopped add-on stays
+        in it, so only an uninstall removes a slug.
+        """
+        for slug in [s for s in self._history if s not in installed]:
+            del self._history[slug]
+            self._breach_counts.pop(slug, None)
+            self._last_outcome.pop(slug, None)
+            self._history_dirty = True
 
     @property
     def config(self) -> dict[str, Any]:
         return self.store.data["resource_watchdog"]
+
+    def _interval_seconds(self) -> int:
+        interval = int(self.config.get("interval_seconds") or 60)
+        return max(30, min(3600, interval))
+
+    def sample_gap(self) -> float:
+        """Shortest time between two Supervisor stats passes, in seconds.
+
+        Three minutes, or the watchdog interval when the watchdog is on and that is
+        shorter. The watchdog and the Observe push share one sample under this gap.
+        """
+        if self.config.get("enabled"):
+            return float(min(STATS_MIN_INTERVAL_SECONDS, self._interval_seconds()))
+        return float(STATS_MIN_INTERVAL_SECONDS)
+
+    async def async_shared_overview(self, max_age: float | None = None) -> dict[str, Any] | None:
+        """The container overview, sampled at most once per ``max_age`` seconds.
+
+        ``max_age`` defaults to ``sample_gap()``. Concurrent callers wait for the one
+        in-flight sample instead of asking the Supervisor again. None when the
+        Supervisor is unavailable.
+        """
+        gap = self.sample_gap() if max_age is None else max_age
+        async with self._sample_lock:
+            if (
+                self.last_overview is not None
+                and self.last_overview_at is not None
+                and time.monotonic() - self.last_overview_at < gap
+            ):
+                return self.last_overview
+            overview = await async_container_resources(self.hass)
+            if not overview.get("available"):
+                return None
+            self._remember_overview(overview)
+            return overview
+
+    def _remember_overview(self, overview: dict[str, Any]) -> None:
+        self.last_overview = overview
+        self.last_overview_at = time.monotonic()
 
     @callback
     def async_start(self) -> None:
@@ -144,8 +221,7 @@ class ResourceWatchdog:
         self.async_stop()
         if not self.config.get("enabled"):
             return
-        interval = int(self.config.get("interval_seconds") or 60)
-        interval = max(30, min(3600, interval))
+        interval = self._interval_seconds()
         self._unsub = async_track_time_interval(
             self.hass, self._async_sample, timedelta(seconds=interval)
         )
@@ -187,18 +263,27 @@ class ResourceWatchdog:
 
     async def _async_sample(self, _now=None) -> None:
         try:
-            await self.async_run_once()
+            # Half a gap of tolerance: a sample the push took just before this tick is reused.
+            overview = await self.async_shared_overview(self.sample_gap() / 2)
+            if overview is not None and self.last_overview_at != self._evaluated_at:
+                await self._async_evaluate(overview)
         except Exception:
             _LOGGER.exception("Resource watchdog sample failed")
 
     async def async_run_once(self) -> None:
-        """One sampling pass. Public for tests and the WS refresh path."""
-        overview = await async_container_resources(self.hass)
-        if not overview.get("available"):
-            return
-        # Kept so the Observe push reuses this sample instead of asking the Supervisor again.
-        self.last_overview = overview
-        self.last_overview_at = time.monotonic()
+        """One sampling pass that always asks the Supervisor. Public for tests; the
+        timer goes through the shared sample instead."""
+        async with self._sample_lock:
+            overview = await async_container_resources(self.hass)
+            if not overview.get("available"):
+                return
+            # Kept so the Observe push reuses this sample instead of asking the Supervisor again.
+            self._remember_overview(overview)
+        await self._async_evaluate(overview)
+
+    async def _async_evaluate(self, overview: dict[str, Any]) -> None:
+        """Record history for, and apply the thresholds to, one sample."""
+        self._evaluated_at = self.last_overview_at
 
         sustained = max(1, int(self.config.get("sustained_samples") or 3))
         changed = False
@@ -245,25 +330,46 @@ class ResourceWatchdog:
             await self._async_trip(container, action, over_cpu, over_mem, cpu, mem)
             changed = True
 
-        # A container that vanished from the overview can no longer be breaching.
+        # A container that vanished from the overview can no longer be breaching. The open
+        # detections in the store count too: an episode that began before a restart is in the
+        # store but not in _episodes.
         seen = {c.get("slug") for c in overview["containers"]}
-        for slug in [s for s in self._episodes if s not in seen]:
+        for slug in self._open_breach_slugs() - seen:
             self._breach_counts.pop(slug, None)
             changed |= self._end_episode(slug)
+
+        # Uninstalled add-ons leave the ring. A truncated overview omits installed add-ons, so
+        # it cannot say which are gone.
+        if not overview.get("truncated"):
+            self._prune_history(seen)
 
         await self._async_maybe_save_history()
 
         if changed:
             async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_dashboard")
 
+    def _open_breach_slugs(self) -> set[str]:
+        """Slugs with a watchdog detection still open or acknowledged, plus open episodes."""
+        slugs = set(self._episodes)
+        for detection in self.store.data["detections"].values():
+            if (
+                detection.get("rule_id") == "container_resource_breach"
+                and detection.get("status") in (DETECTION_OPEN, DETECTION_ACK)
+            ):
+                slug = (detection.get("detail") or {}).get("slug")
+                if isinstance(slug, str) and slug:
+                    slugs.add(slug)
+        return slugs
+
     def _end_episode(self, slug: str) -> bool:
         """Close the breach episode for `slug` and resolve its open detection.
 
-        Returns True when a detection changed. Without this a detection stayed open
-        forever after the first trip, so the Observe breach gauge never returned to 0.
+        Returns True when a detection changed. The stored detection decides, not the
+        in-memory episode table: the table is empty after a restart, and a breach that was
+        open when Home Assistant stopped would otherwise stay open for good and keep the
+        Observe breach gauge above 0.
         """
-        if self._episodes.pop(slug, None) is None:
-            return False
+        self._episodes.pop(slug, None)
         detection = self.store.data["detections"].get(f"watchdog_{slug}")
         if detection is None or detection.get("status") not in (DETECTION_OPEN, DETECTION_ACK):
             return False
@@ -315,6 +421,14 @@ class ResourceWatchdog:
         recurrence = (existing.get("recurrence_count", 0) + 1) if existing else 1
         # A re-trip inside one continuous breach keeps the episode start, so Observe sees
         # one log record for the whole episode; a trip after recovery starts a new one.
+        if slug not in self._episodes and existing is not None and existing.get("status") in (
+            DETECTION_OPEN,
+            DETECTION_ACK,
+        ):
+            # The breach was already open when this boot began: it is the same episode.
+            stored_start = (existing.get("detail") or {}).get("episode_start")
+            if isinstance(stored_start, str) and stored_start:
+                self._episodes[slug] = stored_start
         new_episode = slug not in self._episodes
         episode_start = now_iso if new_episode else self._episodes[slug]
         self._episodes[slug] = episode_start

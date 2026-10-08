@@ -17,7 +17,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.auth.const import GROUP_ID_ADMIN
-from homeassistant.const import HASSIO_USER_NAME
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, HASSIO_USER_NAME
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
@@ -422,6 +422,10 @@ async def test_history_persists_across_a_restart(
         new=AsyncMock(return_value=_overview([_addon("ma", mem=42.0)])),
     ):
         await wd.async_run_once()
+    # A normal Home Assistant restart fires the stop event and never unloads the entry;
+    # the ring must reach the disk then, whatever the write throttle says.
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
 
     # A second watchdog instance (standing in for a fresh restart) loads
     # what the first one wrote.
@@ -450,6 +454,11 @@ async def test_history_write_is_skipped_when_nothing_changed(
             new=AsyncMock(return_value=_overview([_addon("ma", mem=1.0)])),
         ):
             await wd.async_run_once()
+        # The ring changed, but the write is throttled; stopping the entry writes it.
+        write_mock.assert_not_called()
+        await wd.async_flush_history()
+        write_mock.assert_called_once()
+        await wd.async_flush_history()
         write_mock.assert_called_once()
     assert wd.status()["history_last_write"] is not None
 
@@ -466,6 +475,7 @@ async def test_load_history_preserves_previous_file_before_overwrite(
         new=AsyncMock(return_value=_overview([_addon("ma", mem=7.0)])),
     ):
         await wd.async_run_once()
+    await wd.async_flush_history()
 
     wd2 = ResourceWatchdog(hass, entry.runtime_data.store, entry.runtime_data.audit)
     await wd2.async_load_history()
@@ -549,3 +559,48 @@ async def test_thirty_minutes_of_breach_is_one_log_record(
     await _run_samples(wd, [_overview([_addon("a", mem=99.0)])] * 30, collect)
     assert trips[-1] == 10
     assert len(keys) == 1
+
+
+async def test_breach_open_before_a_restart_closes_after_it(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Audit probe: the episode table is in memory, so a breach left open by a restart
+    never resolved and the Observe breach gauge stayed at 1."""
+    store = entry.runtime_data.store
+    wd = _watchdog(entry, default_action="alert")
+    await _run_samples(wd, [_overview([_addon("a", mem=99.0)])] * 3)
+    assert store.data["detections"]["watchdog_a"]["status"] == "open"
+    started = store.data["detections"]["watchdog_a"]["detail"]["episode_start"]
+
+    # Home Assistant restarts: a new watchdog has an empty episode table, the store persists.
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    await _run_samples(wd2, [_overview([_addon("a", mem=10.0)])] * 2)
+    assert store.data["detections"]["watchdog_a"]["status"] == "resolved"
+    assert _breach_gauge(entry) == 0.0
+    assert started
+
+
+async def test_breach_open_before_a_restart_closes_when_the_container_is_gone(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    store = entry.runtime_data.store
+    await _run_samples(_watchdog(entry, default_action="alert"),
+                       [_overview([_addon("a", mem=99.0)])] * 3)
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    await _run_samples(wd2, [_overview([_addon("b", mem=1.0)])])
+    assert store.data["detections"]["watchdog_a"]["status"] == "resolved"
+
+
+async def test_breach_that_continues_across_a_restart_is_one_episode(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The restarted watchdog adopts the stored episode start, so Observe sees one record."""
+    store = entry.runtime_data.store
+    breach = _overview([_addon("a", mem=99.0)])
+    await _run_samples(_watchdog(entry, default_action="alert"), [breach] * 3)
+    first = store.data["detections"]["watchdog_a"]["detail"]["episode_start"]
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    wd2.config.update(sustained_samples=3, default_action="alert")
+    await _run_samples(wd2, [breach] * 3)
+    det = store.data["detections"]["watchdog_a"]
+    assert det["status"] == "open" and det["detail"]["episode_start"] == first

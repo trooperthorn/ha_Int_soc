@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN, SECRET_SETTING_KEYS
@@ -114,11 +115,18 @@ async def async_migrate_legacy_secrets(secrets: HaSocSecretStore, store) -> list
 
     if moved:
         # Save now, not on the debounce timer: plaintext copies stay on disk until this lands.
-        await store.async_save_now()
-        _LOGGER.info(
-            "HA SOC: moved %d secret value(s) into the private secret store "
-            "and removed the old copies from %s.",
-            len(moved),
-            f"{DOMAIN}.storage",
-        )
+        try:
+            await store.async_save_now()
+        except HomeAssistantError:
+            _LOGGER.error(
+                "HA SOC could not remove the old secret copies from the store file; "
+                "they stay until the next successful save."
+            )
+        else:
+            _LOGGER.info(
+                "HA SOC: moved %d secret value(s) into the private secret store "
+                "and removed the old copies from %s.",
+                len(moved),
+                f"{DOMAIN}.storage",
+            )
     return moved

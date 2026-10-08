@@ -60,8 +60,8 @@
         {"entry_id": "e2", "domain": "elkm1", "title": "Elk", "state": "setup_retry", "error_count_24h": 3, "issue_category": "communication"},
         {"entry_id": "e3", "domain": "ecobee", "title": "ecobee", "state": "loaded", "error_count_24h": 0, "issue_category": "credential"},
         {"entry_id": "es1", "domain": "esphome", "title": "Sensor node 1", "state": "loaded", "error_count_24h": 12, "issue_category": "errors"},
-        {"entry_id": "es2", "domain": "esphome", "title": "Sensor node 2", "state": "loaded", "error_count_24h": 7, "issue_category": "errors"},
-        {"entry_id": "es3", "domain": "esphome", "title": "Sensor node 3", "state": "loaded", "error_count_24h": 5, "issue_category": "errors"}
+        {"entry_id": "es2", "domain": "esphome", "title": "Sensor node 2", "state": "loaded", "error_count_24h": 12, "issue_category": "errors"},
+        {"entry_id": "es3", "domain": "esphome", "title": "Sensor node 3", "state": "loaded", "error_count_24h": 12, "issue_category": "errors"}
       ]
     },
     "repairs": [

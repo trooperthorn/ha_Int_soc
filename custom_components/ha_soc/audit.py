@@ -11,10 +11,12 @@ import asyncio
 from datetime import date, datetime, timedelta
 from functools import partial
 import hashlib
+import heapq
 import json
 import logging
 import os
 import re
+import time
 from collections import deque
 from typing import Any, Callable
 
@@ -32,6 +34,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
 import homeassistant.util.dt as dt_util
 
+from .atomic_json import fsync_directory
 from .const import AUDIT_STORAGE_SUBDIR, REDACTED_PLACEHOLDER, SECRET_SETTING_KEYS
 from .store import HaSocData
 
@@ -115,6 +118,19 @@ _SEGMENT_MAX_BYTES = 32 * 1024 * 1024
 
 _DEFAULT_QUERY_LOOKBACK = timedelta(days=7)
 
+# Upper bound on records held in memory while the audit directory cannot be written.
+# Past it new records are counted, not stored; the first flush after recovery writes one
+# chained "audit_records_dropped" record saying how many, so the loss is visible.
+_BUFFER_MAX_RECORDS = 20000
+# A repeating flush failure logs its traceback at most this often (seconds).
+_FLUSH_ERROR_LOG_INTERVAL = 600.0
+# Retention lists the audit directory, so it runs at most this often (seconds), and only on a
+# flush that has records to write.
+_RETENTION_INTERVAL = 3600.0
+# Block size when a query reads a day file from its end.
+_REVERSE_READ_BLOCK = 64 * 1024
+DROPPED_CATEGORY = "audit_records_dropped"
+
 # Exact key match, case-insensitive, any depth: "token_id" stays visible, "token" does not.
 _REDACTED_SERVICE_DATA_KEYS = frozenset(
     {
@@ -134,6 +150,163 @@ _REDACTED_SERVICE_DATA_KEYS = frozenset(
         "probe_secret",
     }
 )
+# Pattern-based redaction on top of the exact list above, so wifi_password, usercode,
+# bearer_token, private_key and similar names are masked too. The key is split into
+# lower-case words (underscores, dashes, spaces and camelCase boundaries).
+_SECRET_ANY_WORD = frozenset(
+    {
+        "password",
+        "passwd",
+        "passphrase",
+        "passcode",
+        "pwd",
+        "secret",
+        "secrets",
+        "credential",
+        "credentials",
+        "psk",
+        "authorization",
+        "bearer",
+        "otp",
+        "totp",
+        "hotp",
+        "cookie",
+        "cookies",
+    }
+)
+# These words mark a credential anywhere in the key (token_value, auth_header) unless the
+# key ends in a word that says it is metadata about it (token_id, auth_type).
+_SECRET_CONTEXT_WORDS = frozenset({"token", "tokens", "auth"})
+_SECRET_CONTEXT_METADATA = frozenset(
+    {
+        "id",
+        "ids",
+        "type",
+        "types",
+        "count",
+        "name",
+        "names",
+        "method",
+        "methods",
+        "provider",
+        "mode",
+        "status",
+        "state",
+        "result",
+        "enabled",
+        "required",
+        "expires",
+        "expiry",
+        "ttl",
+        "length",
+        "index",
+        "slot",
+        "timeout",
+        "duration",
+        "time",
+        "ts",
+        "age",
+        "valid",
+        "limit",
+        "url",
+        "user",
+        "client",
+    }
+)
+# Only when the word ends the key, so "token_id" and "pin_count" stay visible.
+_SECRET_LAST_WORD = frozenset(
+    {"token", "tokens", "pass", "pin", "pincode", "key", "session"}
+)
+_SECRET_JOINED_FRAGMENTS = (
+    "apikey",
+    "privatekey",
+    "secretkey",
+    "accesskey",
+    "authkey",
+    "encryptionkey",
+    "signingkey",
+    "sshkey",
+    "sessionkey",
+    "masterkey",
+    "sharedkey",
+    "usercode",
+)
+# "status_code" and friends are outcomes, not credentials.
+_CODE_NON_SECRET_PREFIXES = frozenset(
+    {
+        "status",
+        "error",
+        "exit",
+        "return",
+        "http",
+        "response",
+        "country",
+        "language",
+        "color",
+        "hex",
+        "zip",
+        "area",
+        "reason",
+        "result",
+    }
+)
+_WORD_SPLIT_RE = re.compile(r"[^a-z0-9]+")
+_CAMEL_SPLIT_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+
+
+def _is_secret_key(key: str) -> bool:
+    """Return whether a service-data key name looks like it holds a credential."""
+    lowered = key.lower()
+    if lowered in _REDACTED_SERVICE_DATA_KEYS:
+        return True
+    words = [
+        word
+        for word in _WORD_SPLIT_RE.split(_CAMEL_SPLIT_RE.sub("_", key).lower())
+        if word
+    ]
+    if not words:
+        return False
+    if any(word in _SECRET_ANY_WORD for word in words):
+        return True
+    joined = "".join(words)
+    if any(fragment in joined for fragment in _SECRET_JOINED_FRAGMENTS):
+        return True
+    last = words[-1]
+    if last in _SECRET_LAST_WORD:
+        return True
+    if any(word in _SECRET_CONTEXT_WORDS for word in words):
+        return last not in _SECRET_CONTEXT_METADATA
+    if last.endswith("code"):
+        return not (len(words) > 1 and words[-2] in _CODE_NON_SECRET_PREFIXES)
+    return False
+
+
+def _json_safe(value: Any) -> Any:
+    """Coerce a payload to plain JSON types so hashing and writing never raise.
+
+    Datetimes become ISO strings, sets become sorted lists, dict keys become
+    strings, and anything else without a JSON form becomes its ``str()``.
+    """
+    if value is None or isinstance(value, (bool, int, str)):
+        return value
+    if isinstance(value, float):
+        return value if value == value and value not in (float("inf"), float("-inf")) else str(value)
+    if isinstance(value, dict):
+        return {str(key): _json_safe(val) for key, val in value.items()}
+    if isinstance(value, (list, tuple, deque)):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        return sorted((_json_safe(item) for item in value), key=str)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.decode("utf-8", "replace")
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001 - a hostile __str__ must not break the chain
+        return f"<unprintable {type(value).__name__}>"
+
+
 # What a notification said is personal; only that one was sent is audited.
 _REDACTED_MESSAGE_DOMAINS = frozenset({"notify", "tts", "persistent_notification"})
 
@@ -162,6 +335,10 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
 )
 IMMEDIATE_FLUSH_PREFIXES = ("firewall_",)
 
+# Newest day files that crash recovery inspects.
+_RECOVERY_FILES = 3
+
+
 # Public: health.py's audit_ban_logger_silenced check reads it.
 BAN_LOGGER_NAME = "homeassistant.components.http.ban"
 # Current core logs the ban warning preformatted with no args; this regex is the live path.
@@ -180,18 +357,27 @@ def _normalize_entity_ids(value: Any) -> list[str]:
 
 
 def _redact_service_data(
-    domain: str | None, service: str | None, value: Any
+    domain: str | None,
+    service: str | None,
+    value: Any,
+    patterns: bool = True,
 ) -> Any:
     """Recursively mask credential-shaped keys in a detail payload.
 
     Values are replaced even when empty so the log never reveals whether a
-    credential field was filled in. Rules are in docs/security.md.
+    credential field was filled in. With ``patterns`` False only the exact key
+    list applies, which is what HA SOC's own records (login_ok ``new_token``,
+    the revoked ``long_lived_tokens`` count) need. Rules are in docs/security.md.
     """
     if isinstance(value, dict):
         redacted: dict[Any, Any] = {}
         for key, val in value.items():
             key_lower = key.lower() if isinstance(key, str) else None
-            if key_lower in _REDACTED_SERVICE_DATA_KEYS:
+            if isinstance(key, str) and (
+                _is_secret_key(key)
+                if patterns
+                else key_lower in _REDACTED_SERVICE_DATA_KEYS
+            ):
                 redacted[key] = REDACTED_PLACEHOLDER
             elif (
                 key_lower in ("message", "title")
@@ -202,10 +388,12 @@ def _redact_service_data(
             elif key_lower == "payload" and domain == "mqtt" and service == "publish":
                 redacted[key] = REDACTED_PLACEHOLDER
             else:
-                redacted[key] = _redact_service_data(domain, service, val)
+                redacted[key] = _redact_service_data(domain, service, val, patterns)
         return redacted
-    if isinstance(value, list):
-        return [_redact_service_data(domain, service, item) for item in value]
+    if isinstance(value, (list, tuple)):
+        return [
+            _redact_service_data(domain, service, item, patterns) for item in value
+        ]
     return value
 
 
@@ -220,7 +408,7 @@ def _redact_secrets_deep(value: Any) -> Any:
             )
             for key, val in value.items()
         }
-    if isinstance(value, list):
+    if isinstance(value, (list, tuple)):
         return [_redact_secrets_deep(item) for item in value]
     return value
 
@@ -273,8 +461,30 @@ class AuditLog:
         self._dir_path = hass.config.path(".storage", AUDIT_STORAGE_SUBDIR)
 
         self._buffer: deque[dict[str, Any]] = deque()
+        # Prepared copies (with seq, prev_hash, hash) of the leading buffered records, so a
+        # retry after a failed flush only hashes records that arrived since the last attempt.
+        self._prepared: deque[dict[str, Any]] = deque()
+        # Records refused because the buffer was full: count, and first/last time.
+        self._dropped_count = 0
+        self._dropped_first_ts: str | None = None
+        self._dropped_last_ts: str | None = None
+        # time.monotonic() of the last logged flush traceback; executor-side only.
+        self._last_flush_error_log: float | None = None
+        # When the last retention pass ran; None until the first one.
+        self._last_retention: datetime | None = None
+        # (directory, day, path) of the file the last append went to, so a flush does not
+        # list the directory again to find it.
+        self._target_cache: tuple[str, str, str] | None = None
+        # (directory, day) of the newest day file, so the day key of a record never moves
+        # backwards when the wall clock does; executor-side only.
+        self._day_floor: tuple[str, str] | None = None
+        # Repairs found while loading the chain; logged by async_start once listeners exist.
+        self._recovery_events: list[tuple[str, dict[str, Any]]] = []
         self._flush_lock = asyncio.Lock()
         self._seq = 0
+        # (seq, hash) of the records written by the flush in progress; executor-side only.
+        self._flush_head: tuple[int, str] | None = None
+        self._head_file_written = False
         self._prev_hash = _GENESIS_PREV_HASH
         # Retention anchor: newest expired record's seq/hash; None until retention deletes something.
         self._anchor: dict[str, Any] | None = None
@@ -312,6 +522,7 @@ class AuditLog:
         await self.hass.async_add_executor_job(self._sync_load_chain_head)
         # Must run after the head loads and before any listener logs, so the reset record is first.
         self._async_detect_chain_reset()
+        self._async_log_recovery_events()
 
         self._unsubs.append(
             self.hass.bus.async_listen(EVENT_CALL_SERVICE, self._handle_call_service)
@@ -474,6 +685,17 @@ class AuditLog:
         )
 
     @callback
+    def _async_log_recovery_events(self) -> None:
+        """Record the repairs the load made, once, as chained audit events."""
+        events, self._recovery_events = self._recovery_events, []
+        for category, detail in events:
+            # Flushed at once: the repair itself is already on disk, and a crash before the
+            # timer would leave the next start with nothing to report.
+            self.async_log(
+                category, detail={**detail, "actor_source": "system"}, flush=True
+            )
+
+    @callback
     def _resolve_actor(self, event: Event) -> tuple[str | None, str]:
         """Best-effort acting user for an event, plus how it was recovered.
 
@@ -505,6 +727,15 @@ class AuditLog:
                 if user is not None:
                     return user.id, "http_request"
         return None, "system"
+
+    @callback
+    def current_actor_id(self) -> str | None:
+        """Id of the user whose websocket connection or HTTP request is active, if any.
+
+        Correlational, like every ambient source here: callers that gate on it
+        must treat None as "unknown", not as "system".
+        """
+        return self._resolve_actor_ambient()[0]
 
     @callback
     def _note_ws_session(self, conn: Any) -> None:
@@ -809,8 +1040,12 @@ class AuditLog:
         one regardless.
         """
         if detail is not None:
+            # Key-pattern masking is for caller-controlled service data only; HA SOC's
+            # own records keep names such as new_token and long_lived_tokens readable.
             detail_value = _redact_secrets_deep(
-                _redact_service_data(domain, service, detail)
+                _redact_service_data(
+                    domain, service, detail, patterns=category == "service_call"
+                )
             )
         else:
             detail_value = {}
@@ -827,7 +1062,21 @@ class AuditLog:
             "attempted_user": attempted_user,
             "detail": detail_value,
         }
-        self._buffer.append(record)
+        if len(self._buffer) >= _BUFFER_MAX_RECORDS:
+            # The audit directory has been unwritable long enough to fill the buffer.
+            # Memory stays bounded; the loss is recorded after the next good flush.
+            if self._dropped_count == 0:
+                self._dropped_first_ts = record["ts"]
+                _LOGGER.error(
+                    "HA SOC audit log: %d records are waiting for a failing disk; "
+                    "newer records are counted and dropped until a flush succeeds",
+                    len(self._buffer),
+                )
+            self._dropped_count += 1
+            self._dropped_last_ts = record["ts"]
+            return
+        # Coerce after redaction so no value can make json.dumps fail later in the flush.
+        self._buffer.append(_json_safe(record))
         if (
             flush
             or category in IMMEDIATE_FLUSH_CATEGORIES
@@ -850,44 +1099,95 @@ class AuditLog:
             self._async_flush(), eager_start=False
         )
 
-    def _drain_and_prepare(self) -> list[dict[str, Any]]:
-        """Pop everything currently buffered and assign seq/prev_hash/hash.
+    def _prepare_buffered(self) -> list[dict[str, Any]]:
+        """Return the buffered records with seq, prev_hash and hash set.
 
-        Synchronous and event-loop-only (no I/O) so the chain's seq/
-        prev_hash mutation never races with a concurrent flush.
+        Nothing is consumed: the buffer, ``_seq`` and ``_prev_hash`` only move in
+        ``_commit_written`` after the records reached disk, so a failed write
+        leaves no gap in the chain and loses no record. The prepared copies are
+        cached, so each attempt hashes only records that were not prepared yet
+        and an outage does not make every retry slower. Synchronous and
+        event-loop-only (no I/O), so the chain state never races a flush.
         """
-        prepared: list[dict[str, Any]] = []
-        while self._buffer:
-            record = self._buffer.popleft()
-            self._seq += 1
-            record["seq"] = self._seq
-            record["prev_hash"] = self._prev_hash
+        if self._prepared:
+            seq = self._prepared[-1]["seq"]
+            prev_hash = self._prepared[-1]["hash"]
+        else:
+            seq = self._seq
+            prev_hash = self._prev_hash
+        for index in range(len(self._prepared), len(self._buffer)):
+            record = dict(self._buffer[index])
+            seq += 1
+            record["seq"] = seq
+            record["prev_hash"] = prev_hash
             canonical = json.dumps(record, sort_keys=True)
-            record_hash = hashlib.sha256(
-                (self._prev_hash + canonical).encode("utf-8")
+            prev_hash = hashlib.sha256(
+                (prev_hash + canonical).encode("utf-8")
             ).hexdigest()
-            record["hash"] = record_hash
-            self._prev_hash = record_hash
-            prepared.append(record)
-        return prepared
+            record["hash"] = prev_hash
+            self._prepared.append(record)
+        return list(self._prepared)
+
+    def _commit_written(self, written: list[dict[str, Any]]) -> None:
+        """Drop the first ``len(written)`` buffered records and advance the chain."""
+        for _ in written:
+            self._buffer.popleft()
+            self._prepared.popleft()
+        self._seq = written[-1]["seq"]
+        self._prev_hash = written[-1]["hash"]
+        if self._dropped_count and len(self._buffer) < _BUFFER_MAX_RECORDS:
+            self._buffer.append(
+                _json_safe(
+                    {
+                        "ts": dt_util.utcnow().isoformat(),
+                        "user_id": None,
+                        "category": DROPPED_CATEGORY,
+                        "domain": None,
+                        "service": None,
+                        "entity_ids": [],
+                        "context_id": None,
+                        "context_parent_id": None,
+                        "ip": None,
+                        "attempted_user": None,
+                        "detail": {
+                            "dropped": self._dropped_count,
+                            "first_ts": self._dropped_first_ts,
+                            "last_ts": self._dropped_last_ts,
+                        },
+                    }
+                )
+            )
+            self._dropped_count = 0
+            self._dropped_first_ts = None
+            self._dropped_last_ts = None
 
     async def _async_flush(self, _now: Any = None) -> None:
         async with self._flush_lock:
-            records = self._drain_and_prepare()
-            flushed_ok = await self.hass.async_add_executor_job(
+            records = self._prepare_buffered()
+            if not records:
+                # Nothing to write: no executor job, no directory listing, no retention pass.
+                return
+            written_count = await self.hass.async_add_executor_job(
                 self._sync_flush, records
             )
-            if flushed_ok and records:
-                if self._syslog_exporter is not None:
-                    self._syslog_exporter.async_enqueue(records)
-                # Mirror on the loop after the executor returns; only a successful flush advances it.
-                self._store.async_set_audit_head(
-                    {
-                        "seq": self._seq,
-                        "hash": self._prev_hash,
-                        "at": dt_util.utcnow().isoformat(),
-                    }
-                )
+            written = records[:written_count]
+            if not written:
+                return
+            self._commit_written(written)
+            if self._syslog_exporter is not None:
+                self._syslog_exporter.async_enqueue(written)
+            # Mirror on the loop after the executor returns. Only a flush whose head file
+            # also reached disk advances it, so a failed head write cannot make the next
+            # start read a stale head as a wiped directory.
+            if not self._head_file_written:
+                return
+            self._store.async_set_audit_head(
+                {
+                    "seq": self._seq,
+                    "hash": self._prev_hash,
+                    "at": dt_util.utcnow().isoformat(),
+                }
+            )
 
     def _sync_ensure_dir(self) -> None:
         """Create the audit directory 0o700 and tighten what already exists.
@@ -942,6 +1242,20 @@ class AuditLog:
         return os.fdopen(fd, "w", encoding="utf-8")
 
     def _sync_load_chain_head(self) -> None:
+        """Load the head, then repair what a crash can leave behind the head."""
+        self._sync_load_chain_head_file()
+        try:
+            self._sync_recover_from_disk()
+        except Exception:  # noqa: BLE001 - odd file contents must not stop the audit log starting
+            # Events already queued describe repairs that are on disk; keep them so the
+            # chain still records what was changed.
+            _LOGGER.warning(
+                "HA SOC audit log: could not check the newest audit files for a "
+                "torn tail or a stale chain head",
+                exc_info=True,
+            )
+
+    def _sync_load_chain_head_file(self) -> None:
         # Whatever this concludes is the real starting point, so immediate flushing is now safe.
         self._head_loaded = True
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
@@ -971,10 +1285,164 @@ class AuditLog:
         self._anchor = None
         self._reset = None
 
-    def _sync_write_chain_head(self) -> None:
+    @staticmethod
+    def _sync_read_tail_window(path: str) -> tuple[int, bytes, int]:
+        """Return (file size, tail bytes, offset of the first tail byte).
+
+        The window grows until it holds two newlines or reaches the file start, so the
+        last line and the line before it are both whole inside it.
+        """
+        with open(path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            window = _REVERSE_READ_BLOCK
+            while True:
+                start = max(0, size - window)
+                handle.seek(start)
+                buf = handle.read(size - start)
+                if start == 0 or buf.count(b"\n") >= 2:
+                    return size, buf, start
+                window *= 2
+
+    def _sync_repair_torn_tail(self, path: str) -> dict[str, Any] | None:
+        """Cut an unterminated, unparseable last line off ``path``.
+
+        A power loss during an append leaves a partial line that no later write can
+        remove. Only that final fragment is cut; a bad line anywhere else is left for
+        verification to report. Returns what was removed, or None.
+        """
+        size, buf, start = self._sync_read_tail_window(path)
+        if not size or buf.endswith(b"\n"):
+            return None
+        newline = buf.rfind(b"\n")
+        fragment = buf[newline + 1 :]
+        if not fragment.strip():
+            return None
+        try:
+            if isinstance(json.loads(fragment), dict):
+                # Whole record that only lost its newline; the next append ends the line.
+                return None
+        except (ValueError, UnicodeDecodeError):
+            pass
+        keep = start + newline + 1
+        fd = os.open(path, os.O_RDWR)
+        try:
+            os.ftruncate(fd, keep)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return {
+            "file": os.path.basename(path),
+            "bytes_removed": len(fragment),
+            "fragment_sha256": hashlib.sha256(fragment).hexdigest(),
+            "truncated_to": keep,
+        }
+
+    def _sync_recent_files(self) -> list[tuple[date, str]]:
+        """The newest few day files, newest first.
+
+        File dates follow a monotonic day key, but a forward clock jump can leave a
+        newer-dated file that holds fewer records than the one before it, so recovery
+        looks at several files rather than only the last one.
+        """
+        return list(reversed(self._sync_list_day_files()))[:_RECOVERY_FILES]
+
+    def _sync_records_after(self, seq: int) -> list[dict[str, Any]]:
+        """Parsed records with a seq at or above ``seq`` from the newest files, by seq."""
+        found: dict[int, dict[str, Any]] = {}
+        for _file_date, path in self._sync_recent_files():
+            for line in self._read_jsonl_reversed(path):
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    break
+                rec_seq = record.get("seq") if isinstance(record, dict) else None
+                if not isinstance(rec_seq, int) or isinstance(rec_seq, bool):
+                    break
+                if rec_seq < seq:
+                    break
+                found[rec_seq] = record
+        return [found[key] for key in sorted(found)]
+
+    @staticmethod
+    def _record_hash_ok(record: dict[str, Any]) -> bool:
+        prev_hash = record.get("prev_hash")
+        if not isinstance(prev_hash, str) or not isinstance(record.get("hash"), str):
+            return False
+        payload = {k: v for k, v in record.items() if k != "hash"}
+        expected = hashlib.sha256(
+            (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
+        ).hexdigest()
+        return expected == record["hash"]
+
+    def _sync_recover_from_disk(self) -> None:
+        """Repair a torn tail and rebuild a head that lags the durable records.
+
+        The records are fsynced before the head is rewritten, so a crash between the
+        two leaves the head behind the files; continuing from the stale head would
+        number the next record with a seq already on disk. The head is advanced only
+        when it loaded cleanly and the records on disk continue exactly from it: the
+        record at the old head seq carries the old head hash and every later record
+        links to the one before and hashes correctly. A missing or unreadable head, a
+        head ahead of the files, or a replaced tail is left alone so reset detection
+        and verification report it.
+        """
+        entries = self._sync_list_day_files()
+        if not entries:
+            return
+        self._day_floor = (self._dir_path, entries[-1][0].isoformat())
+        for _file_date, path in self._sync_recent_files():
+            repair = self._sync_repair_torn_tail(path)
+            if repair is not None:
+                _LOGGER.warning(
+                    "HA SOC audit log: removed a torn last line (%d bytes) from %s",
+                    repair["bytes_removed"],
+                    repair["file"],
+                )
+                self._recovery_events.append(("audit_tail_repaired", repair))
+        if not self._head_file_found:
+            return
+        old_seq = self._seq
+        records = self._sync_records_after(old_seq)
+        if not records or records[-1].get("seq", 0) <= old_seq:
+            return
+        previous_hash = self._prev_hash
+        expected_seq = old_seq
+        if old_seq > 0:
+            if records[0].get("seq") != old_seq or records[0].get("hash") != previous_hash:
+                return
+            records = records[1:]
+        for record in records:
+            expected_seq += 1
+            if (
+                record.get("seq") != expected_seq
+                or record.get("prev_hash") != previous_hash
+                or not self._record_hash_ok(record)
+            ):
+                return
+            previous_hash = record["hash"]
+        self._seq = expected_seq
+        self._prev_hash = previous_hash
+        self._sync_write_chain_head()
+        self._recovery_events.append(
+            (
+                "audit_head_rebuilt",
+                {"head_seq_before": old_seq, "head_seq_after": expected_seq},
+            )
+        )
+
+    def _sync_write_chain_head(
+        self, seq: int | None = None, prev_hash: str | None = None
+    ) -> bool:
+        """Write chain_head.json; return whether it reached disk."""
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
         tmp_path = f"{path}.tmp"
-        payload: dict[str, Any] = {"prev_hash": self._prev_hash, "seq": self._seq}
+        if seq is None and self._flush_head is not None:
+            # Retention rewrites the head mid-flush, before _commit_written has run.
+            seq, prev_hash = self._flush_head
+        payload: dict[str, Any] = {
+            "prev_hash": self._prev_hash if prev_hash is None else prev_hash,
+            "seq": self._seq if seq is None else seq,
+        }
         # Every head rewrite must carry the anchor and reset marker forward.
         if self._anchor is not None:
             payload["anchor"] = self._anchor
@@ -986,41 +1454,141 @@ class AuditLog:
                 tmp_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
             ) as handle:
                 json.dump(payload, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
             os.replace(tmp_path, path)
+            fsync_directory(self._dir_path)
         except OSError:
             _LOGGER.warning(
                 "HA SOC audit log: failed writing %s", path, exc_info=True
             )
-
-    def _sync_flush(self, records: list[dict[str, Any]]) -> bool:
-        """Append prepared records and maintain the head.
-
-        Returns whether the write succeeded, so the caller only advances
-        the store's head mirror over records that reached disk.
-        """
-        try:
-            os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
-            if records:
-                by_day: dict[str, list[str]] = {}
-                for record in records:
-                    day = record["ts"][:10]
-                    by_day.setdefault(day, []).append(
-                        json.dumps(record, sort_keys=True)
-                    )
-                for day, lines in by_day.items():
-                    file_path = self._sync_target_day_file(day)
-                    # O_APPEND with mode 0o600: a brand-new day file is born private.
-                    fd = os.open(
-                        file_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
-                    )
-                    with os.fdopen(fd, "a", encoding="utf-8") as handle:
-                        handle.write("\n".join(lines) + "\n")
-                self._sync_write_chain_head()
-            self._sync_apply_retention()
-        except OSError:
-            _LOGGER.exception("HA SOC audit log: flush to disk failed")
             return False
         return True
+
+    def _sync_flush(self, records: list[dict[str, Any]]) -> int:
+        """Append prepared records and maintain the head.
+
+        Returns how many leading records are durably on disk, so the caller
+        only advances the chain and the store's head mirror over records that
+        were written. The rest stay buffered and are retried unchanged.
+        """
+        written = 0
+        self._head_file_written = False
+        try:
+            os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
+            by_day: list[tuple[str, list[dict[str, Any]]]] = []
+            floor = self._sync_day_floor()
+            for record in records:
+                # A clock stepped back must not send a record to an older file: the day
+                # key never moves backwards, so file order stays append order and
+                # retention, which removes the oldest files first, only ever removes a
+                # prefix of the chain.
+                day = max(record["ts"][:10], floor)
+                floor = day
+                if by_day and by_day[-1][0] == day:
+                    by_day[-1][1].append(record)
+                else:
+                    by_day.append((day, [record]))
+            for day, day_records in by_day:
+                file_path = self._sync_target_day_file(day)
+                text = "".join(
+                    json.dumps(r, sort_keys=True) + chr(10) for r in day_records
+                )
+                self._sync_append_durable(file_path, text)
+                written += len(day_records)
+                self._day_floor = (self._dir_path, day)
+        except OSError as err:
+            # An outage repeats this every attempt, often on the full disk itself, so the
+            # traceback is rate limited and the other attempts log one short line.
+            now = time.monotonic()
+            last = self._last_flush_error_log
+            if last is None or now - last >= _FLUSH_ERROR_LOG_INTERVAL:
+                self._last_flush_error_log = now
+                _LOGGER.exception(
+                    "HA SOC audit log: flush to disk failed, %d record(s) stay buffered",
+                    len(records) - written,
+                )
+            else:
+                _LOGGER.debug(
+                    "HA SOC audit log: flush still failing (%s), %d record(s) stay buffered",
+                    err,
+                    len(records) - written,
+                )
+        if written:
+            self._last_flush_error_log = None
+            last = records[written - 1]
+            self._flush_head = (last["seq"], last["hash"])
+            self._head_file_written = self._sync_write_chain_head()
+        try:
+            # Wall clock, so a clock set backwards cannot hold retention off for hours.
+            now = dt_util.utcnow()
+            if (
+                self._last_retention is None
+                or abs((now - self._last_retention).total_seconds()) >= _RETENTION_INTERVAL
+            ):
+                self._sync_apply_retention()
+                # Set only after a pass that finished, so one that failed is retried.
+                self._last_retention = now
+        except OSError:
+            _LOGGER.exception("HA SOC audit log: retention failed")
+        finally:
+            self._flush_head = None
+        return written
+
+    def _sync_day_floor(self) -> str:
+        """Day key of the newest day file; empty when there is none."""
+        cached = self._day_floor
+        if cached is not None and cached[0] == self._dir_path:
+            return cached[1]
+        entries = self._sync_list_day_files()
+        floor = entries[-1][0].isoformat() if entries else ""
+        self._day_floor = (self._dir_path, floor)
+        return floor
+
+    @staticmethod
+    def _sync_append_durable(file_path: str, text: str) -> None:
+        """Append ``text`` and fsync it; on failure cut off any partial tail."""
+        # O_APPEND with mode 0o600: a brand-new day file is born private.
+        fd = os.open(file_path, os.O_RDWR | os.O_CREAT | os.O_APPEND, 0o600)
+        synced = False
+        try:
+            size = os.fstat(fd).st_size
+            try:
+                data = text.encode("utf-8")
+                if size and os.pread(fd, 1, size - 1) != b"\n":
+                    # A torn line from an earlier failed write that could not be trimmed:
+                    # end it so the first new record starts on its own line.
+                    data = b"\n" + data
+                while data:
+                    data = data[os.write(fd, data):]
+                os.fsync(fd)
+                synced = True
+            except OSError:
+                try:
+                    os.ftruncate(fd, size)
+                except OSError:
+                    _LOGGER.warning(
+                        "HA SOC audit log: could not trim a partial write to %s",
+                        file_path,
+                        exc_info=True,
+                    )
+                raise
+        finally:
+            try:
+                os.close(fd)
+            except OSError:
+                # The data is already on disk; reporting the batch as unwritten would
+                # make the retry append duplicate sequence numbers.
+                if not synced:
+                    raise
+                _LOGGER.warning(
+                    "HA SOC audit log: close failed after a durable write to %s",
+                    file_path,
+                    exc_info=True,
+                )
+        if not size:
+            # A new day or segment file: make its directory entry durable too.
+            fsync_directory(os.path.dirname(file_path))
 
     def _sync_list_day_files(self) -> list[tuple[date, str]]:
         if not os.path.isdir(self._dir_path):
@@ -1045,6 +1613,18 @@ class AuditLog:
         """The file the next append for ``day`` should go to, rolling to a
         fresh segment when the current one has crossed _SEGMENT_MAX_BYTES.
         """
+        cached = self._target_cache
+        if cached is not None and cached[:2] == (self._dir_path, day):
+            try:
+                if os.path.getsize(cached[2]) < _SEGMENT_MAX_BYTES:
+                    return cached[2]
+            except OSError:
+                pass
+        path = self._sync_find_target_day_file(day)
+        self._target_cache = (self._dir_path, day, path)
+        return path
+
+    def _sync_find_target_day_file(self, day: str) -> str:
         base = os.path.join(self._dir_path, f"audit-{day}.jsonl")
         segments: list[tuple[int, str]] = []
         for name in os.listdir(self._dir_path) if os.path.isdir(self._dir_path) else []:
@@ -1206,6 +1786,35 @@ class AuditLog:
         except OSError:
             return
 
+    @staticmethod
+    def _read_jsonl_reversed(path: str):
+        """Yield the non-empty lines of one file as bytes, last line first.
+
+        Reads 64 KiB blocks from the end, so a caller that stops early touches
+        only the tail of the file and never holds more than a block and one line.
+        """
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                position = handle.tell()
+                carry = b""
+                while position > 0:
+                    size = min(_REVERSE_READ_BLOCK, position)
+                    position -= size
+                    handle.seek(position)
+                    parts = (handle.read(size) + carry).split(b"\n")
+                    # The first part may be the end of a line that began in the previous block.
+                    carry = parts[0]
+                    for part in reversed(parts[1:]):
+                        part = part.strip()
+                        if part:
+                            yield part
+                carry = carry.strip()
+                if carry:
+                    yield carry
+        except OSError:
+            return
+
     async def async_query(
         self,
         *,
@@ -1221,11 +1830,17 @@ class AuditLog:
         ``since``/``until`` are aware UTC datetimes (as returned by
         ``dt_util.utcnow()``). Defaults to the last 7 days if ``since`` is
         not given.
+
+        Does not flush: records still in the write buffer are taken from memory
+        (already numbered and hashed, no I/O) and the files are read newest first,
+        stopping at ``limit``, so a query costs the size of its answer and never
+        triggers a write or a retention pass.
         """
-        # Flush first: _sync_query reads only disk, and the panel must not lag up to _FLUSH_INTERVAL.
-        await self._async_flush()
+        # Taken before the executor job starts: a record logged later is not wanted, and one
+        # that a concurrent flush writes meanwhile is seen twice and merged by seq below.
+        buffered = self._prepare_buffered()
         return await self.hass.async_add_executor_job(
-            self._sync_query, since, until, user_id, category, ip, limit
+            self._sync_query, since, until, user_id, category, ip, limit, buffered
         )
 
     def _sync_query(
@@ -1236,36 +1851,53 @@ class AuditLog:
         category: str | None,
         ip: str | None,
         limit: int,
+        buffered: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         until_dt = until or dt_util.utcnow()
         since_dt = since or (until_dt - _DEFAULT_QUERY_LOOKBACK)
+        if limit <= 0:
+            return []
+
+        def _matches(record: dict[str, Any]) -> bool:
+            record_dt = dt_util.parse_datetime(record.get("ts", ""))
+            if record_dt is not None and (record_dt < since_dt or record_dt > until_dt):
+                return False
+            if user_id is not None and record.get("user_id") != user_id:
+                return False
+            if category is not None and record.get("category") != category:
+                return False
+            if ip is not None and record.get("ip") != ip:
+                return False
+            return True
 
         results: list[dict[str, Any]] = []
-        for file_date, path in self._sync_list_day_files():
-            if file_date < since_dt.date() or file_date > until_dt.date():
-                continue
-            for line in self._read_jsonl(path):
+        seen_seqs: set[int] = set()
+        for record in reversed(buffered or []):
+            seen_seqs.add(record.get("seq", 0))
+            if _matches(record):
+                results.append(dict(record))
+                if len(results) >= limit:
+                    return results
+
+        # (date, segment) order is write order, so the reverse is newest first.
+        for file_date, path in reversed(self._sync_list_day_files()):
+            # No upper skip on the file date: the monotonic day key can put a record in a
+            # file dated after its own timestamp, so the record filter decides.
+            if file_date < since_dt.date():
+                break
+            for line in self._read_jsonl_reversed(path):
                 try:
                     record = json.loads(line)
                 except (ValueError, TypeError):
                     continue
-
-                record_dt = dt_util.parse_datetime(record.get("ts", ""))
-                if record_dt is not None and (
-                    record_dt < since_dt or record_dt > until_dt
-                ):
+                if not isinstance(record, dict):
                     continue
-                if user_id is not None and record.get("user_id") != user_id:
+                if record.get("seq", 0) in seen_seqs or not _matches(record):
                     continue
-                if category is not None and record.get("category") != category:
-                    continue
-                if ip is not None and record.get("ip") != ip:
-                    continue
-
                 results.append(record)
-
-        results.sort(key=lambda record: record.get("seq", 0), reverse=True)
-        return results[:limit]
+                if len(results) >= limit:
+                    return results
+        return results
 
     async def async_category_stats(self) -> dict[str, Any]:
         """Per-category record counts and byte shares for the newest day.
@@ -1399,39 +2031,43 @@ class AuditLog:
                 checkpoint_seq=head_seq,
             )
 
-        for _file_date, path in self._sync_list_day_files():
-            for line in self._read_jsonl(path):
-                try:
-                    record = json.loads(line)
-                except (ValueError, TypeError):
-                    return _fail("corrupt_record", None)
+        # Each file is in seq order, so merging them by seq walks the chain in append order
+        # whatever the file names say (files written before the day key was monotonic can
+        # hold records out of name order).
+        streams = [
+            self._iter_verify_records(path)
+            for _file_date, path in self._sync_list_day_files()
+        ]
+        for _key, record in heapq.merge(*streams, key=lambda item: item[0]):
+            if record is None:
+                return _fail("corrupt_record", None)
 
-                checked += 1
-                seq = record.get("seq")
-                stored_hash = record.get("hash")
+            checked += 1
+            seq = record.get("seq")
+            stored_hash = record.get("hash")
 
-                if start_seq is not None and isinstance(seq, int):
-                    # No surviving record may sit at or before the start point.
-                    if seq <= start_seq:
-                        return _fail(start_break_reason, seq)
-                    # The first surviving record must be the start point's direct successor.
-                    if checked == 1 and seq != start_seq + 1:
-                        return _fail(start_break_reason, seq)
+            if start_seq is not None and isinstance(seq, int):
+                # No surviving record may sit at or before the start point.
+                if seq <= start_seq:
+                    return _fail(start_break_reason, seq)
+                # The first surviving record must be the start point's direct successor.
+                if checked == 1 and seq != start_seq + 1:
+                    return _fail(start_break_reason, seq)
 
-                if record.get("prev_hash") != prev_hash:
-                    return _fail("hash_mismatch", seq)
+            if record.get("prev_hash") != prev_hash:
+                return _fail("hash_mismatch", seq)
 
-                payload = {k: v for k, v in record.items() if k != "hash"}
-                recomputed = hashlib.sha256(
-                    (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
-                ).hexdigest()
+            payload = {k: v for k, v in record.items() if k != "hash"}
+            recomputed = hashlib.sha256(
+                (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
+            ).hexdigest()
 
-                if recomputed != stored_hash:
-                    return _fail("hash_mismatch", seq)
+            if recomputed != stored_hash:
+                return _fail("hash_mismatch", seq)
 
-                prev_hash = stored_hash
-                if isinstance(seq, int):
-                    last_seq = seq
+            prev_hash = stored_hash
+            if isinstance(seq, int):
+                last_seq = seq
 
         # Completeness check: a checkpoint ahead of disk means the tail was truncated.
         if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):
@@ -1454,6 +2090,22 @@ class AuditLog:
             "verified_from_seq": verified_from_seq,
             "expired_through": expired_through,
         }
+
+    def _iter_verify_records(self, path: str):
+        """Yield (seq, record) per line; (previous seq, None) for an unreadable line."""
+        last = 0
+        for line in self._read_jsonl(path):
+            try:
+                record = json.loads(line)
+            except (ValueError, TypeError):
+                record = None
+            if not isinstance(record, dict):
+                yield (last, None)
+                continue
+            seq = record.get("seq")
+            if isinstance(seq, int) and not isinstance(seq, bool):
+                last = seq
+            yield (last, record)
 
     def _sync_read_chain_head_file(self) -> dict[str, Any] | None:
         """Read chain_head.json straight from disk, ignoring the in-memory head.

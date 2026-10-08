@@ -22,6 +22,18 @@
             }
           },
           {
+            "key": "os.type",
+            "value": {
+              "stringValue": "homeassistant"
+            }
+          },
+          {
+            "key": "observe.agent.sent_at",
+            "value": {
+              "intValue": "1790000000"
+            }
+          },
+          {
             "key": "service.instance.id",
             "value": {
               "stringValue": "5f0c1c36a1a24a1d9c7e0b7f4c2d9e10"

@@ -115,13 +115,30 @@ owner and admins when the access setting says so):
 | Command | Payload | Answer |
 | --- | --- | --- |
 | `ha_soc/terminal/status` | none | `{supervisor, installed, running, paired, version, hostname, recording, targets: [{id, label, available}], sessions_open, max_sessions, max_session_seconds, sessions}` |
-| `ha_soc/terminal/open` | `{target, cols, rows}` | result `{session_id, target, host, started, recorded, max_session_seconds}`, repeated as the first event `{kind: "opened", ...}`, then events `{kind: "output", data}` (base64), `{kind: "title", title}`, and finally `{kind: "closed", reason, duration_seconds}` |
-| `ha_soc/terminal/input` | `{session_id, data}` (base64, at most 64 KiB decoded) | `{ok: true}` |
-| `ha_soc/terminal/resize` | `{session_id, cols, rows}` | `{ok: true}` |
+| `ha_soc/terminal/open` (owner only) | `{target, cols, rows}` | result `{session_id, target, host, started, recorded, max_session_seconds}`, repeated as the first event `{kind: "opened", ...}`, then events `{kind: "output", data}` (base64), `{kind: "title", title}`, and finally `{kind: "closed", reason, duration_seconds}` |
+| `ha_soc/terminal/input` (owner only) | `{session_id, data}` (base64, at most 64 KiB decoded) | `{ok: true}` |
+| `ha_soc/terminal/resize` (owner only) | `{session_id, cols, rows}` | `{ok: true}` |
 | `ha_soc/terminal/close` | `{session_id}` | `{closed: true}` |
 | `ha_soc/terminal/app_control` (owner only) | `{action: "start"\|"restart"}` | `{ok: true}` or `{ok: false, reason}` |
 | `ha_soc/terminal/forget_pairing` (owner only) | none | `{ok: true}` |
 | `ha_soc/terminal/export_event` | `{kind, session_id?, lines, bytes, sha256}` | `{ok: true}` |
+
+`recorded` in the open result is true only when the app's `session_recording`
+option was read back as true when the session opened. It is false when
+recording is off and also when the options could not be read, so the panel
+never claims a recording the app did not confirm. The same value is written
+to the `terminal_session_open` audit record.
+
+The open, input, resize and run commands are a root shell on the host and are
+owner-only whatever `access_level` is, the same bar as `ha_soc/ssh/run`.
+Status, close, transcript and export events keep the panel tier. The hash of
+a one-shot run is the SHA-256 of the exact bytes of the output: the app
+returns the output file unmodified together with its own `sha256sum`, Core
+hashes the stdout it received, and the `terminal_run` record stores Core's
+hash with the app's beside it (`app_sha256`, `hash_matches_app`). The hash in
+a `terminal/export_event` record is computed by the browser and cannot be
+checked by Core, so the record is marked `hash_source: client_asserted`.
+Hashes Core computes itself are marked `hash_source: server`.
 
 `ha_soc/terminal/close` lets the owner close any user's session (the panel's
 session list, from `status.sessions`, shows every open session); anyone else

@@ -23,7 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from .const import (
@@ -74,21 +74,63 @@ def _pri_to_facility_severity(pri: str) -> tuple[int, int]:
     return pri_int // 8, pri_int % 8
 
 
+# Sender clocks may run ahead of the receiver by this much, and a local-time
+# sender's wall clock may differ from UTC by a whole zone offset (UTC-12 to UTC+14).
+_RFC3164_SKEW = timedelta(minutes=10)
+_RFC3164_MAX_ZONE_OFFSET = timedelta(hours=14)
+_RFC3164_MIN_ZONE_OFFSET = timedelta(minutes=30)
+# How far a local-time line may sit from a whole zone offset and still count as one.
+_RFC3164_ZONE_TOLERANCE = timedelta(minutes=2)
+_RFC3164_ZONE_STEP = 15 * 60  # seconds; every real zone is a multiple of 15 minutes
+
+
 def _rfc3164_timestamp(raw: str, *, receipt_time: datetime) -> str:
-    """Best-effort parse of "Mmm DD HH:MM:SS"; the year is not on the wire,
-    so it is inferred from the receipt time (rolling back one year if that
-    would otherwise place the timestamp in the future)."""
+    """Best-effort parse of "Mmm DD HH:MM:SS" into a UTC ISO timestamp.
+
+    RFC 3164 carries neither a year nor a zone, so both are inferred from the
+    receipt time. The year is the latest one (starting next year, because a
+    sender ahead of UTC can already be in January) for which the date exists
+    and is not later than the receipt time plus the largest zone offset; a
+    February 29 therefore resolves to the last leap year. A wall clock within
+    ``_RFC3164_SKEW`` of the receipt time is taken as UTC (clock skew). One
+    that differs by a whole zone offset (a multiple of 15 minutes from 30
+    minutes to 14 hours), to within two minutes, is taken as the sender's
+    local time and shifted by that offset. A time in the future that
+    matches neither is clamped to the receipt time, since a line cannot be
+    sent before it is received. Anything else is older than the receipt and is
+    kept as UTC. When nothing parses, the receipt time is returned.
+    """
     try:
-        month_name = raw[:3]
-        month = _MONTHS[month_name]
+        month = _MONTHS[raw[:3]]
         rest = raw[3:].strip()
         day_str, time_str = rest.split(None, 1)
         day = int(day_str)
         hour, minute, second = (int(part) for part in time_str.split(":"))
-        year = receipt_time.year
-        candidate = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+        limit = receipt_time + _RFC3164_MAX_ZONE_OFFSET + _RFC3164_SKEW
+        candidate = None
+        # Eight years back always contains a leap year, including across 2100.
+        for year in range(receipt_time.year + 1, receipt_time.year - 8, -1):
+            try:
+                attempt = datetime(year, month, day, hour, minute, second, tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if attempt <= limit:
+                candidate = attempt
+                break
+        if candidate is None:
+            return receipt_time.isoformat()
+        delta = receipt_time - candidate
+        if abs(delta) <= _RFC3164_SKEW:
+            return candidate.isoformat()
+        steps = round(delta.total_seconds() / _RFC3164_ZONE_STEP)
+        offset = timedelta(seconds=steps * _RFC3164_ZONE_STEP)
+        if (
+            _RFC3164_MIN_ZONE_OFFSET <= abs(offset) <= _RFC3164_MAX_ZONE_OFFSET
+            and abs(delta - offset) <= _RFC3164_ZONE_TOLERANCE
+        ):
+            return (candidate + offset).isoformat()
         if candidate > receipt_time:
-            candidate = candidate.replace(year=year - 1)
+            return receipt_time.isoformat()
         return candidate.isoformat()
     except (KeyError, ValueError, IndexError):
         return receipt_time.isoformat()

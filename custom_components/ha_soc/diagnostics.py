@@ -15,7 +15,8 @@ from .secrets_store import PROBE_PAIRING_SECRET_KEY, HaSocSecretStore
 
 # Not credentials, but they identify the installation; redacted to a presence flag.
 _PRIVATE_SETTING_KEYS = frozenset(
-    {"unifi_network_host", "unifi_protect_host", "observe_url", "observe_host_name"}
+    {"unifi_network_host", "unifi_protect_host", "observe_url", "observe_host_name",
+     "observe_ca_pem", "observe_cert_sha256"}
 )
 
 

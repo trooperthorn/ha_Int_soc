@@ -77,6 +77,69 @@ def test_parse_rfc3164_basic_line():
     assert entry["timestamp"].startswith("2025-10-11")
 
 
+# The timestamp carries neither year nor zone; these cases come from the October audit.
+
+_AUDIT_RECEIPT = datetime(2026, 10, 7, 22, 25, 0, tzinfo=timezone.utc)
+
+
+def _stamp(line: str, receipt: datetime = _AUDIT_RECEIPT) -> str:
+    return parse_syslog_line(line, receipt_time=receipt)["timestamp"]
+
+
+def test_rfc3164_sender_clock_ahead_is_not_rolled_back_a_year():
+    # Five minutes in the future used to land in October 2025.
+    assert _stamp("<13>Oct  7 22:30:00 udm kernel: skewed") == "2026-10-07T22:30:00+00:00"
+
+
+def test_rfc3164_sender_clock_behind_is_kept():
+    assert _stamp("<13>Oct  7 22:20:00 udm kernel: behind") == "2026-10-07T22:20:00+00:00"
+
+
+def test_rfc3164_local_time_sender_west_of_utc_is_converted():
+    # UTC-5 wall clock, sent "17:25" when it is 22:25 UTC.
+    assert _stamp("<13>Oct  7 17:25:00 udm kernel: local") == "2026-10-07T22:25:00+00:00"
+
+
+def test_rfc3164_local_time_sender_east_of_utc_is_converted():
+    # UTC+10 wall clock, already the next day.
+    assert _stamp("<13>Oct  8 08:24:30 udm kernel: local") == "2026-10-07T22:24:30+00:00"
+    # Half-hour zone (UTC+5:30).
+    assert _stamp("<13>Oct  8 03:55:00 udm kernel: local") == "2026-10-07T22:25:00+00:00"
+
+
+def test_rfc3164_local_time_across_new_year():
+    receipt = datetime(2026, 12, 31, 20, 0, 0, tzinfo=timezone.utc)
+    # UTC+14 wall clock is already in the next year.
+    assert _stamp("<13>Jan  1 10:00:00 h t: m", receipt) == "2026-12-31T20:00:00+00:00"
+
+
+def test_rfc3164_feb_29_resolves_to_the_last_leap_year():
+    assert _stamp("<13>Feb 29 10:00:00 udm kernel: leap") == "2024-02-29T10:00:00+00:00"
+
+
+def test_rfc3164_feb_29_on_the_day_in_a_leap_year():
+    receipt = datetime(2028, 2, 29, 12, 0, 0, tzinfo=timezone.utc)
+    assert _stamp("<13>Feb 29 11:59:00 udm kernel: leap", receipt) == "2028-02-29T11:59:00+00:00"
+
+
+def test_rfc3164_feb_29_just_after_leap_day_keeps_that_leap_year():
+    receipt = datetime(2028, 3, 1, 0, 5, 0, tzinfo=timezone.utc)
+    assert _stamp("<13>Feb 29 23:59:00 udm kernel: leap", receipt) == "2028-02-29T23:59:00+00:00"
+
+
+def test_rfc3164_impossible_date_falls_back_to_receipt_time():
+    assert _stamp("<13>Feb 30 10:00:00 udm kernel: x") == _AUDIT_RECEIPT.isoformat()
+
+
+def test_rfc3164_future_time_matching_no_zone_is_clamped_to_receipt():
+    # Seven hours and twenty minutes ahead is not a zone offset.
+    assert _stamp("<13>Oct  8 05:45:00 udm kernel: odd") == _AUDIT_RECEIPT.isoformat()
+
+
+def test_rfc3164_old_line_keeps_its_own_time():
+    assert _stamp("<13>Oct  5 03:00:00 udm kernel: old") == "2026-10-05T03:00:00+00:00"
+
+
 def test_parse_rfc3164_with_pid():
     line = "<13>Jan  5 10:00:00 host dockerd[123]: container started"
     entry = parse_syslog_line(line, receipt_time=datetime(2026, 1, 6, tzinfo=timezone.utc))

@@ -35,6 +35,7 @@ from .const import (
     SYSLOG_RECEIVER_MESSAGE_MAX,
     SYSLOG_RECEIVER_STATUS_ERROR_MAX,
 )
+from .containers import cached_addons_info
 from .firewall import (
     async_next_addon_command,
     async_report_from_addon,
@@ -254,9 +255,7 @@ async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
 
 def _addon_info(hass: HomeAssistant) -> dict[str, Any] | None:
     """This project's own add-on's cached info dict, or None if absent."""
-    from homeassistant.components.hassio import get_addons_info
-
-    addons = get_addons_info(hass)
+    addons = cached_addons_info(hass)
     if not addons:
         return None
     for info in addons.values():
@@ -280,6 +279,8 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
     info = _addon_info(hass)
     return {
         "supervisor": True,
+        # False while the Supervisor data is not loaded: "installed" is then unknown, not absent.
+        "supervisor_ready": cached_addons_info(hass) is not None,
         "installed": info is not None,
         "running": bool(info is not None and info.get("state") == "started"),
         "version": info.get("version") if info is not None else None,

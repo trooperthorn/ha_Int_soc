@@ -4,12 +4,16 @@ Wiring only: composes the feature managers and owns the periodic analysis loop.
 """
 from __future__ import annotations
 
+import asyncio
+import inspect
 import logging
-from dataclasses import dataclass
+from functools import partial
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
@@ -35,13 +39,14 @@ from .terminal import (
 from .repairs import (
     async_sync_admin_mfa_issues,
     async_sync_stale_token_issues,
+    async_sync_tls_verify_issue,
     async_sync_vuln_issues,
 )
 from .risk import RiskEngine
 from .scanner import IntegrationScanner
 from .secrets_store import HaSocSecretStore, async_migrate_legacy_secrets
 from .resource_watchdog import ResourceWatchdog
-from .observe_push import ObservePusher, SnapshotCollector
+from .observe_push import DATA_QUEUE_CARRY, ObservePusher, SnapshotCollector
 from .store import HaSocData
 from .syslog_export import SyslogExporter
 from .users import LiveSessionRegistry, UsersManager
@@ -54,6 +59,12 @@ ANALYSIS_INTERVAL = timedelta(minutes=5)
 VULN_SCAN_INTERVAL = timedelta(hours=24)
 SCANNER_SWEEP_INTERVAL = timedelta(days=7)
 CONFIG_CHECK_INTERVAL = timedelta(hours=6)
+# Core waits at most 10 seconds for a failed setup's unload tasks. The stops after
+# the audit log and before the store write share this budget so the write starts
+# inside that window. Terminal sessions have a budget of their own, and the audit
+# log stop has none: cancelling it would lose records, so it is never starved.
+SERVICE_STOP_BUDGET = 7.0
+TERMINAL_CLOSE_BUDGET = 3.0
 # The ledger records transitions, not samples, so a slow cadence loses
 # nothing: a change that persists is still caught on the next pass.
 UNIFI_LEDGER_INTERVAL = timedelta(hours=6)
@@ -82,6 +93,60 @@ class HaSocRuntimeData:
     terminal: TerminalSessions
     crash_forensics: CrashForensics
     observe: ObservePusher
+    _stopped: bool = field(default=False, init=False, repr=False)
+
+    async def async_stop_services(self) -> None:
+        """Stop every service this entry started, in dependency order, once.
+
+        Called from the unload path and registered with ``entry.async_on_unload``
+        before the first service starts, so a setup that fails or is retried
+        leaves no timer, listener or log handler behind. Every stop is safe on a
+        service that never started. A stop that raises is logged and the rest
+        still run.
+        """
+        if self._stopped:
+            return
+        self._stopped = True
+        # The audit log stops before the exporter so its last flush still reaches
+        # the exporter's drain; the store is written last because the stops above
+        # (the audit head mirror, the health records) change it.
+        loop = asyncio.get_running_loop()
+        await self._stop_one("terminal sessions", self.terminal.async_close_all, TERMINAL_CLOSE_BUDGET)
+        # No time limit: the stop flushes buffered records, and a cancelled flush
+        # drops them and leaves a writer thread running that the next AuditLog
+        # could race. Its own work is bounded by the disk write.
+        await self._stop_one("audit log", self.audit.async_stop, None)
+        deadline = loop.time() + SERVICE_STOP_BUDGET
+        for label, stop in (
+            ("syslog exporter", partial(self.syslog.async_stop, drain=True)),
+            ("health", self.health.async_stop),
+            ("scanner", self.scanner.async_stop),
+            ("resource watchdog", self.watchdog.async_stop),
+            ("resource watchdog history", self.watchdog.async_flush_history),
+            ("Observe push", self.observe.async_stop),
+        ):
+            await self._stop_one(label, stop, max(deadline - loop.time(), 0.1))
+        await self._stop_one("store", self.store.async_flush, None)
+
+    @staticmethod
+    async def _stop_one(label: str, stop, budget: float | None) -> None:
+        """Run one stop, bounded by ``budget`` seconds when given, logging any failure.
+
+        A stop cancelled by its budget is not retried (the runtime is already
+        marked stopped), so that service may be left half-stopped.
+        """
+        try:
+            result = stop()
+            if inspect.isawaitable(result):
+                if budget is None:
+                    await result
+                else:
+                    async with asyncio.timeout(budget):
+                        await result
+        except TimeoutError:
+            _LOGGER.error("HA SOC gave up waiting for %s to stop", label)
+        except Exception:  # noqa: BLE001 - one failed stop must not strand the others
+            _LOGGER.exception("HA SOC could not stop %s", label)
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -89,11 +154,17 @@ HaSocConfigEntry = ConfigEntry[HaSocRuntimeData]
 
 
 def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
-    """HA SOC is single-instance; fetch the one loaded entry's runtime data."""
+    """HA SOC is single-instance; fetch the one loaded entry's runtime data.
+
+    Raises ``RuntimeError("HA SOC is not set up")`` when there is no entry or it
+    is not loaded (never set up, failed setup, or unloaded).
+    """
     entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries or entries[0].runtime_data is None:
+    # Core deletes the attribute on unload, so a plain read raises AttributeError.
+    runtime = getattr(entries[0], "runtime_data", None) if entries else None
+    if runtime is None:
         raise RuntimeError("HA SOC is not set up")
-    return entries[0].runtime_data
+    return runtime
 
 
 def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
@@ -112,6 +183,10 @@ def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> N
 async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     store = HaSocData(hass)
     await store.async_load()
+    # Before anything can arm a delayed save (the secret migration re-arms one when
+    # its write fails): a setup that fails from here on writes it out and clears
+    # its timer instead of leaving it to overwrite the retry's data.
+    entry.async_on_unload(store.async_flush)
 
     # Loaded before anything else can want a credential.
     secrets = HaSocSecretStore(hass)
@@ -166,9 +241,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         observe=observe,
     )
 
+    # Registered before anything starts: core runs these callbacks when this setup
+    # fails or is retried as well as on unload, so no service outlives a failed
+    # attempt. Core starts them in reverse order as eager tasks, so the synchronous
+    # runtime drop completes before the stop finishes awaiting.
+    entry.async_on_unload(lambda: _async_forget_runtime(entry))
+    entry.async_on_unload(entry.runtime_data.async_stop_services)
+
+    # Core does not unload config entries when Home Assistant stops, so the stop path
+    # above never runs on a restart. Write the throttled history ring on the stop event
+    # as well; it is a plain listener so removing it on unload is always safe.
+    async def _async_flush_history_on_stop(_event: Event) -> None:
+        await entry.runtime_data.watchdog.async_flush_history()
+
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_flush_history_on_stop)
+    )
+    entry.async_on_unload(lambda: _async_unregister_everything(hass))
+
+    async_sync_tls_verify_issue(hass, store.settings)
     await audit.async_start()
     syslog.async_start(entry)
-    await permissions.async_start()
     await health.async_start()
     scanner.async_start(hass)
     # Load the persisted ring (and snapshot it to .prev) before the watchdog
@@ -177,9 +270,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
     crash_forensics.async_start(entry)
     # Off by default: a no-op unless the owner enabled it and filled in the options.
-    # Registered first so a setup that fails after the push started (for example with
-    # ConfigEntryNotReady) cancels the timer; core runs these callbacks on a failed setup.
-    entry.async_on_unload(observe.async_stop)
     await observe.async_start(entry)
 
     async_register_websocket_api(hass)
@@ -281,24 +371,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     return True
 
 
+@callback
+def _async_forget_runtime(entry: HaSocConfigEntry) -> None:
+    """Drop the runtime of an entry whose setup failed, so lookups see "not set up".
+
+    Core deletes it itself after a successful unload; it does not after a failed setup.
+    """
+    if hasattr(entry, "runtime_data"):
+        object.__delattr__(entry, "runtime_data")
+
+
+async def _async_unregister_everything(hass: HomeAssistant) -> None:
+    """Remove the services and the panel; each call is safe when nothing is registered."""
+    async_unregister_probe_service(hass)
+    async_unregister_external_audit_service(hass)
+    async_unregister_pairing_service(hass)
+    await async_unregister_panel(hass)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
 
-    runtime = entry.runtime_data
+    runtime = getattr(entry, "runtime_data", None)
     if runtime is not None:
-        await runtime.terminal.async_close_all()
-        await runtime.audit.async_stop()
-        await runtime.syslog.async_stop(drain=True)
-        await runtime.permissions.async_stop()
-        await runtime.health.async_stop()
-        runtime.scanner.async_stop()
-        runtime.watchdog.async_stop()
-        runtime.observe.async_stop()
+        await runtime.async_stop_services()
 
-    async_unregister_probe_service(hass)
-    async_unregister_external_audit_service(hass)
-    async_unregister_pairing_service(hass)
-    await async_unregister_panel(hass)
+    if entry.disabled_by is not None:
+        # A disabled entry is not coming back with a reload; do not hold its queue for nothing.
+        hass.data.get(DATA_QUEUE_CARRY, {}).pop(entry.entry_id, None)
+
+    await _async_unregister_everything(hass)
     return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
+    """Forget the Observe queue a stopped push left for a reload; the entry is gone for good."""
+    hass.data.get(DATA_QUEUE_CARRY, {}).pop(entry.entry_id, None)

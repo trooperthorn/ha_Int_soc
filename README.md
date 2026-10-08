@@ -69,6 +69,8 @@ URL a parser actually needs stays visible.
   logs an attempted username anywhere. High-value records (user
   changes, firewall actions, rejected probe calls, privileged reads)
   flush to disk immediately rather than waiting for the periodic timer,
+  a failed write keeps the records buffered so the chain never gaps,
+  credential-like service data keys are masked by pattern,
   and deleting or rolling back the on-disk chain is detected against a
   head mirrored in the main store, raising a Repairs issue and chaining
   the discontinuity itself.
@@ -107,6 +109,8 @@ URL a parser actually needs stays visible.
   its length. Legitimate uses are acknowledged visibly in source with a
   reasoned `# ha-soc-allow` marker, never silently skipped, and a test
   holds HA SOC's own code to zero open findings from these rules.
+  Built-in Core integrations are skipped, unchanged files are not parsed
+  again, and a scan yields to Home Assistant between files.
   Coverage is honest: the scanner records per domain what it scanned,
   skipped, and failed to parse, a domain it never scanned reads "not
   scanned" rather than "0 findings", findings absent on a rescan of
@@ -134,7 +138,8 @@ URL a parser actually needs stays visible.
   logged Core crash), and auto-collect the previous boot's journal tail,
   Supervisor/host status, and container state into a bundle with a ranked
   list of suspects, before the next boot's log churn rotates the evidence
-  away. See docs/CRASH-FORENSICS.md.
+  away. No heartbeat is written once a clean stop has begun, so a normal
+  shutdown is never mistaken for a crash. See docs/CRASH-FORENSICS.md.
 - **Risk Scoring & Security Posture**: an explainable, additive per-user
   risk score (0–100) and an install-wide posture score/grade, both shown
   with their contributing factors, never as an opaque number. Every
@@ -174,7 +179,10 @@ URL a parser actually needs stays visible.
 - **Access control**: the panel and every `ha_soc/*` command default to
   **account owner only**; a setting (Settings tab or the native Configure
   dialog) can open it to every administrator. Enforced server-side on each
-  command, not just on sidebar visibility.
+  command, not just on sidebar visibility. Only the owner can create an
+  administrator or promote a user to administrator, and changes to the
+  Observe settings in the Configure dialog are recorded in the audit log with
+  the user who made them.
 - **Network (UniFi Network / Protect)**: a Dashboard-style tab that talks
   directly to a UniFi console over the LAN with a local Integration API key
   (read-only), verified against Network 10.4.57 and Protect 7.2.105:
@@ -233,11 +241,13 @@ URL a parser actually needs stays visible.
 - **Terminal**: a recorded bash terminal in the panel that executes only on
   this server, in the optional `ha_soc_terminal` app from this repository.
   The app has no ingress and no host port; the panel is the only door, behind
-  HA SOC's own access tier, and the integration holds the one connection to
+  HA SOC's own access tier (opening a session, sending input, resizing and
+  running a command are owner-only whatever `access_level` says, because they
+  are a root shell on the host), and the integration holds the one connection to
   the app's terminal server with a credential the app paired on first start.
   One shell per session with no tmux, so scrollback and paste behave; every
   session recorded by util-linux `script` in the app with its hash in an
-  index, and every open and close audited here with byte counts; xterm.js in
+  index, and every open, close and one-shot run audited here (byte counts, outcome, the SHA-256 of the exact output bytes, whether the app confirmed it was recording, and the command with credentials masked), with transcripts downloadable only by the session owner or the Home Assistant owner; xterm.js in
   the panel with the palette built from the active HA theme; `nano` with
   syntax files for YAML; no SSH client or other network tool in the image, no
   host network, no Docker socket, and the Supervisor token never exported
@@ -271,7 +281,7 @@ URL a parser actually needs stays visible.
   honestly editable or not, a reference living only inside a Jinja
   template is detected but never auto-rewritten, since a text edit there
   risks corrupting the template or missing a dynamic reference. Applying
-  a remap backs everything up first: YAML files are copied aside and
+  a remap backs everything up first: YAML files are copied aside (owner-only, kept 30 days) and
   storage dashboards and helpers get JSON snapshots under
   `.storage/ha_soc_remap/` (kept 30 days), and a YAML file containing
   `!secret` or `!include` is refused as "manual edit required" because a
@@ -701,16 +711,26 @@ Observe monitoring server: per-container CPU and memory for Core, the
 Supervisor and every add-on, watchdog breaches and crash forensics
 classifications as log records, integration health categories, the open
 Repairs count, the unprotected-backup finding and the Supervisor
-resolution state. The push is off by default and sends nothing until you
-turn it on. Several entries of one integration are summed into one error
-series per category, a crash forensics dry run is never sent, and a watchdog
-breach that lasts is one log record until the container recovers, at which
-point the breach gauge returns to 0.
+resolution state, with an availability gauge per source so Observe can tell a
+quiet source from one that could not be read (an unreadable backup store is
+reported as unavailable, never as clean). The push is off by default and sends nothing until you
+turn it on. Several entries of one integration give one error series (the
+domain's count, not a multiple of it), a stopped container reports running 0,
+CPU and memory utilisation are ratios clamped to 0 to 1, no metric carries a
+total beside labelled series that a sum would count twice, and a row cap is
+reported in `observe.ha.push.rows_dropped`. A crash forensics dry run is never
+sent, and a watchdog breach that lasts is one log record until the container
+recovers, even across a Home Assistant restart, at which point the breach
+gauge returns to 0. An integration that recovers or disappears has its error
+series sent once as 0, and log records Observe partly rejects are offered one
+more time and then reported in the log and the diagnostics. The requests name
+the platform (`os.type` `homeassistant`), the Core version and the send time.
 
-When the resource watchdog is off, the push asks the Supervisor for container
-stats itself, at most once per watchdog interval (60 seconds by default), and
-covers up to 300 add-ons. Add-ons past that limit are counted and logged as a
-warning.
+The push and the resource watchdog share one container sample. The Supervisor
+is asked for stats at most every three minutes, or at the watchdog interval when
+the watchdog is on and that is shorter, and the sample covers up to 300 add-ons.
+Add-ons past that limit are counted and logged as a warning. With 30 add-ons and
+the watchdog off this is about 11 Supervisor calls a minute instead of 32.
 
 To enable it, open Settings, Devices and services, HA SOC, Configure, and fill
 in the form:
@@ -718,19 +738,29 @@ in the form:
 | Field | Meaning |
 |---|---|
 | Push to Observe | Off by default. |
-| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private or link-local IP address or `localhost`. No user name, password, query or fragment. |
-| Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key. Tick "Remove the stored ingest key" to delete it. |
+| Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private, link-local or Tailscale (100.64.0.0/10) IP address or `localhost`. No user name, password, query or fragment. |
+| Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key unless you change the Observe URL, in which case the key must be typed again. Tick "Remove the stored ingest key" to delete it. |
 | Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
 | Push interval | 30 to 3600 seconds, 60 by default. |
+| Certificate authority (PEM) | Optional. For an Observe server whose certificate no public authority signed, paste the PEM certificate of the authority that signed it, or its own certificate when it is self-signed. While it is set, only that certificate is trusted for Observe, and the address in the URL must still be named in the certificate. A private key is refused. |
+| Certificate fingerprint (SHA-256) | Optional alternative to the certificate above: pin the one certificate the server presents by its SHA-256 fingerprint (64 hexadecimal characters, colons allowed). Set only one of the two. |
+
+If the settings cannot be written to disk, the form stays open with the error "The settings could not be written to disk" and nothing is changed; check the free space and permissions of the `.storage` folder. HA SOC also writes its store when it unloads or reloads, so a setting changed in the last 15 seconds before a reload is kept.
 
 Every interval HA SOC gathers what it already holds, builds the two OTLP
 JSON requests ([`otlp_mapper.py`](custom_components/ha_soc/otlp_mapper.py))
 and sends them to `POST /v1/metrics` and `POST /v1/logs` on Home Assistant's
 own HTTP session, gzip compressed, with the key as a bearer token and one
 `Idempotency-Key` per payload. A payload that cannot be delivered is kept in
-a bounded in-memory queue of 60 payloads and retried with back-off,
-honouring `Retry-After`; when the queue is full the oldest payload is
-dropped and a warning with the count is logged. Observe answering 404, 400,
+a bounded in-memory queue (60 payloads and 4 MiB) and retried with back-off,
+honouring `Retry-After`. The queue is kept when you save the Configure dialog
+or reload the integration, as long as the URL and host name did not change. A
+log record is queued once, so an outage does not repeat it in every payload.
+When the queue fills up during a long outage the queued metric payloads are
+merged into one that keeps the newest point per series for every five minutes
+(the interval widens if the result is still too large), so hours of outage
+are kept at a coarser resolution; only when merging cannot make room is the
+oldest payload dropped, and a warning with the count is logged. Observe answering 404, 400,
 409, 413, 415 or 422 three times in a row raises a Repairs issue that names the
 status and slows sending down until a push is accepted. Observe answering 401 or 403
 raises a Repairs issue ("Observe refused the ingest key") that clears itself
@@ -869,8 +899,10 @@ changes controller state.
 
 Configure it in **Settings** (owner-only), where UniFi Network and UniFi
 Protect each get a host, a local API key (stored as a secret, masked in
-the API, redacted in the audit log), and a TLS-verify toggle (off by
-default, since consoles ship a self-signed certificate).
+the API, redacted in the audit log), and a TLS-verify toggle (on by
+default; turn it off only for a console that uses its self-signed certificate.
+An install from before the change keeps its old setting, and a Repairs issue
+names every connection that does not check the certificate).
 
 The tab shows, close to the Dashboard's layout: network status, WAN-port
 bandwidth, internet-connected, wireless-client count, per-SSID totals, and

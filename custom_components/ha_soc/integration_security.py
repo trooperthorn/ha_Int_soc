@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import time
 from typing import Any
 
 from homeassistant.core import HomeAssistant
@@ -35,24 +36,62 @@ def _license_present_sync(path: str) -> bool:
     return any(os.path.isfile(os.path.join(path, name)) for name in _LICENSE_NAMES)
 
 
+# root path -> (signature, domains, licenses). The signature is the modification time of the
+# root and of every entry in it. Adding, removing or replacing an integration, or a manifest
+# or license inside one, changes the directory's time, so an unchanged signature means the
+# previous answer still holds and the six file probes per integration can be skipped.
+_SCAN_CACHE: dict[str, tuple[tuple[Any, ...], list[str], dict[str, bool]]] = {}
+# A scan is cached only when nothing in the directory changed in the last two seconds.
+_SCAN_SETTLE_NS = 2_000_000_000
+
+
 def _scan_custom_components_sync(root: str) -> tuple[list[str], dict[str, bool]]:
     """One pass over custom_components/: every directory with a manifest.json,
     plus whether each carries a license file.
 
-    Synchronous disk I/O: executor only, never the event loop.
+    Synchronous disk I/O: executor only, never the event loop. The result is cached
+    by directory modification times; see _SCAN_CACHE.
     """
-    if not os.path.isdir(root):
+    try:
+        root_mtime = os.stat(root).st_mtime_ns
+        names: list[tuple[str, int]] = []
+        with os.scandir(root) as it:
+            for entry in it:
+                if entry.name.startswith((".", "_")):
+                    continue
+                try:
+                    mtime = entry.stat().st_mtime_ns
+                except OSError:
+                    # A dangling link or an unreadable entry: keep scanning the rest and
+                    # let the manifest probe below decide whether it counts.
+                    try:
+                        mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                    except OSError:
+                        mtime = 0
+                names.append((entry.name, mtime))
+    except OSError:
+        _SCAN_CACHE.pop(root, None)
         return [], {}
+    signature = (root_mtime, tuple(sorted(names)))
+    cached = _SCAN_CACHE.get(root)
+    if cached is not None and cached[0] == signature:
+        return list(cached[1]), dict(cached[2])
     domains: list[str] = []
     licenses: dict[str, bool] = {}
-    for name in os.listdir(root):
-        if name.startswith((".", "_")):
-            continue
+    for name, _mtime in names:
         path = os.path.join(root, name)
         if os.path.isfile(os.path.join(path, "manifest.json")):
             domains.append(name)
             licenses[name] = _license_present_sync(path)
-    return sorted(domains), licenses
+    domains.sort()
+    # A change in the same clock tick as this scan could leave a time unchanged, so a
+    # directory touched in the last moments is scanned again next time rather than trusted.
+    newest = max([root_mtime, *(mtime for _name, mtime in names)])
+    if time.time_ns() - newest > _SCAN_SETTLE_NS:
+        _SCAN_CACHE[root] = (signature, domains, licenses)
+    else:
+        _SCAN_CACHE.pop(root, None)
+    return list(domains), dict(licenses)
 
 
 def _repo_url_from_integration(documentation: str | None, issue_tracker: str | None) -> str | None:

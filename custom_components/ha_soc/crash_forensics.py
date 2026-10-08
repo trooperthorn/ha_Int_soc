@@ -286,6 +286,12 @@ class CrashForensics:
         self._unsub_stop = None
         self._unsub_started = None
         self._boot_id = str(uuid4())
+        # Set when core announces a clean stop. A heartbeat written after the
+        # clean-stop marker would look newer than the marker and the next
+        # boot would call a clean shutdown unclean. The lock makes the
+        # marker wait for a heartbeat write already in flight.
+        self._stopping = False
+        self._write_lock = asyncio.Lock()
         self._config_dir = hass.config.path(SUBDIR)
         self._heartbeat_path = os.path.join(self._config_dir, HEARTBEAT_FILENAME)
         self._last_stop_path = os.path.join(self._config_dir, LAST_STOP_FILENAME)
@@ -337,6 +343,7 @@ class CrashForensics:
         sync_write_json_atomic(
             self._heartbeat_path,
             {"ts": _iso_now(), "boot_id": self._boot_id, "core_started": self._core_started},
+            durable=True,
         )
 
     async def _async_initial_heartbeat(self) -> None:
@@ -350,21 +357,30 @@ class CrashForensics:
         await self._async_write_heartbeat()
 
     async def _async_write_heartbeat(self, _now=None) -> None:
-        if self._core_started is None:
-            self._core_started = _iso_now()
-        try:
-            await self.hass.async_add_executor_job(self._sync_write_heartbeat)
-        except OSError:
-            _LOGGER.warning("HA SOC crash forensics: could not write heartbeat", exc_info=True)
+        async with self._write_lock:
+            if self._stopping:
+                return
+            if self._core_started is None:
+                self._core_started = _iso_now()
+            try:
+                await self.hass.async_add_executor_job(self._sync_write_heartbeat)
+            except OSError:
+                _LOGGER.warning("HA SOC crash forensics: could not write heartbeat", exc_info=True)
 
     async def _async_on_stop(self, _event: Event) -> None:
         def _write() -> None:
-            sync_write_json_atomic(self._last_stop_path, {"ts": _iso_now(), "reason": "clean"})
+            sync_write_json_atomic(
+                self._last_stop_path, {"ts": _iso_now(), "reason": "clean"}, durable=True
+            )
 
-        try:
-            await self.hass.async_add_executor_job(_write)
-        except OSError:
-            _LOGGER.warning("HA SOC crash forensics: could not write the clean-stop marker", exc_info=True)
+        self._stopping = True
+        async with self._write_lock:
+            try:
+                await self.hass.async_add_executor_job(_write)
+            except OSError:
+                _LOGGER.warning(
+                    "HA SOC crash forensics: could not write the clean-stop marker", exc_info=True
+                )
 
     async def _async_on_started(self, _event: Event) -> None:
         """Runs after EVENT_HOMEASSISTANT_STARTED, so hassio (needed for

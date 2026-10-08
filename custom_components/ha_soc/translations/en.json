@@ -21,7 +21,9 @@
           "observe_ingest_key": "Ingest key",
           "observe_clear_key": "Remove the stored ingest key",
           "observe_host_name": "Host name",
-          "observe_interval_seconds": "Push interval"
+          "observe_interval_seconds": "Push interval",
+          "observe_ca_pem": "Certificate authority (PEM)",
+          "observe_cert_sha256": "Certificate fingerprint (SHA-256)"
         },
         "data_description": {
           "observe_enabled": "Off by default. Nothing leaves Home Assistant until this is on.",
@@ -29,7 +31,9 @@
           "observe_ingest_key": "A host-bound ingest key that starts with wpi_. It is stored privately and never shown again.",
           "observe_clear_key": "Tick to delete the stored key. Leaving the key field blank keeps it.",
           "observe_host_name": "The host name the ingest key is bound to. Observe refuses data whose host name differs.",
-          "observe_interval_seconds": "Seconds between pushes, from 30 to 3600. The default is 60."
+          "observe_interval_seconds": "Seconds between pushes, from 30 to 3600. The default is 60.",
+          "observe_ca_pem": "Optional. Paste the PEM certificate of the authority that signed your Observe server, or its own certificate when it is self-signed. When set, only that certificate is trusted for Observe. Leave blank to use the normal public authorities.",
+          "observe_cert_sha256": "Optional alternative to the certificate above: the SHA-256 fingerprint of the one certificate your Observe server presents, as printed by openssl x509 -fingerprint -sha256. Set only one of the two."
         }
       }
     },
@@ -37,11 +41,18 @@
       "invalid_url": "Enter a full http or https address without a user name, password, query or fragment.",
       "insecure_url": "Plain http is accepted only for a private IP address or localhost. Use https for any other address.",
       "key_required": "Enter the ingest key.",
+      "key_required_for_url_change": "Enter the ingest key again to change the Observe URL. The stored key is never sent to a new address.",
+      "key_required_for_trust_change": "Enter the ingest key again to set or change the trusted certificate or fingerprint. The stored key is never sent to a server you have just chosen to trust.",
       "invalid_key": "The ingest key must start with wpi_ and contain no spaces.",
       "invalid_host_name": "Enter the host name the ingest key is bound to, without spaces.",
-      "invalid_interval": "The interval must be between 30 and 3600 seconds."
+      "invalid_interval": "The interval must be between 30 and 3600 seconds.",
+      "invalid_ca": "Paste one or more certificates in PEM form, from BEGIN CERTIFICATE to END CERTIFICATE. A private key is refused.",
+      "invalid_fingerprint": "Enter the SHA-256 fingerprint as 64 hexadecimal characters. Colons are allowed.",
+      "trust_conflict": "Set either the certificate or the fingerprint, not both.",
+      "save_failed": "The settings could not be written to disk, so nothing was changed. Check the free space and permissions of the Home Assistant storage folder and the log, then submit again."
     },
     "abort": {
+      "owner_required": "Only the owner can change the Observe settings, because the access level is set to the owner only.",
       "not_loaded": "HA SOC is not loaded, so its options cannot be changed. Reload the integration and try again."
     }
   },
@@ -103,6 +114,10 @@
     "unclean_stop": {
       "title": "Home Assistant restarted after an unclean stop",
       "description": "The previous run ended without a clean-stop marker (classification: {classification}, gap {gap_seconds}s). HA SOC collected a forensics bundle at {bundle_path}. Top suspects: {top_suspects}. Review the bundle in the HA SOC Health view's Crash forensics card, then dismiss this issue."
+    },
+    "tls_verification_disabled": {
+      "title": "Certificate checking is off for a device connection",
+      "description": "HA SOC does not check the TLS certificate of: {connections}. Anyone who can intercept traffic between Home Assistant and that device can read the API key or password HA SOC sends and can answer with false data. Installs from before verification became the default keep their old setting so nothing stops working. If the device has a certificate your system trusts, turn on \"Verify TLS certificate\" for it in the HA SOC settings. If it uses a self-signed certificate, replace it with a trusted one where you can, or ignore this issue to accept the risk."
     },
     "observe_key_rejected": {
       "title": "Observe refused the ingest key",

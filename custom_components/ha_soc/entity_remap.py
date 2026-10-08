@@ -11,8 +11,11 @@ import asyncio
 import json
 import logging
 import os
+import re
 import shutil
+import stat
 import time
+from datetime import datetime, timedelta, timezone
 from itertools import chain
 from typing import Any
 
@@ -27,6 +30,10 @@ _LOGGER = logging.getLogger(__name__)
 
 REMAP_BACKUP_DIR = os.path.join(".storage", "ha_soc_remap")
 _BACKUP_RETENTION_DAYS = 30
+# <config dir>/automations.yaml.ha_soc-<UTC stamp to the millisecond>.bak, see _backup_file_sync.
+_YAML_BACKUP_RE = re.compile(
+    r"^(?:automations|scripts|scenes)\.yaml\.ha_soc-(?P<stamp>\d{8}T\d{9})\.bak$"
+)
 
 YAML_TAINT_REASON = "contains !include or !secret; manual edit required"
 
@@ -49,7 +56,43 @@ def _backup_file_sync(path: str, stamp: str) -> str | None:
         return None
     backup_path = f"{path}.ha_soc-{stamp}.bak"
     shutil.copy2(path, backup_path)
+    # copy2 carries the source mode over; a copy of a config file is owner-only.
+    os.chmod(backup_path, 0o600)
     return backup_path
+
+
+def _prune_yaml_backups_sync(config_dir: str, now: datetime) -> None:
+    """Delete the ``.bak`` copies of the flat YAML files older than the retention
+    period and tighten the mode of the rest; sync, executor-only.
+
+    Age comes from the stamp in the file name, because ``copy2`` keeps the
+    source file's modification time, so a rarely edited automations.yaml would
+    otherwise make a new copy look old. A name whose stamp cannot be read is
+    left alone.
+    """
+    cutoff = now - timedelta(days=_BACKUP_RETENTION_DAYS)
+    try:
+        names = os.listdir(config_dir)
+    except OSError:
+        return
+    for name in names:
+        match = _YAML_BACKUP_RE.match(name)
+        if match is None:
+            continue
+        path = os.path.join(config_dir, name)
+        try:
+            if not os.path.isfile(path) or os.path.islink(path):
+                continue
+            taken = datetime.strptime(match.group("stamp")[:15], "%Y%m%dT%H%M%S").replace(
+                tzinfo=timezone.utc
+            )
+            if taken < cutoff:
+                os.unlink(path)
+            elif stat.S_IMODE(os.stat(path).st_mode) != 0o600:
+                os.chmod(path, 0o600)
+        except (OSError, ValueError):
+            # A vanished or undeletable file must not block the apply.
+            continue
 
 
 async def _backup_file_once(
@@ -712,6 +755,9 @@ async def async_apply_remap(
         }
 
     await hass.async_add_executor_job(_prune_backups_sync, hass.config.path(REMAP_BACKUP_DIR))
+    await hass.async_add_executor_job(
+        _prune_yaml_backups_sync, hass.config.config_dir, dt_util.utcnow()
+    )
 
     report = await async_find_references(hass, old_id)
     fixed: dict[str, int] = {"automation": 0, "script": 0, "scene": 0, "dashboard": 0, "helper": 0}

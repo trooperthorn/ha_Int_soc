@@ -62,13 +62,14 @@ class FakeObserve:
         status, headers, text = reply
         return web.Response(status=status, headers=headers, text=text)
 
-    async def start(self) -> str:
+    async def start(self, ssl_context=None) -> str:
         app = web.Application()
         app.router.add_post("/v1/metrics", self._handle)
         app.router.add_post("/v1/logs", self._handle)
         self.server = TestServer(app)
-        await self.server.start_server()
-        return f"http://127.0.0.1:{self.server.port}"
+        await self.server.start_server(ssl=ssl_context)
+        scheme = "https" if ssl_context else "http"
+        return f"{scheme}://127.0.0.1:{self.server.port}"
 
     async def close(self) -> None:
         if self.server is not None:
@@ -111,8 +112,10 @@ def _snapshot() -> dict[str, Any]:
     return json.loads((FIXTURES / "snapshot.json").read_text(encoding="utf-8"))["snapshot"]
 
 
-async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings):
-    """A pusher with the fixture snapshot, started the way setup starts it."""
+async def _pusher(
+    hass, entry, url: str, clock: Clock | None = None, collect=None, wall=None, **settings
+):
+    """A pusher with the fixture snapshot (or ``collect``), started the way setup starts it."""
     runtime = entry.runtime_data
     runtime.store.async_update_settings(
         **{
@@ -125,12 +128,19 @@ async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings)
     )
     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, KEY)
 
-    async def collect() -> dict[str, Any]:
-        return _snapshot()
+    if collect is None:
+
+        async def collect() -> dict[str, Any]:
+            return _snapshot()
 
     clock = clock or Clock()
     pusher = op.ObservePusher(
-        hass, runtime.store, runtime.secrets, collect, wall=lambda: 1_790_000_000.0, clock=clock
+        hass,
+        runtime.store,
+        runtime.secrets,
+        collect,
+        wall=wall or (lambda: 1_790_000_000.0),
+        clock=clock,
     )
     await pusher.async_start(entry)
     await hass.async_block_till_done()  # the initial push
@@ -163,7 +173,12 @@ async def _pusher(hass, entry, url: str, clock: Clock | None = None, **settings)
         ("http://0.0.0.0:8000", False),
         ("http://240.0.0.1", False),
         ("http://255.255.255.255", False),
-        ("http://100.64.0.1", False),
+        ("http://100.64.0.1", True),
+        ("http://100.64.1.1:8000", True),
+        ("http://100.127.255.254", True),
+        ("http://[::ffff:100.100.100.100]", True),
+        ("http://100.63.255.255", False),
+        ("http://100.128.0.1", False),
         ("http://224.0.0.1", False),
         ("http://[::]", False),
         ("http://observe.example.com", False),
@@ -302,6 +317,8 @@ async def test_options_flow_rejects_bad_input_and_saves_nothing(hass, entry) -> 
 async def test_options_flow_blank_key_keeps_and_clear_removes(hass, entry) -> None:
     runtime = entry.runtime_data
     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, KEY)
+    # The key is already bound to this address, so a blank field may keep it.
+    runtime.store.settings[CONF_OBSERVE_URL] = "https://observe.example.com"
     base = {
         CONF_OBSERVE_ENABLED: True,
         CONF_OBSERVE_URL: "https://observe.example.com",
@@ -402,8 +419,10 @@ async def test_push_sends_metrics_then_logs_with_auth_and_idempotency(
         assert len(set(keys)) == 2 and all(0 < len(k) <= 128 and k.isascii() for k in keys)
 
         metrics = observe.requests[0]["json"]["resourceMetrics"][0]
-        attrs = {a["key"]: a["value"]["stringValue"] for a in metrics["resource"]["attributes"]}
+        attrs = {a["key"]: next(iter(a["value"].values())) for a in metrics["resource"]["attributes"]}
         assert attrs["host.name"] == HOST
+        assert attrs["os.type"] == "homeassistant"
+        assert attrs["observe.agent.sent_at"] == "1790000000"
         assert metrics["scopeMetrics"]
         assert observe.requests[1]["json"]["resourceLogs"][0]["scopeLogs"]
         assert pusher.status["sent_ok"] == 2 and pusher.status["last_status"] == 200
@@ -432,6 +451,98 @@ async def test_partial_success_is_counted_and_logged(hass, entry, observe, caplo
         assert "rejected 3 item(s)" in caplog.text
         assert REDACTED_PLACEHOLDER in _own_log(caplog)  # the key echoed by the server is masked
         assert KEY not in _own_log(caplog)
+    finally:
+        pusher.async_stop()
+
+
+async def test_partial_log_rejection_is_retried_once_and_then_reported(
+    hass, entry, observe, caplog
+) -> None:
+    """Audit probe p04: records Observe rejected were marked sent and never offered again."""
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        partial = json.dumps(
+            {"partialSuccess": {"rejectedLogRecords": 2, "errorMessage": "bad timestamp"}}
+        )
+        # The initial push was accepted whole, so move to records Observe has not seen yet.
+        pusher._sent_log_keys.clear()
+        observe.script = [(200, {}, ""), (200, {}, partial)]  # metrics ok, logs partly rejected
+        observe.requests.clear()
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["rejected_items"] == 2
+        assert pusher.status["abandoned_log_payloads"] == 0
+
+        # Second cycle: the same records are offered again, once, and rejected again.
+        observe.script = [(200, {}, ""), (200, {}, partial)]
+        observe.requests.clear()
+        clock.now += 60
+        with caplog.at_level(logging.ERROR):
+            await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["abandoned_log_payloads"] == 1
+        assert "giving up" in _own_log(caplog)
+
+        # Third cycle: given up, so the records are not offered a third time.
+        observe.script = []
+        observe.requests.clear()
+        clock.now += 60
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics"]
+    finally:
+        pusher.async_stop()
+
+
+async def test_partial_log_rejection_that_clears_on_retry_is_marked_sent(
+    hass, entry, observe
+) -> None:
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        partial = json.dumps({"partialSuccess": {"rejectedLogRecords": 1}})
+        pusher._sent_log_keys.clear()
+        observe.script = [(200, {}, ""), (200, {}, partial)]
+        await pusher.async_push_once()
+        clock.now += 60
+        observe.requests.clear()
+        await pusher.async_push_once()  # accepted whole this time
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["abandoned_log_payloads"] == 0
+        observe.requests.clear()
+        clock.now += 60
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics"]
+    finally:
+        pusher.async_stop()
+
+
+async def test_recovered_integration_sends_one_zero_through_the_pusher(
+    hass, entry, observe
+) -> None:
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        def errors_of(request, domain):
+            return [
+                dp["asDouble"]
+                for rm in request["json"]["resourceMetrics"]
+                for sm in rm["scopeMetrics"]
+                for m in sm["metrics"]
+                if m["name"] == "observe.ha.integration.errors"
+                for dp in m["gauge"]["dataPoints"]
+                if {"key": "observe.ha.integration", "value": {"stringValue": domain}}
+                in dp["attributes"]
+            ]
+
+        snap = _snapshot()
+        snap["integration_overview"]["integrations"] = [
+            r for r in snap["integration_overview"]["integrations"] if r["domain"] != "unifi"
+        ]
+        pusher._collector = AsyncMock(return_value=snap)
+        for expected in ([0.0], []):
+            observe.requests.clear()
+            clock.now += 60
+            await pusher.async_push_once()
+            metrics = next(r for r in observe.requests if r["path"] == "/v1/metrics")
+            assert errors_of(metrics, "unifi") == expected
     finally:
         pusher.async_stop()
 
@@ -667,8 +778,31 @@ async def test_redirects_are_not_followed(hass, entry, observe) -> None:
 # --------------------------------------------------------------------------- bounded queue
 
 
+def _new_record_collector():
+    """A collector whose snapshot carries one crash record that was never seen before.
+
+    Every cycle then queues a logs payload, which cannot be merged the way metrics can, so
+    the queue really reaches its payload bound.
+    """
+    counter = {"n": 0}
+
+    async def collect() -> dict[str, Any]:
+        counter["n"] += 1
+        snapshot = _snapshot()
+        snapshot["crash_bundles"] = [
+            {
+                "id": f"crash-new-{counter['n']}",
+                "ts": "2026-09-19T03:15:00+00:00",
+                "classification": "silent_stop",
+            }
+        ]
+        return snapshot
+
+    return collect
+
+
 async def test_queue_is_bounded_drops_oldest_and_counts(hass, entry, observe, caplog) -> None:
-    pusher, clock = await _pusher(hass, entry, observe.url)
+    pusher, clock = await _pusher(hass, entry, observe.url, collect=_new_record_collector())
     try:
         observe.script = [(503, {"Retry-After": "3600"}, "")]
         await pusher.async_push_once()
@@ -691,19 +825,25 @@ async def test_queue_is_bounded_drops_oldest_and_counts(hass, entry, observe, ca
 
 
 async def test_queue_overflow_keeps_the_newest(hass, entry, observe) -> None:
-    pusher, _ = await _pusher(hass, entry, observe.url)
+    pusher, _ = await _pusher(hass, entry, observe.url, collect=_new_record_collector())
     try:
         observe.script = [(503, {"Retry-After": "3600"}, "")]
         await pusher.async_push_once()
         for _ in range(op.MAX_QUEUE + 5):
             await pusher.async_push_once()
-        before = [p.idempotency_key for p in pusher._queue]
+        def logs() -> list[str]:
+            return [p.idempotency_key for p in pusher._queue if p.signal == "logs"]
+
+        before = logs()
         await pusher.async_push_once()
-        after = [p.idempotency_key for p in pusher._queue]
+        after = logs()
         added = [k for k in after if k not in before]
-        # Oldest out, newest in: the survivors are the tail of everything queued so far.
-        assert after == (before + added)[-op.MAX_QUEUE :]
-        assert len(added) >= 1
+        # Oldest out, newest in: the logs payloads, which are never merged, keep their order and
+        # the survivors are the tail of everything queued so far.
+        assert len(added) == 1
+        assert after == (before + added)[-len(after) :]
+        assert after[-1] == added[0]
+        assert len(pusher._queue) <= op.MAX_QUEUE
     finally:
         pusher.async_stop()
 
@@ -816,6 +956,14 @@ async def test_collector_builds_a_snapshot_the_mapper_accepts(hass, entry) -> No
     assert otlp_mapper.has_points(metrics)
 
 
+def _wd_clock(runtime, clock):
+    """Make the watchdog read the test clock, so ages are controlled."""
+    return patch(
+        "custom_components.ha_soc.resource_watchdog.time",
+        SimpleNamespace(monotonic=clock),
+    )
+
+
 async def test_collector_reuses_a_fresh_watchdog_sample(hass, entry) -> None:
     runtime = entry.runtime_data
     clock = Clock()
@@ -830,21 +978,32 @@ async def test_collector_reuses_a_fresh_watchdog_sample(hass, entry) -> None:
         crash_forensics=runtime.crash_forensics,
         clock=clock,
     )
-    with patch("custom_components.ha_soc.containers.async_container_resources") as fresh:
+    gap = runtime.watchdog.sample_gap()
+    with (
+        _wd_clock(runtime, clock),
+        patch("custom_components.ha_soc.resource_watchdog.async_container_resources") as fresh,
+    ):
         assert (await collector.async_collect())["containers"] is sample
         fresh.assert_not_called()
-        clock.now += op.WATCHDOG_SAMPLE_MAX_AGE_SECONDS
+        clock.now += gap
         fresh.return_value = {"available": False}
         assert "containers" not in await collector.async_collect()
         fresh.assert_called_once()
 
 
-async def test_watchdog_off_push_fetches_at_most_once_per_watchdog_interval(hass, entry) -> None:
-    """Audit push-polls-supervisor-when-watchdog-off: 100 add-ons, watchdog off."""
+async def test_watchdog_off_push_fetches_at_most_once_per_three_minutes(hass, entry) -> None:
+    """Audit push-polls-supervisor-when-watchdog-off: 100 add-ons, watchdog off.
+
+    The push shares the watchdog's sample, and the sample is taken no more often than
+    every STATS_MIN_INTERVAL_SECONDS while the watchdog is off.
+    """
+    from custom_components.ha_soc.resource_watchdog import STATS_MIN_INTERVAL_SECONDS
+
     runtime = entry.runtime_data
     clock = Clock()
     runtime.watchdog.last_overview = None
     runtime.watchdog.last_overview_at = None
+    runtime.store.data["resource_watchdog"]["enabled"] = False
     runtime.store.data["resource_watchdog"]["interval_seconds"] = 60
     collector = op.SnapshotCollector(
         hass,
@@ -855,14 +1014,18 @@ async def test_watchdog_off_push_fetches_at_most_once_per_watchdog_interval(hass
         clock=clock,
     )
     sample = {"available": True, "containers": [], "reason": None, "truncated": 0}
-    with patch(
-        "custom_components.ha_soc.containers.async_container_resources", return_value=sample
-    ) as fresh:
+    with (
+        _wd_clock(runtime, clock),
+        patch(
+            "custom_components.ha_soc.resource_watchdog.async_container_resources",
+            return_value=sample,
+        ) as fresh,
+    ):
         for _ in range(5):
             assert (await collector.async_collect())["containers"] is sample
             clock.now += 10
         assert fresh.call_count == 1
-        clock.now += 60
+        clock.now += STATS_MIN_INTERVAL_SECONDS
         await collector.async_collect()
         assert fresh.call_count == 2
 
@@ -892,7 +1055,7 @@ async def test_watchdog_off_100_add_ons_call_count_is_bounded(hass, entry) -> No
     )
     with (
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
-        patch("homeassistant.components.hassio.get_supervisor_info", return_value=info),
+        patch("homeassistant.components.hassio.get_addons_list", return_value=info["addons"]),
     ):
         for _ in range(3):
             snap = await collector.async_collect()
@@ -921,3 +1084,18 @@ async def test_collector_reports_backup_state(hass, entry) -> None:
     assert collector._backup()[0]["id"] == finding_id
     runtime.store.data["misconfig_findings"][finding_id]["status"] = "dismissed"
     assert collector._backup()[0] is None
+
+
+async def test_collector_reports_an_unreadable_backup_store(hass, entry) -> None:
+    runtime = entry.runtime_data
+    collector = op.SnapshotCollector(
+        hass,
+        runtime.store,
+        health=runtime.health,
+        watchdog=runtime.watchdog,
+        crash_forensics=runtime.crash_forensics,
+    )
+    runtime.health.backup_unreadable = "the backup store could not be read"
+    with patch.object(collector, "_containers", AsyncMock(return_value=None)):
+        snapshot = await collector.async_collect()
+    assert snapshot["backup_unreadable"] == "the backup store could not be read"

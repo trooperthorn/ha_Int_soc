@@ -90,3 +90,11 @@ def test_view_visibility_message_names_yaml_mode() -> None:
     assert "visible:" in text
     assert view_visibility_error_message(None) == "Could not update view visibility"
     assert view_visibility_error_message("no_such_reason") == "Could not update view visibility"
+
+
+async def test_matrix_registers_no_listeners(hass: HomeAssistant, matrix: PermissionsMatrix) -> None:
+    """The lovelace_updated and dashboards-collection listeners only logged at
+    debug level and are gone; the matrix has nothing to start or stop."""
+    assert not hasattr(matrix, "async_start")
+    assert not hasattr(matrix, "async_stop")
+    assert hass.bus.async_listeners().get("lovelace_updated", 0) == 0

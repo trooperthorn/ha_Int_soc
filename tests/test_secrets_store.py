@@ -19,7 +19,10 @@ import logging
 
 import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from homeassistant.helpers.storage import Store
+from homeassistant.util.file import WriteError
 
 from homeassistant.core import HomeAssistant
 
@@ -248,6 +251,27 @@ async def test_migration_moves_settings_secrets_out_of_old_store(
 
     # Second run: nothing left to move.
     assert await async_migrate_legacy_secrets(secrets, store) == []
+
+
+async def test_migration_failed_save_does_not_claim_the_old_copies_were_removed(
+    hass: HomeAssistant, hass_storage: dict, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = HaSocData(hass)
+    await store.async_load()
+    store.data["settings"]["nvd_api_key"] = "OLD-NVD"
+    secrets = HaSocSecretStore(hass)
+    await secrets.async_load()
+    with (
+        patch.object(Store, "_async_write_data", side_effect=WriteError("disk full")),
+        caplog.at_level(logging.INFO, logger="custom_components.ha_soc.secrets_store"),
+    ):
+        # The secret store write fails too; only the store file matters here.
+        with patch.object(secrets, "async_set", new=AsyncMock()):
+            moved = await async_migrate_legacy_secrets(secrets, store)
+    assert moved == ["nvd_api_key"]
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("could not remove the old secret copies" in m for m in messages)
+    assert not any("removed the old copies" in m for m in messages)
 
 
 async def test_migration_moves_firewall_pairing_secret(

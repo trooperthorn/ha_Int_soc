@@ -4,10 +4,12 @@ Covers the cross-cutting issue types no single module owns.
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import timedelta
+from typing import Any
 
 import homeassistant.helpers.issue_registry as ir
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 import homeassistant.util.dt as dt_util
 
 # The constant's home differs across core layouts; the literal fallback keeps the comparison honest.
@@ -27,6 +29,17 @@ _STALE_TOKEN_PREFIX = "stale_access_token_"
 
 # Matches Spook's long-lived-access-token staleness threshold.
 STALE_TOKEN_UNUSED_DAYS = 180
+
+# One fixed issue id for every connection that has certificate checking turned off.
+TLS_VERIFY_DISABLED_ISSUE_ID = "tls_verification_disabled"
+
+# (host key, verify key, label) of the direct connections whose certificate is checked.
+_TLS_CONNECTIONS = (
+    ("unifi_network_host", "unifi_network_verify_ssl", "UniFi Network"),
+    ("unifi_protect_host", "unifi_protect_verify_ssl", "UniFi Protect"),
+    ("pihole_host", "pihole_verify_ssl", "Pi-hole"),
+    ("technitium_host", "technitium_verify_ssl", "Technitium"),
+)
 
 # One fixed issue id; a second reset refreshes it with the newer numbers.
 AUDIT_CHAIN_RESET_ISSUE_ID = "audit_chain_reset"
@@ -52,6 +65,35 @@ def async_create_audit_chain_reset_issue(
             # "none" reads better than 0 for a missing head file.
             "disk_seq": str(disk_seq) if disk_seq is not None else "none",
         },
+    )
+
+
+@callback
+def async_sync_tls_verify_issue(hass: HomeAssistant, settings: Mapping[str, Any]) -> None:
+    """Keep one Repairs issue while a configured connection skips certificate checks.
+
+    A connection counts when it has a host and its verify flag is off: an
+    install from before verification became the default keeps its old
+    setting, and an owner can still switch it off on purpose. The issue
+    names the connections, is deleted once none is left, and can be
+    ignored from the Repairs page.
+    """
+    names = [
+        label
+        for host_key, verify_key, label in _TLS_CONNECTIONS
+        if settings.get(host_key) and not settings.get(verify_key, True)
+    ]
+    if not names:
+        ir.async_delete_issue(hass, DOMAIN, TLS_VERIFY_DISABLED_ISSUE_ID)
+        return
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        TLS_VERIFY_DISABLED_ISSUE_ID,
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="tls_verification_disabled",
+        translation_placeholders={"connections": ", ".join(names)},
     )
 
 

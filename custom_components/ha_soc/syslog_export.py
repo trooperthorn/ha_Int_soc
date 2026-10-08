@@ -69,6 +69,8 @@ _CEF_EVENT_NAMES = {
     "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
     "audit_chain_reset": "Audit Chain Reset",
+    "audit_head_rebuilt": "Audit Chain Head Rebuilt",
+    "audit_tail_repaired": "Audit Torn Tail Repaired",
     "category_registry_change": "Category Registry Change",
     "config_entry_change": "Configuration Entry Change",
     "core_config_change": "Core Configuration Change",
@@ -107,6 +109,7 @@ _CEF_VERY_HIGH_9 = {
     "terminal_pairing_rejected",
 }
 _CEF_HIGH_7 = {
+    "audit_tail_repaired",
     "dashboard_file_denied",
     "ssh_host_key_changed",
     "firewall_pending_discarded",
@@ -115,6 +118,7 @@ _CEF_HIGH_7 = {
     "user_removed",
 }
 _CEF_MEDIUM_5 = {
+    "audit_head_rebuilt",
     "dashboard_file_write",
     "ssh_device_command",
     "ssh_key_change",
@@ -161,7 +165,12 @@ def _severity(record: dict[str, Any]) -> int:
         "external_audit_rejected",
     }:
         return 3  # error
-    if category in {"login_fail", "user_removed", "user_deactivated"}:
+    if category in {
+        "login_fail",
+        "user_removed",
+        "user_deactivated",
+        "audit_tail_repaired",
+    }:
         return 4  # warning
     if category.endswith("_change") or category == "soc_config_change":
         return 5  # notice
@@ -459,6 +468,19 @@ def frame_rfc6587(message: bytes) -> bytes:
     return str(len(message)).encode("ascii") + b" " + message
 
 
+def _build_ssl_context(verify: bool) -> ssl.SSLContext:
+    """Build a TLS client context. Blocking: loads the CA bundle from disk."""
+    if verify:
+        return ssl.create_default_context()
+    # Explicit compatibility mode for today's self-signed certificates. The
+    # UI labels this unverified and TLS verification remains the secure
+    # default.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE  # nosec B323
+    return context
+
+
 class SyslogExporter:
     """Lifecycle-managed, bounded Syslog delivery worker."""
 
@@ -476,6 +498,9 @@ class SyslogExporter:
         self._task: asyncio.Task[None] | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._udp_transport: asyncio.DatagramTransport | None = None
+        # TLS client contexts keyed by "verify". Building one loads the CA
+        # bundle from disk, so it is built once, in the executor.
+        self._ssl_contexts: dict[bool, ssl.SSLContext] = {}
         self._sent = 0
         self._dropped = 0
         self._last_sent_at: str | None = None
@@ -639,16 +664,9 @@ class SyslogExporter:
                 verify = bool(
                     settings.get(CONF_SYSLOG_TLS_VERIFY, DEFAULT_SYSLOG_TLS_VERIFY)
                 )
+                ssl_context = await self._async_ssl_context(verify)
                 if verify:
-                    ssl_context = ssl.create_default_context()
                     server_hostname = host
-                else:
-                    # Explicit compatibility mode for today's self-signed
-                    # certificates. The UI labels this unverified and TLS
-                    # verification remains the secure default.
-                    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE  # nosec B323
             _reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     host,
@@ -660,6 +678,14 @@ class SyslogExporter:
             )
         self._writer.write(frame_rfc6587(message))
         await asyncio.wait_for(self._writer.drain(), timeout=_CONNECT_TIMEOUT)
+
+    async def _async_ssl_context(self, verify: bool) -> ssl.SSLContext:
+        """The TLS client context for this verification mode, built once."""
+        context = self._ssl_contexts.get(verify)
+        if context is None:
+            context = await self.hass.async_add_executor_job(_build_ssl_context, verify)
+            self._ssl_contexts[verify] = context
+        return context
 
     async def _async_close_connection(self) -> None:
         if self._udp_transport is not None:

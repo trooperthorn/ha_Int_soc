@@ -22,7 +22,9 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets as secrets_module
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
@@ -35,6 +37,7 @@ from homeassistant.helpers.hassio import is_hassio
 import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
+from .containers import installed_addons
 from .probe import async_supervisor_call_rejection
 from .secrets_store import TERMINAL_SECRET_KEY, HaSocSecretStore
 from .store import HaSocData
@@ -64,6 +67,12 @@ AUDIT_CATEGORY_FORGET_PAIRING = "terminal_forget_pairing"
 AUDIT_CATEGORY_RUN = "terminal_run"
 AUDIT_CATEGORY_EXPORT = "terminal_export"
 
+# Where an audited hash came from. Run and transcript hashes are computed
+# here over the bytes Core received; an export event's hash is whatever the
+# browser said it hashed, which Core cannot check.
+HASH_SOURCE_SERVER = "server"
+HASH_SOURCE_CLIENT = "client_asserted"
+
 EXPORT_KINDS = (
     "copy_screen",
     "copy_all",
@@ -92,6 +101,7 @@ TARGET_SELF = "self"
 # Coded refusals the panel branches on.
 ERR_NOT_SUPERVISOR = "not_supervisor"
 ERR_NOT_INSTALLED = "app_not_installed"
+ERR_SUPERVISOR_NOT_READY = "supervisor_not_ready"
 ERR_NOT_RUNNING = "app_not_running"
 ERR_NOT_PAIRED = "app_not_paired"
 ERR_LIMIT_USER = "session_limit_user"
@@ -101,6 +111,13 @@ ERR_UNKNOWN_SESSION = "unknown_session"
 ERR_CONNECT = "connect_failed"
 ERR_TERMINAL_BUSY = "terminal_busy"
 ERR_TRANSCRIPT_HASH_MISMATCH = "transcript_hash_mismatch"
+ERR_UNAUTHORIZED = "unauthorized"
+
+# Session owners are remembered after a session ends so a transcript can be
+# tied to the user who recorded it. Bounded; the oldest are forgotten first.
+MAX_REMEMBERED_OWNERS = 2000
+
+REDACTED = "[redacted]"
 
 # ttyd's wire protocol: one command byte then the payload, in both directions.
 _TTYD_INPUT = b"0"
@@ -115,6 +132,209 @@ PAIR_SCHEMA = vol.Schema(
         vol.Optional("version"): str,
     }
 )
+
+
+_SECRET_WORDS = (
+    "pass",
+    "passwd",
+    "password",
+    "pwd",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "api-key",
+    "auth(?!or(?!iz))",
+    "credential",
+    "key",
+    "bearer",
+)
+_SECRET_NAME = r"[A-Za-z0-9_.-]*(?:" + "|".join(w if "(" in w else re.escape(w) for w in _SECRET_WORDS) + r")[A-Za-z0-9_.-]*"
+_VALUE = r"\"[^\"]*\"|'[^']*'|[^\s;&|)'\"]*"
+# NAME=value at the start of a word: an environment assignment, or a long
+# option with an attached value (--password=x).
+_RE_ASSIGN = re.compile(
+    r"(?P<prefix>^|(?<=[\s;&|(?,'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
+    re.IGNORECASE,
+)
+# 'password=a b' in quotes: the value runs to the closing quote, a query &,
+# a statement ; or a newline. Stopping at ; and newline keeps statements after
+# the assignment visible when the quote holds code for another interpreter
+# (mysql -e, sqlite3, perl -e, a here-string), so a leading token=1; cannot
+# hide what follows. A password that itself contains ; is then only partly
+# masked, which is the lesser harm for an audit record.
+_RE_QUOTED_ASSIGN = re.compile(
+    r"(?<=[\"'])(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>[^\"'&;\n]*)", re.IGNORECASE
+)
+# A quote that opens a command string for another shell. Inside it an
+# assignment is an environment prefix, not a form body, so the value stops at
+# whitespace and the commands after it stay visible in the audit record.
+_RE_SHELL_WRAPPER = re.compile(r"(?:\b(?:ba|z|da|a|k|c|tc)?sh\b|\beval\b|\bssh\b|\bsu\b)[^\n'\"]*$|\s-[A-Za-z]*c\s*$")
+
+
+def _opens_quote(text: str, idx: int) -> bool:
+    """True when the quote character at ``idx`` opens a quoted string."""
+    state = ""
+    i = 0
+    while i < idx:
+        ch = text[i]
+        if state == "'":
+            if ch == "'":
+                state = ""
+        elif ch == "\\":
+            i += 1
+        elif state == '"':
+            if ch == '"':
+                state = ""
+        elif ch in "\"'":
+            state = ch
+        i += 1
+    return state == ""
+
+
+def _redact_quoted_assign(m: re.Match[str]) -> str:
+    """Mask a quoted ``password=value``; leave command strings to the word rule."""
+    text = m.string
+    quote_at = m.start() - 1
+    if not _opens_quote(text, quote_at):
+        return m[0]
+    line_start = text.rfind("\n", 0, quote_at) + 1
+    if _RE_SHELL_WRAPPER.search(text[line_start:quote_at]):
+        return m[0]
+    return f"{m['dashes']}{m['name']}={REDACTED}"
+
+
+# --password value, --token value (a separate word).
+_RE_LONG_OPTION = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))--" + _SECRET_NAME + r")(?<!-stdin)(?<!-file)(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)",
+    re.IGNORECASE,
+)
+# mysql-style -pSECRET with no space. A bare "-p" followed by a space is left
+# alone: mkdir -p and cp -p are far more common than a separated password.
+_RE_SHORT_P = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))-p)(?!ass(?:in|out)?\s)(?P<value>\"[^\"]*\"|'[^']*'|[^\s=-][^\s;&|)]*)"
+)
+# curl -u user:pass and --user user:pass
+_RE_USER_PASS = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))(?:-u|--user|--proxy-user))(?P<sep>\s*)(?P<user>[^\s:;&|)]+):(?P<value>[^\s;&|)]+)"
+)
+# scheme://user:pass@host
+_RE_URL_CRED = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*)(?::(?P<value>[^\s/?#]+))?@"
+)
+# A user name with no password that is a plain account, not a token.
+_PLAIN_URL_USERS = frozenset({"git", "ssh", "hg", "svn", "root", "admin"})
+# Dummy passwords that go with a token placed in the user position.
+_DUMMY_URL_PASSWORDS = frozenset({"x", "x-oauth-basic", "x-access-token", "oauth", "oauth2", "token"})
+
+
+def _redact_url_userinfo(m: re.Match[str]) -> str:
+    """user:pass@ keeps the user; a lone userinfo is the credential (a token in the URL)."""
+    if m["value"] is not None:
+        if m["value"].lower() in _DUMMY_URL_PASSWORDS:
+            return f"{m['scheme']}{REDACTED}:{REDACTED}@"
+        return f"{m['scheme']}{m['user']}:{REDACTED}@"
+    if m["user"].lower() in _PLAIN_URL_USERS:
+        return m[0]
+    return f"{m['scheme']}{REDACTED}@"
+
+# Header lines that carry a credential: Authorization, Cookie, Set-Cookie and
+# any header whose name holds a credential word (X-Api-Key, PRIVATE-TOKEN,
+# X-HA-Access). Inside quotes the value runs to the closing quote, so a value
+# with spaces is fully masked; outside quotes it stops at whitespace or a shell
+# operator, so the rest of the command line stays visible in the audit record.
+_HEADER_NAME = (
+    r"(?:set-)?cookie|[A-Za-z0-9-]*(?:authorization|token|api-?key|auth(?!or(?!iz))|secret|access|password|session)[A-Za-z0-9-]*"
+)
+_HEADER_HEAD = r"(?P<head>(?:" + _HEADER_NAME + r")\s*:\s*(?:(?:bearer|basic|token)\s+)?)"
+_RE_HEADER_QUOTED = re.compile(r"(?<=[\"'])" + _HEADER_HEAD + r"(?P<value>[^\s\"'\n][^\"'\n]*)(?=[\"'])", re.IGNORECASE)
+_RE_HEADER_BARE = re.compile(r"(?<![\w/\"'-])" + _HEADER_HEAD + r"(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
+# A bearer token in any other position or header.
+_RE_BEARER = re.compile(r"(?P<head>(?<![\w-])bearer\s+)(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
+
+# A JSON body: "password": "x" or \"token\":\"x\" (the name must be quoted, so
+# an Authorization header is left to its own rule).
+_RE_JSON_FIELD = re.compile(
+    r"(?P<name>\\?\"" + _SECRET_NAME + r"\\?\")(?P<sep>\s*:\s*)(?P<value>\\\"[^\"]*?\\\"|\"(?:\\.|[^\"\\])*\"|[^\s,}\"']+)",
+    re.IGNORECASE,
+)
+# The --cookie option.
+_RE_COOKIE_OPTION = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))--cookie)(?P<sep>\s+|=)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+)
+# Options whose next word is a password, tied to the command that uses them so
+# that find -P, rsync -P, ssh -N and grep -P keep their arguments: sshpass -p,
+# mosquitto_pub -P, ssh-keygen -N, docker login -p, curl -b (a cookie).
+_RE_SECRET_SHORT_WORD = re.compile(
+    r"(?P<opt>\bsshpass\s+-p"
+    r"|\bmosquitto_(?:pub|sub|rr)\b[^\n;&|]*?\s-P"
+    r"|\bssh-keygen\b[^\n;&|]*?\s-N"
+    r"|\bdocker\s+login\b[^\n;&|]*?\s-p"
+    r"|\bcurl\b[^\n;&|]*?\s-b"
+    r"|\bredis-cli\b[^\n;&|]*?\s-a)"
+    r"(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)"
+)
+# smbclient -U user%password
+_RE_SMB_USER = re.compile(
+    r"(?P<head>\b(?:smbclient|rpcclient|smbget|smbtree)\b[^\n;&|]*?\s-U\s*[^\s%;&|]+%)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+)
+# openssl -pass pass:x, -passin pass:x, -passout pass:x
+_RE_OPENSSL_PASS = re.compile(r"(?P<head>(?:^|(?<=\s))-pass(?:in|out)?\s+[\"']?pass:)(?P<value>[^\s;&|)\"']+)")
+# htpasswd -b [-c] file user password
+_RE_HTPASSWD = re.compile(
+    r"(?P<head>\bhtpasswd[ \t]+(?:-[A-Za-z]+[ \t]+)*?-[A-Za-z]*b[A-Za-z]*[ \t]+(?:-[A-Za-z]+[ \t]+)*\S+[ \t]+\S+[ \t]+)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+)
+# echo SECRET | docker login --password-stdin, or | sudo -S: the secret is the
+# piped text. The tail may cross pipes but not ; or &, so an earlier echo
+# does not claim a login further along the line.
+_RE_PIPED_SECRET = re.compile(
+    r"(?P<head>\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*"
+    r"(?:(?:\"[^\"]*%[^\"]*\"|'[^']*%[^']*'|[^\s;&|)]*%[^\s;&|)]*)\s+)?)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+    r"(?P<tail>\s*\|[^\n;&]*?(?:--[A-Za-z-]*(?:password|token|secret)[A-Za-z-]*-stdin|\bsudo\b[^\n;&|]*?\s-[A-Za-z]*S\b))",
+    re.IGNORECASE,
+)
+
+
+
+def redact_command(command: str) -> str:
+    """The command with credential-looking arguments and assignments masked.
+
+    The audited command is the evidence of what a user ran, but a password
+    typed on a command line must not become a second copy of the password in
+    the audit log. Covers NAME=value where the name looks like a credential,
+    --password value and --token=value, mysql-style -pSECRET, curl -u
+    user:pass, user:pass@host in URLs, Authorization and Cookie headers, JSON password
+    fields, secrets inside quoted query strings and form bodies, sshpass,
+    openssl -pass, htpasswd -b, -P and -N options, and text piped to a
+    ``--password-stdin`` login.
+    """
+    out = _RE_URL_CRED.sub(_redact_url_userinfo, command)
+    out = _RE_USER_PASS.sub(lambda m: f"{m['opt']}{m['sep']}{m['user']}:{REDACTED}", out)
+    out = _RE_HEADER_QUOTED.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_HEADER_BARE.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_BEARER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_PIPED_SECRET.sub(lambda m: f"{m['head']}{REDACTED}{m['tail']}", out)
+    out = _RE_COOKIE_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_JSON_FIELD.sub(lambda m: f"{m['name']}{m['sep']}{REDACTED}", out)
+    out = _RE_SMB_USER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_OPENSSL_PASS.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_HTPASSWD.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_SECRET_SHORT_WORD.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_QUOTED_ASSIGN.sub(_redact_quoted_assign, out)
+    out = _RE_ASSIGN.sub(lambda m: f"{m['prefix']}{m['dashes']}{m['name']}={REDACTED}", out)
+    out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)
+    return out
+
+
+def _basic_auth_headers(secret: str) -> dict[str, str]:
+    """The Authorization header for ttyd and the run/transcript listener.
+
+    ``aiohttp.BasicAuth`` is deprecated; ``encode_basic_auth`` builds the
+    same header value without the deprecation warning.
+    """
+    return {"Authorization": aiohttp.encode_basic_auth(TTYD_USER, secret)}
 
 
 class TerminalError(Exception):
@@ -135,17 +355,24 @@ def _installed_addon(hass: HomeAssistant) -> dict[str, Any] | None:
     The slug the Supervisor assigns is ``{repository}_{slug}``; matching on
     the suffix avoids knowing the repository hash.
     """
-    try:
-        from homeassistant.components.hassio import get_supervisor_info
-
-        info = get_supervisor_info(hass) or {}
-    except Exception:  # noqa: BLE001 - not a Supervisor install, or hassio not set up yet
-        return None
-    for addon in info.get("addons") or []:
+    for addon in installed_addons(hass) or []:
         slug = str(addon.get("slug") or "")
         if slug == APP_SLUG or slug.endswith(f"_{APP_SLUG}"):
             return dict(addon)
     return None
+
+
+def _missing_app_error(hass: HomeAssistant) -> TerminalError:
+    """The refusal for an app that is not in the cached list.
+
+    While the Supervisor data has not loaded the list is unknown, not empty,
+    so the refusal says that instead of claiming the app is not installed.
+    """
+    if installed_addons(hass) is None:
+        return TerminalError(
+            ERR_SUPERVISOR_NOT_READY, "The Supervisor data has not loaded yet; try again shortly"
+        )
+    return TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
 
 
 async def _addon_info(hass: HomeAssistant, slug: str) -> dict[str, Any] | None:
@@ -167,6 +394,8 @@ async def async_terminal_status(hass: HomeAssistant, secrets: HaSocSecretStore, 
     status: dict[str, Any] = {
         "supervisor": is_hassio(hass),
         "installed": False,
+        # False while the Supervisor data is not loaded: "installed" is then unknown, not absent.
+        "supervisor_ready": installed_addons(hass) is not None,
         "running": False,
         "paired": bool(await secrets.async_get(TERMINAL_SECRET_KEY)),
         "version": None,
@@ -276,7 +505,7 @@ async def async_app_control(hass: HomeAssistant, action: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - the cached add-on list may not exist yet
         addon = None
     if addon is None:
-        return {"ok": False, "reason": ERR_NOT_INSTALLED}
+        return {"ok": False, "reason": _missing_app_error(hass).code}
     try:
         from homeassistant.components.hassio import get_supervisor_client
     except Exception:  # noqa: BLE001 - hassio internals not guaranteed stable
@@ -317,7 +546,14 @@ class TerminalSession:
     closed: bool = False
     close_reason: str | None = None
     title: str | None = None
+    # Whether the app confirmed it is recording this session. False when the
+    # app's options could not be read as well as when recording is off.
+    recorded: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
+
+
+# Longer than the browser-side close needs; shorter than aiohttp's 10 second default.
+WS_CLOSE_TIMEOUT = 2.0
 
 
 class TerminalSessions:
@@ -332,6 +568,11 @@ class TerminalSessions:
         # self.sessions); this is the only state that stops a second run
         # while a user's first one is still in flight.
         self._running_users: set[str] = set()
+        # Opens in flight. A slot is reserved here before the first await so
+        # concurrent opens count against the same limits as finished ones.
+        self._opening: dict[object, str] = {}
+        # session_id -> owning user id, kept after the session ends.
+        self._owners: OrderedDict[str, str] = OrderedDict()
 
     def _for_user(self, user_id: str) -> list[TerminalSession]:
         return [s for s in self.sessions.values() if s.user_id == user_id]
@@ -342,7 +583,7 @@ class TerminalSessions:
             raise TerminalError(ERR_NOT_SUPERVISOR, "The terminal needs a Supervisor-based install")
         addon = _installed_addon(self._hass)
         if addon is None:
-            raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+            raise _missing_app_error(self._hass)
         info = await _addon_info(self._hass, str(addon["slug"]))
         if not info or info.get("state") != "started":
             raise TerminalError(ERR_NOT_RUNNING, "The HA SOC Terminal app is not running; start it first")
@@ -366,10 +607,14 @@ class TerminalSessions:
         """
         if user_id in self._running_users:
             raise TerminalError(ERR_TERMINAL_BUSY, "A command is already running for you; wait for it to finish")
-        host, secret = await self._target_host_and_secret()
+        # Reserve the slot before the first await: the lookup below yields, and
+        # a second run arriving meanwhile must see this one.
         self._running_users.add(user_id)
         started = dt_util.utcnow()
+        data: Any = None
+        outcome = "error"
         try:
+            host, secret = await self._target_host_and_secret()
             session = async_get_clientsession(self._hass)
             url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/run"
             try:
@@ -377,36 +622,89 @@ class TerminalSessions:
                     async with session.post(
                         url,
                         json={"command": command, "timeout_seconds": timeout_seconds},
-                        auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                        headers=_basic_auth_headers(secret),
                     ) as resp:
                         data = await resp.json(content_type=None)
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            except asyncio.TimeoutError as err:
+                outcome = "timeout"
                 raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+            except (aiohttp.ClientError, OSError) as err:
+                outcome = "unreachable"
+                raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+            except ValueError as err:
+                # Not JSON (a proxy error page, a truncated body). The command
+                # may have run, so it is audited as failed, with a fixed message
+                # rather than the parser's text, which can quote the body.
+                outcome = "failed"
+                raise TerminalError(
+                    ERR_CONNECT, "The Terminal app returned a response that could not be read"
+                ) from err
+            if not isinstance(data, dict) or "error" in data:
+                outcome = "refused"
+                message = data.get("error") if isinstance(data, dict) else "malformed response"
+                raise TerminalError(ERR_CONNECT, f"The Terminal app refused the command: {message}")
+            outcome = "completed"
+        except TerminalError as err:
+            if outcome != "error":
+                # The request left Core, so the command may have run.
+                self._audit_run(user_id, command, started, None, outcome, err.message)
+            # outcome "error": refused before anything was sent (app stopped,
+            # not paired), so there is nothing to audit.
+            raise
         finally:
             self._running_users.discard(user_id)
-        if not isinstance(data, dict) or "error" in data:
-            message = data.get("error") if isinstance(data, dict) else "malformed response"
-            raise TerminalError(ERR_CONNECT, f"The Terminal app refused the command: {message}")
-        duration = int((dt_util.utcnow() - started).total_seconds())
-        stdout = str(data.get("stdout", ""))
-        output_bytes = len(stdout.encode("utf-8"))
-        digest = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
-        self._audit.async_log(
-            AUDIT_CATEGORY_RUN,
-            user_id=user_id,
-            detail={
-                "command": command,
-                "exit_code": data.get("exit_code"),
-                "bytes": output_bytes,
-                "sha256": digest,
-                "duration_seconds": duration,
-            },
-            flush=True,
-        )
+        self._audit_run(user_id, command, started, data, outcome, None)
         return data
 
-    async def async_transcript(self, *, user_id: str, session_id: str) -> dict[str, Any]:
-        """GET a recorded transcript from the run/transcript listener, hash-verified."""
+    def _audit_run(
+        self,
+        user_id: str,
+        command: str,
+        started: datetime,
+        data: dict[str, Any] | None,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        """One terminal_run record per attempt that reached the app, secrets masked."""
+        duration = int((dt_util.utcnow() - started).total_seconds())
+        detail: dict[str, Any] = {
+            "command": redact_command(command),
+            "outcome": outcome,
+            "duration_seconds": duration,
+        }
+        if data is not None:
+            raw = str(data.get("stdout", "")).encode("utf-8")
+            detail["exit_code"] = data.get("exit_code")
+            detail["bytes"] = len(raw)
+            # Computed here over the exact bytes received; the app's own hash
+            # of the file it wrote is kept beside it so a difference shows.
+            detail["sha256"] = hashlib.sha256(raw).hexdigest()
+            detail["hash_source"] = HASH_SOURCE_SERVER
+            app_sha256 = data.get("sha256")
+            if isinstance(app_sha256, str) and app_sha256:
+                detail["app_sha256"] = app_sha256
+                detail["hash_matches_app"] = hmac.compare_digest(app_sha256.lower(), detail["sha256"])
+        else:
+            # The command may have executed even though no answer came back.
+            detail["exit_code"] = None
+            detail["error"] = error
+        self._audit.async_log(AUDIT_CATEGORY_RUN, user_id=user_id, detail=detail, flush=True)
+
+    async def async_transcript(
+        self, *, user_id: str, session_id: str, allow_any: bool = False
+    ) -> dict[str, Any]:
+        """GET a recorded transcript from the run/transcript listener, hash-verified.
+
+        Only the session's owner, or a caller with ``allow_any`` (the HA
+        owner), may download it. A session this process has no owner record
+        for (opened before a restart, or never opened here) is available to
+        ``allow_any`` callers only.
+        """
+        if not allow_any and self._owners.get(session_id) != user_id:
+            raise TerminalError(
+                ERR_UNAUTHORIZED,
+                "Only the session's user or the Home Assistant owner can download this transcript",
+            )
         host, secret = await self._target_host_and_secret()
         session = async_get_clientsession(self._hass)
         url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/transcript"
@@ -415,7 +713,7 @@ class TerminalSessions:
                 async with session.get(
                     url,
                     params={"id": session_id},
-                    auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                    headers=_basic_auth_headers(secret),
                 ) as resp:
                     if resp.status == 404:
                         raise TerminalError(ERR_UNKNOWN_SESSION, "No such transcript")
@@ -432,7 +730,13 @@ class TerminalSessions:
         self._audit.async_log(
             AUDIT_CATEGORY_EXPORT,
             user_id=user_id,
-            detail={"kind": "download_transcript", "session_id": session_id, "bytes": byte_count, "sha256": digest},
+            detail={
+                "kind": "download_transcript",
+                "session_id": session_id,
+                "bytes": byte_count,
+                "sha256": digest,
+                "hash_source": HASH_SOURCE_SERVER,
+            },
             flush=True,
         )
         return {"session_id": session_id, "text": text, "sha256": digest, "bytes": byte_count}
@@ -450,14 +754,32 @@ class TerminalSessions:
             raise TerminalError(ERR_UNKNOWN_TARGET, f"Unknown terminal target {target!r}")
         if not is_hassio(self._hass):
             raise TerminalError(ERR_NOT_SUPERVISOR, "The terminal needs a Supervisor-based install")
-        if len(self._for_user(user_id)) >= MAX_SESSIONS_PER_USER:
+        # Count sessions and opens in flight, then reserve this open's slot
+        # before any await, so concurrent opens cannot all pass the check.
+        pending = list(self._opening.values())
+        if len(self._for_user(user_id)) + pending.count(user_id) >= MAX_SESSIONS_PER_USER:
             raise TerminalError(ERR_LIMIT_USER, "You already have a terminal session open; close it first")
-        if len(self.sessions) >= MAX_SESSIONS_TOTAL:
+        if len(self.sessions) + len(pending) >= MAX_SESSIONS_TOTAL:
             raise TerminalError(ERR_LIMIT_TOTAL, f"{MAX_SESSIONS_TOTAL} sessions are already open on this install")
+        reservation = object()
+        self._opening[reservation] = user_id
+        try:
+            return await self._open_reserved(user_id, target, cols, rows, send)
+        finally:
+            self._opening.pop(reservation, None)
 
+    async def _open_reserved(
+        self,
+        user_id: str,
+        target: str,
+        cols: int,
+        rows: int,
+        send: Callable[[dict[str, Any]], None],
+    ) -> TerminalSession:
+        """The rest of an open, run while its slot is held in ``_opening``."""
         addon = _installed_addon(self._hass)
         if addon is None:
-            raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+            raise _missing_app_error(self._hass)
         info = await _addon_info(self._hass, str(addon["slug"]))
         if not info or info.get("state") != "started":
             raise TerminalError(ERR_NOT_RUNNING, "The HA SOC Terminal app is not running; start it first")
@@ -470,6 +792,10 @@ class TerminalSessions:
                 ERR_NOT_PAIRED,
                 "The Terminal app has not paired with HA SOC yet; it does so within a minute of starting",
             )
+        # Only a readable option that says true counts as recorded; the panel
+        # must never claim a recording the app did not confirm.
+        options = info.get("options") if isinstance(info.get("options"), dict) else {}
+        recorded = options.get("session_recording") is True
 
         ws = await self._connect(host, secret, cols, rows)
         session = TerminalSession(
@@ -480,15 +806,26 @@ class TerminalSessions:
             started=dt_util.utcnow(),
             send=send,
             ws=ws,
+            recorded=recorded,
         )
         self.sessions[session.session_id] = session
+        self._owners[session.session_id] = user_id
+        while len(self._owners) > MAX_REMEMBERED_OWNERS:
+            self._owners.popitem(last=False)
         session.reader = self._hass.async_create_background_task(
             self._read(session), f"ha_soc terminal {session.session_id}"
         )
         self._audit.async_log(
             AUDIT_CATEGORY_OPEN,
             user_id=user_id,
-            detail={"session_id": session.session_id, "target": target, "host": host, "cols": cols, "rows": rows},
+            detail={
+                "session_id": session.session_id,
+                "target": target,
+                "host": host,
+                "cols": cols,
+                "rows": rows,
+                "recorded": recorded,
+            },
             flush=True,
         )
         return session
@@ -622,24 +959,28 @@ class TerminalSessions:
         session.close_reason = session.close_reason or reason
         self.sessions.pop(session.session_id, None)
         try:
-            await session.ws.close()
-        except Exception:  # noqa: BLE001
-            pass
-        duration = int((dt_util.utcnow() - session.started).total_seconds())
-        self._audit.async_log(
-            AUDIT_CATEGORY_CLOSE,
-            user_id=session.user_id,
-            detail={
-                "session_id": session.session_id,
-                "target": session.target,
-                "host": session.host,
-                "duration_seconds": duration,
-                "bytes_in": session.bytes_in,
-                "bytes_out": session.bytes_out,
-                "reason": session.close_reason,
-            },
-            flush=True,
-        )
+            try:
+                async with asyncio.timeout(WS_CLOSE_TIMEOUT):
+                    await session.ws.close()
+            except Exception:  # noqa: BLE001 - includes the timeout; the record below still matters
+                pass
+        finally:
+            # Written even if this task is cancelled while the socket closes.
+            duration = int((dt_util.utcnow() - session.started).total_seconds())
+            self._audit.async_log(
+                AUDIT_CATEGORY_CLOSE,
+                user_id=session.user_id,
+                detail={
+                    "session_id": session.session_id,
+                    "target": session.target,
+                    "host": session.host,
+                    "duration_seconds": duration,
+                    "bytes_in": session.bytes_in,
+                    "bytes_out": session.bytes_out,
+                    "reason": session.close_reason,
+                },
+                flush=True,
+            )
         try:
             session.send({"kind": "closed", "reason": session.close_reason, "duration_seconds": duration})
         except Exception:  # noqa: BLE001 - the browser may already be gone

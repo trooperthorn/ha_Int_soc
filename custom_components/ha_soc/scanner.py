@@ -730,13 +730,33 @@ def _finding_from_hit(hit: dict[str, Any], rel_path: str, domain: str, now: str)
     return finding
 
 
-def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
-    """Run every rule against one directory tree and report both the
-    findings and the coverage actually achieved. Blocking (file I/O and
-    ``ast.parse``): always run via an executor job."""
+class _ScanPlan:
+    """Which files one scan will read, decided before any file is opened."""
+
+    __slots__ = ("all_files", "selected_files", "skipped_too_large", "skipped_over_cap")
+
+    def __init__(
+        self,
+        all_files: list[Path],
+        selected_files: list[Path],
+        skipped_too_large: int,
+        skipped_over_cap: int,
+    ) -> None:
+        self.all_files = all_files
+        self.selected_files = selected_files
+        self.skipped_too_large = skipped_too_large
+        self.skipped_over_cap = skipped_over_cap
+
+
+# domain -> relative path -> (mtime_ns, size, hits or None when the file cannot be parsed).
+ScanCache = dict[str, dict[str, tuple[int, int, "list[dict[str, Any]] | None"]]]
+
+
+def _plan_scan(directory: Path, domain: str) -> _ScanPlan:
+    """List and size the candidate files. Blocking (directory walk and stat)."""
     all_files = sorted(directory.rglob("*.py"))
 
-    sized_files: list[Path] = []
+    sized_files: list[tuple[int, Path]] = []
     skipped_too_large = 0
     for path in all_files:
         try:
@@ -771,58 +791,117 @@ def scan_directory_report(directory: Path, domain: str) -> dict[str, Any]:
             MAX_FILES_PER_SCAN,
             domain,
         )
+    return _ScanPlan(all_files, selected_files, skipped_too_large, skipped_over_cap)
 
+
+def _scan_file(
+    path: Path,
+    directory: Path,
+    domain: str,
+    cache: ScanCache | None,
+) -> list[dict[str, Any]] | None:
+    """Rule hits for one file, or None when it cannot be scanned. Blocking.
+
+    A file whose modification time and size match the last scan reuses that scan's hits
+    and does no parsing. The cache is keyed by domain and relative path, so a replaced
+    file (new time or size) is read again.
+    """
+    rel_path = str(path.relative_to(directory))
+    domain_cache = cache.get(domain) if cache is not None else None
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    signature = (stat.st_mtime_ns, stat.st_size)
+    if domain_cache is not None:
+        cached = domain_cache.get(rel_path)
+        if cached is not None and cached[:2] == signature:
+            hits = cached[2]
+            return None if hits is None else [dict(hit) for hit in hits]
+    hits: list[dict[str, Any]] | None
+    try:
+        # The rule loop is inside the per-file try so one pathological file costs only its own coverage.
+        source = path.read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        lines = source.splitlines()
+        hits = []
+        for rule in _RULES:
+            hits.extend(rule(tree, lines))
+        for domain_rule in _DOMAIN_RULES:
+            for hit in domain_rule(tree, lines, domain):
+                _apply_allow_marker(hit, lines)
+                hits.append(hit)
+    except (SyntaxError, UnicodeDecodeError, ValueError, RecursionError) as err:
+        # Deterministic for this content, so it is remembered like a result.
+        hits = None
+        _LOGGER.debug(
+            "HA SOC scanner: skipping %s in domain %s (%s)", path, domain, err.__class__.__name__
+        )
+    except (OSError, MemoryError) as err:
+        # May pass on the next pass, so it is not remembered.
+        _LOGGER.debug(
+            "HA SOC scanner: skipping %s in domain %s (%s)", path, domain, err.__class__.__name__
+        )
+        return None
+    if cache is not None:
+        cache.setdefault(domain, {})[rel_path] = (
+            signature[0],
+            signature[1],
+            None if hits is None else [dict(hit) for hit in hits],
+        )
+    return hits
+
+
+def _build_report(
+    directory: Path,
+    domain: str,
+    plan: _ScanPlan,
+    file_hits: list[tuple[Path, list[dict[str, Any]] | None]],
+    cache: ScanCache | None,
+) -> dict[str, Any]:
+    """Turn per-file hits into findings and the coverage record. No I/O."""
     now = dt_util.utcnow().isoformat()
     findings: list[dict[str, Any]] = []
     scanned_paths: list[str] = []
     parse_failures = 0
-    for path in selected_files:
-        rel_path = str(path.relative_to(directory))
-        try:
-            # The rule loop is inside the per-file try so one pathological file costs only its own coverage.
-            source = path.read_text(encoding="utf-8")
-            tree = ast.parse(source)
-            lines = source.splitlines()
-            file_findings: list[dict[str, Any]] = []
-            for rule in _RULES:
-                for hit in rule(tree, lines):
-                    file_findings.append(_finding_from_hit(hit, rel_path, domain, now))
-            for domain_rule in _DOMAIN_RULES:
-                for hit in domain_rule(tree, lines, domain):
-                    _apply_allow_marker(hit, lines)
-                    file_findings.append(_finding_from_hit(hit, rel_path, domain, now))
-        except (
-            OSError,
-            SyntaxError,
-            UnicodeDecodeError,
-            ValueError,
-            RecursionError,
-            MemoryError,
-        ) as err:
-            # One bad file must not abort the scan; it is counted as a parse failure.
+    for path, hits in file_hits:
+        if hits is None:
             parse_failures += 1
-            _LOGGER.debug(
-                "HA SOC scanner: skipping %s in domain %s (%s)",
-                path,
-                domain,
-                err.__class__.__name__,
-            )
             continue
-        findings.extend(file_findings)
+        rel_path = str(path.relative_to(directory))
+        findings.extend(_finding_from_hit(hit, rel_path, domain, now) for hit in hits)
         scanned_paths.append(rel_path)
-
+    if cache is not None and domain in cache:
+        # Forget files that are gone or no longer selected, so the cache cannot grow.
+        keep = {str(path.relative_to(directory)) for path, _hits in file_hits}
+        cache[domain] = {rel: value for rel, value in cache[domain].items() if rel in keep}
     return {
         "findings": findings,
         "coverage": {
             "scanned_files": len(scanned_paths),
-            "skipped_oversize": skipped_too_large,
-            "skipped_over_cap": skipped_over_cap,
+            "skipped_oversize": plan.skipped_too_large,
+            "skipped_over_cap": plan.skipped_over_cap,
             "parse_failures": parse_failures,
             "scanned_at": now,
         },
         "scanned_paths": set(scanned_paths),
-        "candidate_paths": {str(path.relative_to(directory)) for path in all_files},
+        "candidate_paths": {str(path.relative_to(directory)) for path in plan.all_files},
     }
+
+
+def scan_directory_report(
+    directory: Path, domain: str, cache: ScanCache | None = None
+) -> dict[str, Any]:
+    """Run every rule against one directory tree and report both the
+    findings and the coverage actually achieved. Blocking (file I/O and
+    ``ast.parse``): always run via an executor job. The scanner itself drives
+    the same steps one file per job so the event loop is never starved; this
+    whole-tree form is for tests and the self-scan."""
+    plan = _plan_scan(directory, domain)
+    file_hits = [
+        (path, _scan_file(path, directory, domain, cache)) for path in plan.selected_files
+    ]
+    return _build_report(directory, domain, plan, file_hits, cache)
 
 
 def scan_directory(directory: Path, domain: str) -> list[dict[str, Any]]:
@@ -842,6 +921,8 @@ class IntegrationScanner:
         self.hass = hass
         self._store = store
         self._unsub_config_entry_changed: Callable[[], None] | None = None
+        # Rule hits by file signature, in memory only: the first sweep after a restart reads everything.
+        self._scan_cache: ScanCache = {}
 
     def async_start(self, hass: HomeAssistant) -> None:
         self._unsub_config_entry_changed = async_dispatcher_connect(
@@ -879,6 +960,11 @@ class IntegrationScanner:
         # resolve once the domain has no entries left at all.
         if any(e.domain == domain for e in self.hass.config_entries.async_entries(domain)):
             return
+        self._scan_cache.pop(domain, None)
+        self._resolve_domain_findings(domain, "integration_removed")
+
+    def _resolve_domain_findings(self, domain: str, reason: str) -> None:
+        """Resolve every finding of a domain that is not already settled."""
         now = dt_util.utcnow().isoformat()
         for finding_id, finding in list(self._store.data["scanner_findings"].items()):
             if finding.get("domain") != domain:
@@ -889,7 +975,7 @@ class IntegrationScanner:
                 "scanner_findings", finding_id, "resolved",
                 by_user_id=None, note=None, at=now,
             )
-            finding["resolved_reason"] = "integration_removed"
+            finding["resolved_reason"] = reason
         self._store.async_schedule_save()
 
     async def _async_scan_on_install(self, domain: str) -> None:
@@ -899,9 +985,22 @@ class IntegrationScanner:
         except Exception:  # noqa: BLE001 - a failed on-install scan must not go unlogged
             _LOGGER.exception("HA SOC scanner: on-install scan of domain %s failed", domain)
 
-    def _scan_dir(self, directory: Path, domain: str) -> dict[str, Any]:
-        """Blocking: file I/O and `ast.parse`. Always run via an executor job."""
-        return scan_directory_report(directory, domain)
+    async def _async_scan_dir(self, directory: Path, domain: str) -> dict[str, Any]:
+        """Scan one tree with one executor job per file and a yield between files.
+
+        A single job for the whole tree holds the interpreter lock in long stretches
+        of parsing and starves the event loop on a large integration; per file jobs
+        bound each stretch to one file. Unchanged files are served from the cache.
+        """
+        plan = await self.hass.async_add_executor_job(_plan_scan, directory, domain)
+        file_hits: list[tuple[Path, list[dict[str, Any]] | None]] = []
+        for path in plan.selected_files:
+            hits = await self.hass.async_add_executor_job(
+                _scan_file, path, directory, domain, self._scan_cache
+            )
+            file_hits.append((path, hits))
+            await asyncio.sleep(0)
+        return _build_report(directory, domain, plan, file_hits, self._scan_cache)
 
     def _coverage_table(self) -> dict[str, dict[str, Any]]:
         """domain -> coverage record for the domain's latest completed scan."""
@@ -916,7 +1015,14 @@ class IntegrationScanner:
 
     async def async_scan_integration(self, domain: str) -> list[dict[str, Any]]:
         integration = await async_get_integration(self.hass, domain)
-        report = await self.hass.async_add_executor_job(self._scan_dir, integration.file_path, domain)
+        if integration.is_built_in:
+            # Shipped and signed with Home Assistant Core: not third-party code, and the largest
+            # share of the scan time on a typical install. Findings an older version stored for
+            # it are settled instead of lingering unscanned.
+            self._scan_cache.pop(domain, None)
+            self._resolve_domain_findings(domain, "built_in_not_scanned")
+            return []
+        report = await self._async_scan_dir(integration.file_path, domain)
         findings = report["findings"]
 
         table = self._store.data["scanner_findings"]

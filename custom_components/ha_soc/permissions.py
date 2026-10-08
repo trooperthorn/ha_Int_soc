@@ -6,16 +6,14 @@ from __future__ import annotations
 
 import inspect
 import logging
-from typing import Any, Callable
+from typing import Any
 
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
-
-_LOVELACE_UPDATED_EVENT = "lovelace_updated"
 
 # Candidate attribute names on the lovelace runtime container; first hit wins.
 _DASHBOARDS_COLLECTION_ATTRS = ("dashboards_collection", "collection")
@@ -68,49 +66,8 @@ class PermissionsMatrix:
     def __init__(self, hass: HomeAssistant, store: HaSocData) -> None:
         self.hass = hass
         self.store = store
-        self._unsub_bus: Callable[[], None] | None = None
-        self._unsub_collection: Callable[[], None] | None = None
-        # Never cached negative, so lovelace finishing after async_start() is still found.
+        # Never cached negative, so lovelace finishing after setup is still found.
         self._dashboards_collection: Any | None = None
-
-    async def async_start(self) -> None:
-        self._unsub_bus = self.hass.bus.async_listen(
-            _LOVELACE_UPDATED_EVENT, self._on_lovelace_updated
-        )
-
-        collection = self._get_dashboards_collection()
-        if collection is not None:
-            try:
-                self._unsub_collection = collection.async_add_listener(
-                    self._on_dashboards_changed
-                )
-            except (AttributeError, TypeError):
-                _LOGGER.debug(
-                    "Dashboards collection has no usable async_add_listener; "
-                    "drift detection will rely on the lovelace_updated event only",
-                    exc_info=True,
-                )
-
-    async def async_stop(self) -> None:
-        if self._unsub_bus is not None:
-            self._unsub_bus()
-            self._unsub_bus = None
-        if self._unsub_collection is not None:
-            try:
-                self._unsub_collection()
-            except Exception:  # noqa: BLE001 - unsub callables should never raise, but never let teardown die
-                _LOGGER.debug(
-                    "Error unsubscribing dashboards collection listener", exc_info=True
-                )
-            self._unsub_collection = None
-
-    @callback
-    def _on_lovelace_updated(self, event: Event) -> None:
-        _LOGGER.debug("lovelace_updated event received: %s", event.data)
-
-    @callback
-    def _on_dashboards_changed(self, change_type: str, item_id: str, config: Any) -> None:
-        _LOGGER.debug("Dashboards collection changed: %s %s", change_type, item_id)
 
     def _get_lovelace_data(self) -> Any | None:
         try:

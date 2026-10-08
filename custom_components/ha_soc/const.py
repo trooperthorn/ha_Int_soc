@@ -14,6 +14,11 @@ STORAGE_KEY = f"{DOMAIN}.storage"
 STORAGE_VERSION_MAJOR = 1
 STORAGE_VERSION_MINOR = 0
 STORAGE_SAVE_DELAY = 15  # seconds, debounced
+# The syslog receiver ring has its own storage file so log traffic never rewrites the main store.
+SYSLOG_RING_KEY = f"{DOMAIN}.syslog_ring"
+# Log lines are low value and arrive constantly, so the ring file is written at most this often
+# (and once more when the entry stops or reloads).
+SYSLOG_RING_SAVE_DELAY = 300  # seconds, debounced
 
 # Audit JSONL files and the chain head live here; never written on the event loop.
 AUDIT_STORAGE_SUBDIR = f"{DOMAIN}_audit"
@@ -174,8 +179,10 @@ CONF_UNIFI_PROTECT_HOST = "unifi_protect_host"
 CONF_UNIFI_PROTECT_API_KEY = "unifi_protect_api_key"
 CONF_UNIFI_PROTECT_VERIFY_SSL = "unifi_protect_verify_ssl"
 
-# Off by default: UniFi consoles ship self-signed certificates; see docs/operations.md.
-DEFAULT_UNIFI_VERIFY_SSL = False
+# On for a new install; an owner whose console uses a self-signed certificate opts out
+# explicitly. An existing install keeps the value it had (see HaSocData.async_load and
+# docs/decisions.md).
+DEFAULT_UNIFI_VERIFY_SSL = True
 
 # Hardcoded literals; only the host ever comes from the user.
 UNIFI_NETWORK_API_PATH = "/proxy/network/integration/v1"
@@ -185,7 +192,7 @@ CONF_PIHOLE_HOST = "pihole_host"
 CONF_PIHOLE_API_KEY = "pihole_api_key"
 CONF_PIHOLE_VERIFY_SSL = "pihole_verify_ssl"
 CONF_PIHOLE_IOT_CIDR = "pihole_iot_cidr"
-DEFAULT_PIHOLE_VERIFY_SSL = False
+DEFAULT_PIHOLE_VERIFY_SSL = True
 PIHOLE_API_PATH = "/api"
 
 # Technitium DNS Server: a parallel, independently-configurable DNS visibility
@@ -193,7 +200,7 @@ PIHOLE_API_PATH = "/api"
 CONF_TECHNITIUM_HOST = "technitium_host"
 CONF_TECHNITIUM_API_TOKEN = "technitium_api_token"
 CONF_TECHNITIUM_VERIFY_SSL = "technitium_verify_ssl"
-DEFAULT_TECHNITIUM_VERIFY_SSL = False
+DEFAULT_TECHNITIUM_VERIFY_SSL = True
 TECHNITIUM_API_PATH = "/api"
 
 # Observe push (docs/design.md, "Observe push"). Off by default; the options flow writes
@@ -203,6 +210,10 @@ CONF_OBSERVE_URL = "observe_url"
 CONF_OBSERVE_INGEST_KEY = "observe_ingest_key"
 CONF_OBSERVE_HOST_NAME = "observe_host_name"
 CONF_OBSERVE_INTERVAL = "observe_interval_seconds"
+# How to trust an Observe server whose certificate no public CA signed (docs/design.md,
+# "Observe push"). Both are public data, so both live in the store; at most one is set.
+CONF_OBSERVE_CA_PEM = "observe_ca_pem"
+CONF_OBSERVE_FINGERPRINT = "observe_cert_sha256"
 DEFAULT_OBSERVE_ENABLED = False
 DEFAULT_OBSERVE_INTERVAL = 60
 MIN_OBSERVE_INTERVAL = 30

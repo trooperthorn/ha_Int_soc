@@ -8,7 +8,13 @@ Each feature manager is independently testable and knows nothing about the other
 
 `const.py` is kept deliberately small: only values that cross module boundaries live there. Module-local constants (risk weights, regex patterns, WS command strings, `DEFAULT_EVIDENCE_RETENTION_DAYS`, `THRESHOLD_SPECS`) live next to the code that uses them. `SIGNAL_UPDATE` is the dispatcher signal that pushes live updates to the panel and triggers the sensor and binary_sensor coordinators, with a topic appended (for example `f"{SIGNAL_UPDATE}_users"`); `EVENT_ALERT` is the custom bus event (`ha_soc_alert`) fired for user-built automations. The shared vocabularies are `LEVEL_ENFORCED`, `LEVEL_COSMETIC`, and `LEVEL_BEST_EFFORT` (shown verbatim in the frontend), `SEVERITY_*` (vulns, misconfig, detections, scanner), `STATUS_*` (finding lifecycle for vulns, misconfig, scanner), and `DETECTION_*` (detection lifecycle).
 
+`IntegrationHealth.async_start` loads the manifests of all configured domains with one `async_get_integrations` call and starts the first misconfiguration sweep as a background task (`_sweep_task`) instead of awaiting it, so setup no longer waits for the sweep to read configuration files and ask the Supervisor (OPT-5). A caller of `async_run_misconfig_checks` while that sweep runs awaits its result rather than starting a second one, and `async_stop` cancels it. `misconfig_sweep_ran` stays False until it finishes, which the Observe push already reports as the source not yet checked.
+
 In `async_setup_entry`, the private secret store is loaded before anything else can want a credential, legacy plaintext copies are drained into it exactly once, and a first analysis pass, config check, and (when enabled) scanner sweep are kicked off shortly after startup rather than after a full interval, so the dashboard is not empty on a fresh install. `async_register_probe_service` is handed the audit log (so a rejected Probe callback is recorded as `probe_auth_rejected`) and the secret store (the pairing secret is pinned and verified there); on non-Supervisor installs it registers nothing. In `_async_vuln_scan`, the tracker fetches the NVD API key from the secret store right before each request (SEC-3); nothing is passed from `__init__.py`.
+
+Terminal limits and audit. `TerminalSessions` takes the per-user and per-install session slot, and the per-user run slot, before its first await, so concurrent requests cannot pass the same check. Opening a session, sending input, resizing and running a command are owner-only whatever `access_level` says (a root shell, the same bar as `ssh/run`). A session reports `recorded` true only when the app's `session_recording` option was read back as true at open. The run hash is the SHA-256 of the exact output bytes: the app's `run` CGI returns the output file unmodified (`jq --rawfile`, not command substitution, which strips the trailing newline) with its own `sha256sum`, and Core hashes what it received and records both. Export-event hashes come from the browser and are stored as `hash_source: client_asserted`. Runs that reached the app are audited whatever the outcome, with credential-looking arguments masked by `redact_command` (assignments, options, headers, cookies, JSON fields, URL userinfo and piped login secrets), a reply that is not valid JSON audited as outcome `failed`, and a transcript is served only to the session owner or the Home Assistant owner.
+
+Setup failure, retry and unload. Right after the runtime object is built, and before any service starts, `async_setup_entry` registers three callbacks with `entry.async_on_unload`. Core runs them when a setup fails or is retried as well as on unload, as eager tasks started in reverse order of registration, so the synchronous ones finish before the asynchronous ones finish awaiting: one removes the probe, external-audit and pairing services and the panel; one is `HaSocRuntimeData.async_stop_services`; one drops the half-built `runtime_data`, which core leaves in place after a failed setup. `async_stop_services` runs once and in order: terminal sessions close (3 second budget, and each socket close is capped at 2 seconds so the session-end audit record is always written), the audit log stops and flushes (no time limit, so records are never dropped and no writer thread outlives the stop), the syslog exporter drains, then the health, scanner, watchdog and Observe push stop, and the store is written last because the stops change it (the audit head mirror, the health records). The store write matters because `HaSocData` debounces saves by 15 seconds and core never writes a pending delayed save on unload or reload, so a setting changed shortly before a reload used to revert. The stops after the audit log share a 7 second budget; a stop that raises or overruns is logged and the rest still run, and an overrun stop is not retried so that service may be left half-stopped. An early registration of the store flush, before the secret migration, clears any delayed save a failed migration write re-armed if setup fails before the services are registered. Without these callbacks a failed attempt left its audit listeners, the failed-login handler and the timers running, and the retry built a second `AuditLog` that continued the same chain from the same head, so two writers produced duplicate sequence numbers and a broken hash chain. `get_runtime_data` raises `RuntimeError("HA SOC is not set up")` when there is no entry or no runtime, including after an unload (core deletes the attribute, so a plain read raised `AttributeError`). `require_soc_access` and `require_owner` answer a WebSocket command with the error code `not_loaded` when an HA SOC entry exists but has no runtime; an administrator who is not the owner still gets `unauthorized`, because the access level cannot be read and the default is owner-only. `HaSocData.async_save_now` raises `StoreSaveError` when the file could not be written; core's `Store` logs and swallows that failure, so `HaSocStore` counts failed writes (write errors, serialisation errors and OS errors) to let the caller see one.
 
 ## Audit chain
 
@@ -74,13 +80,21 @@ No bus event exists for these, so they are reconstructed indirectly:
 
 ### Storage, flushing, and verification
 
-Storage is newline-delimited JSON, one file per UTC calendar day (`audit-YYYY-MM-DD.jsonl`) under `.storage/<AUDIT_STORAGE_SUBDIR>/`, plus a tiny `chain_head.json` sidecar so the hash chain survives a restart. The sidecar also carries the retention anchor, written whenever retention deletes expired day files, so expiry does not break verification of everything that survives. Records are only ever appended. All file I/O runs in the executor, never on the event loop. Once the current file crosses `_SEGMENT_MAX_BYTES` within a day, records continue in numbered segments (`audit-YYYY-MM-DD.1.jsonl`, `.2.jsonl`, and so on); `_FILENAME_RE` group 2 is the segment index (absent meaning 0), used only to list files in written order, and `_sync_list_day_files` sorts by `(date, segment)`, which equals write order, so verification walks records in the sequence they were appended.
+Storage is newline-delimited JSON, one file per UTC calendar day (`audit-YYYY-MM-DD.jsonl`) under `.storage/<AUDIT_STORAGE_SUBDIR>/`, plus a tiny `chain_head.json` sidecar so the hash chain survives a restart. The sidecar also carries the retention anchor, written whenever retention deletes expired day files, so expiry does not break verification of everything that survives. Records are only ever appended. All file I/O runs in the executor, never on the event loop. A flush with nothing buffered does no work at all: no executor job, no directory listing. A flush with records remembers the file it appended to, so it lists the directory again only when the day changes or the segment fills, and retention (which lists the directory) runs at most once an hour (`_RETENTION_INTERVAL`) and only on a flush that had records to write. Once the current file crosses `_SEGMENT_MAX_BYTES` within a day, records continue in numbered segments (`audit-YYYY-MM-DD.1.jsonl`, `.2.jsonl`, and so on); `_FILENAME_RE` group 2 is the segment index (absent meaning 0), used only to list files in written order, and `_sync_list_day_files` sorts by `(date, segment)`, which equals write order, so verification walks records in the sequence they were appended.
 
 The buffer normally drains on a 30 s timer (`_FLUSH_INTERVAL`), but high-value categories (user lifecycle, HA SOC's own config changes, every `firewall_*` record, `detection_status_changed`, `probe_auth_rejected`, `audit_chain_reset`, `privileged_read`; see `IMMEDIATE_FLUSH_CATEGORIES` and `IMMEDIATE_FLUSH_PREFIXES`, matched exactly or on `startswith`) schedule an immediate flush task instead, so the records most worth tampering with reach the hash-chained files with the smallest window in which a crash could drop them. The set is a public module constant so tests can assert it matches the plan. `async_log`'s `flush=True` forces an immediate flush; the high-value categories get one regardless, so a caller outside the module (probe.py's `probe_auth_rejected`) cannot skip it (work item 1.7).
 
-`_async_schedule_flush` uses `eager_start=False` on purpose: an eagerly-started task would drain the buffer synchronously inside the caller's frame, turning `async_log` from "append and return" into "append, hash, and hand off to the executor" mid-listener. Deferring to the next loop iteration keeps `async_log` non-blocking and lets a burst of records ride one flush (`_flush_task` holds the in-flight task). A done-check is enough dedup: a task that is done has already drained whatever was buffered when it ran. The method is a no-op until the chain head has loaded (`_head_loaded`): before that the instance's seq starts at genesis, and a flush would write records numbered from 1 and clobber `chain_head.json` over whatever chain is on disk. `_sync_load_chain_head` sets the flag first because whatever it concludes, a restored head or a legitimately fresh chain, is the real starting point.
+`_async_schedule_flush` uses `eager_start=False` on purpose: an eagerly-started task would drain the buffer synchronously inside the caller's frame, turning `async_log` from "append and return" into "append, hash, and hand off to the executor" mid-listener. Deferring to the next loop iteration keeps `async_log` non-blocking and lets a burst of records ride one flush (`_flush_task` holds the in-flight task). A done-check is enough dedup: a task that is done has either written the records that were buffered when it ran or, after a failed write, left them buffered for the next timer tick. The method is a no-op until the chain head has loaded (`_head_loaded`): before that the instance's seq starts at genesis, and a flush would write records numbered from 1 and clobber `chain_head.json` over whatever chain is on disk. `_sync_load_chain_head` sets the flag first because whatever it concludes, a restored head or a legitimately fresh chain, is the real starting point.
 
-`async_log` is event-loop only and must stay a plain, synchronous, non-blocking callback. `_drain_and_prepare` is likewise synchronous and event-loop-only so the chain's seq and prev_hash mutation never races a concurrent flush. In `_async_flush` the head mirror is written on the event loop after the executor job returns, because `store.data` must never be mutated off-loop; `_seq` and `_prev_hash` cannot have moved since the drain because the flush lock is held and only `_drain_and_prepare` mutates them.
+`async_log` is event-loop only and must stay a plain, synchronous, non-blocking callback. `_prepare_buffered` is likewise synchronous and event-loop-only. It computes seq, prev_hash and hash for copies of the buffered records without consuming anything: the buffer, `_seq` and `_prev_hash` move only in `_commit_written`, after the executor job reports how many leading records reached disk. A failed write therefore leaves the records buffered and the chain without a gap, and the retry produces byte-identical records. `_sync_append_durable` fsyncs each day file after the append and, if a write fails midway, truncates the file back to its previous size so a torn line never precedes the retry; `chain_head.json` is fsynced before the rename and is written for the last record actually written. A retention failure after a successful write is logged and never requeues records. In `_async_flush` the head mirror and the syslog hand-off happen on the event loop after the executor returns and cover only the written records, because `store.data` must never be mutated off-loop; `_seq` and `_prev_hash` cannot have moved in between because the flush lock is held and only `_commit_written` mutates them.
+
+`async_log` coerces every record to plain JSON types (`_json_safe`) after redaction: datetimes and dates become ISO strings, sets become sorted lists, dict keys become strings, and any other object becomes its `str()`. Service data from python_script or custom integrations can carry a `timedelta` or a set, and an uncoercible value would otherwise make hashing raise after the sequence number had advanced.
+
+The crash forensics heartbeat and clean-stop files are written with `sync_write_json_atomic(..., durable=True)`, which fsyncs the temp file before `os.replace` and the directory afterwards, so a power loss leaves the old or the new content and never an empty file. The resource watchdog ring keeps the non-durable default because it rewrites every sampling interval.
+
+File names follow a monotonic day key, not the raw record time. `_sync_flush` places each record in `max(record UTC day, newest existing day file)` with no upper bound, so a wall clock stepped back by any amount (a host without a battery-backed clock) appends to the newest file instead of reopening an older one; the record keeps its true `ts`. File order is therefore append order and seq order, which keeps retention (oldest file first, anchored on the deleted tail) consistent. A forward jump puts later records in a future-dated file that age-based retention does not reach until the date passes; the size cap still applies. `_sync_verify_chain` does not rely on that: each file is in seq order, so it merges the files by seq (`heapq.merge`) and walks the chain in sequence, which also verifies files an older build wrote with out-of-order names.
+
+Recovery at load (`_sync_recover_from_disk`, run by `_sync_load_chain_head` after the head is read). A power loss during an append can leave an unterminated, unparseable last line in one of the newest three day files, all of which are checked; it is cut back to the last complete record and the removal is recorded as an `audit_tail_repaired` event (file, bytes removed, SHA-256 of the removed bytes). A fragment that parses as a whole record is kept. Records are fsynced before `chain_head.json` is rewritten, so a crash between the two leaves the head behind the files; the head is then rebuilt, but only when it loaded cleanly, the record on disk at the old head seq carries the old head hash, and every later record links to the one before and hashes correctly; an `audit_head_rebuilt` event records the old and new seq. Without this the next record would reuse a seq already on disk. A head ahead of the files is left alone because that is truncation, which verification reports as `tail_truncated`. The events are queued during the executor load and logged by `async_start` after reset detection, so they are chained records.
 
 Reset detection in `async_start` must run after the head loads and before any listener can log, so the `audit_chain_reset` record is the first record of the continued chain and carries the mirror's hash as its `prev_hash` (work item 1.5).
 
@@ -88,17 +102,17 @@ The five registries beyond the entity registry each fire their own `<name>_regis
 
 Import fallbacks: the literal event-type strings are what core fires; importing the matching constants (`EVENT_USER_ADDED` and friends, the registry `EVENT_*_REGISTRY_UPDATED` names, `SIGNAL_CONFIG_ENTRY_CHANGED`) is a nicety, so an import failure falls back to the stable literal rather than breaking setup. `SignalType` subclasses `str`, so the literal `config_entry_changed` fallback reaches the same dispatcher slot. The `current_connection` and `current_request` contextvars are the only "who did this" signal an integration can read; an import failure degrades to no ambient recovery, never a broken setup. The repairs import in `_async_detect_chain_reset` is local so audit.py's import graph stays minimal.
 
-`async_query` flushes first so a change made seconds ago is visible immediately; `_sync_query` reads only disk, and without the flush the panel would lag up to `_FLUSH_INTERVAL`. `async_category_stats` answers the open-items report's volume observation (a busy install writes on the order of 10 MB of audit records per day) by showing what produces the bulk, so retention and size-cap tuning stops being guesswork. It is deliberately cheap: only the newest day's files are scanned in one pass, with no new storage; it flushes first so buffered records count, and reads as bytes so shares reflect what is on disk. `ws_audit_category_stats` exposes it.
+`async_query` does not flush and does not start a retention pass. Records still in the write buffer are read from memory (`_prepare_buffered` has already numbered and hashed them, and does no I/O), so a change made seconds ago is visible immediately, and `_sync_query` then reads the day files newest first, each from its end in 64 KiB blocks (`_read_jsonl_reversed`), and stops as soon as `limit` records match. A record that a concurrent flush writes while the query runs is seen once, because the buffered copy is taken first and the disk records are skipped when their sequence number is already in it. A query therefore costs the size of its answer, not the size of the log (OPT-4). `async_category_stats` answers the open-items report's volume observation (a busy install writes on the order of 10 MB of audit records per day) by showing what produces the bulk, so retention and size-cap tuning stops being guesswork. It is deliberately cheap: only the newest day's files are scanned in one pass, with no new storage; it flushes first so buffered records count, and reads as bytes so shares reflect what is on disk. `ws_audit_category_stats` exposes it.
 
-The syslog exporter receives records only after the local JSONL append succeeds and the hash and sequence fields are assigned. The export formats are documented in `CEF-SCHEMA.md`.
+The exporter builds its TLS client context once per verification mode in the executor and reuses it on reconnect, so the CA bundle is never loaded on the event loop. The syslog exporter receives records only after the local JSONL append succeeds and the hash and sequence fields are assigned. The export formats are documented in `CEF-SCHEMA.md`.
 
-The syslog **receiver** (`custom_components/ha_soc/syslog_receiver.py`, `ha_soc_probe/rootfs/usr/lib/ha_soc/syslog_receiver.py`) is the opposite direction: instead of HA SOC sending its own audit records out, it becomes a target something else on the LAN can point at, most notably the "logspout" HA add-on (github.com/bertbaron/hassio-addons/logspout), which forwards every Docker container's stdout/stderr on the host to a configured `syslog+udp://<host>:<port>` target. The Probe runs a small asyncio UDP listener (`ha_soc_probe_syslog_receiver` s6 service), parses each line with a best-effort RFC 3164/RFC 5424 header parser (raw fallback when neither matches, so nothing is silently dropped), buffers entries in a bounded in-memory deque (drop-oldest on overflow), and periodically batches them to Core via `ingest_probe_result`, following the same poll/apply/report shape as `ha_soc_probe_snmp`'s `run` script. Core appends accepted batches to a bounded ring-buffer store bucket (`syslog_receiver_entries`, most recent `SYSLOG_RECEIVER_MAX_ENTRIES` kept, oldest dropped first) — deliberately not the audit.py hash-chain machinery, which is for tamper-evident security records at security-audit retention timescales, not arbitrary container noise. **UDP only this phase**; TCP/TLS receive support is a documented follow-up (see `docs/security.md`'s syslog receiver section) rather than being built now. The panel's Logs view exposes it as a "Forwarded container logs (logspout)" source with its own filterable/sortable table, separate from the point-in-time raw container-log pull; `ha_soc/syslog_receiver/entries` is the paginated, owner-gated fetch command (a dedicated command rather than embedding in `HaSocSettings`, since this is a growing list, matching `ha_soc/netscan/status`'s precedent for owner-only LAN-derived data).
+The syslog **receiver** (`custom_components/ha_soc/syslog_receiver.py`, `ha_soc_probe/rootfs/usr/lib/ha_soc/syslog_receiver.py`) is the opposite direction: instead of HA SOC sending its own audit records out, it becomes a target something else on the LAN can point at, most notably the "logspout" HA add-on (github.com/bertbaron/hassio-addons/logspout), which forwards every Docker container's stdout/stderr on the host to a configured `syslog+udp://<host>:<port>` target. The Probe runs a small asyncio UDP listener (`ha_soc_probe_syslog_receiver` s6 service), parses each line with a best-effort RFC 3164/RFC 5424 header parser (raw fallback when neither matches, so nothing is silently dropped; an RFC 3164 timestamp has no year or zone, so both are inferred from the receipt time: a leap day resolves to the last leap year, a sender clock a few minutes ahead is kept, a whole-zone-offset difference is read as the sender's local time, and a time in the future is clamped to the receipt, see docs/decisions.md), buffers entries in a bounded in-memory deque (drop-oldest on overflow), and periodically batches them to Core via `ingest_probe_result`, following the same poll/apply/report shape as `ha_soc_probe_snmp`'s `run` script. Core appends accepted batches to a bounded ring buffer (`syslog_receiver_entries`, most recent `SYSLOG_RECEIVER_MAX_ENTRIES` kept, oldest dropped first) that has its own Store file (`ha_soc.syslog_ring`) apart from the main Store, deliberately not the audit.py hash-chain machinery, which is for tamper-evident security records at security-audit retention timescales, not arbitrary container noise. **UDP only this phase**; TCP/TLS receive support is a documented follow-up (see `docs/security.md`'s syslog receiver section) rather than being built now. The panel's Logs view exposes it as a "Forwarded container logs (logspout)" source with its own filterable/sortable table, separate from the point-in-time raw container-log pull; `ha_soc/syslog_receiver/entries` is the paginated, owner-gated fetch command (a dedicated command rather than embedding in `HaSocSettings`, since this is a growing list, matching `ha_soc/netscan/status`'s precedent for owner-only LAN-derived data).
 
 ## Store and secrets
 
 ### The general store
 
-`HaSocData`'s Store holds everything except the audit log: settings, the permissions matrix, and the lifecycle state (new, confirmed, dismissed, resolved) of vulnerability, misconfiguration, scanner, and detection findings. It excludes the audit log and raw event history, which are high-volume and live in their own rotating JSONL files; rewriting one Store file on every audit event would serialize the whole history on every write. It also excludes every secret value.
+`HaSocData`'s Store holds everything except the audit log: settings, the permissions matrix, and the lifecycle state (new, confirmed, dismissed, resolved) of vulnerability, misconfiguration, scanner, and detection findings. It excludes the audit log and raw event history, which are high-volume and live in their own rotating JSONL files; rewriting one Store file on every audit event would serialize the whole history on every write. It also excludes every secret value. The syslog receiver ring is held in memory under `syslog_receiver_entries` but is persisted in its own Store file (`SYSLOG_RING_KEY`, `ha_soc.syslog_ring`, written with a 300 second delay and once more on stop), so log traffic never rewrites the main Store file; an older install's ring found in the main file is moved to the new one on load.
 
 The one audit-related thing it holds is `audit_head`, a `{seq, hash, at}` mirror of the chain's on-disk head written by audit.py after every successful flush. It exists because the audit directory and the Store are two files an attacker would have to falsify consistently: a wiped or rolled-back audit directory whose head has fallen behind the mirror is detected at the next startup and verification. The mirror only ever advances (`async_set_audit_head`): a backwards head is exactly the wipe signal, so accepting a lower seq would erase the evidence; a regressing call is a programming error or a race and is dropped (work item 1.5).
 
@@ -114,7 +128,7 @@ Other `StoreData` fields:
 - `peripheral_ignored`: a USB or serial device an admin confirmed is intentionally unassigned.
 - `firewall`: `known_rules` and `known_rules_reported_at` mirror the add-on's last report; `pending` is the single in-flight test; `history` is a capped log of past applies.
 - `integration_security`: `github` caches per-repo signals keyed `owner/repo`; `refreshed_at` is the last refresh.
-- `resource_watchdog`: config only; breach counters and usage history are runtime-in-memory, because writing a time series into the Store every sample would churn it for diagnostic data. `hard_limits` is the owner-set Docker cap per slug (`{memory_mb, cpus}`), which requires the Probe's Protection Mode disabled; `hard_limit_state` is the Probe's last report (`{"status": applied|failed|denied, "detail", "at"}`); `overrides` entries are `slug -> {cpu_percent, memory_percent, action, enabled}`, every key optional.
+- `resource_watchdog`: config only; breach counters and usage history are runtime-in-memory in the Store (the history has its own throttled file, see `docs/RESOURCE-WATCHDOG.md`), because writing a time series into the Store every sample would churn it for diagnostic data. `hard_limits` is the owner-set Docker cap per slug (`{memory_mb, cpus}`), which requires the Probe's Protection Mode disabled; `hard_limit_state` is the Probe's last report (`{"status": applied|failed|denied, "detail", "at"}`); `overrides` entries are `slug -> {cpu_percent, memory_percent, action, enabled}`, every key optional.
 - `panel_layout`: a personal UI preference; any user with SOC access sets their own. A missing `view_id` or `user_id` means "each view's declared default order, nothing hidden", never an error.
 - `snmp_status`: operational state, never configuration.
 
@@ -140,6 +154,8 @@ health.py and scanner.py create their own Repairs issues inline because they hav
 
 ## WebSocket API and access control
 
+Putting a user into the administrator group is owner-only: `users/create` and `users/update` refuse a non-owner caller whose `group_ids` contain the admin group, on top of the existing owner-only rule for administrator targets.
+
 `websocket_api.py` is the single surface the panel talks to; the namespace is `ha_soc/*`. Mutating and PII-bearing commands never return raw refresh-token secrets or JWT material, only metadata (ids, timestamps, client names). `require_soc_access` is modeled on `websocket_api.require_admin` (same signature, same "raise Unauthorized, do not call func" shape) so it composes with `@websocket_command` and `@async_response` the way `require_admin` does. The gating tiers are described in `security.md`.
 
 Command notes:
@@ -161,7 +177,7 @@ Command notes:
 
 ### Permissions matrix
 
-`permissions.py` talks to internal, version-sensitive surfaces: lovelace's runtime `hass.data` container, its dashboards storage collection, and the frontend's per-user storage helper. None is formally public, so every access path is wrapped defensively and degrades to a logged WARNING plus a stable `error_reason` string, both so a version mismatch never crashes setup and so the websocket layer can surface a real message. `PermissionsMatrix` only edits lovelace dashboard configs and per-user frontend storage, and mirrors the intended state into `HaSocData` so the matrix UI and `async_check_drift()` have a source of truth. `_DASHBOARDS_COLLECTION_ATTRS` lists plausible attribute names on the lovelace runtime container, tried in order; the collection is cached once found and never cached negative, so lovelace finishing after `async_start()` is still found. `_find_view` falls back to treating `view_path` as a positional index because real dashboards sometimes omit `path`. `_visible_user_ids` returns None when `visible` is not a per-user list (True or absent means everyone, False means nobody); the caller must tell that apart from an explicit empty list, which also means hidden from everyone. `async_set_view_visibility` builds `expected_policy` where True means "this user should see the view"; users newly listed get True, users dropped from an explicit list get False, and a visible-to-all reset flips previously restricted users back to True. `async_check_drift` is read-only by design.
+`permissions.py` talks to internal, version-sensitive surfaces: lovelace's runtime `hass.data` container, its dashboards storage collection, and the frontend's per-user storage helper. None is formally public, so every access path is wrapped defensively and degrades to a logged WARNING plus a stable `error_reason` string, both so a version mismatch never crashes setup and so the websocket layer can surface a real message. `PermissionsMatrix` registers no listeners and has no start or stop (the `lovelace_updated` and dashboards collection listeners only logged, and were removed); it only edits lovelace dashboard configs and per-user frontend storage, and mirrors the intended state into `HaSocData` so the matrix UI and `async_check_drift()` have a source of truth. `_DASHBOARDS_COLLECTION_ATTRS` lists plausible attribute names on the lovelace runtime container, tried in order; the collection is cached once found and never cached negative, so lovelace finishing after `async_start()` is still found. `_find_view` falls back to treating `view_path` as a positional index because real dashboards sometimes omit `path`. `_visible_user_ids` returns None when `visible` is not a per-user list (True or absent means everyone, False means nobody); the caller must tell that apart from an explicit empty list, which also means hidden from everyone. `async_set_view_visibility` builds `expected_policy` where True means "this user should see the view"; users newly listed get True, users dropped from an explicit list get False, and a visible-to-all reset flips previously restricted users back to True. `async_check_drift` is read-only by design.
 
 ### Users and MFA policy
 
@@ -235,7 +251,7 @@ Resource bounds `MAX_FILE_SIZE_BYTES` (500 KB) and `MAX_FILES_PER_SCAN` (400) ap
 
 Rescan reconciliation (`_reconcile_domain_findings`): findings absent from a new scan move to resolved with `not_found_on_rescan`, but only when their file was evaluated this pass or deleted outright, never when skipped (a fail-open guard). A dismissed finding whose pattern is gone from a fully scanned file also resolves, because "the code no longer contains this" is more accurate than "an analyst chose to ignore it".
 
-`_on_config_entry_changed` scans a newly added integration once, off the loop, rather than waiting for the weekly sweep; `scanner_enabled` governs every scan path including this one (the weekly sweep already honored it and the on-install trigger silently did not). `_async_scan_on_install` wraps the task so a raise does not vanish as an unretrieved exception. `async_scan_all` yields between domains because a large install can have hundreds, each a blocking executor job.
+`_on_config_entry_changed` scans a newly added integration once, off the loop, rather than waiting for the weekly sweep; `scanner_enabled` governs every scan path including this one (the weekly sweep already honored it and the on-install trigger silently did not). `_async_scan_on_install` wraps the task so a raise does not vanish as an unretrieved exception. `async_scan_all` yields between domains because a large install can have hundreds. Within a domain `_async_scan_dir` plans the scan in one executor job (`_plan_scan`), then reads and parses one file per executor job (`_scan_file`) and yields to the loop between files, so a long stretch of parsing never holds the interpreter lock for more than one module (OPT-6). Integrations shipped with Core (`integration.is_built_in`) are not scanned at all: `async_scan_integration` returns an empty list, and findings an older version stored for such a domain are resolved with `built_in_not_scanned`. Rule hits are cached in memory by domain and relative path with the file's modification time and size (`ScanCache`); a file whose pair is unchanged is not read or parsed again, a file that cannot be parsed is remembered the same way, and a read error is not remembered. A rescan drops cache entries for files that are gone. The cache is not persisted, so the first sweep after a restart reads everything once.
 
 A new high or medium finding opens a Repairs issue; an acknowledged extraction finding stays visible but never opens one, because a permanent alarm on a reviewed pattern trains alarm fatigue. When a pass finds nothing the issue is deleted, a harmless no-op or a cleanup. `_hit` accepts an explicit snippet when the source line must not be stored verbatim; the hardcoded-credential rule masks the literal this way (work plan item 1.3). `_RULES` holds the original two-argument rules and `_DOMAIN_RULES` those that need the scanned domain as a referent, kept separate to leave the original signature and its direct-call tests untouched. Rule 1 (TLS verification disabled) matches the keyword name rather than the callee so it catches requests, httpx, and aiohttp alike. Rule 5 includes `AnnAssign` because `token: str = "..."` is the same credential with a type hint. `_entry_mapping_alias_nodes` follows one level of aliasing (`options = entry.options or {}`, and tuple iteration over mappings); `_mapping_use_fires` climbs past defaulting BoolOps; `_call_string_literals` collects literals in source order so a nested path-building call contributes to the outer call's view. Rule semantics and false positives are in `security.md`.
 
@@ -306,7 +322,7 @@ Home Assistant has no feature for this in core or in Spook: renaming an entity_i
 
 ### Container resources, logs, and peripherals
 
-containers.py answers "which container is crashing my server": on a Supervisor install every add-on, Core, and the Supervisor is its own container, and one pinned near 100 percent memory is the classic OOM-kill signal. Stats are fetched on demand through the Supervisor client rather than the hassio integration's cache, which is populated only for add-ons whose disabled-by-default stats sensors are enabled. Fetching is bounded by `_CONCURRENCY` and `_MAX_ADDONS`. A stopped add-on is flagged `not_running` (a container that keeps going stopped is itself the symptom) and gets no stats fetch. Results sort suspicious-first, then memory percent, then CPU.
+containers.py answers "which container is crashing my server": on a Supervisor install every add-on, Core, and the Supervisor is its own container, and one pinned near 100 percent memory is the classic OOM-kill signal. Stats are fetched on demand through the Supervisor client rather than the hassio integration's cache, which is populated only for add-ons whose disabled-by-default stats sensors are enabled. The add-on list comes from core's `get_addons_list` through `installed_addons`, which returns None before the Supervisor data is loaded, so the result is `available: False` with reason `supervisor_not_ready` rather than an exception. Fetching is bounded by `_CONCURRENCY` and `_MAX_ADDONS`. A stopped add-on is flagged `not_running` (a container that keeps going stopped is itself the symptom) and gets no stats fetch. Results sort suspicious-first, then memory percent, then CPU.
 
 logs.py's `_MAX_READ_BYTES` makes the fault-log view an advisory glance; the tail answers "did this crash, and how". Container logs come through the Supervisor's journald gateway (transport quirks in `OPERATIONS-NOTES.md`); `async_fetch_container_log` keeps the tail and cuts on a line boundary.
 
@@ -383,17 +399,26 @@ snapshot dict and the time. The snapshot keys are `containers` (the
 rows), `crash_bundles` (`sync_list_bundles`), `integration_overview`,
 `repairs` (issue dicts with a `domain`), `backup_checked` with
 `backup_finding` (the `backup_unprotected` health finding or None) and
-`resolution` (the Supervisor `/resolution/info` body). A missing key means
-"not collected" and yields no points, so a Core install without a
-Supervisor sends no container or Supervisor series.
+`resolution` (the Supervisor `/resolution/info` body) and `backup_unreadable`
+(the reason the backup store could not be read, or None). A missing key means
+"not collected" and yields no data points for that source, and the source is
+reported as unavailable (see below), so a Core install without a Supervisor
+sends no container or Supervisor series and says why.
 
 Names, units and attributes follow section 3.4 of Observe's
 `DATA-API-DESIGN.md`. The resource carries `host.name`, `service.name`
-`home-assistant`, `observe.producer` `ha_Int_soc` and, when known, the
-instance id, Core version and installation type. The scope name is
+`home-assistant`, `observe.producer` `ha_Int_soc`, `os.type` `homeassistant`
+(the platform Observe shows for the host), `observe.agent.sent_at` (the send
+time in whole unix seconds) and, when known, the instance id, `service.version`
+(the Core version) and installation type. The scope name is
 `ha_soc.collector.<source>`, which Observe stores as the source. Every
 metric is a gauge with `asDouble` and the snapshot time. CPU and memory
-percentages are divided by 100 because Observe stores ratios. Log records
+percentages are divided by 100 because Observe stores ratios, and the result
+is clamped into 0 to 1 (the Supervisor documents `cpu_percent` only as the
+percentage of the CPU that is used, so a multi-core reading above 100 would
+otherwise break the unit `1`). `observe.ha.container.running` is 1 only for
+the state `started`; a stopped, errored or unknown state is 0 and a row with
+no state has no point. Log records
 carry `event.name`, a stable `observe.dedup_key` (a re-send is a no-op in
 Observe) and a severity of 9, 13 or 17: crash classifications
 `silent_stop` and `kernel_fault` are 17, `core_restart` is 13 and
@@ -401,15 +426,31 @@ Observe) and a severity of 9, 13 or 17: crash classifications
 containers, integration rows and repair domains; 500 log records per
 request; 5,000 points) so a request stays inside Observe's limits.
 
-Series must stay distinct, because Observe keeps one value per series. The
-per-integration error gauge is therefore summed per domain and issue
-category, so three ESPHome entries produce one `esphome` point. Bundles
+Series must stay distinct, because Observe keeps one value per series, and a
+sum over one metric name must never count anything twice. Every config entry of
+a domain carries the domain's whole 24 hour error count, so the
+per-integration error gauge takes that count once per domain (the largest of
+its entries, not the sum) and sends one point per domain, labelled with the
+first category of its entries in the order credential, failing, communication,
+collection, errors, debug_logging, disabled. When the row cap cuts the list the
+domains with the most errors stay. A total next to labelled series of the same
+name is not sent: the per-domain repair counts are
+`observe.ha.repair.domain_issues` beside the total `observe.ha.repair.issues`,
+and the per-reason Supervisor flags are `observe.ha.supervisor.unhealthy_reason`
+beside the count `observe.ha.supervisor.unhealthy_reasons`. A row cap never cuts
+silently: `observe.ha.push.rows_dropped` (unit `{row}`, attribute
+`observe.ha.push.kind` of `containers`, `integrations`, `repair_domains`,
+`unhealthy_reasons` or `points`) is sent with every payload, 0 when nothing was
+cut, and is exempt from the point cap. Bundles
 marked `dry_run` (the panel's drill) are never sent as crashes;
 `sync_list_bundles` exposes the flag. The watchdog stores an `episode_start`
 in each breach detection's detail: a re-trip inside one continuous breach
 keeps it, so the log record's dedup key is stable for the whole episode. The
 watchdog resolves the detection when a sample shows the container back
-under its limits (or stopped, or gone), which is what returns
+under its limits (or stopped, or gone). It decides from the detections in the
+store, not from its in-memory episode table, so a breach left open by a Home
+Assistant restart is closed too, and a breach that continues across a restart
+keeps its stored episode start. That is what returns
 `observe.ha.watchdog.breaches` to 0, and a trip after that starts a new
 episode and reopens the row.
 
@@ -421,6 +462,23 @@ calls plus one per started add-on per interval, the same as the watchdog.
 The pass covers up to 300 add-ons; the rest are counted in `truncated` and
 logged as a warning.
 
+Availability and honest gaps. Every metrics request carries the gauge
+`observe.source.available` (unit `1`, attribute `observe.source`, plus
+`observe.source.reason` when the value is 0) for each of `containers`,
+`watchdog`, `integrations`, `repairs`, `backup`, `supervisor` and
+`crash_forensics`. A source with nothing to report, such as no open breach, is
+available and sends its own zero, so Observe can tell a quiet source from one
+that could not be read. These points are exempt from the point cap and are not
+sent for an empty snapshot. When `.storage/backup` exists but cannot be read,
+`IntegrationHealth.backup_unreadable` holds the reason, the backup gauge is not
+sent (it used to be sent as 0, "clean") and the `backup` source is unavailable
+with that reason. The pusher remembers which `(domain, category)` integration
+error series it has sent; when one is gone from the next snapshot, because the
+entry was removed or unloaded or the domain moved to another category, that
+series is sent once as 0 and forgotten, so Observe does not show its last
+count for ever. A domain that is only cut by the row cap is not zeroed. If a
+snapshot has no integration overview the memory is left alone.
+
 Golden files in `tests/fixtures/observe_otlp/` pin the output;
 `docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
 routes accepted them with no rejects.
@@ -428,35 +486,107 @@ routes accepted them with no rejects.
 ### The push client
 
 `observe_push.py` holds three things. `SnapshotCollector` gathers the
-snapshot from data HA SOC already holds: the resource watchdog's latest
-container sample (a fresh Supervisor call only when that sample is older than
-90 seconds), the stored detections, the integration overview, the issue
+snapshot from data HA SOC already holds: the container sample it shares
+with the resource watchdog (`ResourceWatchdog.async_shared_overview`: a fresh
+Supervisor call only when the sample is older than three minutes, or older than
+the watchdog interval when the watchdog is on and that is shorter), the stored detections, the integration overview, the issue
 registry's open issues, the unprotected-backup finding, and, refreshed at
 most every ten minutes because they change rarely, the crash bundle list and
 the Supervisor `/resolution/info` body. A part that cannot be collected is
-left out. `ObservePusher` owns the timer and the delivery rules.
+left out. `ObservePusher` owns the timer and the delivery rules. Observe
+answers 200 with a `partialSuccess` count when it refused some records of a
+logs payload and does not say which. The keys of such a payload are not marked
+sent, so the next cycle offers the same records once more (Observe skips the
+ones it already holds by dedup key). A key whose payload is partly rejected a
+second time is given up on, marked sent, logged as an error and counted in
+`abandoned_log_payloads` of the diagnostics. Metric rejections are only counted
+and logged, because every gauge is sent again on the next cycle.
 `validate_url`, `validate_host_name`, `validate_ingest_key` and
 `validate_options` are the pure checks the options flow and the pusher share.
 
-The settings are `observe_enabled`, `observe_url`, `observe_host_name` and
-`observe_interval_seconds` in the HA SOC store and the ingest key in the
+The settings are `observe_enabled`, `observe_url`, `observe_host_name`,
+`observe_interval_seconds`, `observe_ca_pem` and `observe_cert_sha256` in the HA SOC store and the ingest key in the
 secret store (`observe_ingest_key`, in `SECRET_SETTING_KEYS`, so every
 masking path covers it). `entry.options` stays `{}`; the options flow writes
 the store, flushes it to disk with `async_save_now` (the store normally
 debounces writes and the reload builds a fresh store that reads the file),
 and only then schedules the reload, which restarts the push with the new
-values. Setup registers `observe.async_stop` with `entry.async_on_unload`
-before starting the push, so a setup that fails afterwards (for example with
-`ConfigEntryNotReady`) cancels the timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
+values. The flow resolves the acting user (the flow context `user_id`, else
+`AuditLog.current_actor_id`, which reads the HTTP request carrying the flow),
+aborts with `owner_required` when a non-owner acts under the owner-only access
+level, and writes that user into the `observe_push_changed` audit record.
+`validate_options` takes the stored URL: with a stored key, a different URL
+needs the key typed again (`key_required_for_url_change`), and so does setting or changing
+the pasted CA or the pinned fingerprint (`key_required_for_trust_change`). A write that fails is shown as the form error `save_failed`, the
+settings are put back as they were, and no reload is scheduled. Setup
+registers the stop of every service with `entry.async_on_unload` before the
+first one starts (see "Setup failure, retry and unload" near the top of this file), so a setup
+that fails afterwards (for example with `ConfigEntryNotReady`) cancels the
+push timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
 configuration, the pusher arms no timer and opens no connection.
 
 Each tick runs under one lock, so a slow cycle makes the next tick skip
 instead of overlapping. A tick builds the metrics request and, when it holds
 records Observe has not yet accepted, the logs request, gzips them in the
 executor, queues them and sends from the head of the queue. The queue holds
-at most 60 payloads; overflow drops the oldest and counts it. Each payload
-has one `Idempotency-Key` for its whole life, so a retry after a lost
-response is recognised by Observe.
+at most 60 payloads and 4 MiB of compressed body (`MAX_QUEUE`,
+`MAX_QUEUE_BYTES`). Each payload has one `Idempotency-Key` for its whole life,
+so a retry after a lost response is recognised by Observe.
+
+Long outages. When an enqueue takes the queue over either bound,
+`_async_enforce_bounds` first merges the queued metrics payloads, except the
+head of the queue (which may have been sent once already and must keep its key),
+into one new payload (`compact_metrics`, in the executor). The merged payload
+keeps, for each series (scope, metric name, unit, attribute set), the newest
+point of every interval of 300 seconds, judged by the point's own timestamp, and
+uses the resource of the newest request. All points are gauges, so the newest
+value of an interval stands for it. A merge is cut into as many payloads as Observe's
+limits need (`compact_metrics_requests`): at most 5,000 points (`MAX_POINTS` of the
+mapper) and 900 KiB of plain JSON each, so a large install never builds a request
+Observe refuses. If the queue is still over its byte bound, or a merged payload is over
+512 KiB gzipped (Observe caps a request at 1 MiB, plain and gzipped), the merge is
+repeated with 600, 1200, 2400 and 3600 seconds. A merge cannot reduce the
+number of log payloads; only if the queue is still over a bound is a payload
+dropped and counted in `dropped_overflow`. The oldest payload that is not a merged
+one goes first, so a flood of distinct log records cannot remove the merged outage
+history; merged payloads are dropped, oldest first, only when nothing else is left. With one push a minute the
+queue therefore holds the whole outage as roughly one point per five minutes
+per series and a few tens of kilobytes, instead of the last 30 minutes at full
+resolution (measured in docs/decisions.md).
+
+Log records are queued once. A logs request is cut down to the records whose
+dedup key is neither remembered as accepted nor already waiting in a queued
+payload (`_queued_log_keys`, computed from the queue so it cannot drift), and a
+payload carries exactly the keys of the records it holds. A record whose payload
+leaves the queue without being accepted (dropped on overflow or rejected) is
+offered again the next cycle, because its key is neither sent nor queued.
+
+Reloads. `async_stop` hands the queue, the sent-key memory, the partial-retry
+memory and the integration series to a carry-over in `hass.data`
+(`DATA_QUEUE_CARRY`, by config entry id), and the next pusher of the entry
+adopts it in `async_start` when the URL and host name are unchanged. A wait after a
+transient failure (`Retry-After` or the back-off) is carried with it, so a reload does
+not contact a server that asked for time; a rejected ingest key is not waited out,
+because the owner reloads after fixing it. Otherwise,
+or when the push is disabled or its settings are invalid, the old payloads are
+discarded, because they name the old host and were meant for the old server.
+The queue is not written to disk, so a restart of Home Assistant still loses it.
+Removing or disabling the entry clears the carry-over (`async_remove_entry`,
+`async_unload_entry`); an entry that is only unloaded keeps it for the reload that follows.
+The sent-key memory holds 5,000 keys and forgets the oldest first.
+
+Trust for a private certificate. `observe_ca_pem` and `observe_cert_sha256`
+are settings in the store (public data, not secrets), at most one of them set.
+`build_trust` turns them into the `ssl` argument of the request: a pasted CA
+becomes a TLS 1.2 or newer client context that trusts only those certificates
+(the system store is not added, and the host name is still checked), and a
+fingerprint becomes an `aiohttp.Fingerprint` that pins the one certificate. It
+runs in the executor because it parses certificates, and again in the options
+flow so a certificate the TLS library refuses is reported as `invalid_ca`. With
+neither set the request uses Home Assistant's default trust, so a self-signed
+server is refused. `validate_ca_pem` keeps only certificate blocks (at most 10,
+64 KiB), so a pasted private key is refused, never stored.
+The audit record of the options flow notes only that a CA is set.
 
 Outcomes by response: 200 is accepted (a `partialSuccess` rejected count is
 counted and logged, not retried); 401 and 403 raise the Repairs issue, drop
@@ -469,12 +599,12 @@ retry cannot change the answer. Three such drops in a row (400, 404, 409, 413,
 HA SOC push", which names the last status, and sending then backs off
 exponentially (10 seconds doubling to 15 minutes) instead of dropping a payload
 every tick; an accepted push clears both. Plain `http` is accepted only for
-localhost, loopback, RFC1918, IPv6 unique local, link-local and IPv4-mapped
-addresses of those kinds. Redirects are not followed, so the key is
+localhost, loopback, RFC1918, the shared address space 100.64.0.0/10 (Tailscale),
+IPv6 unique local, link-local and IPv4-mapped addresses of those kinds. Redirects are not followed, so the key is
 never sent anywhere but the configured address. Waiting is a stored "not
 before" time compared against a monotonic clock, never a sleep. Log records
-that were accepted are remembered by their dedup key (in memory) so a later
-logs request is only sent when it carries something new.
+that were accepted are remembered by their dedup key (in memory, at most 5,000
+keys) so a later logs request is only sent when it carries something new.
 
 The key is placed only in the `Authorization` header. Log lines name the
 status and the payload kind, never the URL or headers, and pass any server
@@ -643,6 +773,7 @@ Section maps recorded from deleted divider comments:
 | test_integration_security.py | Overview shape and github "not collected" without a token; this repo's own integration as a custom row; core row consistency; refresh with no token is a no-op; refresh with a token populates the cache; the two WebSocket handlers; the disk scan must never run on the event loop; sprint 4 hardening (4.10) |
 | test_layout.py | Store-level; WS commands |
 | test_pihole.py | Pure helpers; async_pihole_overview |
+| test_perf_cpu.py | OPT-4, OPT-5, OPT-6: setup time and the longest event loop stall on the 70-entry fixture (`tests/perf_env.py`); the sweep runs in the background and is shared and cancelled; scanner second run parses nothing, skips built-in integrations and never stalls the loop; a 140,000-record audit query returns 200 rows under 30 MB with no flush |
 | test_probe.py | Fixtures; legitimate add-on calls (Supervisor context plus secret); rejections (wrong or missing context, missing secret) |
 | test_redteam_fixes.py | MED-1 secrets never reach the audit log verbatim; MED-2 verify_chain detects a truncated tail; HIGH-1 trust-on-first-use secret gate; MED-7 rule source must be a real IP/CIDR; LOW-7 owner and self delete guard; MED-9 revoke-all includes long-lived tokens |
 | test_resource_watchdog.py | Hard-cap plumbing; WS layer |
