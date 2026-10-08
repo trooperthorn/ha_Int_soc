@@ -150,11 +150,11 @@ _SECRET_WORDS = (
     "bearer",
 )
 _SECRET_NAME = r"[A-Za-z0-9_.-]*(?:" + "|".join(re.escape(w) for w in _SECRET_WORDS) + r")[A-Za-z0-9_.-]*"
-_VALUE = r"\"[^\"]*\"|'[^']*'|[^\s;&|)]*"
+_VALUE = r"\"[^\"]*\"|'[^']*'|[^\s;&|)'\"]*"
 # NAME=value at the start of a word: an environment assignment, or a long
 # option with an attached value (--password=x).
 _RE_ASSIGN = re.compile(
-    r"(?P<prefix>^|(?<=[\s;&|(]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
+    r"(?P<prefix>^|(?<=[\s;&|(?'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
     re.IGNORECASE,
 )
 # --password value, --token value (a separate word).
@@ -164,7 +164,7 @@ _RE_LONG_OPTION = re.compile(
 )
 # mysql-style -pSECRET with no space. A bare "-p" followed by a space is left
 # alone: mkdir -p and cp -p are far more common than a separated password.
-_RE_SHORT_P = re.compile(r"(?P<opt>(?:^|(?<=\s))-p)(?P<value>[^\s=-][^\s;&|)]*)")
+_RE_SHORT_P = re.compile(r"(?P<opt>(?:^|(?<=\s))-p)(?!ass(?:in|out)?\s)(?P<value>[^\s=-][^\s;&|)]*)")
 # curl -u user:pass and --user user:pass
 _RE_USER_PASS = re.compile(
     r"(?P<opt>(?:^|(?<=\s))(?:-u|--user|--proxy-user))(?P<sep>\s*)(?P<user>[^\s:;&|)]+):(?P<value>[^\s;&|)]+)"
@@ -177,6 +177,37 @@ _RE_AUTH_HEADER = re.compile(
     re.IGNORECASE,
 )
 
+# A JSON body: "password": "x" or \"token\":\"x\" (the name must be quoted, so
+# an Authorization header is left to its own rule).
+_RE_JSON_FIELD = re.compile(
+    r"(?P<name>\\?\"" + _SECRET_NAME + r"\\?\")(?P<sep>\s*:\s*)(?P<value>\\?\"[^\"]*?\\?\"|[^\s,}\"']+)",
+    re.IGNORECASE,
+)
+# Cookie: and Set-Cookie: header values, and the --cookie option.
+_RE_COOKIE_HEADER = re.compile(r"(?P<head>(?:set-)?cookie\s*:\s*)(?P<value>[^\"'\n]+)", re.IGNORECASE)
+_RE_COOKIE_OPTION = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))--cookie)(?P<sep>\s+|=)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+)
+# Options whose next word is a password: sshpass -p, mosquitto -P, ssh-keygen -N.
+_RE_SECRET_SHORT_WORD = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))(?:sshpass\s+-p|-[NP]))(?P<sep>\s+)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)"
+)
+# openssl -pass pass:x, -passin pass:x, -passout pass:x
+_RE_OPENSSL_PASS = re.compile(r"(?P<head>(?:^|(?<=\s))-pass(?:in|out)?\s+pass:)(?P<value>[^\s;&|)]+)")
+# htpasswd -b [-c] file user password
+_RE_HTPASSWD = re.compile(
+    r"(?P<head>\bhtpasswd\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*b[A-Za-z]*\s+(?:-[A-Za-z]+\s+)*\S+\s+\S+\s+)"
+    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+)
+# echo SECRET | docker login --password-stdin: the secret is the piped text.
+_RE_PIPED_SECRET = re.compile(
+    r"(?P<head>\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+    r"(?P<tail>\s*\|[^\n]*?--[A-Za-z-]*(?:password|token|secret)[A-Za-z-]*-stdin)",
+    re.IGNORECASE,
+)
+
+
 
 def redact_command(command: str) -> str:
     """The command with credential-looking arguments and assignments masked.
@@ -185,11 +216,21 @@ def redact_command(command: str) -> str:
     typed on a command line must not become a second copy of the password in
     the audit log. Covers NAME=value where the name looks like a credential,
     --password value and --token=value, mysql-style -pSECRET, curl -u
-    user:pass, user:pass@host in URLs, and Authorization style headers.
+    user:pass, user:pass@host in URLs, Authorization and Cookie headers, JSON password
+    fields, secrets inside quoted query strings and form bodies, sshpass,
+    openssl -pass, htpasswd -b, -P and -N options, and text piped to a
+    ``--password-stdin`` login.
     """
     out = _RE_URL_CRED.sub(lambda m: f"{m['scheme']}{m['user']}:{REDACTED}@", command)
     out = _RE_USER_PASS.sub(lambda m: f"{m['opt']}{m['sep']}{m['user']}:{REDACTED}", out)
     out = _RE_AUTH_HEADER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_PIPED_SECRET.sub(lambda m: f"{m['head']}{REDACTED}{m['tail']}", out)
+    out = _RE_COOKIE_HEADER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_COOKIE_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_JSON_FIELD.sub(lambda m: f"{m['name']}{m['sep']}{REDACTED}", out)
+    out = _RE_OPENSSL_PASS.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_HTPASSWD.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_SECRET_SHORT_WORD.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_ASSIGN.sub(lambda m: f"{m['prefix']}{m['dashes']}{m['name']}={REDACTED}", out)
     out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)
@@ -499,6 +540,14 @@ class TerminalSessions:
             except (aiohttp.ClientError, OSError) as err:
                 outcome = "unreachable"
                 raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+            except ValueError as err:
+                # Not JSON (a proxy error page, a truncated body). The command
+                # may have run, so it is audited as failed, with a fixed message
+                # rather than the parser's text, which can quote the body.
+                outcome = "failed"
+                raise TerminalError(
+                    ERR_CONNECT, "The Terminal app returned a response that could not be read"
+                ) from err
             if not isinstance(data, dict) or "error" in data:
                 outcome = "refused"
                 message = data.get("error") if isinstance(data, dict) else "malformed response"

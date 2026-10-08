@@ -142,9 +142,10 @@ def fake_ttyd(monkeypatch):
 class _FakeHttpResponse:
     """Stands in for aiohttp's response, as an async context manager."""
 
-    def __init__(self, *, status: int = 200, json_body: Any = None, text_body: str = "", headers: dict | None = None) -> None:
+    def __init__(self, *, status: int = 200, json_body: Any = None, json_error: Exception | None = None, text_body: str = "", headers: dict | None = None) -> None:
         self.status = status
         self._json_body = json_body
+        self._json_error = json_error
         self._text_body = text_body
         self.headers = headers or {}
 
@@ -155,6 +156,8 @@ class _FakeHttpResponse:
         return None
 
     async def json(self, content_type=None) -> Any:
+        if self._json_error is not None:
+            raise self._json_error
         return self._json_body
 
     async def text(self) -> str:
@@ -819,6 +822,45 @@ async def test_an_unreachable_and_a_refused_run_are_audited(
     assert outcomes == ["refused", "unreachable"]
 
 
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("Expecting value: <html>secret</html>"), UnicodeDecodeError("utf-8", b"\xff", 0, 1, "bad")],
+)
+async def test_a_garbled_run_response_is_audited_as_failed(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd, error: Exception
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    fake_httpd.post_response = _FakeHttpResponse(json_error=error)
+    with pytest.raises(tm.TerminalError) as err:
+        await sessions.async_run(user_id="u1", command="systemctl stop x", timeout_seconds=5)
+    assert err.value.code == tm.ERR_CONNECT
+    assert "secret" not in err.value.message
+    rows = await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN)
+    assert len(rows) == 1
+    assert rows[0]["detail"]["outcome"] == "failed"
+    assert rows[0]["detail"]["exit_code"] is None
+    assert "secret" not in str(rows[0]["detail"]["error"])
+    assert sessions._running_users == set()
+
+
+async def test_the_websocket_gets_a_clean_error_for_a_garbled_run(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    fake_httpd.post_response = _FakeHttpResponse(json_error=ValueError("<html>"))
+    connection = _connection()
+    await _call(
+        hass,
+        ws_terminal_run,
+        connection,
+        {"id": 1, "type": "ha_soc/terminal/run", "command": "id", "timeout_seconds": 5},
+    )
+    connection.send_error.assert_called_once()
+    assert connection.send_error.call_args.args[1] == tm.ERR_CONNECT
+    assert "<html>" not in connection.send_error.call_args.args[2]
+
+
 async def test_a_run_refused_before_anything_was_sent_is_not_audited(
     hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
 ) -> None:
@@ -843,6 +885,24 @@ async def test_a_run_refused_before_anything_was_sent_is_not_audited(
         ("curl -H 'Authorization: Bearer abc.def' x", "curl -H 'Authorization: Bearer [redacted]' x"),
         ("mkdir -p /data/x && ls -la", "mkdir -p /data/x && ls -la"),
         ("echo hello", "echo hello"),
+        ("curl -d 'password=hunter2' http://x", "curl -d 'password=[redacted]' http://x"),
+        ("curl 'http://x/api?token=abc123&y=1'", "curl 'http://x/api?token=[redacted]&y=1'"),
+        ('curl -d \'{"password":"hunter2"}\' http://x', 'curl -d \'{"password":[redacted]}\' http://x'),
+        ("export TOKEN='abc def'", 'export TOKEN=[redacted]'),
+        ('mysql -u root -pHunter2 db', 'mysql -u root -p[redacted] db'),
+        ("sshpass -p 'hunter2' ssh u@h", 'sshpass -p [redacted] ssh u@h'),
+        ('openssl enc -aes256 -pass pass:hunter2', 'openssl enc -aes256 -pass pass:[redacted]'),
+        ('PGPASSWORD=hunter2 psql -h db', 'PGPASSWORD=[redacted] psql -h db'),
+        ('curl https://user:hunter2@host/x', 'curl https://user:[redacted]@host/x'),
+        ('ha auth reset --password hunter2', 'ha auth reset --password [redacted]'),
+        ('echo hunter2 | docker login --password-stdin', 'echo [redacted] | docker login --password-stdin'),
+        ('wget --header="X-Api-Key: abc123" http://x', 'wget --header="X-Api-Key: [redacted]" http://x'),
+        ("curl --cookie 'session=abc123' http://x", 'curl --cookie [redacted] http://x'),
+        ("curl -H 'Cookie: session=abc123' http://x", "curl -H 'Cookie: [redacted]' http://x"),
+        ('ha supervisor options --password=hunter2', 'ha supervisor options --password=[redacted]'),
+        ("ssh-keygen -N 'hunter2' -f k", 'ssh-keygen -N [redacted] -f k'),
+        ('htpasswd -b f user hunter2', 'htpasswd -b f user [redacted]'),
+        ('mosquitto_pub -u u -P hunter2 -t a -m b', 'mosquitto_pub -u u -P [redacted] -t a -m b'),
     ],
 )
 def test_redact_command(command: str, expected: str) -> None:
