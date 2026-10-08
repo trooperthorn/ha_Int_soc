@@ -661,6 +661,8 @@ async def test_supervisor_checks_skip_without_touching_findings_when_not_ready(
     assert len(opened) == 1
     finding_id = opened[0]["id"]
     before = dict(health._store.data["misconfig_findings"][finding_id])
+    issue_before = ir.async_get(hass).async_get_issue(DOMAIN, finding_id)
+    assert issue_before is not None
     health._probe_unreported_since = dt_util.utcnow() - timedelta(minutes=5)
     grace_start = health._probe_unreported_since
 
@@ -675,4 +677,5 @@ async def test_supervisor_checks_skip_without_touching_findings_when_not_ready(
 
     after = health._store.data["misconfig_findings"][finding_id]
     assert after["status"] == before["status"]
+    assert ir.async_get(hass).async_get_issue(DOMAIN, finding_id) is not None
     assert health._probe_unreported_since == grace_start

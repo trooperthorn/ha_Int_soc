@@ -101,6 +101,7 @@ TARGET_SELF = "self"
 # Coded refusals the panel branches on.
 ERR_NOT_SUPERVISOR = "not_supervisor"
 ERR_NOT_INSTALLED = "app_not_installed"
+ERR_SUPERVISOR_NOT_READY = "supervisor_not_ready"
 ERR_NOT_RUNNING = "app_not_running"
 ERR_NOT_PAIRED = "app_not_paired"
 ERR_LIMIT_USER = "session_limit_user"
@@ -229,6 +230,19 @@ def _installed_addon(hass: HomeAssistant) -> dict[str, Any] | None:
     return None
 
 
+def _missing_app_error(hass: HomeAssistant) -> TerminalError:
+    """The refusal for an app that is not in the cached list.
+
+    While the Supervisor data has not loaded the list is unknown, not empty,
+    so the refusal says that instead of claiming the app is not installed.
+    """
+    if installed_addons(hass) is None:
+        return TerminalError(
+            ERR_SUPERVISOR_NOT_READY, "The Supervisor data has not loaded yet; try again shortly"
+        )
+    return TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+
+
 async def _addon_info(hass: HomeAssistant, slug: str) -> dict[str, Any] | None:
     """``GET /addons/{slug}/info``: hostname, state, version, and (for Core) options."""
     try:
@@ -248,6 +262,8 @@ async def async_terminal_status(hass: HomeAssistant, secrets: HaSocSecretStore, 
     status: dict[str, Any] = {
         "supervisor": is_hassio(hass),
         "installed": False,
+        # False while the Supervisor data is not loaded: "installed" is then unknown, not absent.
+        "supervisor_ready": installed_addons(hass) is not None,
         "running": False,
         "paired": bool(await secrets.async_get(TERMINAL_SECRET_KEY)),
         "version": None,
@@ -357,7 +373,7 @@ async def async_app_control(hass: HomeAssistant, action: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 - the cached add-on list may not exist yet
         addon = None
     if addon is None:
-        return {"ok": False, "reason": ERR_NOT_INSTALLED}
+        return {"ok": False, "reason": _missing_app_error(hass).code}
     try:
         from homeassistant.components.hassio import get_supervisor_client
     except Exception:  # noqa: BLE001 - hassio internals not guaranteed stable
@@ -435,7 +451,7 @@ class TerminalSessions:
             raise TerminalError(ERR_NOT_SUPERVISOR, "The terminal needs a Supervisor-based install")
         addon = _installed_addon(self._hass)
         if addon is None:
-            raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+            raise _missing_app_error(self._hass)
         info = await _addon_info(self._hass, str(addon["slug"]))
         if not info or info.get("state") != "started":
             raise TerminalError(ERR_NOT_RUNNING, "The HA SOC Terminal app is not running; start it first")
@@ -623,7 +639,7 @@ class TerminalSessions:
         """The rest of an open, run while its slot is held in ``_opening``."""
         addon = _installed_addon(self._hass)
         if addon is None:
-            raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
+            raise _missing_app_error(self._hass)
         info = await _addon_info(self._hass, str(addon["slug"]))
         if not info or info.get("state") != "started":
             raise TerminalError(ERR_NOT_RUNNING, "The HA SOC Terminal app is not running; start it first")

@@ -165,3 +165,30 @@ def test_cached_addons_info_is_none_when_not_ready(hass: HomeAssistant) -> None:
 
     assert cached_addons_info(hass) is None
     assert installed_addons(hass) is None
+
+
+def test_supervisor_not_ready_is_quiet_but_other_failures_warn(
+    hass: HomeAssistant, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Startup is expected and stays at debug; any other failure is a warning
+    so the security checks that depend on the data do not stop silently."""
+    import logging
+
+    from homeassistant.components.hassio import HassioNotReadyError
+
+    from custom_components.ha_soc.containers import cached_addons_info, installed_addons
+
+    caplog.set_level(logging.DEBUG, logger="custom_components.ha_soc.containers")
+    assert cached_addons_info(hass) is None
+    assert installed_addons(hass) is None
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    with (
+        patch("homeassistant.components.hassio.get_addons_info", side_effect=RuntimeError("boom")),
+        patch("homeassistant.components.hassio.get_addons_list", side_effect=RuntimeError("boom")),
+    ):
+        assert cached_addons_info(hass) is None
+        assert installed_addons(hass) is None
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 2
+    assert HassioNotReadyError  # the quiet path above is that exception, not a blanket catch

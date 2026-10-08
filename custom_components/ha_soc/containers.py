@@ -57,18 +57,23 @@ def _flags_for(container: dict[str, Any]) -> list[str]:
 def installed_addons(hass: HomeAssistant) -> list[dict[str, Any]] | None:
     """The Supervisor's cached list of installed add-ons, or None.
 
-    None means the list is not available: hassio is not loaded, its first
-    refresh has not finished (core raises HassioNotReadyError until then),
-    or the helper is missing. Callers treat that as "Supervisor not ready"
-    and never see an exception. This replaces reading the ``addons`` key of
-    ``get_supervisor_info()``, which core deprecated in 2026.4.
+    None means the list is not available yet: hassio is not loaded or its
+    first refresh has not finished (core raises HassioNotReadyError until
+    then). Callers treat that as "Supervisor not ready" and never see the
+    exception. Any other failure is a fault, not a startup window, so it is
+    logged as a warning (and still returns None so the caller skips). This
+    replaces reading the ``addons`` key of ``get_supervisor_info()``, which
+    core deprecated in 2026.4.
     """
-    try:
-        from homeassistant.components.hassio import get_addons_list
+    from homeassistant.components.hassio import HassioNotReadyError, get_addons_list
 
+    try:
         return list(get_addons_list(hass))
-    except Exception as err:  # noqa: BLE001 - HassioNotReadyError or a missing helper
-        _LOGGER.debug("Supervisor add-on list not available: %s", err)
+    except HassioNotReadyError:
+        _LOGGER.debug("Supervisor add-on list not loaded yet")
+        return None
+    except Exception:  # noqa: BLE001 - a core change must not stop the callers
+        _LOGGER.warning("Supervisor add-on list could not be read", exc_info=True)
         return None
 
 
@@ -76,14 +81,19 @@ def cached_addons_info(hass: HomeAssistant) -> dict[str, dict[str, Any] | None] 
     """The Supervisor's cached per-add-on detail, or None when not ready.
 
     Core's get_addons_info() raises HassioNotReadyError until the first
-    refresh completes; callers get None instead and skip their check.
+    refresh completes; callers get None instead and skip their check. Any
+    other failure is logged as a warning, so the security checks that depend
+    on this data do not stop without a visible signal.
     """
-    try:
-        from homeassistant.components.hassio import get_addons_info
+    from homeassistant.components.hassio import HassioNotReadyError, get_addons_info
 
+    try:
         return get_addons_info(hass)
-    except Exception as err:  # noqa: BLE001 - HassioNotReadyError or a missing helper
-        _LOGGER.debug("Supervisor add-on info not available: %s", err)
+    except HassioNotReadyError:
+        _LOGGER.debug("Supervisor add-on info not loaded yet")
+        return None
+    except Exception:  # noqa: BLE001 - a core change must not stop the callers
+        _LOGGER.warning("Supervisor add-on info could not be read", exc_info=True)
         return None
 
 

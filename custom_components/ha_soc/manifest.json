@@ -30,7 +30,7 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/trooperthorn/ha_Int_soc/issues",
   "requirements": [
-    "asyncssh>=2.24.0,<3"
+    "asyncssh==2.24.0"
   ],
   "single_config_entry": true,
   "version": "2026.09.27.1"

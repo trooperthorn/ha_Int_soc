@@ -483,33 +483,48 @@ async def test_heartbeat_tick_during_shutdown_still_classifies_as_clean(
 
 
 async def test_heartbeat_in_flight_when_stop_arrives_is_ordered_before_the_marker(
-    hass: HomeAssistant, entry: MockConfigEntry, freezer
+    hass: HomeAssistant, entry: MockConfigEntry
 ) -> None:
     """A heartbeat write already running in the executor when the stop event
-    fires must finish before the marker is written."""
+    fires must finish before the marker is written.
+
+    The order is read from the sequence of file writes, not from timestamps,
+    because a frozen clock gives both files the same time and cannot tell a
+    lock from no lock.
+    """
     import asyncio
     import threading
-    from datetime import timedelta
+
+    from custom_components.ha_soc import crash_forensics
 
     run1: CrashForensics = entry.runtime_data.crash_forensics
     started = threading.Event()
     release = threading.Event()
     real_write = run1._sync_write_heartbeat
+    real_atomic = crash_forensics.sync_write_json_atomic
+    order: list[str] = []
 
     def slow_write() -> None:
         started.set()
         release.wait(5)
         real_write()
 
-    with patch.object(run1, "_sync_write_heartbeat", slow_write):
+    def recording_atomic(path, *args, **kwargs):
+        result = real_atomic(path, *args, **kwargs)
+        order.append("marker" if str(path) == str(run1._last_stop_path) else "heartbeat")
+        return result
+
+    with (
+        patch.object(run1, "_sync_write_heartbeat", slow_write),
+        patch.object(crash_forensics, "sync_write_json_atomic", recording_atomic),
+    ):
         beat = hass.async_create_task(run1._async_write_heartbeat())
         await hass.async_add_executor_job(started.wait, 5)
-        freezer.tick(timedelta(seconds=5))
         stop = hass.async_create_task(run1._async_on_stop(None))
         await asyncio.sleep(0)
+        # The marker must be waiting for the heartbeat that is still running.
+        assert order == []
         release.set()
         await asyncio.gather(beat, stop)
 
-    heartbeat = await hass.async_add_executor_job(sync_read_json, run1._heartbeat_path)
-    marker = await hass.async_add_executor_job(sync_read_json, run1._last_stop_path)
-    assert heartbeat["ts"] <= marker["ts"]
+    assert order == ["heartbeat", "marker"]

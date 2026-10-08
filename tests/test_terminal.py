@@ -470,10 +470,35 @@ async def test_app_control_start_and_restart_call_the_supervisor_client(
 
 async def test_app_control_refuses_when_not_installed(hass: HomeAssistant, entry: MockConfigEntry, monkeypatch) -> None:
     monkeypatch.setattr(tm, "is_hassio", lambda _hass: True)
+    monkeypatch.setattr(tm, "installed_addons", lambda _hass: [])
     connection = await _call(
         hass, ws_terminal_app_control, _connection(), {"id": 1, "type": "ha_soc/terminal/app_control", "action": "start"}
     )
     assert connection.send_result.call_args[0][1] == {"ok": False, "reason": tm.ERR_NOT_INSTALLED}
+
+
+async def test_supervisor_not_ready_is_not_reported_as_not_installed(
+    hass: HomeAssistant, entry: MockConfigEntry, monkeypatch
+) -> None:
+    """Before the Supervisor data loads the app's state is unknown, and the
+    refusals and the status say so instead of claiming it is not installed."""
+    monkeypatch.setattr(tm, "is_hassio", lambda _hass: True)
+    connection = await _call(
+        hass, ws_terminal_app_control, _connection(), {"id": 1, "type": "ha_soc/terminal/app_control", "action": "start"}
+    )
+    assert connection.send_result.call_args[0][1] == {"ok": False, "reason": tm.ERR_SUPERVISOR_NOT_READY}
+
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    connection = await _call(hass, ws_terminal_open, _connection(), {"id": 2, "type": "ha_soc/terminal/open", "target": "self"})
+    assert connection.send_error.call_args[0][1] == tm.ERR_SUPERVISOR_NOT_READY
+
+    connection = await _call(hass, ws_terminal_status, _connection(), {"id": 3, "type": "ha_soc/terminal/status"})
+    status = connection.send_result.call_args[0][1]
+    assert status["installed"] is False and status["supervisor_ready"] is False
+
+    monkeypatch.setattr(tm, "installed_addons", lambda _hass: [])
+    connection = await _call(hass, ws_terminal_status, _connection(), {"id": 4, "type": "ha_soc/terminal/status"})
+    assert connection.send_result.call_args[0][1]["supervisor_ready"] is True
 
 
 async def test_forget_pairing_clears_the_secret_and_is_audited(hass: HomeAssistant, entry: MockConfigEntry) -> None:
