@@ -404,8 +404,10 @@ async def test_push_sends_metrics_then_logs_with_auth_and_idempotency(
         assert len(set(keys)) == 2 and all(0 < len(k) <= 128 and k.isascii() for k in keys)
 
         metrics = observe.requests[0]["json"]["resourceMetrics"][0]
-        attrs = {a["key"]: a["value"]["stringValue"] for a in metrics["resource"]["attributes"]}
+        attrs = {a["key"]: next(iter(a["value"].values())) for a in metrics["resource"]["attributes"]}
         assert attrs["host.name"] == HOST
+        assert attrs["os.type"] == "homeassistant"
+        assert attrs["observe.agent.sent_at"] == "1790000000"
         assert metrics["scopeMetrics"]
         assert observe.requests[1]["json"]["resourceLogs"][0]["scopeLogs"]
         assert pusher.status["sent_ok"] == 2 and pusher.status["last_status"] == 200
@@ -434,6 +436,98 @@ async def test_partial_success_is_counted_and_logged(hass, entry, observe, caplo
         assert "rejected 3 item(s)" in caplog.text
         assert REDACTED_PLACEHOLDER in _own_log(caplog)  # the key echoed by the server is masked
         assert KEY not in _own_log(caplog)
+    finally:
+        pusher.async_stop()
+
+
+async def test_partial_log_rejection_is_retried_once_and_then_reported(
+    hass, entry, observe, caplog
+) -> None:
+    """Audit probe p04: records Observe rejected were marked sent and never offered again."""
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        partial = json.dumps(
+            {"partialSuccess": {"rejectedLogRecords": 2, "errorMessage": "bad timestamp"}}
+        )
+        # The initial push was accepted whole, so move to records Observe has not seen yet.
+        pusher._sent_log_keys.clear()
+        observe.script = [(200, {}, ""), (200, {}, partial)]  # metrics ok, logs partly rejected
+        observe.requests.clear()
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["rejected_items"] == 2
+        assert pusher.status["abandoned_log_payloads"] == 0
+
+        # Second cycle: the same records are offered again, once, and rejected again.
+        observe.script = [(200, {}, ""), (200, {}, partial)]
+        observe.requests.clear()
+        clock.now += 60
+        with caplog.at_level(logging.ERROR):
+            await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["abandoned_log_payloads"] == 1
+        assert "giving up" in _own_log(caplog)
+
+        # Third cycle: given up, so the records are not offered a third time.
+        observe.script = []
+        observe.requests.clear()
+        clock.now += 60
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics"]
+    finally:
+        pusher.async_stop()
+
+
+async def test_partial_log_rejection_that_clears_on_retry_is_marked_sent(
+    hass, entry, observe
+) -> None:
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        partial = json.dumps({"partialSuccess": {"rejectedLogRecords": 1}})
+        pusher._sent_log_keys.clear()
+        observe.script = [(200, {}, ""), (200, {}, partial)]
+        await pusher.async_push_once()
+        clock.now += 60
+        observe.requests.clear()
+        await pusher.async_push_once()  # accepted whole this time
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics", "/v1/logs"]
+        assert pusher.status["abandoned_log_payloads"] == 0
+        observe.requests.clear()
+        clock.now += 60
+        await pusher.async_push_once()
+        assert [r["path"] for r in observe.requests] == ["/v1/metrics"]
+    finally:
+        pusher.async_stop()
+
+
+async def test_recovered_integration_sends_one_zero_through_the_pusher(
+    hass, entry, observe
+) -> None:
+    pusher, clock = await _pusher(hass, entry, observe.url)
+    try:
+        def errors_of(request, domain):
+            return [
+                dp["asDouble"]
+                for rm in request["json"]["resourceMetrics"]
+                for sm in rm["scopeMetrics"]
+                for m in sm["metrics"]
+                if m["name"] == "observe.ha.integration.errors"
+                for dp in m["gauge"]["dataPoints"]
+                if {"key": "observe.ha.integration", "value": {"stringValue": domain}}
+                in dp["attributes"]
+            ]
+
+        snap = _snapshot()
+        snap["integration_overview"]["integrations"] = [
+            r for r in snap["integration_overview"]["integrations"] if r["domain"] != "unifi"
+        ]
+        pusher._collector = AsyncMock(return_value=snap)
+        for expected in ([0.0], []):
+            observe.requests.clear()
+            clock.now += 60
+            await pusher.async_push_once()
+            metrics = next(r for r in observe.requests if r["path"] == "/v1/metrics")
+            assert errors_of(metrics, "unifi") == expected
     finally:
         pusher.async_stop()
 
@@ -923,3 +1017,18 @@ async def test_collector_reports_backup_state(hass, entry) -> None:
     assert collector._backup()[0]["id"] == finding_id
     runtime.store.data["misconfig_findings"][finding_id]["status"] = "dismissed"
     assert collector._backup()[0] is None
+
+
+async def test_collector_reports_an_unreadable_backup_store(hass, entry) -> None:
+    runtime = entry.runtime_data
+    collector = op.SnapshotCollector(
+        hass,
+        runtime.store,
+        health=runtime.health,
+        watchdog=runtime.watchdog,
+        crash_forensics=runtime.crash_forensics,
+    )
+    runtime.health.backup_unreadable = "the backup store could not be read"
+    with patch.object(collector, "_containers", AsyncMock(return_value=None)):
+        snapshot = await collector.async_collect()
+    assert snapshot["backup_unreadable"] == "the backup store could not be read"

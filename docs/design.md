@@ -393,14 +393,18 @@ snapshot dict and the time. The snapshot keys are `containers` (the
 rows), `crash_bundles` (`sync_list_bundles`), `integration_overview`,
 `repairs` (issue dicts with a `domain`), `backup_checked` with
 `backup_finding` (the `backup_unprotected` health finding or None) and
-`resolution` (the Supervisor `/resolution/info` body). A missing key means
-"not collected" and yields no points, so a Core install without a
-Supervisor sends no container or Supervisor series.
+`resolution` (the Supervisor `/resolution/info` body) and `backup_unreadable`
+(the reason the backup store could not be read, or None). A missing key means
+"not collected" and yields no data points for that source, and the source is
+reported as unavailable (see below), so a Core install without a Supervisor
+sends no container or Supervisor series and says why.
 
 Names, units and attributes follow section 3.4 of Observe's
 `DATA-API-DESIGN.md`. The resource carries `host.name`, `service.name`
-`home-assistant`, `observe.producer` `ha_Int_soc` and, when known, the
-instance id, Core version and installation type. The scope name is
+`home-assistant`, `observe.producer` `ha_Int_soc`, `os.type` `homeassistant`
+(the platform Observe shows for the host), `observe.agent.sent_at` (the send
+time in whole unix seconds) and, when known, the instance id, `service.version`
+(the Core version) and installation type. The scope name is
 `ha_soc.collector.<source>`, which Observe stores as the source. Every
 metric is a gauge with `asDouble` and the snapshot time. CPU and memory
 percentages are divided by 100 because Observe stores ratios, and the result
@@ -452,6 +456,23 @@ calls plus one per started add-on per interval, the same as the watchdog.
 The pass covers up to 300 add-ons; the rest are counted in `truncated` and
 logged as a warning.
 
+Availability and honest gaps. Every metrics request carries the gauge
+`observe.source.available` (unit `1`, attribute `observe.source`, plus
+`observe.source.reason` when the value is 0) for each of `containers`,
+`watchdog`, `integrations`, `repairs`, `backup`, `supervisor` and
+`crash_forensics`. A source with nothing to report, such as no open breach, is
+available and sends its own zero, so Observe can tell a quiet source from one
+that could not be read. These points are exempt from the point cap and are not
+sent for an empty snapshot. When `.storage/backup` exists but cannot be read,
+`IntegrationHealth.backup_unreadable` holds the reason, the backup gauge is not
+sent (it used to be sent as 0, "clean") and the `backup` source is unavailable
+with that reason. The pusher remembers which `(domain, category)` integration
+error series it has sent; when one is gone from the next snapshot, because the
+entry was removed or unloaded or the domain moved to another category, that
+series is sent once as 0 and forgotten, so Observe does not show its last
+count for ever. A domain that is only cut by the row cap is not zeroed. If a
+snapshot has no integration overview the memory is left alone.
+
 Golden files in `tests/fixtures/observe_otlp/` pin the output;
 `docs/OBSERVE-VALIDATION.md` records that Observe's normaliser and ingest
 routes accepted them with no rejects.
@@ -465,7 +486,14 @@ container sample (a fresh Supervisor call only when that sample is older than
 registry's open issues, the unprotected-backup finding, and, refreshed at
 most every ten minutes because they change rarely, the crash bundle list and
 the Supervisor `/resolution/info` body. A part that cannot be collected is
-left out. `ObservePusher` owns the timer and the delivery rules.
+left out. `ObservePusher` owns the timer and the delivery rules. Observe
+answers 200 with a `partialSuccess` count when it refused some records of a
+logs payload and does not say which. The keys of such a payload are not marked
+sent, so the next cycle offers the same records once more (Observe skips the
+ones it already holds by dedup key). A key whose payload is partly rejected a
+second time is given up on, marked sent, logged as an error and counted in
+`abandoned_log_payloads` of the diagnostics. Metric rejections are only counted
+and logged, because every gauge is sent again on the next cycle.
 `validate_url`, `validate_host_name`, `validate_ingest_key` and
 `validate_options` are the pure checks the options flow and the pusher share.
 

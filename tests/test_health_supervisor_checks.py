@@ -525,6 +525,25 @@ async def test_backup_protection_absent_file_is_nothing_to_check(
     assert findings == []
 
 
+async def test_backup_protection_unreadable_store_is_reported_not_clean(
+    hass: HomeAssistant, health: IntegrationHealth, tmp_path
+) -> None:
+    """An unreadable store is unknown, which the Observe push must not send as clean."""
+    hass.config.config_dir = str(tmp_path)
+    (tmp_path / ".storage").mkdir()
+    (tmp_path / ".storage" / "backup").write_text("{not json", encoding="utf-8")
+    assert await health._check_backup_protection() == []
+    assert health.backup_unreadable == "the backup store could not be read"
+
+    _write_backup_store(
+        tmp_path,
+        password_set=True,
+        agents={"backup.local": {"protected": True, "retention": None}},
+    )
+    assert await health._check_backup_protection() == []
+    assert health.backup_unreadable is None
+
+
 async def test_samba_share_without_password_or_with_guest_is_flagged(
     hass: HomeAssistant, health: IntegrationHealth
 ) -> None:

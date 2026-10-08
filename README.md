@@ -709,7 +709,9 @@ Observe monitoring server: per-container CPU and memory for Core, the
 Supervisor and every add-on, watchdog breaches and crash forensics
 classifications as log records, integration health categories, the open
 Repairs count, the unprotected-backup finding and the Supervisor
-resolution state. The push is off by default and sends nothing until you
+resolution state, with an availability gauge per source so Observe can tell a
+quiet source from one that could not be read (an unreadable backup store is
+reported as unavailable, never as clean). The push is off by default and sends nothing until you
 turn it on. Several entries of one integration give one error series (the
 domain's count, not a multiple of it), a stopped container reports running 0,
 CPU and memory utilisation are ratios clamped to 0 to 1, no metric carries a
@@ -717,7 +719,10 @@ total beside labelled series that a sum would count twice, and a row cap is
 reported in `observe.ha.push.rows_dropped`. A crash forensics dry run is never
 sent, and a watchdog breach that lasts is one log record until the container
 recovers, even across a Home Assistant restart, at which point the breach
-gauge returns to 0.
+gauge returns to 0. An integration that recovers or disappears has its error
+series sent once as 0, and log records Observe partly rejects are offered one
+more time and then reported in the log and the diagnostics. The requests name
+the platform (`os.type` `homeassistant`), the Core version and the send time.
 
 When the resource watchdog is off, the push asks the Supervisor for container
 stats itself, at most once per watchdog interval (60 seconds by default), and

@@ -22,6 +22,18 @@
             }
           },
           {
+            "key": "os.type",
+            "value": {
+              "stringValue": "homeassistant"
+            }
+          },
+          {
+            "key": "observe.agent.sent_at",
+            "value": {
+              "intValue": "1790000000"
+            }
+          },
+          {
             "key": "service.instance.id",
             "value": {
               "stringValue": "5f0c1c36a1a24a1d9c7e0b7f4c2d9e10"
@@ -279,6 +291,26 @@
               },
               "name": "observe.ha.container.running",
               "unit": "1"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "containers"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
+              "unit": "1"
             }
           ],
           "scope": {
@@ -306,6 +338,26 @@
               },
               "name": "observe.ha.watchdog.breaches",
               "unit": "{breach}"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "watchdog"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
+              "unit": "1"
             }
           ],
           "scope": {
@@ -485,6 +537,26 @@
               },
               "name": "observe.ha.integration.errors",
               "unit": "{error}"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "integrations"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
+              "unit": "1"
             }
           ],
           "scope": {
@@ -556,6 +628,26 @@
               },
               "name": "observe.ha.repair.domain_issues",
               "unit": "{issue}"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "repairs"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
+              "unit": "1"
             }
           ],
           "scope": {
@@ -582,6 +674,26 @@
                 ]
               },
               "name": "observe.ha.backup.unprotected",
+              "unit": "1"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "backup"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
               "unit": "1"
             }
           ],
@@ -660,6 +772,26 @@
                 ]
               },
               "name": "observe.ha.supervisor.unhealthy_reason",
+              "unit": "1"
+            },
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "supervisor"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
               "unit": "1"
             }
           ],
@@ -740,6 +872,33 @@
           ],
           "scope": {
             "name": "ha_soc.collector.push"
+          }
+        },
+        {
+          "metrics": [
+            {
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "asDouble": 1.0,
+                    "attributes": [
+                      {
+                        "key": "observe.source",
+                        "value": {
+                          "stringValue": "crash_forensics"
+                        }
+                      }
+                    ],
+                    "timeUnixNano": "1790000000000000000"
+                  }
+                ]
+              },
+              "name": "observe.source.available",
+              "unit": "1"
+            }
+          ],
+          "scope": {
+            "name": "ha_soc.collector.crash_forensics"
           }
         }
       ]

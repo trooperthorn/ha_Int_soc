@@ -53,6 +53,8 @@ from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
 
+BACKUP_STORE_UNREADABLE = "the backup store could not be read"
+
 HEALTH_TICK_INTERVAL = timedelta(minutes=5)
 STARTUP_GRACE = timedelta(minutes=5)
 ERROR_BUCKET_SPAN_HOURS = 24
@@ -218,6 +220,9 @@ class IntegrationHealth:
         self._started_at: datetime | None = None
         # True once a full misconfiguration sweep has run, so a finding that is absent means clean.
         self.misconfig_sweep_ran = False
+        # Why the backup store could not be judged on the last run of the backup check, or None
+        # when it was read (or is absent). The Observe push reports the source as unavailable.
+        self.backup_unreadable: str | None = None
         # In-memory only; resets on every reload for a fresh grace window, like _started_at.
         self._probe_unreported_since: datetime | None = None
 
@@ -1438,10 +1443,12 @@ class IntegrationHealth:
                 ),
             }
 
+        self.backup_unreadable = BACKUP_STORE_UNREADABLE
         info = await self.hass.async_add_executor_job(_read)
         if info is None:
             _LOGGER.debug("Skipping backup_unprotected check: could not read %s", path)
             return []
+        self.backup_unreadable = None
         if info["absent"]:
             return self._async_finalize_check("backup_unprotected", [])
 

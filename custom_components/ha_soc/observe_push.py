@@ -16,6 +16,8 @@ Delivery rules:
   Other 4xx answers mean the payload itself is wrong, so it is dropped and counted. After
   REJECT_THRESHOLD of them in a row sending backs off exponentially and a Repairs issue
   names the status; any accepted push clears both.
+- A 200 answer with a partialSuccess rejection of log records keeps those records unsent for
+  one more try on the next cycle; a second rejection gives up and reports it.
 - The ingest key is only ever placed in the Authorization header. It is removed from every
   log line and never appears in diagnostics or the status dict.
 """
@@ -302,6 +304,7 @@ class SnapshotCollector:
         finding, checked = self._backup()
         snapshot["backup_finding"] = finding
         snapshot["backup_checked"] = checked
+        snapshot["backup_unreadable"] = getattr(self._health, "backup_unreadable", None)
         snapshot.update(await self._slow_parts())
         return snapshot
 
@@ -398,6 +401,7 @@ class _Payload:
     body: bytes  # gzip-compressed OTLP JSON
     idempotency_key: str
     dedup_keys: frozenset[str] = field(default_factory=frozenset)
+    rejected: int = 0  # Items Observe reported in a partialSuccess answer to this payload.
 
 
 @dataclass(frozen=True)
@@ -457,6 +461,10 @@ class ObservePusher:
         self._retry_at = 0.0
         self._failures = 0
         self._sent_log_keys: set[str] = set()
+        # Log keys whose payload Observe partly rejected once; a second rejection gives up.
+        self._partial_retried: set[str] = set()
+        # The (domain, category) integration error series sent so far, to zero a recovered one.
+        self._integration_series: set[tuple[str, str]] = set()
         self._auth_rejected = False
         self._reject_streak = 0
         self._rejected_issue = False
@@ -464,6 +472,7 @@ class ObservePusher:
         self.dropped_overflow = 0
         self.dropped_rejected = 0
         self.rejected_items = 0
+        self.abandoned_log_payloads = 0
         self.sent_ok = 0
         self.last_success: str | None = None
         self.last_status: int | str | None = None
@@ -516,6 +525,8 @@ class ObservePusher:
             self._unsub = None
         self._config = None
         self._queue.clear()
+        self._partial_retried.clear()
+        self._integration_series.clear()
         self._retry_at = 0.0
         self._failures = 0
         self._auth_rejected = False
@@ -551,6 +562,7 @@ class ObservePusher:
             "dropped_overflow": self.dropped_overflow,
             "dropped_rejected": self.dropped_rejected,
             "rejected_items": self.rejected_items,
+            "abandoned_log_payloads": self.abandoned_log_payloads,
             "auth_rejected": self._auth_rejected,
             "rejected_streak": self._reject_streak,
             "last_success": self.last_success,
@@ -590,7 +602,9 @@ class ObservePusher:
         snapshot = await self._collector()
         now = self._wall()
         dropped_by_mapper: dict[str, int] = {}
-        metrics = otlp_mapper.build_metrics(self._identity, snapshot, now, dropped_by_mapper)
+        metrics = otlp_mapper.build_metrics(
+            self._identity, snapshot, now, dropped_by_mapper, self._integration_series
+        )
         logs = otlp_mapper.build_logs(self._identity, snapshot, now, dropped_by_mapper)
         if dropped_by_mapper:
             _LOGGER.warning(
@@ -642,9 +656,7 @@ class ObservePusher:
                 self._retry_at = 0.0
                 self.sent_ok += 1
                 self.last_success = dt_util.utcnow().isoformat()
-                self._sent_log_keys |= item.dedup_keys
-                if len(self._sent_log_keys) > SENT_KEYS_LIMIT:
-                    self._sent_log_keys = set(item.dedup_keys)
+                self._note_log_keys(item)
                 if self._auth_rejected:
                     self._auth_rejected = False
                     async_delete_observe_key_issue(self.hass)
@@ -676,6 +688,37 @@ class ObservePusher:
                     else min(BACKOFF_BASE_SECONDS * 2 ** (self._failures - 1), BACKOFF_MAX_SECONDS)
                 )
                 return
+
+    def _note_log_keys(self, item: _Payload) -> None:
+        """Remember which log records Observe has taken, once a logs payload was accepted.
+
+        Observe's answer does not say which records of a partial rejection were refused, so
+        the keys of such a payload are left unsent: the next cycle builds the same records
+        again, Observe skips the ones it already holds by dedup key, and the refused ones get
+        a second try. A key rejected a second time is given up on, marked sent so it is not
+        retried for ever, and reported.
+        """
+        keys = item.dedup_keys
+        if item.signal == "logs" and item.rejected:
+            given_up = keys & self._partial_retried
+            if given_up:
+                self.abandoned_log_payloads += 1
+                _LOGGER.error(
+                    "Observe rejected log records again on the retry; giving up on %d record "
+                    "key(s), %d rejected in this answer",
+                    len(given_up),
+                    item.rejected,
+                )
+                self._partial_retried = (self._partial_retried - given_up) | (keys - given_up)
+                keys = given_up
+            else:
+                self._partial_retried |= keys
+                return
+        else:
+            self._partial_retried -= keys
+        self._sent_log_keys |= keys
+        if len(self._sent_log_keys) > SENT_KEYS_LIMIT:
+            self._sent_log_keys = set(keys)
 
     # -- one request ----------------------------------------------------------
 
@@ -729,7 +772,7 @@ class ObservePusher:
 
         self.last_status = status
         if status == 200:
-            self._note_partial_success(item.signal, body)
+            item.rejected = self._note_partial_success(item.signal, body)
             return _OK, None
         if status in (401, 403):
             _LOGGER.warning(
@@ -750,13 +793,14 @@ class ObservePusher:
         )
         return _DROP, None
 
-    def _note_partial_success(self, signal: str, body: bytes) -> None:
+    def _note_partial_success(self, signal: str, body: bytes) -> int:
+        """Log a partialSuccess answer and return how many items Observe rejected."""
         if not body:
-            return
+            return 0
         try:
             partial = json.loads(body).get("partialSuccess") or {}
         except (ValueError, AttributeError):
-            return
+            return 0
         raw = partial.get("rejectedDataPoints", partial.get("rejectedLogRecords", 0))
         try:
             rejected = int(raw or 0)
@@ -771,3 +815,4 @@ class ObservePusher:
                 rejected,
                 self._redact(message) or "no reason given",
             )
+        return rejected

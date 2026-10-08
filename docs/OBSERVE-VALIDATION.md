@@ -23,6 +23,10 @@ This record states how the golden files in `tests/fixtures/observe_otlp/` were c
 - Result: 43 samples and 5 events accepted, 0 rejected. The new series are `observe.ha.repair.domain_issues`, `observe.ha.supervisor.unhealthy_reason` and `observe.ha.push.rows_dropped`; the three ESPHome fixture rows arrive as one `observe.ha.integration.errors` sample of 12.
 - The throwaway script was not kept, so this is an attestation like the earlier runs.
 
+## Availability and identity fields
+
+- Date: 2026-10-07. Not run against Observe in this slice: no Observe checkout was executed. The golden files were regenerated with `os.type`, `observe.agent.sent_at` and `observe.source.available`, and `tests/test_otlp_mapper.py` repeats the reading rules of `observe/otlp/normalize.py` for them (a string `os.type` becomes the platform, `service.version` the agent version, an `intValue` send time between 0 and 253402300800, a source point with the attribute `observe.source` and the reason on the first). Repeat the run above against the then-current Observe checkout and add a dated row.
+
 ## Provenance
 
 The throwaway script and its output were not kept, so the results below are an attestation by the person who ran it, not an artifact this repository can replay. Nothing here can be re-checked without the Observe checkout at `c4bb7e1`. The limit checks in `tests/test_otlp_mapper.py` are the part verified on every run. An UPDATE_GOLDEN run fails on purpose after writing the files, so it can never pass in CI by accident.

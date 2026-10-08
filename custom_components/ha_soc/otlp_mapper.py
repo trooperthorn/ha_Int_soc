@@ -17,6 +17,8 @@ from typing import Any
 SCOPE_PREFIX = "ha_soc.collector."
 SERVICE_NAME = "home-assistant"
 PRODUCER = "ha_Int_soc"
+# Observe's name for the platform of a host that runs Home Assistant (observe/otlp/normalize.py).
+OS_TYPE = "homeassistant"
 
 # Observe's per-request and per-field limits (observe/ingest/schema.py, otlp/normalize.py).
 MAX_POINTS = 5000
@@ -87,11 +89,14 @@ def _ns(ts: float) -> str:
     return str(int(round(ts * 1_000_000_000)))
 
 
-def _resource(identity: Identity) -> dict[str, Any]:
+def _resource(identity: Identity, now: float) -> dict[str, Any]:
+    """The resource of one request. `observe.agent.sent_at` is `now` in whole unix seconds."""
     attrs: dict[str, Any] = {
         "host.name": identity.host_name,
         "service.name": SERVICE_NAME,
         "observe.producer": PRODUCER,
+        "os.type": OS_TYPE,
+        "observe.agent.sent_at": int(now),
     }
     for key, value in (
         ("service.instance.id", identity.instance_id),
@@ -221,7 +226,16 @@ def _priority(category: str) -> int:
     return len(CATEGORY_PRIORITY)
 
 
-def _integrations(m: _Metrics, overview: Any) -> None:
+def _integrations(
+    m: _Metrics, overview: Any, series: set[tuple[str, str]] | None = None
+) -> None:
+    """Counts per category and one error series per domain.
+
+    `series` is the (domain, category) pairs the previous payload sent, updated in place. A
+    pair that is gone now (the entry was removed or unloaded, or the domain moved to another
+    category) is sent once as 0, because Observe would otherwise keep showing its last value
+    for ever. A domain that is still present but cut by the row cap is not zeroed.
+    """
     if not isinstance(overview, dict):
         return
     counts = overview.get("category_counts")
@@ -246,10 +260,23 @@ def _integrations(m: _Metrics, overview: Any) -> None:
             category_of[domain] = category
     # The domains with the most errors are the ones to keep when the cap cuts the list.
     ranked = sorted(errors, key=lambda d: (-errors[d], d))
+    sent: set[tuple[str, str]] = set()
     for domain in _capped(m, "integrations", ranked):
         m.gauge("integrations", "observe.ha.integration.errors", "{error}",
                 errors[domain], observe__ha__integration=domain,
                 observe__ha__integration__category=category_of[domain])
+        sent.add((domain, category_of[domain]))
+    if series is None:
+        return
+    keep = set(sent)
+    for domain, category in sorted(series - sent):
+        if domain in errors and category_of[domain] == category:
+            keep.add((domain, category))  # Cut by the cap, not recovered.
+            continue
+        m.gauge("integrations", "observe.ha.integration.errors", "{error}", 0, force=True,
+                observe__ha__integration=domain, observe__ha__integration__category=category)
+    series.clear()
+    series.update(keep)
 
 
 def _repairs(m: _Metrics, issues: Any) -> None:
@@ -269,8 +296,14 @@ def _repairs(m: _Metrics, issues: Any) -> None:
                 observe__ha__repair__state="open", observe__ha__repair__domain=domain)
 
 
-def _backup(m: _Metrics, finding: Any, checked: bool) -> None:
-    """One gauge: 1 while the unprotected-backup finding is open, 0 when the check ran clean."""
+def _backup(m: _Metrics, finding: Any, checked: bool, unreadable: Any) -> None:
+    """One gauge: 1 while the unprotected-backup finding is open, 0 when the check ran clean.
+
+    When the backup store could not be read the answer is unknown, so no gauge is sent at
+    all; `_source_status` reports the source as unavailable with the reason instead.
+    """
+    if isinstance(unreadable, str) and unreadable:
+        return
     if isinstance(finding, dict):
         detail = finding.get("detail") if isinstance(finding.get("detail"), dict) else {}
         m.gauge("backup", "observe.ha.backup.unprotected", "1", 1,
@@ -295,6 +328,49 @@ def _supervisor(m: _Metrics, resolution: Any) -> None:
                 observe__ha__supervisor__reason=reason)
 
 
+def _source_status(m: _Metrics, snapshot: dict[str, Any]) -> None:
+    """`observe.source.available` per source: 1 when its data was collected, else 0 with why.
+
+    A source with nothing to report (no breach, no repair issue) is available and sends its
+    own zeroes, so Observe can tell a quiet source from one that could not be read. Sent only
+    for a snapshot that holds something, so an empty snapshot stays an empty request.
+    """
+    if not snapshot:
+        return
+    containers = snapshot.get("containers")
+    if isinstance(containers, dict) and containers.get("available"):
+        containers_reason = ""
+    elif isinstance(containers, dict) and containers.get("reason"):
+        containers_reason = str(containers["reason"])
+    else:
+        containers_reason = "container statistics were not available"
+    unreadable = snapshot.get("backup_unreadable")
+    if isinstance(unreadable, str) and unreadable:
+        backup = unreadable
+    elif snapshot.get("backup_finding") is None and not snapshot.get("backup_checked"):
+        backup = "the backup check has not run yet"
+    else:
+        backup = ""
+    statuses = (
+        ("containers", containers_reason),
+        ("watchdog", "" if snapshot.get("detections") is not None else
+         "the detections were not collected"),
+        ("integrations", "" if isinstance(snapshot.get("integration_overview"), dict) else
+         "the integration overview could not be collected"),
+        ("repairs", "" if snapshot.get("repairs") is not None else
+         "the repair issues could not be read"),
+        ("backup", backup),
+        ("supervisor", "" if isinstance(snapshot.get("resolution"), dict) else
+         "the Supervisor resolution info was not available"),
+        ("crash_forensics", "" if snapshot.get("crash_bundles") is not None else
+         "the crash bundle list was not available"),
+    )
+    for source, reason in statuses:
+        extra = {"observe__source__reason": reason} if reason else {}
+        m.gauge(source, "observe.source.available", "1", int(not reason), force=True,
+                observe__source=source, **extra)
+
+
 ROW_KINDS = ("containers", "integrations", "repair_domains", "unhealthy_reasons", "points")
 
 
@@ -314,8 +390,12 @@ def _dropped(m: _Metrics) -> None:
 def build_metrics(
     identity: Identity, snapshot: dict[str, Any], now: float,
     dropped: dict[str, int] | None = None,
+    integration_series: set[tuple[str, str]] | None = None,
 ) -> dict[str, Any]:
     """The ExportMetricsServiceRequest for one snapshot taken at `now` (unix seconds).
+
+    `integration_series` is the caller's memory of the integration error series already sent;
+    see `_integrations`. Leave it out and no zero is ever sent for a series that went away.
 
     Rows and points past the caps are left out; if `dropped` is given, it receives the
     count left out per kind ("containers", "integrations", "repair_domains",
@@ -325,14 +405,16 @@ def build_metrics(
     m = _Metrics(now, dropped)
     _containers(m, snapshot.get("containers"))
     _watchdog(m, snapshot.get("detections"))
-    _integrations(m, snapshot.get("integration_overview"))
+    _integrations(m, snapshot.get("integration_overview"), integration_series)
     _repairs(m, snapshot.get("repairs"))
-    _backup(m, snapshot.get("backup_finding"), bool(snapshot.get("backup_checked")))
+    _backup(m, snapshot.get("backup_finding"), bool(snapshot.get("backup_checked")),
+            snapshot.get("backup_unreadable"))
     _supervisor(m, snapshot.get("resolution"))
     _dropped(m)
+    _source_status(m, snapshot)
     return {
         "resourceMetrics": [
-            {"resource": _resource(identity), "scopeMetrics": m.scope_metrics()}
+            {"resource": _resource(identity, now), "scopeMetrics": m.scope_metrics()}
         ]
     }
 
@@ -441,7 +523,7 @@ def build_logs(
         mine = [r for r in records if _event_name(r) == event]
         if mine:
             scopes.append({"scope": {"name": SCOPE_PREFIX + source}, "logRecords": mine})
-    return {"resourceLogs": [{"resource": _resource(identity), "scopeLogs": scopes}]}
+    return {"resourceLogs": [{"resource": _resource(identity, now), "scopeLogs": scopes}]}
 
 
 def _event_name(record: dict[str, Any]) -> str:
