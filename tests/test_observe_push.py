@@ -302,6 +302,8 @@ async def test_options_flow_rejects_bad_input_and_saves_nothing(hass, entry) -> 
 async def test_options_flow_blank_key_keeps_and_clear_removes(hass, entry) -> None:
     runtime = entry.runtime_data
     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, KEY)
+    # The key is already bound to this address, so a blank field may keep it.
+    runtime.store.settings[CONF_OBSERVE_URL] = "https://observe.example.com"
     base = {
         CONF_OBSERVE_ENABLED: True,
         CONF_OBSERVE_URL: "https://observe.example.com",

@@ -18,6 +18,8 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
 from .const import (
+    ACCESS_LEVEL_OWNER_AND_ADMINS,
+    DEFAULT_ACCESS_LEVEL,
     CONF_OBSERVE_ENABLED,
     CONF_OBSERVE_HOST_NAME,
     CONF_OBSERVE_INGEST_KEY,
@@ -65,10 +67,30 @@ class HaSocOptionsFlow(OptionsFlow):
     change and never reload. The flow schedules the reload itself.
     """
 
+    async def _async_actor_may_change(self, runtime: Any, actor_id: str) -> bool:
+        """The owner always may; other administrators only under "owners and admins".
+
+        Core does not pass the acting user to an options flow, so the actor comes from the
+        flow context when present and otherwise from the HTTP request that is driving the
+        flow. When neither names a user the flow proceeds, as it did before, and the audit
+        record carries no user.
+        """
+        user = await self.hass.auth.async_get_user(actor_id)
+        if user is None or not user.is_admin:
+            return False
+        if user.is_owner:
+            return True
+        level = runtime.store.settings.get("access_level", DEFAULT_ACCESS_LEVEL)
+        return level == ACCESS_LEVEL_OWNER_AND_ADMINS
+
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> Any:
         runtime = getattr(self.config_entry, "runtime_data", None)
         if runtime is None:
             return self.async_abort(reason="not_loaded")
+
+        actor_id = self.context.get("user_id") or runtime.audit.current_actor_id()
+        if actor_id is not None and not await self._async_actor_may_change(runtime, actor_id):
+            return self.async_abort(reason="owner_required")
 
         settings = runtime.store.settings
         key_set = bool(await runtime.secrets.async_get(CONF_OBSERVE_INGEST_KEY))
@@ -77,7 +99,9 @@ class HaSocOptionsFlow(OptionsFlow):
         if user_input is not None:
             clear_key = bool(user_input.get(CONF_CLEAR_KEY))
             errors, changes, new_key = validate_options(
-                user_input, key_already_set=key_set and not clear_key
+                user_input,
+                key_already_set=key_set and not clear_key,
+                stored_url=settings.get(CONF_OBSERVE_URL),
             )
             if not errors:
                 missing = object()
@@ -110,6 +134,7 @@ class HaSocOptionsFlow(OptionsFlow):
                     audited[CONF_OBSERVE_INGEST_KEY] = None
                 runtime.audit.async_log(
                     "soc_config_change",
+                    user_id=actor_id,
                     detail={"action": "observe_push_changed", "changes": audited},
                 )
                 self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)

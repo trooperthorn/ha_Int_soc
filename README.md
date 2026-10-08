@@ -176,7 +176,10 @@ URL a parser actually needs stays visible.
 - **Access control**: the panel and every `ha_soc/*` command default to
   **account owner only**; a setting (Settings tab or the native Configure
   dialog) can open it to every administrator. Enforced server-side on each
-  command, not just on sidebar visibility.
+  command, not just on sidebar visibility. Only the owner can create an
+  administrator or promote a user to administrator, and changes to the
+  Observe settings in the Configure dialog are recorded in the audit log with
+  the user who made them.
 - **Network (UniFi Network / Protect)**: a Dashboard-style tab that talks
   directly to a UniFi console over the LAN with a local Integration API key
   (read-only), verified against Network 10.4.57 and Protect 7.2.105:
@@ -723,7 +726,7 @@ in the form:
 |---|---|
 | Push to Observe | Off by default. |
 | Observe URL | The base address of the Observe server. `https` works for any address; plain `http` is accepted only for a private or link-local IP address or `localhost`. No user name, password, query or fragment. |
-| Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key. Tick "Remove the stored ingest key" to delete it. |
+| Ingest key | A host-bound ingest key that starts with `wpi_`. It is stored in the private secret store, is never shown again, and a blank field keeps the stored key unless you change the Observe URL, in which case the key must be typed again. Tick "Remove the stored ingest key" to delete it. |
 | Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
 | Push interval | 30 to 3600 seconds, 60 by default. |
 

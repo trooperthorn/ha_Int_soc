@@ -247,6 +247,13 @@ def require_owner(func):
     return with_owner
 
 
+def _grants_admin_group(group_ids: list[str] | None) -> bool:
+    """True when a create or update request would put the user in the admin group."""
+    from homeassistant.auth.const import GROUP_ID_ADMIN
+
+    return GROUP_ID_ADMIN in (group_ids or [])
+
+
 async def _async_target_is_admin(hass: HomeAssistant, user_id: str) -> bool:
     """True when the TARGET of a user-management command is the owner or a
     member of the admin group, resolved server-side from hass.auth.
@@ -461,6 +468,9 @@ async def ws_users_detail(hass: HomeAssistant, connection, msg: dict) -> None:
 @websocket_api.async_response
 async def ws_users_create(hass: HomeAssistant, connection, msg: dict) -> None:
     runtime = _runtime(hass)
+    # Only the owner creates administrators; an admin could otherwise mint a peer.
+    if not connection.user.is_owner and _grants_admin_group(msg.get("group_ids")):
+        raise Unauthorized
     record = await runtime.users.async_create_user(
         msg["name"], group_ids=msg.get("group_ids"), local_only=msg.get("local_only")
     )
@@ -490,9 +500,11 @@ async def ws_users_update(hass: HomeAssistant, connection, msg: dict) -> None:
         if k in ("name", "is_active", "group_ids", "local_only")
     }
 
-    # Admin-group targets are owner-only, as for deactivate/delete/revoke.
-    if not connection.user.is_owner and await _async_target_is_admin(
-        hass, msg["user_id"]
+    # Admin-group targets are owner-only, as for deactivate/delete/revoke, and so is
+    # putting anyone into the admin group.
+    if not connection.user.is_owner and (
+        _grants_admin_group(msg.get("group_ids"))
+        or await _async_target_is_admin(hass, msg["user_id"])
     ):
         raise Unauthorized
 

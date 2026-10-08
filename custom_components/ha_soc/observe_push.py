@@ -98,6 +98,7 @@ SENT_KEYS_LIMIT = 5000
 ERROR_INVALID_URL = "invalid_url"
 ERROR_INSECURE_URL = "insecure_url"
 ERROR_KEY_REQUIRED = "key_required"
+ERROR_KEY_REQUIRED_FOR_URL = "key_required_for_url_change"
 ERROR_INVALID_KEY = "invalid_key"
 ERROR_INVALID_HOST_NAME = "invalid_host_name"
 ERROR_INVALID_INTERVAL = "invalid_interval"
@@ -188,14 +189,21 @@ def validate_ingest_key(raw: Any) -> str | None:
     return text
 
 
+_UNSET: Any = object()
+
+
 def validate_options(
-    user_input: dict[str, Any], *, key_already_set: bool
+    user_input: dict[str, Any], *, key_already_set: bool, stored_url: Any = _UNSET
 ) -> tuple[dict[str, str], dict[str, Any], str | None]:
     """Check one options-flow submission.
 
     Returns (errors by field, settings changes, new ingest key or None). The key is blank
     when the existing one is kept. Fields are only required when the push is enabled, but
     anything that is filled in must be valid either way.
+
+    When ``stored_url`` is given and a stored key exists, pointing the push at a different
+    URL requires the key to be typed again, so a blank field can never send the stored key
+    to a new destination.
     """
     errors: dict[str, str] = {}
     enabled = bool(user_input.get(CONF_OBSERVE_ENABLED, DEFAULT_OBSERVE_ENABLED))
@@ -222,6 +230,14 @@ def validate_options(
             errors[CONF_OBSERVE_INGEST_KEY] = ERROR_INVALID_KEY
     elif enabled and not key_already_set:
         errors[CONF_OBSERVE_INGEST_KEY] = ERROR_KEY_REQUIRED
+    elif (
+        key_already_set
+        and stored_url is not _UNSET
+        and CONF_OBSERVE_URL not in errors
+        and url is not None
+        and url != (stored_url or None)
+    ):
+        errors[CONF_OBSERVE_INGEST_KEY] = ERROR_KEY_REQUIRED_FOR_URL
 
     interval = user_input.get(CONF_OBSERVE_INTERVAL, DEFAULT_OBSERVE_INTERVAL)
     try:

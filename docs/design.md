@@ -148,6 +148,8 @@ health.py and scanner.py create their own Repairs issues inline because they hav
 
 ## WebSocket API and access control
 
+Putting a user into the administrator group is owner-only: `users/create` and `users/update` refuse a non-owner caller whose `group_ids` contain the admin group, on top of the existing owner-only rule for administrator targets.
+
 `websocket_api.py` is the single surface the panel talks to; the namespace is `ha_soc/*`. Mutating and PII-bearing commands never return raw refresh-token secrets or JWT material, only metadata (ids, timestamps, client names). `require_soc_access` is modeled on `websocket_api.require_admin` (same signature, same "raise Unauthorized, do not call func" shape) so it composes with `@websocket_command` and `@async_response` the way `require_admin` does. The gating tiers are described in `security.md`.
 
 Command notes:
@@ -453,7 +455,12 @@ masking path covers it). `entry.options` stays `{}`; the options flow writes
 the store, flushes it to disk with `async_save_now` (the store normally
 debounces writes and the reload builds a fresh store that reads the file),
 and only then schedules the reload, which restarts the push with the new
-values. A write that fails is shown as the form error `save_failed`, the
+values. The flow resolves the acting user (the flow context `user_id`, else
+`AuditLog.current_actor_id`, which reads the HTTP request carrying the flow),
+aborts with `owner_required` when a non-owner acts under the owner-only access
+level, and writes that user into the `observe_push_changed` audit record.
+`validate_options` takes the stored URL: with a stored key, a different URL
+needs the key typed again (`key_required_for_url_change`). A write that fails is shown as the form error `save_failed`, the
 settings are put back as they were, and no reload is scheduled. Setup
 registers the stop of every service with `entry.async_on_unload` before the
 first one starts (see "Setup failure, retry and unload" near the top of this file), so a setup

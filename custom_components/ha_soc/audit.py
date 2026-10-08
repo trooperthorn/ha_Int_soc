@@ -697,6 +697,15 @@ class AuditLog:
         return None, "system"
 
     @callback
+    def current_actor_id(self) -> str | None:
+        """Id of the user whose websocket connection or HTTP request is active, if any.
+
+        Correlational, like every ambient source here: callers that gate on it
+        must treat None as "unknown", not as "system".
+        """
+        return self._resolve_actor_ambient()[0]
+
+    @callback
     def _note_ws_session(self, conn: Any) -> None:
         """Emit one synthetic session_seen record per refresh token."""
         token_id = getattr(conn, "refresh_token_id", None)
