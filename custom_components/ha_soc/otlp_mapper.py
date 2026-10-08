@@ -113,12 +113,13 @@ class _Metrics:
         self.count = 0
 
     def gauge(
-        self, source: str, name: str, unit: str, value: Any, **attrs: Any
+        self, source: str, name: str, unit: str, value: Any, *, force: bool = False,
+        **attrs: Any
     ) -> None:
         number = _number(value)
         if number is None:
             return
-        if self.count >= MAX_POINTS:
+        if self.count >= MAX_POINTS and not force:
             self.drop("points")
             return
         point = {
@@ -160,6 +161,21 @@ def _capped(m: _Metrics, what: str, items: list[Any]) -> list[Any]:
     return items[:MAX_ROWS]
 
 
+def _ratio(percent: Any) -> float | None:
+    """A Supervisor percentage as a 0 to 1 ratio, clamped into that range.
+
+    The Supervisor documents `cpu_percent` only as the percentage of the CPU that is used
+    (developers docs, api/supervisor/models.md) and aiohasupervisor types it as a bare float.
+    Docker's own formula can give more than 100 for a container on several cores, so the
+    value is clamped: the unit `1` promises a ratio, and Observe grades it at 0.85 and 0.95.
+    See docs/decisions.md, "Observe payload values".
+    """
+    number = _number(percent)
+    if number is None:
+        return None
+    return round(min(1.0, max(0.0, number / 100)), 6)
+
+
 def _containers(m: _Metrics, overview: Any) -> None:
     if not isinstance(overview, dict) or not overview.get("available"):
         return
@@ -167,16 +183,18 @@ def _containers(m: _Metrics, overview: Any) -> None:
         slug = row.get("slug")
         if not isinstance(slug, str) or not slug:
             continue
-        cpu, mem = _number(row.get("cpu_percent")), _number(row.get("memory_percent"))
         m.gauge("containers", "container.cpu.utilization", "1",
-                None if cpu is None else round(cpu / 100, 6), container__name=slug)
+                _ratio(row.get("cpu_percent")), container__name=slug)
         m.gauge("containers", "container.memory.utilization", "1",
-                None if mem is None else round(mem / 100, 6), container__name=slug)
+                _ratio(row.get("memory_percent")), container__name=slug)
         m.gauge("containers", "container.memory.usage", "By",
                 row.get("memory_usage"), container__name=slug)
-        running = 1 if row.get("state") in ("started", None) else 0
-        m.gauge("containers", "observe.ha.container.running", "1", running,
-                container__name=slug)
+        # Only a container the Supervisor reports as started is running. A stopped, errored
+        # or unknown state is 0; a row with no state at all says nothing, so it has no point.
+        state = row.get("state")
+        if isinstance(state, str) and state:
+            m.gauge("containers", "observe.ha.container.running", "1",
+                    int(state == "started"), container__name=slug)
 
 
 def _watchdog(m: _Metrics, detections: Any) -> None:
@@ -192,6 +210,17 @@ def _watchdog(m: _Metrics, detections: Any) -> None:
                 observe__ha__watchdog__rule=rule)
 
 
+# The order health.py gives a record when it has several reasons; an unknown name sorts last.
+CATEGORY_PRIORITY = ("credential", "failing", "communication", "collection", "errors",
+                     "debug_logging", "disabled")
+
+
+def _priority(category: str) -> int:
+    if category in CATEGORY_PRIORITY:
+        return CATEGORY_PRIORITY.index(category)
+    return len(CATEGORY_PRIORITY)
+
+
 def _integrations(m: _Metrics, overview: Any) -> None:
     if not isinstance(overview, dict):
         return
@@ -200,18 +229,27 @@ def _integrations(m: _Metrics, overview: Any) -> None:
         for category in sorted(counts):
             m.gauge("integrations", "observe.ha.integration.count", "{integration}",
                     counts[category], observe__ha__integration__category=str(category))
-    # Several config entries of one domain (three ESPHome devices) would otherwise write
-    # identical series, which Observe keeps only one of. Sum them per domain and category.
-    grouped: dict[tuple[str, str], float] = {}
+    # The health record of every config entry carries the error count of its whole domain
+    # (the logger is per domain), so three ESPHome entries repeat one number. Take the
+    # domain's count once, not the sum, and send one series per domain. A domain with entries
+    # in several categories is labelled with the first of them in CATEGORY_PRIORITY, so
+    # summing the series of this metric never counts an error twice.
+    errors: dict[str, float] = {}
+    category_of: dict[str, str] = {}
     for row in _rows(overview.get("integrations")):
         domain = row.get("domain")
-        if isinstance(domain, str) and domain:
-            key = (domain, str(row.get("issue_category", "")))
-            grouped[key] = grouped.get(key, 0) + (_number(row.get("error_count_24h")) or 0)
-    for domain, category in _capped(m, "integrations", sorted(grouped)):
+        if not (isinstance(domain, str) and domain):
+            continue
+        errors[domain] = max(errors.get(domain, 0.0), _number(row.get("error_count_24h")) or 0.0)
+        category = str(row.get("issue_category", ""))
+        if domain not in category_of or _priority(category) < _priority(category_of[domain]):
+            category_of[domain] = category
+    # The domains with the most errors are the ones to keep when the cap cuts the list.
+    ranked = sorted(errors, key=lambda d: (-errors[d], d))
+    for domain in _capped(m, "integrations", ranked):
         m.gauge("integrations", "observe.ha.integration.errors", "{error}",
-                grouped[(domain, category)], observe__ha__integration=domain,
-                observe__ha__integration__category=category)
+                errors[domain], observe__ha__integration=domain,
+                observe__ha__integration__category=category_of[domain])
 
 
 def _repairs(m: _Metrics, issues: Any) -> None:
@@ -224,8 +262,10 @@ def _repairs(m: _Metrics, issues: Any) -> None:
         by_domain[key] = by_domain.get(key, 0) + 1
     m.gauge("repairs", "observe.ha.repair.issues", "{issue}", sum(by_domain.values()),
             observe__ha__repair__state="open")
+    # The per-domain breakdown has its own metric name: a series of `observe.ha.repair.issues`
+    # for each domain next to the total would make any sum of that name count every issue twice.
     for domain in _capped(m, "repair_domains", sorted(by_domain)):
-        m.gauge("repairs", "observe.ha.repair.issues", "{issue}", by_domain[domain],
+        m.gauge("repairs", "observe.ha.repair.domain_issues", "{issue}", by_domain[domain],
                 observe__ha__repair__state="open", observe__ha__repair__domain=domain)
 
 
@@ -247,10 +287,28 @@ def _supervisor(m: _Metrics, resolution: Any) -> None:
     unsupported = _strings(data.get("unsupported"))
     m.gauge("supervisor", "observe.ha.supervisor.healthy", "1", int(not unhealthy))
     m.gauge("supervisor", "observe.ha.supervisor.supported", "1", int(not unsupported))
-    m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reasons", "{reason}", len(unhealthy))
-    for reason in _capped(m, "unhealthy_reasons", sorted(unhealthy)):
-        m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reasons", "{reason}", 1,
+    m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reasons", "{reason}",
+            len(set(unhealthy)))
+    # One flag per reason under its own name, for the same reason as the repair breakdown.
+    for reason in _capped(m, "unhealthy_reasons", sorted(set(unhealthy))):
+        m.gauge("supervisor", "observe.ha.supervisor.unhealthy_reason", "1", 1,
                 observe__ha__supervisor__reason=reason)
+
+
+ROW_KINDS = ("containers", "integrations", "repair_domains", "unhealthy_reasons", "points")
+
+
+def _dropped(m: _Metrics) -> None:
+    """How many rows each cap left out of this payload, 0 when none, so a cut is never silent.
+
+    Sent every time (a gauge Observe last saw at 5 would otherwise stay at 5 after the cut
+    ended) and exempt from the point cap, which would be the one cut that could hide itself.
+    """
+    if not m.count:
+        return  # An empty snapshot stays an empty request.
+    for kind in ROW_KINDS:
+        m.gauge("push", "observe.ha.push.rows_dropped", "{row}", m.dropped.get(kind, 0),
+                force=True, observe__ha__push__kind=kind)
 
 
 def build_metrics(
@@ -261,7 +319,8 @@ def build_metrics(
 
     Rows and points past the caps are left out; if `dropped` is given, it receives the
     count left out per kind ("containers", "integrations", "repair_domains",
-    "unhealthy_reasons", "points") so the sender can log it.
+    "unhealthy_reasons", "points") so the sender can log it. The same counts are sent as the
+    gauge `observe.ha.push.rows_dropped`, one point per kind.
     """
     m = _Metrics(now, dropped)
     _containers(m, snapshot.get("containers"))
@@ -270,6 +329,7 @@ def build_metrics(
     _repairs(m, snapshot.get("repairs"))
     _backup(m, snapshot.get("backup_finding"), bool(snapshot.get("backup_checked")))
     _supervisor(m, snapshot.get("resolution"))
+    _dropped(m)
     return {
         "resourceMetrics": [
             {"resource": _resource(identity), "scopeMetrics": m.scope_metrics()}

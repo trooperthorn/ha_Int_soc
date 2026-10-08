@@ -16,6 +16,13 @@ This record states how the golden files in `tests/fixtures/observe_otlp/` were c
 - Result: 38 samples and 5 events accepted, 0 rejected. The three ESPHome fixture rows arrive as one `observe.ha.integration.errors` sample (24), the dry-run bundle produces no event, and the watchdog event's dedup key is the episode start.
 - The throwaway script was not kept, so this is an attestation like the first run.
 
+## Repeat run after the payload value fixes
+
+- Date: 2026-10-07. Observe checkout `ipMontior` at commit `5279692`, read only, with byte code writing turned off.
+- Method: a throwaway script outside both repositories imported `observe.otlp.normalize` and ran `normalize_metrics` and `normalize_logs` on the regenerated golden files with the bound host `haos-lab`. The ingest routes were not repeated; the change does not touch the envelope.
+- Result: 43 samples and 5 events accepted, 0 rejected. The new series are `observe.ha.repair.domain_issues`, `observe.ha.supervisor.unhealthy_reason` and `observe.ha.push.rows_dropped`; the three ESPHome fixture rows arrive as one `observe.ha.integration.errors` sample of 12.
+- The throwaway script was not kept, so this is an attestation like the earlier runs.
+
 ## Provenance
 
 The throwaway script and its output were not kept, so the results below are an attestation by the person who ran it, not an artifact this repository can replay. Nothing here can be re-checked without the Observe checkout at `c4bb7e1`. The limit checks in `tests/test_otlp_mapper.py` are the part verified on every run. An UPDATE_GOLDEN run fails on purpose after writing the files, so it can never pass in CI by accident.

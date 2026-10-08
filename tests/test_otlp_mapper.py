@@ -120,6 +120,11 @@ def test_integration_repair_backup_supervisor_points():
     assert _by_name(out, "observe.ha.supervisor.healthy")[0][1] == 0.0
     assert _by_name(out, "observe.ha.supervisor.supported")[0][1] == 0.0
     assert _by_name(out, "observe.ha.supervisor.unhealthy_reasons")[0][1] == 2.0
+    # The per-domain and per-reason breakdowns have their own names.
+    assert all(a == {"observe.ha.repair.state": "open"} for a, _v in repairs)
+    by_domain = _by_name(out, "observe.ha.repair.domain_issues")
+    assert sum(v for _a, v in by_domain) == 3.0
+    assert len(_by_name(out, "observe.ha.supervisor.unhealthy_reason")) == 2
 
 
 def test_clean_backup_and_healthy_supervisor():
@@ -138,7 +143,7 @@ def test_unknown_sources_produce_no_points():
     bad = {"containers": {"available": True, "containers": [
         {"slug": "x", "cpu_percent": float("nan"), "memory_percent": "a", "memory_usage": None}]}}
     names = [m["name"] for _s, m, _d in _points(om.build_metrics(identity, bad, now))]
-    assert names == ["observe.ha.container.running"]
+    assert names == []
 
 
 def _check_limits(metrics, logs):
@@ -253,19 +258,88 @@ def test_entries_of_one_integration_make_one_distinct_series():
     esphome = [(a, v) for a, v in _by_name(out, "observe.ha.integration.errors")
                if a["observe.ha.integration"] == "esphome"]
     assert esphome == [({"observe.ha.integration": "esphome",
-                         "observe.ha.integration.category": "errors"}, 24.0)]
+                         "observe.ha.integration.category": "errors"}, 12.0)]
     keys = _series_keys(out)
     assert len(keys) == len(set(keys)), "two points share a series; Observe would keep one"
 
 
-def test_a_domain_in_two_categories_keeps_both_series():
+def test_a_domain_in_two_categories_is_one_series_with_the_first_category():
     rows = [{"domain": "esphome", "error_count_24h": 4, "issue_category": "errors"},
-            {"domain": "esphome", "error_count_24h": 1, "issue_category": "communication"}]
+            {"domain": "esphome", "error_count_24h": 4, "issue_category": "communication"}]
     out = om.build_metrics(om.Identity(host_name="h"),
                            {"integration_overview": {"integrations": rows}}, 1.0)
-    got = {a["observe.ha.integration.category"]: v
-           for a, v in _by_name(out, "observe.ha.integration.errors")}
-    assert got == {"errors": 4.0, "communication": 1.0}
+    assert _by_name(out, "observe.ha.integration.errors") == [
+        ({"observe.ha.integration": "esphome",
+          "observe.ha.integration.category": "communication"}, 4.0)]
+
+
+def test_three_entries_of_one_domain_do_not_multiply_the_errors():
+    """Audit probe p09: every entry of a domain carries the domain's whole count."""
+    rows = [{"domain": "esphome", "error_count_24h": 5, "issue_category": "communication"}
+            for _ in range(3)]
+    out = om.build_metrics(om.Identity(host_name="h"),
+                           {"integration_overview": {"integrations": rows}}, 1.0)
+    errors = _by_name(out, "observe.ha.integration.errors")
+    assert [v for _a, v in errors] == [5.0]
+
+
+def test_stopped_and_unknown_containers_are_not_running():
+    """Audit probe p04: a None, unknown or error state used to count as running."""
+    states = {"s": "started", "t": "stopped", "u": "unknown", "e": "error", "n": None}
+    rows = [{"slug": slug, "state": state} for slug, state in states.items()]
+    out = om.build_metrics(om.Identity(host_name="h"),
+                           {"containers": {"available": True, "containers": rows}}, 1.0)
+    running = {a["container.name"]: v for a, v in _by_name(out, "observe.ha.container.running")}
+    assert running == {"s": 1.0, "t": 0.0, "u": 0.0, "e": 0.0}
+
+
+def test_utilization_is_a_ratio_clamped_into_zero_to_one():
+    """Audit probe p04: 230 percent became 2.3 under the unit 1."""
+    rows = [{"slug": "x", "state": "started", "cpu_percent": 230.0, "memory_percent": 10.0},
+            {"slug": "y", "state": "started", "cpu_percent": -3.0, "memory_percent": 100.5}]
+    out = om.build_metrics(om.Identity(host_name="h"),
+                           {"containers": {"available": True, "containers": rows}}, 1.0)
+    cpu = {a["container.name"]: v for a, v in _by_name(out, "container.cpu.utilization")}
+    mem = {a["container.name"]: v for a, v in _by_name(out, "container.memory.utilization")}
+    assert cpu == {"x": 1.0, "y": 0.0} and mem == {"x": 0.1, "y": 1.0}
+
+
+def test_no_metric_has_a_total_series_beside_labelled_series():
+    """A sum over any one metric name must not count an item twice."""
+    identity, snap, now = _load()
+    snap = {**snap, "repairs": [{"domain": "a"}, {"domain": "a"}, {"domain": "b"}],
+            "resolution": {"data": {"unhealthy": ["privileged", "docker"], "unsupported": []}}}
+    out = om.build_metrics(identity, snap, now)
+    series: dict[str, list[dict]] = {}
+    for _s, m, dp in _points(out):
+        series.setdefault(m["name"], []).append(_attr_map(dp))
+    for name, attrs in series.items():
+        if name in ("observe.ha.integration.count", "observe.ha.push.rows_dropped",
+                    "observe.ha.watchdog.breaches"):
+            continue  # one series per distinct label value, never a total next to them
+        if len(attrs) > 1:
+            assert all(a for a in attrs), f"{name} has an unlabelled total beside labelled series"
+    repairs = [v for _a, v in _by_name(out, "observe.ha.repair.issues")]
+    assert repairs == [3.0]
+    assert sum(v for _a, v in _by_name(out, "observe.ha.repair.domain_issues")) == 3.0
+
+
+def test_integration_cap_keeps_the_domains_with_the_most_errors_and_reports_the_rest():
+    """Audit probe p09: the alphabetical cap dropped zwave_js (50 errors) and zha."""
+    rows = [{"domain": f"{c}{i:03d}", "issue_category": "errors", "error_count_24h": 1}
+            for i in range(60) for c in "ab"]
+    rows += [{"domain": "zwave_js", "issue_category": "errors", "error_count_24h": 50},
+             {"domain": "zha", "issue_category": "errors", "error_count_24h": 9}]
+    dropped: dict[str, int] = {}
+    out = om.build_metrics(om.Identity(host_name="h"),
+                           {"integration_overview": {"integrations": rows}}, 1.0, dropped)
+    names = {a["observe.ha.integration"] for a, _v in _by_name(out, "observe.ha.integration.errors")}
+    assert {"zwave_js", "zha"} <= names and len(names) == om.MAX_ROWS
+    assert dropped == {"integrations": 22}
+    # The cut is visible in the payload itself, one point per kind, zero when nothing was cut.
+    sent = {a["observe.ha.push.kind"]: v for a, v in _by_name(out, "observe.ha.push.rows_dropped")}
+    assert sent == {"containers": 0.0, "integrations": 22.0, "repair_domains": 0.0,
+                    "unhealthy_reasons": 0.0, "points": 0.0}
 
 
 def test_dry_run_bundle_is_never_sent_as_a_crash():

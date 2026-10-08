@@ -403,7 +403,12 @@ Names, units and attributes follow section 3.4 of Observe's
 instance id, Core version and installation type. The scope name is
 `ha_soc.collector.<source>`, which Observe stores as the source. Every
 metric is a gauge with `asDouble` and the snapshot time. CPU and memory
-percentages are divided by 100 because Observe stores ratios. Log records
+percentages are divided by 100 because Observe stores ratios, and the result
+is clamped into 0 to 1 (the Supervisor documents `cpu_percent` only as the
+percentage of the CPU that is used, so a multi-core reading above 100 would
+otherwise break the unit `1`). `observe.ha.container.running` is 1 only for
+the state `started`; a stopped, errored or unknown state is 0 and a row with
+no state has no point. Log records
 carry `event.name`, a stable `observe.dedup_key` (a re-send is a no-op in
 Observe) and a severity of 9, 13 or 17: crash classifications
 `silent_stop` and `kernel_fault` are 17, `core_restart` is 13 and
@@ -411,15 +416,31 @@ Observe) and a severity of 9, 13 or 17: crash classifications
 containers, integration rows and repair domains; 500 log records per
 request; 5,000 points) so a request stays inside Observe's limits.
 
-Series must stay distinct, because Observe keeps one value per series. The
-per-integration error gauge is therefore summed per domain and issue
-category, so three ESPHome entries produce one `esphome` point. Bundles
+Series must stay distinct, because Observe keeps one value per series, and a
+sum over one metric name must never count anything twice. Every config entry of
+a domain carries the domain's whole 24 hour error count, so the
+per-integration error gauge takes that count once per domain (the largest of
+its entries, not the sum) and sends one point per domain, labelled with the
+first category of its entries in the order credential, failing, communication,
+collection, errors, debug_logging, disabled. When the row cap cuts the list the
+domains with the most errors stay. A total next to labelled series of the same
+name is not sent: the per-domain repair counts are
+`observe.ha.repair.domain_issues` beside the total `observe.ha.repair.issues`,
+and the per-reason Supervisor flags are `observe.ha.supervisor.unhealthy_reason`
+beside the count `observe.ha.supervisor.unhealthy_reasons`. A row cap never cuts
+silently: `observe.ha.push.rows_dropped` (unit `{row}`, attribute
+`observe.ha.push.kind` of `containers`, `integrations`, `repair_domains`,
+`unhealthy_reasons` or `points`) is sent with every payload, 0 when nothing was
+cut, and is exempt from the point cap. Bundles
 marked `dry_run` (the panel's drill) are never sent as crashes;
 `sync_list_bundles` exposes the flag. The watchdog stores an `episode_start`
 in each breach detection's detail: a re-trip inside one continuous breach
 keeps it, so the log record's dedup key is stable for the whole episode. The
 watchdog resolves the detection when a sample shows the container back
-under its limits (or stopped, or gone), which is what returns
+under its limits (or stopped, or gone). It decides from the detections in the
+store, not from its in-memory episode table, so a breach left open by a Home
+Assistant restart is closed too, and a breach that continues across a restart
+keeps its stored episode start. That is what returns
 `observe.ha.watchdog.breaches` to 0, and a trip after that starts a new
 episode and reopens the row.
 

@@ -549,3 +549,48 @@ async def test_thirty_minutes_of_breach_is_one_log_record(
     await _run_samples(wd, [_overview([_addon("a", mem=99.0)])] * 30, collect)
     assert trips[-1] == 10
     assert len(keys) == 1
+
+
+async def test_breach_open_before_a_restart_closes_after_it(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """Audit probe: the episode table is in memory, so a breach left open by a restart
+    never resolved and the Observe breach gauge stayed at 1."""
+    store = entry.runtime_data.store
+    wd = _watchdog(entry, default_action="alert")
+    await _run_samples(wd, [_overview([_addon("a", mem=99.0)])] * 3)
+    assert store.data["detections"]["watchdog_a"]["status"] == "open"
+    started = store.data["detections"]["watchdog_a"]["detail"]["episode_start"]
+
+    # Home Assistant restarts: a new watchdog has an empty episode table, the store persists.
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    await _run_samples(wd2, [_overview([_addon("a", mem=10.0)])] * 2)
+    assert store.data["detections"]["watchdog_a"]["status"] == "resolved"
+    assert _breach_gauge(entry) == 0.0
+    assert started
+
+
+async def test_breach_open_before_a_restart_closes_when_the_container_is_gone(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    store = entry.runtime_data.store
+    await _run_samples(_watchdog(entry, default_action="alert"),
+                       [_overview([_addon("a", mem=99.0)])] * 3)
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    await _run_samples(wd2, [_overview([_addon("b", mem=1.0)])])
+    assert store.data["detections"]["watchdog_a"]["status"] == "resolved"
+
+
+async def test_breach_that_continues_across_a_restart_is_one_episode(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    """The restarted watchdog adopts the stored episode start, so Observe sees one record."""
+    store = entry.runtime_data.store
+    breach = _overview([_addon("a", mem=99.0)])
+    await _run_samples(_watchdog(entry, default_action="alert"), [breach] * 3)
+    first = store.data["detections"]["watchdog_a"]["detail"]["episode_start"]
+    wd2 = ResourceWatchdog(hass, store, entry.runtime_data.audit)
+    wd2.config.update(sustained_samples=3, default_action="alert")
+    await _run_samples(wd2, [breach] * 3)
+    det = store.data["detections"]["watchdog_a"]
+    assert det["status"] == "open" and det["detail"]["episode_start"] == first

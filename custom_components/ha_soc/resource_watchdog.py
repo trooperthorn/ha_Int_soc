@@ -245,9 +245,11 @@ class ResourceWatchdog:
             await self._async_trip(container, action, over_cpu, over_mem, cpu, mem)
             changed = True
 
-        # A container that vanished from the overview can no longer be breaching.
+        # A container that vanished from the overview can no longer be breaching. The open
+        # detections in the store count too: an episode that began before a restart is in the
+        # store but not in _episodes.
         seen = {c.get("slug") for c in overview["containers"]}
-        for slug in [s for s in self._episodes if s not in seen]:
+        for slug in self._open_breach_slugs() - seen:
             self._breach_counts.pop(slug, None)
             changed |= self._end_episode(slug)
 
@@ -256,14 +258,28 @@ class ResourceWatchdog:
         if changed:
             async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_dashboard")
 
+    def _open_breach_slugs(self) -> set[str]:
+        """Slugs with a watchdog detection still open or acknowledged, plus open episodes."""
+        slugs = set(self._episodes)
+        for detection in self.store.data["detections"].values():
+            if (
+                detection.get("rule_id") == "container_resource_breach"
+                and detection.get("status") in (DETECTION_OPEN, DETECTION_ACK)
+            ):
+                slug = (detection.get("detail") or {}).get("slug")
+                if isinstance(slug, str) and slug:
+                    slugs.add(slug)
+        return slugs
+
     def _end_episode(self, slug: str) -> bool:
         """Close the breach episode for `slug` and resolve its open detection.
 
-        Returns True when a detection changed. Without this a detection stayed open
-        forever after the first trip, so the Observe breach gauge never returned to 0.
+        Returns True when a detection changed. The stored detection decides, not the
+        in-memory episode table: the table is empty after a restart, and a breach that was
+        open when Home Assistant stopped would otherwise stay open for good and keep the
+        Observe breach gauge above 0.
         """
-        if self._episodes.pop(slug, None) is None:
-            return False
+        self._episodes.pop(slug, None)
         detection = self.store.data["detections"].get(f"watchdog_{slug}")
         if detection is None or detection.get("status") not in (DETECTION_OPEN, DETECTION_ACK):
             return False
@@ -315,6 +331,14 @@ class ResourceWatchdog:
         recurrence = (existing.get("recurrence_count", 0) + 1) if existing else 1
         # A re-trip inside one continuous breach keeps the episode start, so Observe sees
         # one log record for the whole episode; a trip after recovery starts a new one.
+        if slug not in self._episodes and existing is not None and existing.get("status") in (
+            DETECTION_OPEN,
+            DETECTION_ACK,
+        ):
+            # The breach was already open when this boot began: it is the same episode.
+            stored_start = (existing.get("detail") or {}).get("episode_start")
+            if isinstance(stored_start, str) and stored_start:
+                self._episodes[slug] = stored_start
         new_episode = slug not in self._episodes
         episode_start = now_iso if new_episode else self._episodes[slug]
         self._episodes[slug] = episode_start
