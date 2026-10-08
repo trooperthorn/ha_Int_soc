@@ -157,6 +157,10 @@ _RE_ASSIGN = re.compile(
     r"(?P<prefix>^|(?<=[\s;&|(?'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
     re.IGNORECASE,
 )
+# 'password=a b' in quotes: the value runs to the closing quote or a query &.
+_RE_QUOTED_ASSIGN = re.compile(
+    r"(?<=[\"'])(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>[^\"'&]*)", re.IGNORECASE
+)
 # --password value, --token value (a separate word).
 _RE_LONG_OPTION = re.compile(
     r"(?P<opt>(?:^|(?<=\s))--" + _SECRET_NAME + r")(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)",
@@ -164,37 +168,66 @@ _RE_LONG_OPTION = re.compile(
 )
 # mysql-style -pSECRET with no space. A bare "-p" followed by a space is left
 # alone: mkdir -p and cp -p are far more common than a separated password.
-_RE_SHORT_P = re.compile(r"(?P<opt>(?:^|(?<=\s))-p)(?!ass(?:in|out)?\s)(?P<value>[^\s=-][^\s;&|)]*)")
+_RE_SHORT_P = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))-p)(?!ass(?:in|out)?\s)(?P<value>\"[^\"]*\"|'[^']*'|[^\s=-][^\s;&|)]*)"
+)
 # curl -u user:pass and --user user:pass
 _RE_USER_PASS = re.compile(
     r"(?P<opt>(?:^|(?<=\s))(?:-u|--user|--proxy-user))(?P<sep>\s*)(?P<user>[^\s:;&|)]+):(?P<value>[^\s;&|)]+)"
 )
 # scheme://user:pass@host
-_RE_URL_CRED = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*):(?P<value>[^\s/@]+)@")
-# Authorization: Bearer xyz, X-Api-Key: xyz
-_RE_AUTH_HEADER = re.compile(
-    r"(?P<head>(?:authorization|x-api-key|x-auth-token)\s*:\s*(?:bearer\s+|basic\s+|token\s+)?)(?P<value>[^\s\"';&|)]+)",
-    re.IGNORECASE,
+_RE_URL_CRED = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*)(?::(?P<value>[^\s/@]+))?@"
 )
+# A user name with no password that is a plain account, not a token.
+_PLAIN_URL_USERS = frozenset({"git", "ssh", "hg", "svn", "root", "admin"})
+
+
+def _redact_url_userinfo(m: re.Match[str]) -> str:
+    """user:pass@ keeps the user; a lone userinfo is the credential (a token in the URL)."""
+    if m["value"] is not None:
+        return f"{m['scheme']}{m['user']}:{REDACTED}@"
+    if m["user"].lower() in _PLAIN_URL_USERS:
+        return m[0]
+    return f"{m['scheme']}{REDACTED}@"
+
+# Header lines that carry a credential: Authorization, Cookie, Set-Cookie and
+# any header whose name holds a credential word (X-Api-Key, PRIVATE-TOKEN,
+# X-HA-Access). Inside quotes the value runs to the closing quote, so a value
+# with spaces is fully masked; outside quotes it stops at whitespace or a shell
+# operator, so the rest of the command line stays visible in the audit record.
+_HEADER_NAME = (
+    r"(?:set-)?cookie|[A-Za-z0-9-]*(?:authorization|token|api-?key|auth|secret|access|password|session)[A-Za-z0-9-]*"
+)
+_HEADER_HEAD = r"(?P<head>(?:" + _HEADER_NAME + r")\s*:\s*(?:(?:bearer|basic|token)\s+)?)"
+_RE_HEADER_QUOTED = re.compile(r"(?<=[\"'])" + _HEADER_HEAD + r"(?P<value>[^\"'\n]+)(?=[\"'])", re.IGNORECASE)
+_RE_HEADER_BARE = re.compile(r"(?<![\w/\"'-])" + _HEADER_HEAD + r"(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
+# A bearer token in any other position or header.
+_RE_BEARER = re.compile(r"(?P<head>(?<![\w-])bearer\s+)(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
 
 # A JSON body: "password": "x" or \"token\":\"x\" (the name must be quoted, so
 # an Authorization header is left to its own rule).
 _RE_JSON_FIELD = re.compile(
-    r"(?P<name>\\?\"" + _SECRET_NAME + r"\\?\")(?P<sep>\s*:\s*)(?P<value>\\?\"[^\"]*?\\?\"|[^\s,}\"']+)",
+    r"(?P<name>\\?\"" + _SECRET_NAME + r"\\?\")(?P<sep>\s*:\s*)(?P<value>\\\"[^\"]*?\\\"|\"(?:\\.|[^\"\\])*\"|[^\s,}\"']+)",
     re.IGNORECASE,
 )
-# Cookie: and Set-Cookie: header values, and the --cookie option.
-_RE_COOKIE_HEADER = re.compile(r"(?P<head>(?:set-)?cookie\s*:\s*)(?P<value>[^\"'\n]+)", re.IGNORECASE)
+# The --cookie option.
 _RE_COOKIE_OPTION = re.compile(
     r"(?P<opt>(?:^|(?<=\s))--cookie)(?P<sep>\s+|=)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
 )
-# Options whose next word is a password: sshpass -p, mosquitto -P, ssh-keygen -N.
+# Options whose next word is a password, tied to the command that uses them so
+# that find -P, rsync -P, ssh -N and grep -P keep their arguments: sshpass -p,
+# mosquitto_pub -P, ssh-keygen -N, docker login -p, curl -b (a cookie).
 _RE_SECRET_SHORT_WORD = re.compile(
-    r"(?P<opt>(?:^|(?<=\s))(?:sshpass\s+-p|-[NP]))(?P<sep>\s+)"
-    r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)"
+    r"(?P<opt>\bsshpass\s+-p"
+    r"|\bmosquitto_(?:pub|sub|rr)\b[^\n;&|]*?\s-P"
+    r"|\bssh-keygen\b[^\n;&|]*?\s-N"
+    r"|\bdocker\s+login\b[^\n;&|]*?\s-p"
+    r"|\bcurl\b[^\n;&|]*?\s-b)"
+    r"(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)"
 )
 # openssl -pass pass:x, -passin pass:x, -passout pass:x
-_RE_OPENSSL_PASS = re.compile(r"(?P<head>(?:^|(?<=\s))-pass(?:in|out)?\s+pass:)(?P<value>[^\s;&|)]+)")
+_RE_OPENSSL_PASS = re.compile(r"(?P<head>(?:^|(?<=\s))-pass(?:in|out)?\s+[\"']?pass:)(?P<value>[^\s;&|)\"']+)")
 # htpasswd -b [-c] file user password
 _RE_HTPASSWD = re.compile(
     r"(?P<head>\bhtpasswd\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*b[A-Za-z]*\s+(?:-[A-Za-z]+\s+)*\S+\s+\S+\s+)"
@@ -202,7 +235,8 @@ _RE_HTPASSWD = re.compile(
 )
 # echo SECRET | docker login --password-stdin: the secret is the piped text.
 _RE_PIPED_SECRET = re.compile(
-    r"(?P<head>\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
+    r"(?P<head>\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*"
+    r"(?:(?:\"[^\"]*%[^\"]*\"|'[^']*%[^']*'|[^\s;&|)]*%[^\s;&|)]*)\s+)?)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
     r"(?P<tail>\s*\|[^\n]*?--[A-Za-z-]*(?:password|token|secret)[A-Za-z-]*-stdin)",
     re.IGNORECASE,
 )
@@ -221,16 +255,18 @@ def redact_command(command: str) -> str:
     openssl -pass, htpasswd -b, -P and -N options, and text piped to a
     ``--password-stdin`` login.
     """
-    out = _RE_URL_CRED.sub(lambda m: f"{m['scheme']}{m['user']}:{REDACTED}@", command)
+    out = _RE_URL_CRED.sub(_redact_url_userinfo, command)
     out = _RE_USER_PASS.sub(lambda m: f"{m['opt']}{m['sep']}{m['user']}:{REDACTED}", out)
-    out = _RE_AUTH_HEADER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_HEADER_QUOTED.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_HEADER_BARE.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_BEARER.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_PIPED_SECRET.sub(lambda m: f"{m['head']}{REDACTED}{m['tail']}", out)
-    out = _RE_COOKIE_HEADER.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_COOKIE_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_JSON_FIELD.sub(lambda m: f"{m['name']}{m['sep']}{REDACTED}", out)
     out = _RE_OPENSSL_PASS.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_HTPASSWD.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_SECRET_SHORT_WORD.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_QUOTED_ASSIGN.sub(lambda m: f"{m['dashes']}{m['name']}={REDACTED}", out)
     out = _RE_ASSIGN.sub(lambda m: f"{m['prefix']}{m['dashes']}{m['name']}={REDACTED}", out)
     out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)

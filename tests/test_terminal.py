@@ -903,6 +903,37 @@ async def test_a_run_refused_before_anything_was_sent_is_not_audited(
         ("ssh-keygen -N 'hunter2' -f k", 'ssh-keygen -N [redacted] -f k'),
         ('htpasswd -b f user hunter2', 'htpasswd -b f user [redacted]'),
         ('mosquitto_pub -u u -P hunter2 -t a -m b', 'mosquitto_pub -u u -P [redacted] -t a -m b'),
+        # A cookie word must never hide the commands after it.
+        ("echo cookie: ; rm -rf /config", "echo cookie: ; rm -rf /config"),
+        ("curl -H Cookie:a=b http://x && rm -rf /data", "curl -H Cookie:[redacted] http://x && rm -rf /data"),
+        ("curl -H 'Cookie: a=1; b=2' x; rm -rf /", "curl -H 'Cookie: [redacted]' x; rm -rf /"),
+        # A token as the whole userinfo; a plain account name is kept.
+        ("git clone https://ghp_abcdefghijk@github.com/x", "git clone https://[redacted]@github.com/x"),
+        ("git clone ssh://git@host/x", "git clone ssh://git@host/x"),
+        # -P and -N are masked only for the commands that take a password there.
+        ("grep -P '[0-9]+' f", "grep -P '[0-9]+' f"),
+        ("find -P / -name x -delete", "find -P / -name x -delete"),
+        ("rsync -P src/ host:/dst", "rsync -P src/ host:/dst"),
+        ("ssh -N root@host -L 1:a:2", "ssh -N root@host -L 1:a:2"),
+        ("iptables -N MYCHAIN", "iptables -N MYCHAIN"),
+        ("xargs -P 4 cmd", "xargs -P 4 cmd"),
+        # Values with spaces and escaped quotes.
+        ("curl --data-urlencode 'password=a b' x", "curl --data-urlencode 'password=[redacted]' x"),
+        ('mysql -p"hun ter2" db', "mysql -p[redacted] db"),
+        ('curl -d \'{"password": "a\\"b"}\' x', "curl -d '{\"password\": [redacted]}' x"),
+        # Bearer values and custom credential headers.
+        ("curl -H 'X-Token: Bearer abc' x", "curl -H 'X-Token: Bearer [redacted]' x"),
+        ("curl -H 'PRIVATE-TOKEN: abc' http://x", "curl -H 'PRIVATE-TOKEN: [redacted]' http://x"),
+        ("curl -H 'X-HA-Access: abc' http://x", "curl -H 'X-HA-Access: [redacted]' http://x"),
+        ("curl -H 'Authorization: Bearer abc def' x", "curl -H 'Authorization: Bearer [redacted]' x"),
+        # Other secret shapes.
+        (
+            "printf '%s' hunter2 | docker login --password-stdin -u u",
+            "printf '%s' [redacted] | docker login --password-stdin -u u",
+        ),
+        ("openssl rsa -passin 'pass:hunter2'", "openssl rsa -passin 'pass:[redacted]'"),
+        ("docker login -p hunter2 reg", "docker login -p [redacted] reg"),
+        ("curl -b 'session=abc' x", "curl -b [redacted] x"),
     ],
 )
 def test_redact_command(command: str, expected: str) -> None:
