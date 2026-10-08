@@ -126,6 +126,8 @@ _FLUSH_ERROR_LOG_INTERVAL = 600.0
 # Retention lists the audit directory, so it runs at most this often (seconds), and only on a
 # flush that has records to write.
 _RETENTION_INTERVAL = 3600.0
+# Block size when a query reads a day file from its end.
+_REVERSE_READ_BLOCK = 64 * 1024
 DROPPED_CATEGORY = "audit_records_dropped"
 
 # Exact key match, case-insensitive, any depth: "token_id" stays visible, "token" does not.
@@ -1586,6 +1588,35 @@ class AuditLog:
         except OSError:
             return
 
+    @staticmethod
+    def _read_jsonl_reversed(path: str):
+        """Yield the non-empty lines of one file as bytes, last line first.
+
+        Reads 64 KiB blocks from the end, so a caller that stops early touches
+        only the tail of the file and never holds more than a block and one line.
+        """
+        try:
+            with open(path, "rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                position = handle.tell()
+                carry = b""
+                while position > 0:
+                    size = min(_REVERSE_READ_BLOCK, position)
+                    position -= size
+                    handle.seek(position)
+                    parts = (handle.read(size) + carry).split(b"\n")
+                    # The first part may be the end of a line that began in the previous block.
+                    carry = parts[0]
+                    for part in reversed(parts[1:]):
+                        part = part.strip()
+                        if part:
+                            yield part
+                carry = carry.strip()
+                if carry:
+                    yield carry
+        except OSError:
+            return
+
     async def async_query(
         self,
         *,
@@ -1601,11 +1632,17 @@ class AuditLog:
         ``since``/``until`` are aware UTC datetimes (as returned by
         ``dt_util.utcnow()``). Defaults to the last 7 days if ``since`` is
         not given.
+
+        Does not flush: records still in the write buffer are taken from memory
+        (already numbered and hashed, no I/O) and the files are read newest first,
+        stopping at ``limit``, so a query costs the size of its answer and never
+        triggers a write or a retention pass.
         """
-        # Flush first: _sync_query reads only disk, and the panel must not lag up to _FLUSH_INTERVAL.
-        await self._async_flush()
+        # Taken before the executor job starts: a record logged later is not wanted, and one
+        # that a concurrent flush writes meanwhile is seen twice and merged by seq below.
+        buffered = self._prepare_buffered()
         return await self.hass.async_add_executor_job(
-            self._sync_query, since, until, user_id, category, ip, limit
+            self._sync_query, since, until, user_id, category, ip, limit, buffered
         )
 
     def _sync_query(
@@ -1616,36 +1653,53 @@ class AuditLog:
         category: str | None,
         ip: str | None,
         limit: int,
+        buffered: list[dict[str, Any]] | None = None,
     ) -> list[dict[str, Any]]:
         until_dt = until or dt_util.utcnow()
         since_dt = since or (until_dt - _DEFAULT_QUERY_LOOKBACK)
+        if limit <= 0:
+            return []
+
+        def _matches(record: dict[str, Any]) -> bool:
+            record_dt = dt_util.parse_datetime(record.get("ts", ""))
+            if record_dt is not None and (record_dt < since_dt or record_dt > until_dt):
+                return False
+            if user_id is not None and record.get("user_id") != user_id:
+                return False
+            if category is not None and record.get("category") != category:
+                return False
+            if ip is not None and record.get("ip") != ip:
+                return False
+            return True
 
         results: list[dict[str, Any]] = []
-        for file_date, path in self._sync_list_day_files():
-            if file_date < since_dt.date() or file_date > until_dt.date():
+        seen_seqs: set[int] = set()
+        for record in reversed(buffered or []):
+            seen_seqs.add(record.get("seq", 0))
+            if _matches(record):
+                results.append(dict(record))
+                if len(results) >= limit:
+                    return results
+
+        # (date, segment) order is write order, so the reverse is newest first.
+        for file_date, path in reversed(self._sync_list_day_files()):
+            if file_date > until_dt.date():
                 continue
-            for line in self._read_jsonl(path):
+            if file_date < since_dt.date():
+                break
+            for line in self._read_jsonl_reversed(path):
                 try:
                     record = json.loads(line)
                 except (ValueError, TypeError):
                     continue
-
-                record_dt = dt_util.parse_datetime(record.get("ts", ""))
-                if record_dt is not None and (
-                    record_dt < since_dt or record_dt > until_dt
-                ):
+                if not isinstance(record, dict):
                     continue
-                if user_id is not None and record.get("user_id") != user_id:
+                if record.get("seq", 0) in seen_seqs or not _matches(record):
                     continue
-                if category is not None and record.get("category") != category:
-                    continue
-                if ip is not None and record.get("ip") != ip:
-                    continue
-
                 results.append(record)
-
-        results.sort(key=lambda record: record.get("seq", 0), reverse=True)
-        return results[:limit]
+                if len(results) >= limit:
+                    return results
+        return results
 
     async def async_category_stats(self) -> dict[str, Any]:
         """Per-category record counts and byte shares for the newest day.

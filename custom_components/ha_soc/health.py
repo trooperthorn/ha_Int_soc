@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import datetime, timedelta
+import asyncio
 import ipaddress
 import json
 import logging
@@ -29,7 +30,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.event import async_track_time_interval
-from homeassistant.loader import async_get_integration, async_get_integrations
+from homeassistant.loader import async_get_integrations
 import homeassistant.util.dt as dt
 
 from .audit import BAN_LOGGER_NAME
@@ -225,6 +226,8 @@ class IntegrationHealth:
         self.backup_unreadable: str | None = None
         # In-memory only; resets on every reload for a fresh grace window, like _started_at.
         self._probe_unreported_since: datetime | None = None
+        # The sweep that setup started in the background; a caller during it waits for its result.
+        self._sweep_task: asyncio.Task[list[dict]] | None = None
 
         self._dispatcher_unsub: Callable[[], None] | None = None
         self._timer_unsub: Callable[[], None] | None = None
@@ -263,9 +266,17 @@ class IntegrationHealth:
             self.hass, self._async_tick, HEALTH_TICK_INTERVAL
         )
 
-        await self.async_run_misconfig_checks()
+        # The sweep reads configuration files and the Supervisor, which setup does not wait for.
+        # Being a background task it neither delays this setup nor blocks Home Assistant's startup.
+        self._sweep_task = self.hass.async_create_background_task(
+            self._async_sweep_misconfig(), "HA SOC initial misconfiguration sweep"
+        )
 
     async def async_stop(self) -> None:
+        sweep = self._sweep_task
+        self._sweep_task = None
+        if sweep is not None and not sweep.done():
+            sweep.cancel()
         if self._dispatcher_unsub is not None:
             self._dispatcher_unsub()
             self._dispatcher_unsub = None
@@ -387,11 +398,13 @@ class IntegrationHealth:
         for domain in domains:
             prefixes.append((f"homeassistant.components.{domain}", domain))
             prefixes.append((f"custom_components.{domain}", domain))
+        # One gathered load instead of one await per domain: core reads the manifests of the
+        # domains it has not cached in a single executor job.
+        loaded = await async_get_integrations(self.hass, domains)
         for domain in domains:
-            try:
-                integration = await async_get_integration(self.hass, domain)
-            except Exception:  # noqa: BLE001 - a domain with a broken manifest
-                continue
+            integration = loaded.get(domain)
+            if integration is None or isinstance(integration, Exception):
+                continue  # a domain with a broken or missing manifest
             for logger_prefix in integration.manifest.get("loggers", []) or []:
                 prefixes.append((logger_prefix, domain))
         # Longest prefix first so a specific manifest-declared logger name wins.
@@ -575,6 +588,13 @@ class IntegrationHealth:
         return self._sweep_yaml
 
     async def async_run_misconfig_checks(self) -> list[dict]:
+        sweep = self._sweep_task
+        if sweep is not None and not sweep.done() and sweep is not asyncio.current_task():
+            # The sweep setup started is still running: share its result instead of running a second one.
+            return await asyncio.shield(sweep)
+        return await self._async_sweep_misconfig()
+
+    async def _async_sweep_misconfig(self) -> list[dict]:
         # Nothing is evaluated and no finding is touched until HA has finished starting plus STARTUP_GRACE.
         if self._started_at is None or dt.utcnow() - self._started_at < STARTUP_GRACE:
             _LOGGER.debug(

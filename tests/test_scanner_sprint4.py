@@ -87,7 +87,7 @@ async def test_unscanned_domain_is_not_zero(
     assert "never_scanned" not in payload["coverage"]
 
     (tmp_path / "mod.py").write_text("x = 1\n", encoding="utf-8")
-    fake_integration = SimpleNamespace(file_path=tmp_path)
+    fake_integration = SimpleNamespace(file_path=tmp_path, is_built_in=False)
     with patch.object(
         scanner_mod, "async_get_integration", new=AsyncMock(return_value=fake_integration)
     ):
@@ -127,7 +127,7 @@ async def test_scanner_reconciles_findings(
 ) -> None:
     mod = tmp_path / "mod.py"
     mod.write_text('import requests\nrequests.get("https://x", verify=False)\n', encoding="utf-8")
-    fake_integration = SimpleNamespace(file_path=tmp_path)
+    fake_integration = SimpleNamespace(file_path=tmp_path, is_built_in=False)
 
     with patch.object(
         scanner_mod, "async_get_integration", new=AsyncMock(return_value=fake_integration)
@@ -154,7 +154,7 @@ async def test_reconciliation_skips_unevaluated_files(
     evidence the pattern is gone."""
     mod = tmp_path / "mod.py"
     mod.write_text('import requests\nrequests.get("https://x", verify=False)\n', encoding="utf-8")
-    fake_integration = SimpleNamespace(file_path=tmp_path)
+    fake_integration = SimpleNamespace(file_path=tmp_path, is_built_in=False)
 
     with patch.object(
         scanner_mod, "async_get_integration", new=AsyncMock(return_value=fake_integration)

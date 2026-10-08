@@ -109,6 +109,8 @@ URL a parser actually needs stays visible.
   its length. Legitimate uses are acknowledged visibly in source with a
   reasoned `# ha-soc-allow` marker, never silently skipped, and a test
   holds HA SOC's own code to zero open findings from these rules.
+  Built-in Core integrations are skipped, unchanged files are not parsed
+  again, and a scan yields to Home Assistant between files.
   Coverage is honest: the scanner records per domain what it scanned,
   skipped, and failed to parse, a domain it never scanned reads "not
   scanned" rather than "0 findings", findings absent on a rescan of

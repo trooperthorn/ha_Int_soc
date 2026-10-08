@@ -157,10 +157,11 @@ async def test_user_removed_splits_actor_from_target(
     assert record["detail"]["actor_source"] == "ws_connection"
 
 
-async def test_query_flushes_buffer_first(
+async def test_query_sees_buffered_records_without_flushing(
     hass: HomeAssistant, tmp_path: Any
 ) -> None:
-    """A record logged a moment ago is visible without waiting 30 seconds."""
+    """A record logged a moment ago is visible without waiting 30 seconds, and reading
+    the log does not write it (OPT-4)."""
     audit = await _make_audit(hass, tmp_path)
     audit.async_log("service_call", user_id="u1", domain="light", service="turn_on")
     assert len(audit._buffer) == 1
@@ -168,8 +169,10 @@ async def test_query_flushes_buffer_first(
     results = await audit.async_query(category="service_call")
     assert len(results) == 1
     assert results[0]["user_id"] == "u1"
-    # The buffer really was flushed, not just peeked at.
-    assert len(audit._buffer) == 0
+    assert results[0]["seq"] == 1
+    # Peeked at, not flushed: the buffer is intact and nothing reached the disk.
+    assert len(audit._buffer) == 1
+    assert audit._sync_list_day_files() == []
 
 
 async def test_call_service_extracts_area_targets(
