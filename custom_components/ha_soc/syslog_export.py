@@ -109,6 +109,7 @@ _CEF_VERY_HIGH_9 = {
     "terminal_pairing_rejected",
 }
 _CEF_HIGH_7 = {
+    "audit_tail_repaired",
     "dashboard_file_denied",
     "ssh_host_key_changed",
     "firewall_pending_discarded",
@@ -117,6 +118,7 @@ _CEF_HIGH_7 = {
     "user_removed",
 }
 _CEF_MEDIUM_5 = {
+    "audit_head_rebuilt",
     "dashboard_file_write",
     "ssh_device_command",
     "ssh_key_change",
@@ -163,7 +165,12 @@ def _severity(record: dict[str, Any]) -> int:
         "external_audit_rejected",
     }:
         return 3  # error
-    if category in {"login_fail", "user_removed", "user_deactivated"}:
+    if category in {
+        "login_fail",
+        "user_removed",
+        "user_deactivated",
+        "audit_tail_repaired",
+    }:
         return 4  # warning
     if category.endswith("_change") or category == "soc_config_change":
         return 5  # notice

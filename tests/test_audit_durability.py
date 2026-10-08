@@ -91,7 +91,7 @@ async def test_clock_step_back_survives_restart(hass, tmp_path):
         audit.async_log("login_ok", user_id="u")
     await audit._async_flush()
     audit = await _restart(hass, audit)
-    with _at(7):
+    with _at(8):
         audit.async_log("login_ok", user_id="u")
     await audit._async_flush()
 
@@ -273,3 +273,136 @@ async def test_truncated_tail_is_not_masked_by_the_rebuild(hass, tmp_path):
     result = await restarted.async_verify_chain()
     assert result["ok"] is False
     assert result["reason"] == "tail_truncated"
+
+
+async def _start(hass, audit: AuditLog) -> AuditLog:
+    """A new instance started through async_start, as after a process restart."""
+    fresh = AuditLog(hass, audit._store)
+    fresh._dir_path = audit._dir_path
+    await fresh.async_start()
+    await hass.async_block_till_done()
+    return fresh
+
+
+def _all_records(audit: AuditLog) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for name in _day_files(audit):
+        with open(os.path.join(audit._dir_path, name), encoding="utf-8") as handle:
+            out.extend(json.loads(line) for line in handle if line.strip())
+    return out
+
+
+async def test_recovery_events_reach_disk_without_waiting_for_the_timer(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        for i in range(2):
+            audit.async_log("login_ok", user_id="u", detail={"i": i})
+    await audit._async_flush()
+    path = os.path.join(audit._dir_path, _day_files(audit)[0])
+    with open(path, "a", encoding="utf-8") as handle:
+        handle.write('{"seq": 3, "ts": "2026-10-08T12:00:00+00:00", "categ')
+
+    restarted = await _start(hass, audit)
+    try:
+        # No explicit flush: the repair event must already be durable.
+        categories = [r["category"] for r in _all_records(restarted)]
+        assert categories.count("audit_tail_repaired") == 1
+        assert (await restarted.async_verify_chain())["ok"] is True
+    finally:
+        await restarted.async_stop()
+
+
+async def test_deleted_head_file_is_still_a_chain_reset(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        for i in range(3):
+            audit.async_log("login_ok", user_id="u", detail={"i": i})
+    await audit._async_flush()
+    os.remove(os.path.join(audit._dir_path, "chain_head.json"))
+
+    restarted = await _start(hass, audit)
+    try:
+        categories = [r["category"] for r in _all_records(restarted)]
+        assert "audit_chain_reset" in categories
+        assert "audit_head_rebuilt" not in categories
+        assert (await restarted.async_verify_chain())["reason"] == "chain_reset"
+    finally:
+        await restarted.async_stop()
+
+
+async def test_corrupt_head_file_is_not_rebuilt_from_the_records(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        for i in range(3):
+            audit.async_log("login_ok", user_id="u", detail={"i": i})
+    await audit._async_flush()
+    with open(os.path.join(audit._dir_path, "chain_head.json"), "w") as handle:
+        handle.write("{not json")
+
+    restarted = await _restart(hass, audit)
+    assert restarted._recovery_events == []
+    assert restarted._seq == 0
+
+
+async def test_head_is_not_moved_across_a_replaced_tail(hass, tmp_path):
+    """The record at the old head seq must carry the old head hash."""
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        for i in range(3):
+            audit.async_log("login_ok", user_id="u", detail={"i": i})
+    await audit._async_flush()
+    head_path = os.path.join(audit._dir_path, "chain_head.json")
+    with open(head_path, encoding="utf-8") as handle:
+        head = json.load(handle)
+    head["prev_hash"] = "0" * 64
+    with open(head_path, "w", encoding="utf-8") as handle:
+        json.dump(head, handle)
+    # Append a valid-looking record 4 so the files are ahead of the (forged) head.
+    with _at(8, 13):
+        audit.async_log("login_ok", user_id="u", detail={"i": 3})
+    await audit._async_flush()
+    with open(head_path, "w", encoding="utf-8") as handle:
+        json.dump(head, handle)
+
+    restarted = await _restart(hass, audit)
+    assert restarted._recovery_events == []
+    assert restarted._prev_hash == "0" * 64
+
+
+async def test_forward_clock_jump_does_not_capture_later_records(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    with _at(25):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    with _at(8, 13):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+
+    assert _day_files(audit) == [
+        "audit-2026-10-08.jsonl",
+        "audit-2026-10-25.jsonl",
+    ]
+    assert _seqs(audit) == [1, 3, 2]
+    with _at(8, 14):
+        found = await audit.async_query()
+    assert {r["seq"] for r in found} == {1, 3}
+    assert (await audit.async_verify_chain())["ok"] is True
+
+
+async def test_query_finds_records_in_a_later_dated_file_after_a_step_back(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8, 23):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    with _at(9, 1):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    with _at(8, 23):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    with _at(8, 23):
+        found = await audit.async_query()
+    assert {r["seq"] for r in found} == {1, 3}

@@ -50,8 +50,8 @@ ignore RFC 5424 structured data.
 |---:|---|
 | 10 | `audit_chain_reset` |
 | 9 | `probe_auth_rejected`, `external_audit_chain_break`, `external_audit_rejected` |
-| 7 | `login_fail`, `user_removed`, `user_deactivated`, `firewall_pending_discarded` |
-| 5 | known security/configuration changes, privileged reads, token creation, watchdog and detection-status events, `external_audit`, `programming_session` |
+| 7 | `login_fail`, `user_removed`, `user_deactivated`, `firewall_pending_discarded`, `audit_tail_repaired` |
+| 5 | known security/configuration changes, privileged reads, token creation, watchdog and detection-status events, `external_audit`, `programming_session`, `audit_head_rebuilt` |
 | 3 | `login_ok`, `service_call`, `session_seen` |
 | 4 | unknown/unclassified future categories |
 

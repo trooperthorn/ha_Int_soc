@@ -335,6 +335,27 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
 )
 IMMEDIATE_FLUSH_PREFIXES = ("firewall_",)
 
+# Newest day files that crash recovery inspects.
+_RECOVERY_FILES = 3
+
+
+def _bounded_day(record_day: str, floor: str) -> str:
+    """Later of the record's day and the floor, unless the floor is far in the future.
+
+    A floor more than one day ahead of the record is a forward clock jump, not a
+    backward step; honoring it would send every later record to a future-dated file
+    that retention would not reach by age. Verification merges by seq, so a record in
+    an older-dated file is harmless.
+    """
+    if not floor or floor <= record_day:
+        return record_day
+    try:
+        ahead = date.fromisoformat(floor) - date.fromisoformat(record_day)
+    except ValueError:
+        return record_day
+    return floor if ahead.days <= 1 else record_day
+
+
 # Public: health.py's audit_ban_logger_silenced check reads it.
 BAN_LOGGER_NAME = "homeassistant.components.http.ban"
 # Current core logs the ban warning preformatted with no args; this regex is the live path.
@@ -685,7 +706,11 @@ class AuditLog:
         """Record the repairs the load made, once, as chained audit events."""
         events, self._recovery_events = self._recovery_events, []
         for category, detail in events:
-            self.async_log(category, detail={**detail, "actor_source": "system"})
+            # Flushed at once: the repair itself is already on disk, and a crash before the
+            # timer would leave the next start with nothing to report.
+            self.async_log(
+                category, detail={**detail, "actor_source": "system"}, flush=True
+            )
 
     @callback
     def _resolve_actor(self, event: Event) -> tuple[str | None, str]:
@@ -1238,9 +1263,10 @@ class AuditLog:
         self._sync_load_chain_head_file()
         try:
             self._sync_recover_from_disk()
-        except OSError:
+        except Exception:  # noqa: BLE001 - odd file contents must not stop the audit log starting
+            self._recovery_events = []
             _LOGGER.warning(
-                "HA SOC audit log: could not check the newest audit file for a "
+                "HA SOC audit log: could not check the newest audit files for a "
                 "torn tail or a stale chain head",
                 exc_info=True,
             )
@@ -1327,16 +1353,42 @@ class AuditLog:
             "truncated_to": keep,
         }
 
-    def _sync_last_durable_record(self) -> dict[str, Any] | None:
-        """The last record of the newest non-empty audit file, or None if unusable."""
-        for _file_date, path in reversed(self._sync_list_day_files()):
+    def _sync_recent_files(self) -> list[tuple[date, str]]:
+        """The newest few day files, newest first.
+
+        File dates follow a monotonic day key, but a forward clock jump can leave a
+        newer-dated file that holds fewer records than the one before it, so recovery
+        looks at several files rather than only the last one.
+        """
+        return list(reversed(self._sync_list_day_files()))[:_RECOVERY_FILES]
+
+    def _sync_records_after(self, seq: int) -> list[dict[str, Any]]:
+        """Parsed records with a seq at or above ``seq`` from the newest files, by seq."""
+        found: dict[int, dict[str, Any]] = {}
+        for _file_date, path in self._sync_recent_files():
             for line in self._read_jsonl_reversed(path):
                 try:
                     record = json.loads(line)
                 except (ValueError, TypeError):
-                    return None
-                return record if isinstance(record, dict) else None
-        return None
+                    break
+                rec_seq = record.get("seq") if isinstance(record, dict) else None
+                if not isinstance(rec_seq, int) or isinstance(rec_seq, bool):
+                    break
+                if rec_seq < seq:
+                    break
+                found[rec_seq] = record
+        return [found[key] for key in sorted(found)]
+
+    @staticmethod
+    def _record_hash_ok(record: dict[str, Any]) -> bool:
+        prev_hash = record.get("prev_hash")
+        if not isinstance(prev_hash, str) or not isinstance(record.get("hash"), str):
+            return False
+        payload = {k: v for k, v in record.items() if k != "hash"}
+        expected = hashlib.sha256(
+            (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
+        ).hexdigest()
+        return expected == record["hash"]
 
     def _sync_recover_from_disk(self) -> None:
         """Repair a torn tail and rebuild a head that lags the durable records.
@@ -1344,47 +1396,54 @@ class AuditLog:
         The records are fsynced before the head is rewritten, so a crash between the
         two leaves the head behind the files; continuing from the stale head would
         number the next record with a seq already on disk. The head is advanced only
-        to a last record whose hash is consistent with its own contents. A head that is
-        ahead of the files is not touched: that is truncation, and verification reports it.
+        when it loaded cleanly and the records on disk continue exactly from it: the
+        record at the old head seq carries the old head hash and every later record
+        links to the one before and hashes correctly. A missing or unreadable head, a
+        head ahead of the files, or a replaced tail is left alone so reset detection
+        and verification report it.
         """
         entries = self._sync_list_day_files()
         if not entries:
             return
         self._day_floor = (self._dir_path, entries[-1][0].isoformat())
-        repair = self._sync_repair_torn_tail(entries[-1][1])
-        if repair is not None:
-            _LOGGER.warning(
-                "HA SOC audit log: removed a torn last line (%d bytes) from %s",
-                repair["bytes_removed"],
-                repair["file"],
-            )
-            self._recovery_events.append(("audit_tail_repaired", repair))
-        record = self._sync_last_durable_record()
-        if record is None:
+        for _file_date, path in self._sync_recent_files():
+            repair = self._sync_repair_torn_tail(path)
+            if repair is not None:
+                _LOGGER.warning(
+                    "HA SOC audit log: removed a torn last line (%d bytes) from %s",
+                    repair["bytes_removed"],
+                    repair["file"],
+                )
+                self._recovery_events.append(("audit_tail_repaired", repair))
+        if not self._head_file_found:
             return
-        seq = record.get("seq")
-        record_hash = record.get("hash")
-        prev_hash = record.get("prev_hash")
-        if (
-            not isinstance(seq, int)
-            or isinstance(seq, bool)
-            or not isinstance(record_hash, str)
-            or not isinstance(prev_hash, str)
-            or seq <= self._seq
-        ):
+        old_seq = self._seq
+        records = self._sync_records_after(old_seq)
+        if not records or records[-1].get("seq", 0) <= old_seq:
             return
-        payload = {k: v for k, v in record.items() if k != "hash"}
-        expected = hashlib.sha256(
-            (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
-        ).hexdigest()
-        if expected != record_hash:
-            return
-        before = self._seq
-        self._seq = seq
-        self._prev_hash = record_hash
+        previous_hash = self._prev_hash
+        expected_seq = old_seq
+        if old_seq > 0:
+            if records[0].get("seq") != old_seq or records[0].get("hash") != previous_hash:
+                return
+            records = records[1:]
+        for record in records:
+            expected_seq += 1
+            if (
+                record.get("seq") != expected_seq
+                or record.get("prev_hash") != previous_hash
+                or not self._record_hash_ok(record)
+            ):
+                return
+            previous_hash = record["hash"]
+        self._seq = expected_seq
+        self._prev_hash = previous_hash
         self._sync_write_chain_head()
         self._recovery_events.append(
-            ("audit_head_rebuilt", {"head_seq_before": before, "head_seq_after": seq})
+            (
+                "audit_head_rebuilt",
+                {"head_seq_before": old_seq, "head_seq_after": expected_seq},
+            )
         )
 
     def _sync_write_chain_head(
@@ -1438,7 +1497,7 @@ class AuditLog:
             for record in records:
                 # A clock stepped back must not send a record to an older file: the day
                 # key never moves backwards, so file order stays append order.
-                day = max(record["ts"][:10], floor)
+                day = _bounded_day(record["ts"][:10], floor)
                 floor = day
                 if by_day and by_day[-1][0] == day:
                     by_day[-1][1].append(record)
@@ -1836,8 +1895,8 @@ class AuditLog:
 
         # (date, segment) order is write order, so the reverse is newest first.
         for file_date, path in reversed(self._sync_list_day_files()):
-            if file_date > until_dt.date():
-                continue
+            # No upper skip on the file date: the monotonic day key can put a record in a
+            # file dated after its own timestamp, so the record filter decides.
             if file_date < since_dt.date():
                 break
             for line in self._read_jsonl_reversed(path):
