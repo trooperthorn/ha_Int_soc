@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- The one-shot run endpoint now returns the output file unmodified together
+  with its `sha256` and `bytes`. It used to read the output through command
+  substitution, which strips trailing newlines, so the hash the integration
+  computed over `hello` plus a newline never matched `sha256sum` of the file.
+
 - Fixed the run/transcript listener (`ha_soc_terminal_httpd`, port 7682)
   never starting: the base image's busybox is built without the `httpd`
   applet, so the service died with `httpd: applet not found` and s6

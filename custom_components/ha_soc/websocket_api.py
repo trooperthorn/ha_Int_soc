@@ -2749,8 +2749,10 @@ async def ws_ssh_run(hass: HomeAssistant, connection, msg: dict) -> None:
 
 # --- Terminal app -----------------------------------------------------------
 #
-# The same owner-or-admins tier as the rest of the panel, applied per
-# command. A session is a subscription: output arrives as events on the open
+# Opening a session, sending input, resizing and running a command are
+# owner-only whatever access_level says, because they are a root shell on the
+# host (the same bar as ha_soc/ssh/run). Status, close, transcript and export
+# events follow the owner-or-admins tier of the rest of the panel. A session is a subscription: output arrives as events on the open
 # command's id until either side closes it, and the browser going away closes
 # it too. Bytes ride as base64 in both directions because a terminal stream is
 # not text. Shapes: docs/protocol.md; design: docs/TERMINAL-DESIGN.md.
@@ -2766,7 +2768,7 @@ async def ws_terminal_status(hass: HomeAssistant, connection, msg: dict) -> None
     connection.send_result(msg["id"], status)
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/open",
@@ -2811,7 +2813,7 @@ async def ws_terminal_open(hass: HomeAssistant, connection, msg: dict) -> None:
         "target": session.target,
         "host": session.host,
         "started": session.started.isoformat(),
-        "recorded": True,
+        "recorded": session.recorded,
         "max_session_seconds": terminal.MAX_SESSION_SECONDS,
     }
     connection.send_result(msg_id, opened)
@@ -2820,7 +2822,7 @@ async def ws_terminal_open(hass: HomeAssistant, connection, msg: dict) -> None:
     _send({"kind": "opened", **opened})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/input",
@@ -2839,7 +2841,7 @@ async def ws_terminal_input(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"ok": True})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/resize",
@@ -2886,7 +2888,7 @@ async def ws_terminal_close(hass: HomeAssistant, connection, msg: dict) -> None:
     connection.send_result(msg["id"], {"closed": True})
 
 
-@require_soc_access
+@require_owner
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "ha_soc/terminal/run",
@@ -2956,9 +2958,10 @@ async def ws_terminal_export_event(hass: HomeAssistant, connection, msg: dict) -
     """Record that screen text left the panel by copy or download.
 
     The panel computes the hash client-side (crypto.subtle.digest) over
-    exactly what it copied or downloaded, before this call, so the audit
-    record identifies the actual bytes rather than trusting a byte count
-    alone. Copying still succeeds even when this call fails; the panel
+    what it copied or downloaded, before this call. Core cannot see those
+    bytes, so the audit record stores the hash marked ``client_asserted``:
+    it identifies what the browser claims it exported, not something Core
+    verified. Copying still succeeds even when this call fails; the panel
     shows a warning in that case rather than blocking the clipboard.
     """
     runtime = _runtime(hass)
@@ -2971,6 +2974,7 @@ async def ws_terminal_export_event(hass: HomeAssistant, connection, msg: dict) -
             "lines": msg["lines"],
             "bytes": msg["bytes"],
             "sha256": msg["sha256"],
+            "hash_source": terminal.HASH_SOURCE_CLIENT,
         },
         flush=True,
     )

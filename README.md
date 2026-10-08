@@ -235,11 +235,13 @@ URL a parser actually needs stays visible.
 - **Terminal**: a recorded bash terminal in the panel that executes only on
   this server, in the optional `ha_soc_terminal` app from this repository.
   The app has no ingress and no host port; the panel is the only door, behind
-  HA SOC's own access tier, and the integration holds the one connection to
+  HA SOC's own access tier (opening a session, sending input, resizing and
+  running a command are owner-only whatever `access_level` says, because they
+  are a root shell on the host), and the integration holds the one connection to
   the app's terminal server with a credential the app paired on first start.
   One shell per session with no tmux, so scrollback and paste behave; every
   session recorded by util-linux `script` in the app with its hash in an
-  index, and every open, close and one-shot run audited here (byte counts, outcome, and the command with credentials masked), with transcripts downloadable only by the session owner or the Home Assistant owner; xterm.js in
+  index, and every open, close and one-shot run audited here (byte counts, outcome, the SHA-256 of the exact output bytes, whether the app confirmed it was recording, and the command with credentials masked), with transcripts downloadable only by the session owner or the Home Assistant owner; xterm.js in
   the panel with the palette built from the active HA theme; `nano` with
   syntax files for YAML; no SSH client or other network tool in the image, no
   host network, no Docker socket, and the Supervisor token never exported

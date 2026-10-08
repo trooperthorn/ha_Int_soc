@@ -171,16 +171,16 @@ class _FakeHttpdSession:
         self.get_calls: list[dict] = []
         self.raises: Exception | None = None
 
-    def post(self, url, *, json, auth):
+    def post(self, url, *, json, headers):
         if self.raises is not None:
             raise self.raises
-        self.post_calls.append({"url": url, "json": json, "auth": auth})
+        self.post_calls.append({"url": url, "json": json, "headers": headers})
         return self.post_response
 
-    def get(self, url, *, params, auth):
+    def get(self, url, *, params, headers):
         if self.raises is not None:
             raise self.raises
-        self.get_calls.append({"url": url, "params": params, "auth": auth})
+        self.get_calls.append({"url": url, "params": params, "headers": headers})
         return self.get_response
 
 
@@ -190,6 +190,10 @@ def fake_httpd(monkeypatch):
     fake_session = _FakeHttpdSession()
     monkeypatch.setattr(tm, "async_get_clientsession", lambda _hass: fake_session)
     return fake_session
+
+
+def _expected_basic_auth(secret: str) -> str:
+    return "Basic " + base64.b64encode(f"{tm.TTYD_USER}:{secret}".encode()).decode()
 
 
 def _connection(user_id: str = "owner1", is_owner: bool = True, is_admin: bool = True) -> MagicMock:
@@ -529,6 +533,7 @@ async def test_export_event_is_audited_with_its_fields(hass: HomeAssistant, entr
         "lines": 42,
         "bytes": 1024,
         "sha256": "b" * 64,
+        "hash_source": "client_asserted",
     }
 
 
@@ -559,8 +564,7 @@ async def test_run_happy_path_is_audited(
     result = connection.send_result.call_args[0][1]
     assert result["stdout"] == "hello\n" and result["exit_code"] == 0
     assert fake_httpd.post_calls[0]["json"] == {"command": "echo hello", "timeout_seconds": 30}
-    assert fake_httpd.post_calls[0]["auth"].login == tm.TTYD_USER
-    assert fake_httpd.post_calls[0]["auth"].password == SECRET
+    assert fake_httpd.post_calls[0]["headers"] == {"Authorization": _expected_basic_auth(SECRET)}
 
     logged = await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN)
     assert logged[0]["detail"]["command"] == "echo hello"
@@ -616,6 +620,7 @@ async def test_transcript_ok_verifies_the_hash_and_is_audited(
         "session_id": "abc123",
         "bytes": len(text.encode()),
         "sha256": digest,
+        "hash_source": "server",
     }
 
 
@@ -875,3 +880,128 @@ async def test_a_transcript_with_no_owner_record_is_for_the_ha_owner_only(
     assert err.value.code == tm.ERR_UNAUTHORIZED
     result = await sessions.async_transcript(user_id="owner1", session_id="old1", allow_any=True)
     assert result["text"] == "x"
+
+
+# --- truthful hashes, recording state, owner-only root shell ------------------
+
+
+def _sha256sum(data: bytes) -> str:
+    """The digest the app's ``sha256sum`` prints for the same bytes."""
+    import subprocess
+
+    out = subprocess.run(["sha256sum"], input=data, capture_output=True, check=True).stdout
+    return out.split()[0].decode()
+
+
+async def test_run_hash_matches_sha256sum_on_both_sides(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    """The app hashes the file it wrote; Core hashes stdout. For "hello\n" they agree."""
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    expected = _sha256sum(b"hello\n")
+    fake_httpd.post_response = _FakeHttpResponse(
+        json_body={
+            "id": "run1",
+            "stdout": "hello\n",
+            "exit_code": 0,
+            "duration_seconds": 0,
+            "truncated": False,
+            "sha256": expected,
+            "bytes": 6,
+        }
+    )
+    connection = await _call(
+        hass, ws_terminal_run, _connection(), {"id": 1, "type": "ha_soc/terminal/run", "command": "echo hello", "timeout_seconds": 30}
+    )
+    assert connection.send_result.call_args[0][1]["stdout"] == "hello\n"
+    detail = (await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN))[0]["detail"]
+    assert detail["sha256"] == expected
+    assert detail["app_sha256"] == expected
+    assert detail["hash_matches_app"] is True
+    assert detail["hash_source"] == "server"
+    assert detail["bytes"] == 6
+
+
+async def test_run_records_a_difference_between_the_two_hashes(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    fake_httpd.post_response = _FakeHttpResponse(
+        json_body={"id": "run1", "stdout": "hello", "exit_code": 0, "sha256": _sha256sum(b"hello\n")}
+    )
+    await _call(hass, ws_terminal_run, _connection(), {"id": 1, "type": "ha_soc/terminal/run", "command": "echo hello", "timeout_seconds": 30})
+    detail = (await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN))[0]["detail"]
+    assert detail["hash_matches_app"] is False
+    assert detail["sha256"] == _sha256sum(b"hello")
+
+
+def test_the_run_listener_hashes_the_bytes_it_returns() -> None:
+    """The CGI must not read stdout through $(cat ...), which strips the trailing newline."""
+    from pathlib import Path
+
+    script = (Path(__file__).parents[1] / "ha_soc_terminal" / "rootfs" / "www" / "cgi-bin" / "run").read_text(encoding="utf-8")
+    assert '--rawfile stdout "${out_file}"' in script
+    code = "\n".join(line for line in script.splitlines() if not line.lstrip().startswith("#"))
+    assert "$(cat " not in code
+    assert 'sha256: $sha256' in script
+
+
+async def test_the_recorded_flag_follows_the_app_option(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_ttyd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    opened = await _open(hass, _connection())
+    assert opened["recorded"] is True
+    await entry.runtime_data.terminal.async_close_all()
+
+    app_running.info["options"] = {"session_recording": False}
+    opened = await _open(hass, _connection(), msg_id=2)
+    assert opened["recorded"] is False
+    rows = await _audit(hass, entry, tm.AUDIT_CATEGORY_OPEN)
+    assert rows[0]["detail"]["recorded"] is False
+    await entry.runtime_data.terminal.async_close_all()
+
+    # Options that cannot be read are not a confirmation.
+    app_running.info["options"] = {}
+    opened = await _open(hass, _connection(), msg_id=3)
+    assert opened["recorded"] is False
+
+
+async def test_the_opened_event_carries_the_same_recorded_flag(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_ttyd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    app_running.info["options"] = {"session_recording": False}
+    connection = _connection()
+    await _open(hass, connection)
+    assert [e for e in _events(connection) if e["kind"] == "opened"][0]["recorded"] is False
+
+
+async def test_a_non_owner_admin_is_refused_the_root_shell_under_owner_and_admins(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_ttyd, fake_httpd
+) -> None:
+    """owner_and_admins widens the panel, not the root shell (same bar as ssh/run)."""
+    entry.runtime_data.store.settings["access_level"] = "owner_and_admins"
+    admin = _connection(user_id="admin1", is_owner=False)
+    for handler, msg in (
+        (ws_terminal_open, {"type": "ha_soc/terminal/open"}),
+        (ws_terminal_input, {"type": "ha_soc/terminal/input", "session_id": "x", "data": "AA=="}),
+        (ws_terminal_resize, {"type": "ha_soc/terminal/resize", "session_id": "x", "cols": 80, "rows": 24}),
+        (ws_terminal_run, {"type": "ha_soc/terminal/run", "command": "id"}),
+        (ws_terminal_app_control, {"type": "ha_soc/terminal/app_control", "action": "start"}),
+    ):
+        with pytest.raises(Unauthorized):
+            handler(hass, admin, {"id": 1, **msg})
+    assert fake_ttyd["connect_args"] is None
+    assert fake_httpd.post_calls == []
+    # The read-only and cleanup commands keep the panel tier.
+    status = await _call(hass, ws_terminal_status, admin, {"id": 2, "type": "ha_soc/terminal/status"})
+    assert status.send_result.called
+
+
+def test_no_aiohttp_deprecation_warnings_from_the_auth_header() -> None:
+    import warnings
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert tm._basic_auth_headers(SECRET) == {"Authorization": _expected_basic_auth(SECRET)}

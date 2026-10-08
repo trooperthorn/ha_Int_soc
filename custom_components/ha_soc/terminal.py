@@ -66,6 +66,12 @@ AUDIT_CATEGORY_FORGET_PAIRING = "terminal_forget_pairing"
 AUDIT_CATEGORY_RUN = "terminal_run"
 AUDIT_CATEGORY_EXPORT = "terminal_export"
 
+# Where an audited hash came from. Run and transcript hashes are computed
+# here over the bytes Core received; an export event's hash is whatever the
+# browser said it hashed, which Core cannot check.
+HASH_SOURCE_SERVER = "server"
+HASH_SOURCE_CLIENT = "client_asserted"
+
 EXPORT_KINDS = (
     "copy_screen",
     "copy_all",
@@ -186,6 +192,15 @@ def redact_command(command: str) -> str:
     out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)
     return out
+
+
+def _basic_auth_headers(secret: str) -> dict[str, str]:
+    """The Authorization header for ttyd and the run/transcript listener.
+
+    ``aiohttp.BasicAuth`` is deprecated; ``encode_basic_auth`` builds the
+    same header value without the deprecation warning.
+    """
+    return {"Authorization": aiohttp.encode_basic_auth(TTYD_USER, secret)}
 
 
 class TerminalError(Exception):
@@ -388,6 +403,9 @@ class TerminalSession:
     closed: bool = False
     close_reason: str | None = None
     title: str | None = None
+    # Whether the app confirmed it is recording this session. False when the
+    # app's options could not be read as well as when recording is off.
+    recorded: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
 
@@ -461,7 +479,7 @@ class TerminalSessions:
                     async with session.post(
                         url,
                         json={"command": command, "timeout_seconds": timeout_seconds},
-                        auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                        headers=_basic_auth_headers(secret),
                     ) as resp:
                         data = await resp.json(content_type=None)
             except asyncio.TimeoutError as err:
@@ -504,10 +522,17 @@ class TerminalSessions:
             "duration_seconds": duration,
         }
         if data is not None:
-            stdout = str(data.get("stdout", ""))
+            raw = str(data.get("stdout", "")).encode("utf-8")
             detail["exit_code"] = data.get("exit_code")
-            detail["bytes"] = len(stdout.encode("utf-8"))
-            detail["sha256"] = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+            detail["bytes"] = len(raw)
+            # Computed here over the exact bytes received; the app's own hash
+            # of the file it wrote is kept beside it so a difference shows.
+            detail["sha256"] = hashlib.sha256(raw).hexdigest()
+            detail["hash_source"] = HASH_SOURCE_SERVER
+            app_sha256 = data.get("sha256")
+            if isinstance(app_sha256, str) and app_sha256:
+                detail["app_sha256"] = app_sha256
+                detail["hash_matches_app"] = hmac.compare_digest(app_sha256.lower(), detail["sha256"])
         else:
             # The command may have executed even though no answer came back.
             detail["exit_code"] = None
@@ -537,7 +562,7 @@ class TerminalSessions:
                 async with session.get(
                     url,
                     params={"id": session_id},
-                    auth=aiohttp.BasicAuth(TTYD_USER, secret),
+                    headers=_basic_auth_headers(secret),
                 ) as resp:
                     if resp.status == 404:
                         raise TerminalError(ERR_UNKNOWN_SESSION, "No such transcript")
@@ -554,7 +579,13 @@ class TerminalSessions:
         self._audit.async_log(
             AUDIT_CATEGORY_EXPORT,
             user_id=user_id,
-            detail={"kind": "download_transcript", "session_id": session_id, "bytes": byte_count, "sha256": digest},
+            detail={
+                "kind": "download_transcript",
+                "session_id": session_id,
+                "bytes": byte_count,
+                "sha256": digest,
+                "hash_source": HASH_SOURCE_SERVER,
+            },
             flush=True,
         )
         return {"session_id": session_id, "text": text, "sha256": digest, "bytes": byte_count}
@@ -610,6 +641,10 @@ class TerminalSessions:
                 ERR_NOT_PAIRED,
                 "The Terminal app has not paired with HA SOC yet; it does so within a minute of starting",
             )
+        # Only a readable option that says true counts as recorded; the panel
+        # must never claim a recording the app did not confirm.
+        options = info.get("options") if isinstance(info.get("options"), dict) else {}
+        recorded = options.get("session_recording") is True
 
         ws = await self._connect(host, secret, cols, rows)
         session = TerminalSession(
@@ -620,6 +655,7 @@ class TerminalSessions:
             started=dt_util.utcnow(),
             send=send,
             ws=ws,
+            recorded=recorded,
         )
         self.sessions[session.session_id] = session
         self._owners[session.session_id] = user_id
@@ -631,7 +667,14 @@ class TerminalSessions:
         self._audit.async_log(
             AUDIT_CATEGORY_OPEN,
             user_id=user_id,
-            detail={"session_id": session.session_id, "target": target, "host": host, "cols": cols, "rows": rows},
+            detail={
+                "session_id": session.session_id,
+                "target": target,
+                "host": host,
+                "cols": cols,
+                "rows": rows,
+                "recorded": recorded,
+            },
             flush=True,
         )
         return session
