@@ -239,7 +239,7 @@ URL a parser actually needs stays visible.
   the app's terminal server with a credential the app paired on first start.
   One shell per session with no tmux, so scrollback and paste behave; every
   session recorded by util-linux `script` in the app with its hash in an
-  index, and every open and close audited here with byte counts; xterm.js in
+  index, and every open, close and one-shot run audited here (byte counts, outcome, and the command with credentials masked), with transcripts downloadable only by the session owner or the Home Assistant owner; xterm.js in
   the panel with the palette built from the active HA theme; `nano` with
   syntax files for YAML; no SSH client or other network tool in the image, no
   host network, no Docker socket, and the Supervisor token never exported

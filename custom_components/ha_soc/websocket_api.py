@@ -2930,7 +2930,9 @@ async def ws_terminal_transcript(hass: HomeAssistant, connection, msg: dict) -> 
     runtime = _runtime(hass)
     try:
         result = await runtime.terminal.async_transcript(
-            user_id=connection.user.id, session_id=msg["session_id"]
+            user_id=connection.user.id,
+            session_id=msg["session_id"],
+            allow_any=bool(connection.user.is_owner),
         )
     except terminal.TerminalError as err:
         connection.send_error(msg["id"], err.code, err.message)

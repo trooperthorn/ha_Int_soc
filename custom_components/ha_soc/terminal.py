@@ -22,7 +22,9 @@ import hashlib
 import hmac
 import json
 import logging
+import re
 import secrets as secrets_module
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Callable
@@ -101,6 +103,13 @@ ERR_UNKNOWN_SESSION = "unknown_session"
 ERR_CONNECT = "connect_failed"
 ERR_TERMINAL_BUSY = "terminal_busy"
 ERR_TRANSCRIPT_HASH_MISMATCH = "transcript_hash_mismatch"
+ERR_UNAUTHORIZED = "unauthorized"
+
+# Session owners are remembered after a session ends so a transcript can be
+# tied to the user who recorded it. Bounded; the oldest are forgotten first.
+MAX_REMEMBERED_OWNERS = 2000
+
+REDACTED = "[redacted]"
 
 # ttyd's wire protocol: one command byte then the payload, in both directions.
 _TTYD_INPUT = b"0"
@@ -115,6 +124,68 @@ PAIR_SCHEMA = vol.Schema(
         vol.Optional("version"): str,
     }
 )
+
+
+_SECRET_WORDS = (
+    "pass",
+    "passwd",
+    "password",
+    "pwd",
+    "secret",
+    "token",
+    "apikey",
+    "api_key",
+    "api-key",
+    "auth",
+    "credential",
+    "key",
+    "bearer",
+)
+_SECRET_NAME = r"[A-Za-z0-9_.-]*(?:" + "|".join(re.escape(w) for w in _SECRET_WORDS) + r")[A-Za-z0-9_.-]*"
+_VALUE = r"\"[^\"]*\"|'[^']*'|[^\s;&|)]*"
+# NAME=value at the start of a word: an environment assignment, or a long
+# option with an attached value (--password=x).
+_RE_ASSIGN = re.compile(
+    r"(?P<prefix>^|(?<=[\s;&|(]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
+    re.IGNORECASE,
+)
+# --password value, --token value (a separate word).
+_RE_LONG_OPTION = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))--" + _SECRET_NAME + r")(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)",
+    re.IGNORECASE,
+)
+# mysql-style -pSECRET with no space. A bare "-p" followed by a space is left
+# alone: mkdir -p and cp -p are far more common than a separated password.
+_RE_SHORT_P = re.compile(r"(?P<opt>(?:^|(?<=\s))-p)(?P<value>[^\s=-][^\s;&|)]*)")
+# curl -u user:pass and --user user:pass
+_RE_USER_PASS = re.compile(
+    r"(?P<opt>(?:^|(?<=\s))(?:-u|--user|--proxy-user))(?P<sep>\s*)(?P<user>[^\s:;&|)]+):(?P<value>[^\s;&|)]+)"
+)
+# scheme://user:pass@host
+_RE_URL_CRED = re.compile(r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*):(?P<value>[^\s/@]+)@")
+# Authorization: Bearer xyz, X-Api-Key: xyz
+_RE_AUTH_HEADER = re.compile(
+    r"(?P<head>(?:authorization|x-api-key|x-auth-token)\s*:\s*(?:bearer\s+|basic\s+|token\s+)?)(?P<value>[^\s\"';&|)]+)",
+    re.IGNORECASE,
+)
+
+
+def redact_command(command: str) -> str:
+    """The command with credential-looking arguments and assignments masked.
+
+    The audited command is the evidence of what a user ran, but a password
+    typed on a command line must not become a second copy of the password in
+    the audit log. Covers NAME=value where the name looks like a credential,
+    --password value and --token=value, mysql-style -pSECRET, curl -u
+    user:pass, user:pass@host in URLs, and Authorization style headers.
+    """
+    out = _RE_URL_CRED.sub(lambda m: f"{m['scheme']}{m['user']}:{REDACTED}@", command)
+    out = _RE_USER_PASS.sub(lambda m: f"{m['opt']}{m['sep']}{m['user']}:{REDACTED}", out)
+    out = _RE_AUTH_HEADER.sub(lambda m: f"{m['head']}{REDACTED}", out)
+    out = _RE_ASSIGN.sub(lambda m: f"{m['prefix']}{m['dashes']}{m['name']}={REDACTED}", out)
+    out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
+    out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)
+    return out
 
 
 class TerminalError(Exception):
@@ -336,6 +407,11 @@ class TerminalSessions:
         # self.sessions); this is the only state that stops a second run
         # while a user's first one is still in flight.
         self._running_users: set[str] = set()
+        # Opens in flight. A slot is reserved here before the first await so
+        # concurrent opens count against the same limits as finished ones.
+        self._opening: dict[object, str] = {}
+        # session_id -> owning user id, kept after the session ends.
+        self._owners: OrderedDict[str, str] = OrderedDict()
 
     def _for_user(self, user_id: str) -> list[TerminalSession]:
         return [s for s in self.sessions.values() if s.user_id == user_id]
@@ -370,10 +446,14 @@ class TerminalSessions:
         """
         if user_id in self._running_users:
             raise TerminalError(ERR_TERMINAL_BUSY, "A command is already running for you; wait for it to finish")
-        host, secret = await self._target_host_and_secret()
+        # Reserve the slot before the first await: the lookup below yields, and
+        # a second run arriving meanwhile must see this one.
         self._running_users.add(user_id)
         started = dt_util.utcnow()
+        data: Any = None
+        outcome = "error"
         try:
+            host, secret = await self._target_host_and_secret()
             session = async_get_clientsession(self._hass)
             url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/run"
             try:
@@ -384,33 +464,71 @@ class TerminalSessions:
                         auth=aiohttp.BasicAuth(TTYD_USER, secret),
                     ) as resp:
                         data = await resp.json(content_type=None)
-            except (aiohttp.ClientError, asyncio.TimeoutError, OSError) as err:
+            except asyncio.TimeoutError as err:
+                outcome = "timeout"
                 raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+            except (aiohttp.ClientError, OSError) as err:
+                outcome = "unreachable"
+                raise TerminalError(ERR_CONNECT, f"Could not reach the Terminal app at {host}: {err}") from err
+            if not isinstance(data, dict) or "error" in data:
+                outcome = "refused"
+                message = data.get("error") if isinstance(data, dict) else "malformed response"
+                raise TerminalError(ERR_CONNECT, f"The Terminal app refused the command: {message}")
+            outcome = "completed"
+        except TerminalError as err:
+            if outcome != "error":
+                # The request left Core, so the command may have run.
+                self._audit_run(user_id, command, started, None, outcome, err.message)
+            # outcome "error": refused before anything was sent (app stopped,
+            # not paired), so there is nothing to audit.
+            raise
         finally:
             self._running_users.discard(user_id)
-        if not isinstance(data, dict) or "error" in data:
-            message = data.get("error") if isinstance(data, dict) else "malformed response"
-            raise TerminalError(ERR_CONNECT, f"The Terminal app refused the command: {message}")
-        duration = int((dt_util.utcnow() - started).total_seconds())
-        stdout = str(data.get("stdout", ""))
-        output_bytes = len(stdout.encode("utf-8"))
-        digest = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
-        self._audit.async_log(
-            AUDIT_CATEGORY_RUN,
-            user_id=user_id,
-            detail={
-                "command": command,
-                "exit_code": data.get("exit_code"),
-                "bytes": output_bytes,
-                "sha256": digest,
-                "duration_seconds": duration,
-            },
-            flush=True,
-        )
+        self._audit_run(user_id, command, started, data, outcome, None)
         return data
 
-    async def async_transcript(self, *, user_id: str, session_id: str) -> dict[str, Any]:
-        """GET a recorded transcript from the run/transcript listener, hash-verified."""
+    def _audit_run(
+        self,
+        user_id: str,
+        command: str,
+        started: datetime,
+        data: dict[str, Any] | None,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        """One terminal_run record per attempt that reached the app, secrets masked."""
+        duration = int((dt_util.utcnow() - started).total_seconds())
+        detail: dict[str, Any] = {
+            "command": redact_command(command),
+            "outcome": outcome,
+            "duration_seconds": duration,
+        }
+        if data is not None:
+            stdout = str(data.get("stdout", ""))
+            detail["exit_code"] = data.get("exit_code")
+            detail["bytes"] = len(stdout.encode("utf-8"))
+            detail["sha256"] = hashlib.sha256(stdout.encode("utf-8")).hexdigest()
+        else:
+            # The command may have executed even though no answer came back.
+            detail["exit_code"] = None
+            detail["error"] = error
+        self._audit.async_log(AUDIT_CATEGORY_RUN, user_id=user_id, detail=detail, flush=True)
+
+    async def async_transcript(
+        self, *, user_id: str, session_id: str, allow_any: bool = False
+    ) -> dict[str, Any]:
+        """GET a recorded transcript from the run/transcript listener, hash-verified.
+
+        Only the session's owner, or a caller with ``allow_any`` (the HA
+        owner), may download it. A session this process has no owner record
+        for (opened before a restart, or never opened here) is available to
+        ``allow_any`` callers only.
+        """
+        if not allow_any and self._owners.get(session_id) != user_id:
+            raise TerminalError(
+                ERR_UNAUTHORIZED,
+                "Only the session's user or the Home Assistant owner can download this transcript",
+            )
         host, secret = await self._target_host_and_secret()
         session = async_get_clientsession(self._hass)
         url = f"http://{host}:{TERMINAL_HTTPD_PORT}/cgi-bin/transcript"
@@ -454,11 +572,29 @@ class TerminalSessions:
             raise TerminalError(ERR_UNKNOWN_TARGET, f"Unknown terminal target {target!r}")
         if not is_hassio(self._hass):
             raise TerminalError(ERR_NOT_SUPERVISOR, "The terminal needs a Supervisor-based install")
-        if len(self._for_user(user_id)) >= MAX_SESSIONS_PER_USER:
+        # Count sessions and opens in flight, then reserve this open's slot
+        # before any await, so concurrent opens cannot all pass the check.
+        pending = list(self._opening.values())
+        if len(self._for_user(user_id)) + pending.count(user_id) >= MAX_SESSIONS_PER_USER:
             raise TerminalError(ERR_LIMIT_USER, "You already have a terminal session open; close it first")
-        if len(self.sessions) >= MAX_SESSIONS_TOTAL:
+        if len(self.sessions) + len(pending) >= MAX_SESSIONS_TOTAL:
             raise TerminalError(ERR_LIMIT_TOTAL, f"{MAX_SESSIONS_TOTAL} sessions are already open on this install")
+        reservation = object()
+        self._opening[reservation] = user_id
+        try:
+            return await self._open_reserved(user_id, target, cols, rows, send)
+        finally:
+            self._opening.pop(reservation, None)
 
+    async def _open_reserved(
+        self,
+        user_id: str,
+        target: str,
+        cols: int,
+        rows: int,
+        send: Callable[[dict[str, Any]], None],
+    ) -> TerminalSession:
+        """The rest of an open, run while its slot is held in ``_opening``."""
         addon = _installed_addon(self._hass)
         if addon is None:
             raise TerminalError(ERR_NOT_INSTALLED, "The HA SOC Terminal app is not installed")
@@ -486,6 +622,9 @@ class TerminalSessions:
             ws=ws,
         )
         self.sessions[session.session_id] = session
+        self._owners[session.session_id] = user_id
+        while len(self._owners) > MAX_REMEMBERED_OWNERS:
+            self._owners.popitem(last=False)
         session.reader = self._hass.async_create_background_task(
             self._read(session), f"ha_soc terminal {session.session_id}"
         )

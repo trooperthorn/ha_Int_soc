@@ -43,6 +43,7 @@ from custom_components.ha_soc.websocket_api import (
     ws_terminal_transcript,
 )
 
+ISOLATED_CONFIG_DIR = True
 HASSIO_USER_NAME = "Supervisor"
 SECRET = "a" * 64
 ADDONS = {"addons": [{"slug": "3fd1bd45_ha_soc_terminal", "name": "HA SOC Terminal", "state": "started", "version": "2026.09.10.5"}]}
@@ -635,3 +636,242 @@ def test_transcript_rejects_a_bad_id_at_the_schema() -> None:
             {"id": 1, "type": "ha_soc/terminal/transcript", "session_id": "../etc/passwd"}
         )
 
+
+
+# --- limits under concurrency, run audit, redaction, transcript ownership ----
+
+
+async def test_concurrent_opens_cannot_exceed_the_per_user_limit(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, monkeypatch
+) -> None:
+    """Six opens by one user started together yield one session (audit probe)."""
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    release = asyncio.Event()
+
+    async def _slow_connect(self, host, secret, cols, rows):
+        await release.wait()
+        return _FakeTtyd()
+
+    monkeypatch.setattr(tm.TerminalSessions, "_connect", _slow_connect)
+    tasks = [
+        asyncio.ensure_future(
+            sessions.async_open(user_id="u1", target="self", cols=80, rows=24, send=lambda e: None)
+        )
+        for _ in range(6)
+    ]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    opened = [r for r in results if not isinstance(r, Exception)]
+    refused = [r for r in results if isinstance(r, tm.TerminalError)]
+    assert len(opened) == 1
+    assert len(refused) == 5 and all(r.code == tm.ERR_LIMIT_USER for r in refused)
+    assert len(sessions.sessions) == 1
+    assert sessions._opening == {}
+    await sessions.async_close_all()
+
+
+async def test_concurrent_opens_cannot_exceed_the_total_limit(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, monkeypatch
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    release = asyncio.Event()
+
+    async def _slow_connect(self, host, secret, cols, rows):
+        await release.wait()
+        return _FakeTtyd()
+
+    monkeypatch.setattr(tm.TerminalSessions, "_connect", _slow_connect)
+    tasks = [
+        asyncio.ensure_future(
+            sessions.async_open(user_id=f"u{i}", target="self", cols=80, rows=24, send=lambda e: None)
+        )
+        for i in range(6)
+    ]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    opened = [r for r in results if not isinstance(r, Exception)]
+    refused = [r for r in results if isinstance(r, tm.TerminalError)]
+    assert len(opened) == tm.MAX_SESSIONS_TOTAL
+    assert all(r.code == tm.ERR_LIMIT_TOTAL for r in refused)
+    await sessions.async_close_all()
+
+
+async def test_a_failed_open_releases_its_slot(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_ttyd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    fake_ttyd["raises"] = tm.TerminalError(tm.ERR_CONNECT, "down")
+    with pytest.raises(tm.TerminalError):
+        await sessions.async_open(user_id="u1", target="self", cols=80, rows=24, send=lambda e: None)
+    assert sessions._opening == {}
+    fake_ttyd["raises"] = None
+    await sessions.async_open(user_id="u1", target="self", cols=80, rows=24, send=lambda e: None)
+    await sessions.async_close_all()
+
+
+async def test_concurrent_runs_for_one_user_start_only_one(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, monkeypatch
+) -> None:
+    """The busy slot is taken before the app lookup awaits (audit probe)."""
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    posts = 0
+    release = asyncio.Event()
+
+    class _Resp:
+        async def __aenter__(self):
+            nonlocal posts
+            posts += 1
+            await release.wait()
+            return self
+
+        async def __aexit__(self, *exc):
+            return None
+
+        async def json(self, content_type=None):
+            return {"stdout": "ok", "exit_code": 0}
+
+    fake = MagicMock()
+    fake.post = lambda *a, **k: _Resp()
+    monkeypatch.setattr(tm, "async_get_clientsession", lambda _hass: fake)
+    tasks = [
+        asyncio.ensure_future(sessions.async_run(user_id="u1", command="id", timeout_seconds=5))
+        for _ in range(4)
+    ]
+    for _ in range(20):
+        await asyncio.sleep(0)
+    release.set()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    assert posts == 1
+    busy = [r for r in results if isinstance(r, tm.TerminalError)]
+    assert len(busy) == 3 and all(r.code == tm.ERR_TERMINAL_BUSY for r in busy)
+    assert sessions._running_users == set()
+
+
+async def test_a_timed_out_run_is_audited(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    """The command may have executed, so the attempt is recorded (audit probe)."""
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    fake_httpd.raises = asyncio.TimeoutError()
+    connection = await _call(
+        hass, ws_terminal_run, _connection(), {"id": 1, "type": "ha_soc/terminal/run", "command": "rm -rf /data/x", "timeout_seconds": 5}
+    )
+    assert connection.send_error.call_args[0][1] == tm.ERR_CONNECT
+    logged = await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN)
+    assert len(logged) == 1
+    detail = logged[0]["detail"]
+    assert detail["command"] == "rm -rf /data/x"
+    assert detail["outcome"] == "timeout"
+    assert detail["exit_code"] is None
+
+
+async def test_an_unreachable_and_a_refused_run_are_audited(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    fake_httpd.raises = aiohttp.ClientConnectionError("down")
+    with pytest.raises(tm.TerminalError):
+        await sessions.async_run(user_id="u1", command="a", timeout_seconds=5)
+    fake_httpd.raises = None
+    fake_httpd.post_response = _FakeHttpResponse(json_body={"error": "bad"})
+    with pytest.raises(tm.TerminalError):
+        await sessions.async_run(user_id="u1", command="b", timeout_seconds=5)
+    outcomes = sorted(row["detail"]["outcome"] for row in await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN))
+    assert outcomes == ["refused", "unreachable"]
+
+
+async def test_a_run_refused_before_anything_was_sent_is_not_audited(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    # Not paired: no secret, so no request leaves Core.
+    with pytest.raises(tm.TerminalError) as err:
+        await entry.runtime_data.terminal.async_run(user_id="u1", command="id", timeout_seconds=5)
+    assert err.value.code == tm.ERR_NOT_PAIRED
+    assert await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN) == []
+    assert entry.runtime_data.terminal._running_users == set()
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        ("mysql -pSecret db", "mysql -p[redacted] db"),
+        ("TOKEN=abc cmd", "TOKEN=[redacted] cmd"),
+        ("DB_PASSWORD='a b' FOO=1 run", "DB_PASSWORD=[redacted] FOO=1 run"),
+        ("curl -u admin:SuperSecret123 http://x", "curl -u admin:[redacted] http://x"),
+        ("curl http://bob:hunter2@host/x", "curl http://bob:[redacted]@host/x"),
+        ("tool --password hunter2 --verbose", "tool --password [redacted] --verbose"),
+        ("tool --api-key=abc123", "tool --api-key=[redacted]"),
+        ("curl -H 'Authorization: Bearer abc.def' x", "curl -H 'Authorization: Bearer [redacted]' x"),
+        ("mkdir -p /data/x && ls -la", "mkdir -p /data/x && ls -la"),
+        ("echo hello", "echo hello"),
+    ],
+)
+def test_redact_command(command: str, expected: str) -> None:
+    assert tm.redact_command(command) == expected
+
+
+async def test_the_audited_command_is_redacted(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    fake_httpd.post_response = _FakeHttpResponse(json_body={"stdout": "", "exit_code": 0})
+    await _call(
+        hass,
+        ws_terminal_run,
+        _connection(),
+        {"id": 1, "type": "ha_soc/terminal/run", "command": "TOKEN=abc mysql -pSecret", "timeout_seconds": 5},
+    )
+    # The command sent to the app is untouched; only the audit copy is masked.
+    assert fake_httpd.post_calls[0]["json"]["command"] == "TOKEN=abc mysql -pSecret"
+    detail = (await _audit(hass, entry, tm.AUDIT_CATEGORY_RUN))[0]["detail"]
+    assert detail["command"] == "TOKEN=[redacted] mysql -p[redacted]"
+    assert "abc" not in str(detail) and "Secret" not in str(detail)
+
+
+async def test_another_admin_gets_unauthorized_for_a_transcript(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_ttyd, fake_httpd
+) -> None:
+    import hashlib
+
+    from custom_components.ha_soc.const import ACCESS_LEVEL_OWNER_AND_ADMINS
+
+    entry.runtime_data.store.async_update_settings(access_level=ACCESS_LEVEL_OWNER_AND_ADMINS)
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    session = await sessions.async_open(user_id="admin1", target="self", cols=80, rows=24, send=lambda e: None)
+    await sessions.async_close(session.session_id, "admin1")
+    text = "typed\n"
+    digest = hashlib.sha256(text.encode()).hexdigest()
+    fake_httpd.get_response = _FakeHttpResponse(status=200, text_body=text, headers={"X-Sha256": digest})
+    msg = {"id": 1, "type": "ha_soc/terminal/transcript", "session_id": session.session_id}
+
+    other = await _call(hass, ws_terminal_transcript, _connection(user_id="admin2", is_owner=False), dict(msg))
+    assert other.send_error.call_args[0][1] == tm.ERR_UNAUTHORIZED == "unauthorized"
+    assert fake_httpd.get_calls == []
+
+    mine = await _call(hass, ws_terminal_transcript, _connection(user_id="admin1", is_owner=False), dict(msg))
+    assert mine.send_result.call_args[0][1]["text"] == text
+    owner = await _call(hass, ws_terminal_transcript, _connection(user_id="owner1", is_owner=True), dict(msg))
+    assert owner.send_result.call_args[0][1]["text"] == text
+
+
+async def test_a_transcript_with_no_owner_record_is_for_the_ha_owner_only(
+    hass: HomeAssistant, entry: MockConfigEntry, app_running, fake_httpd
+) -> None:
+    await entry.runtime_data.secrets.async_set(TERMINAL_SECRET_KEY, SECRET)
+    sessions = entry.runtime_data.terminal
+    fake_httpd.get_response = _FakeHttpResponse(status=200, text_body="x", headers={})
+    with pytest.raises(tm.TerminalError) as err:
+        await sessions.async_transcript(user_id="admin1", session_id="old1")
+    assert err.value.code == tm.ERR_UNAUTHORIZED
+    result = await sessions.async_transcript(user_id="owner1", session_id="old1", allow_any=True)
+    assert result["text"] == "x"
