@@ -1,6 +1,7 @@
 pytest-homeassistant-custom-component==0.13.365
 home-assistant-frontend==20260826.7
 aiousbwatcher==1.1.2
-# The suite needs it to generate and import keys. It matches the exact version in the manifest.
+# The suite needs it to generate and import keys. The manifest declares a range
+# (core depends on asyncssh, so hassfest refuses an exact pin); the tests pin the floor.
 asyncssh==2.24.0
 serialx==1.9.0
