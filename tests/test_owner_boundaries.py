@@ -1,12 +1,16 @@
 """Owner-only administrator management and Observe settings (audit probes p06 and p22)."""
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from homeassistant.auth.const import GROUP_ID_ADMIN, GROUP_ID_USER
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from aiohttp.test_utils import make_mocked_request
+from homeassistant.components.http import KEY_HASS_USER
 from homeassistant.helpers.http import current_request
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
@@ -269,3 +273,63 @@ async def test_non_admin_state_view_of_user_risk_shows_the_band_only(hass, entry
         assert public == {"band": "high"}
         assert "MFA" not in str(state.as_dict())
         assert "factors" not in state.attributes
+
+
+async def test_posture_sensor_shows_the_grade_only(hass, entry) -> None:
+    runtime = entry.runtime_data
+    runtime.risk.last_posture_result = {
+        "score": 71,
+        "grade": "C",
+        "terms": [{"name": "mfa", "points": 12, "detail": "two admins lack MFA"}],
+    }
+    async_dispatcher_send(hass, f"{SIGNAL_UPDATE}_dashboard")
+    await hass.async_block_till_done()
+
+    state = hass.states.get("sensor.security_posture_score")
+    if state is None:
+        matches = [
+            s for s in hass.states.async_all("sensor") if "posture" in s.entity_id
+        ]
+        assert matches, "the posture sensor was not created"
+        state = matches[0]
+    public = {
+        k: v
+        for k, v in state.attributes.items()
+        if k not in ("friendly_name", "icon", "state_class")
+    }
+    assert public == {"grade": "C"}
+    assert state.state == "71"
+    assert "two admins" not in str(state.as_dict())
+
+
+async def test_options_audit_record_names_the_user_of_a_real_request(hass, entry) -> None:
+    """The actor comes from a real aiohttp request carrying the authenticated user."""
+    owner, _, _ = await _users(hass)
+    request = make_mocked_request("POST", "/api/config/config_entries/options/flow/x")
+    request[KEY_HASS_USER] = owner
+    token = current_request.set(request)
+    try:
+        await _submit(hass, entry, _values(FIRST_URL, KEY))
+    finally:
+        current_request.reset(token)
+
+    runtime = entry.runtime_data
+    await runtime.audit._async_flush()
+    records = await runtime.audit.async_query(category="soc_config_change", limit=10)
+    changed = [r for r in records if r["detail"].get("action") == "observe_push_changed"]
+    assert changed
+    assert all(r["user_id"] == owner.id for r in changed)
+
+
+def test_owner_required_abort_text_is_under_options_abort() -> None:
+    """An options flow looks its abort reasons up under options.abort, not config.abort."""
+    path = (
+        Path(__file__).parent.parent
+        / "custom_components"
+        / "ha_soc"
+        / "translations"
+        / "en.json"
+    )
+    strings = json.loads(path.read_text(encoding="utf-8"))
+    assert "owner_required" in strings["options"]["abort"]
+    assert "owner_required" not in strings["config"]["abort"]
