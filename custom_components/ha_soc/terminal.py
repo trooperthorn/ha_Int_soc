@@ -157,9 +157,14 @@ _RE_ASSIGN = re.compile(
     r"(?P<prefix>^|(?<=[\s;&|(?,'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
     re.IGNORECASE,
 )
-# 'password=a b' in quotes: the value runs to the closing quote or a query &.
+# 'password=a b' in quotes: the value runs to the closing quote, a query &,
+# a statement ; or a newline. Stopping at ; and newline keeps statements after
+# the assignment visible when the quote holds code for another interpreter
+# (mysql -e, sqlite3, perl -e, a here-string), so a leading token=1; cannot
+# hide what follows. A password that itself contains ; is then only partly
+# masked, which is the lesser harm for an audit record.
 _RE_QUOTED_ASSIGN = re.compile(
-    r"(?<=[\"'])(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>[^\"'&]*)", re.IGNORECASE
+    r"(?<=[\"'])(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>[^\"'&;\n]*)", re.IGNORECASE
 )
 # A quote that opens a command string for another shell. Inside it an
 # assignment is an environment prefix, not a form body, so the value stops at

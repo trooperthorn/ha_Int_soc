@@ -966,6 +966,18 @@ async def test_a_run_refused_before_anything_was_sent_is_not_audited(
         ("smbclient -U user%hunter2 //h/s", "smbclient -U user%[redacted] //h/s"),
         ("echo hunter2 | sudo -S ls", "echo [redacted] | sudo -S ls"),
         ("mount -o username=u,password=pw //h/s /m", "mount -o username=u,password=[redacted] //h/s /m"),
+        # Code for another interpreter: a leading assignment must not hide the statements after it.
+        ("mysql -e 'password=1; DROP DATABASE ha'", "mysql -e 'password=[redacted]; DROP DATABASE ha'"),
+        ("sqlite3 db 'token=1; DELETE FROM states'", "sqlite3 db 'token=[redacted]; DELETE FROM states'"),
+        (
+            "perl -e 'password=1; unlink glob \"/config/*\"'",
+            "perl -e 'password=[redacted]; unlink glob \"/config/*\"'",
+        ),
+        (
+            "xargs -I{} sh -c 'echo {}' <<< 'password=x; rm -rf /'",
+            "xargs -I{} sh -c 'echo {}' <<< 'password=[redacted]; rm -rf /'",
+        ),
+        ("mysql -e 'password=1\nDROP DATABASE ha'", "mysql -e 'password=[redacted]\nDROP DATABASE ha'"),
     ],
 )
 def test_redact_command(command: str, expected: str) -> None:
