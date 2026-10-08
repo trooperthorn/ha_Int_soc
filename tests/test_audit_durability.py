@@ -369,7 +369,7 @@ async def test_head_is_not_moved_across_a_replaced_tail(hass, tmp_path):
     assert restarted._prev_hash == "0" * 64
 
 
-async def test_forward_clock_jump_does_not_capture_later_records(hass, tmp_path):
+async def test_forward_clock_jump_keeps_file_order_equal_to_seq_order(hass, tmp_path):
     audit = await _make_audit(hass, tmp_path)
     with _at(8):
         audit.async_log("login_ok", user_id="u")
@@ -385,11 +385,95 @@ async def test_forward_clock_jump_does_not_capture_later_records(hass, tmp_path)
         "audit-2026-10-08.jsonl",
         "audit-2026-10-25.jsonl",
     ]
-    assert _seqs(audit) == [1, 3, 2]
+    assert _seqs(audit) == [1, 2, 3]
     with _at(8, 14):
         found = await audit.async_query()
     assert {r["seq"] for r in found} == {1, 3}
     assert (await audit.async_verify_chain())["ok"] is True
+
+
+async def _stepped_back_layout(hass, tmp_path) -> AuditLog:
+    """Records 1 on day 8, then 2 and 3 after the clock jumped to day 25 and back."""
+    audit = await _make_audit(hass, tmp_path)
+    for day in (8, 25, 8):
+        with _at(day):
+            audit.async_log("login_ok", user_id="u")
+        await audit._async_flush()
+    return audit
+
+
+async def test_retention_after_a_clock_step_leaves_a_valid_chain(hass, tmp_path):
+    audit = await _stepped_back_layout(hass, tmp_path)
+    audit._store.settings["audit_retention_days"] = 10
+    with _at(25, 14):
+        await hass.async_add_executor_job(audit._sync_apply_retention)
+
+    assert _day_files(audit) == ["audit-2026-10-25.jsonl"]
+    assert _seqs(audit) == [2, 3]
+    result = await audit.async_verify_chain()
+    assert result["ok"] is True
+    assert result["records_checked"] == 2
+
+
+async def test_size_cap_after_a_clock_step_keeps_the_newest_records(hass, tmp_path):
+    audit = await _stepped_back_layout(hass, tmp_path)
+    audit._store.settings["audit_max_bytes"] = 1
+    with _at(25, 14):
+        await hass.async_add_executor_job(audit._sync_apply_retention)
+
+    assert _seqs(audit) == [2, 3]
+    assert (await audit.async_verify_chain())["ok"] is True
+
+
+async def test_large_clock_step_back_then_crash_recovers(hass, tmp_path):
+    """A host that boots at a stale date, then crashes with a torn tail and a lagging head."""
+    audit = await _make_audit(hass, tmp_path)
+    with _at(25):
+        for i in range(2):
+            audit.async_log("login_ok", user_id="u", detail={"i": i})
+    await audit._async_flush()
+    with _at(3):
+        audit.async_log("login_ok", user_id="u", detail={"i": 2})
+    with patch.object(AuditLog, "_sync_write_chain_head", return_value=False):
+        await audit._async_flush()
+    assert _day_files(audit) == ["audit-2026-10-25.jsonl"]
+    with open(os.path.join(audit._dir_path, _day_files(audit)[-1]), "ab") as handle:
+        handle.write(b'{"seq": 4, "categ')
+
+    restarted = await _restart(hass, audit)
+    with _at(3, 1):
+        restarted.async_log("login_ok", user_id="u", detail={"after": "restart"})
+    await restarted._async_flush()
+
+    seqs = _seqs(restarted)
+    assert len(seqs) == len(set(seqs))
+    assert seqs == sorted(seqs)
+    kinds = [r["category"] for r in _all_records(restarted)]
+    assert kinds.count("audit_tail_repaired") == 1
+    assert kinds.count("audit_head_rebuilt") == 1
+    assert (await restarted.async_verify_chain())["ok"] is True
+
+
+async def test_query_after_a_large_step_back_finds_older_dated_records(hass, tmp_path):
+    audit = await _stepped_back_layout(hass, tmp_path)
+    with _at(8, 14):
+        found = await audit.async_query(since=dt.datetime(2026, 10, 8, tzinfo=dt.timezone.utc))
+    assert {r["seq"] for r in found} == {1, 3}
+
+
+async def test_recovery_events_survive_a_scan_error(hass, tmp_path):
+    audit = await _make_audit(hass, tmp_path)
+    with _at(8):
+        audit.async_log("login_ok", user_id="u")
+    await audit._async_flush()
+    path = os.path.join(audit._dir_path, _day_files(audit)[-1])
+    with open(path, "ab") as handle:
+        handle.write(b'{"seq": 2, "categ')
+    fresh = AuditLog(hass, audit._store)
+    fresh._dir_path = audit._dir_path
+    with patch.object(AuditLog, "_sync_records_after", side_effect=ValueError("odd")):
+        await hass.async_add_executor_job(fresh._sync_load_chain_head)
+    assert [kind for kind, _d in fresh._recovery_events] == ["audit_tail_repaired"]
 
 
 async def test_query_finds_records_in_a_later_dated_file_after_a_step_back(hass, tmp_path):

@@ -339,23 +339,6 @@ IMMEDIATE_FLUSH_PREFIXES = ("firewall_",)
 _RECOVERY_FILES = 3
 
 
-def _bounded_day(record_day: str, floor: str) -> str:
-    """Later of the record's day and the floor, unless the floor is far in the future.
-
-    A floor more than one day ahead of the record is a forward clock jump, not a
-    backward step; honoring it would send every later record to a future-dated file
-    that retention would not reach by age. Verification merges by seq, so a record in
-    an older-dated file is harmless.
-    """
-    if not floor or floor <= record_day:
-        return record_day
-    try:
-        ahead = date.fromisoformat(floor) - date.fromisoformat(record_day)
-    except ValueError:
-        return record_day
-    return floor if ahead.days <= 1 else record_day
-
-
 # Public: health.py's audit_ban_logger_silenced check reads it.
 BAN_LOGGER_NAME = "homeassistant.components.http.ban"
 # Current core logs the ban warning preformatted with no args; this regex is the live path.
@@ -1264,7 +1247,8 @@ class AuditLog:
         try:
             self._sync_recover_from_disk()
         except Exception:  # noqa: BLE001 - odd file contents must not stop the audit log starting
-            self._recovery_events = []
+            # Events already queued describe repairs that are on disk; keep them so the
+            # chain still records what was changed.
             _LOGGER.warning(
                 "HA SOC audit log: could not check the newest audit files for a "
                 "torn tail or a stale chain head",
@@ -1496,8 +1480,10 @@ class AuditLog:
             floor = self._sync_day_floor()
             for record in records:
                 # A clock stepped back must not send a record to an older file: the day
-                # key never moves backwards, so file order stays append order.
-                day = _bounded_day(record["ts"][:10], floor)
+                # key never moves backwards, so file order stays append order and
+                # retention, which removes the oldest files first, only ever removes a
+                # prefix of the chain.
+                day = max(record["ts"][:10], floor)
                 floor = day
                 if by_day and by_day[-1][0] == day:
                     by_day[-1][1].append(record)
