@@ -144,26 +144,64 @@ _SECRET_WORDS = (
     "apikey",
     "api_key",
     "api-key",
-    "auth",
+    "auth(?!or(?!iz))",
     "credential",
     "key",
     "bearer",
 )
-_SECRET_NAME = r"[A-Za-z0-9_.-]*(?:" + "|".join(re.escape(w) for w in _SECRET_WORDS) + r")[A-Za-z0-9_.-]*"
+_SECRET_NAME = r"[A-Za-z0-9_.-]*(?:" + "|".join(w if "(" in w else re.escape(w) for w in _SECRET_WORDS) + r")[A-Za-z0-9_.-]*"
 _VALUE = r"\"[^\"]*\"|'[^']*'|[^\s;&|)'\"]*"
 # NAME=value at the start of a word: an environment assignment, or a long
 # option with an attached value (--password=x).
 _RE_ASSIGN = re.compile(
-    r"(?P<prefix>^|(?<=[\s;&|(?'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
+    r"(?P<prefix>^|(?<=[\s;&|(?,'\"]))(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>" + _VALUE + r")",
     re.IGNORECASE,
 )
 # 'password=a b' in quotes: the value runs to the closing quote or a query &.
 _RE_QUOTED_ASSIGN = re.compile(
     r"(?<=[\"'])(?P<dashes>-{0,2})(?P<name>" + _SECRET_NAME + r")=(?P<value>[^\"'&]*)", re.IGNORECASE
 )
+# A quote that opens a command string for another shell. Inside it an
+# assignment is an environment prefix, not a form body, so the value stops at
+# whitespace and the commands after it stay visible in the audit record.
+_RE_SHELL_WRAPPER = re.compile(r"(?:\b(?:ba|z|da|a|k|c|tc)?sh\b|\beval\b|\bssh\b|\bsu\b)[^\n'\"]*$|\s-[A-Za-z]*c\s*$")
+
+
+def _opens_quote(text: str, idx: int) -> bool:
+    """True when the quote character at ``idx`` opens a quoted string."""
+    state = ""
+    i = 0
+    while i < idx:
+        ch = text[i]
+        if state == "'":
+            if ch == "'":
+                state = ""
+        elif ch == "\\":
+            i += 1
+        elif state == '"':
+            if ch == '"':
+                state = ""
+        elif ch in "\"'":
+            state = ch
+        i += 1
+    return state == ""
+
+
+def _redact_quoted_assign(m: re.Match[str]) -> str:
+    """Mask a quoted ``password=value``; leave command strings to the word rule."""
+    text = m.string
+    quote_at = m.start() - 1
+    if not _opens_quote(text, quote_at):
+        return m[0]
+    line_start = text.rfind("\n", 0, quote_at) + 1
+    if _RE_SHELL_WRAPPER.search(text[line_start:quote_at]):
+        return m[0]
+    return f"{m['dashes']}{m['name']}={REDACTED}"
+
+
 # --password value, --token value (a separate word).
 _RE_LONG_OPTION = re.compile(
-    r"(?P<opt>(?:^|(?<=\s))--" + _SECRET_NAME + r")(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)",
+    r"(?P<opt>(?:^|(?<=\s))--" + _SECRET_NAME + r")(?<!-stdin)(?<!-file)(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)",
     re.IGNORECASE,
 )
 # mysql-style -pSECRET with no space. A bare "-p" followed by a space is left
@@ -177,15 +215,19 @@ _RE_USER_PASS = re.compile(
 )
 # scheme://user:pass@host
 _RE_URL_CRED = re.compile(
-    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*)(?::(?P<value>[^\s/@]+))?@"
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)(?P<user>[^\s:/@]*)(?::(?P<value>[^\s/?#]+))?@"
 )
 # A user name with no password that is a plain account, not a token.
 _PLAIN_URL_USERS = frozenset({"git", "ssh", "hg", "svn", "root", "admin"})
+# Dummy passwords that go with a token placed in the user position.
+_DUMMY_URL_PASSWORDS = frozenset({"x", "x-oauth-basic", "x-access-token", "oauth", "oauth2", "token"})
 
 
 def _redact_url_userinfo(m: re.Match[str]) -> str:
     """user:pass@ keeps the user; a lone userinfo is the credential (a token in the URL)."""
     if m["value"] is not None:
+        if m["value"].lower() in _DUMMY_URL_PASSWORDS:
+            return f"{m['scheme']}{REDACTED}:{REDACTED}@"
         return f"{m['scheme']}{m['user']}:{REDACTED}@"
     if m["user"].lower() in _PLAIN_URL_USERS:
         return m[0]
@@ -197,10 +239,10 @@ def _redact_url_userinfo(m: re.Match[str]) -> str:
 # with spaces is fully masked; outside quotes it stops at whitespace or a shell
 # operator, so the rest of the command line stays visible in the audit record.
 _HEADER_NAME = (
-    r"(?:set-)?cookie|[A-Za-z0-9-]*(?:authorization|token|api-?key|auth|secret|access|password|session)[A-Za-z0-9-]*"
+    r"(?:set-)?cookie|[A-Za-z0-9-]*(?:authorization|token|api-?key|auth(?!or(?!iz))|secret|access|password|session)[A-Za-z0-9-]*"
 )
 _HEADER_HEAD = r"(?P<head>(?:" + _HEADER_NAME + r")\s*:\s*(?:(?:bearer|basic|token)\s+)?)"
-_RE_HEADER_QUOTED = re.compile(r"(?<=[\"'])" + _HEADER_HEAD + r"(?P<value>[^\"'\n]+)(?=[\"'])", re.IGNORECASE)
+_RE_HEADER_QUOTED = re.compile(r"(?<=[\"'])" + _HEADER_HEAD + r"(?P<value>[^\s\"'\n][^\"'\n]*)(?=[\"'])", re.IGNORECASE)
 _RE_HEADER_BARE = re.compile(r"(?<![\w/\"'-])" + _HEADER_HEAD + r"(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
 # A bearer token in any other position or header.
 _RE_BEARER = re.compile(r"(?P<head>(?<![\w-])bearer\s+)(?P<value>[^\s\"';&|)]+)", re.IGNORECASE)
@@ -223,21 +265,28 @@ _RE_SECRET_SHORT_WORD = re.compile(
     r"|\bmosquitto_(?:pub|sub|rr)\b[^\n;&|]*?\s-P"
     r"|\bssh-keygen\b[^\n;&|]*?\s-N"
     r"|\bdocker\s+login\b[^\n;&|]*?\s-p"
-    r"|\bcurl\b[^\n;&|]*?\s-b)"
+    r"|\bcurl\b[^\n;&|]*?\s-b"
+    r"|\bredis-cli\b[^\n;&|]*?\s-a)"
     r"(?P<sep>\s+)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)-][^\s;&|)]*)"
+)
+# smbclient -U user%password
+_RE_SMB_USER = re.compile(
+    r"(?P<head>\b(?:smbclient|rpcclient|smbget|smbtree)\b[^\n;&|]*?\s-U\s*[^\s%;&|]+%)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
 )
 # openssl -pass pass:x, -passin pass:x, -passout pass:x
 _RE_OPENSSL_PASS = re.compile(r"(?P<head>(?:^|(?<=\s))-pass(?:in|out)?\s+[\"']?pass:)(?P<value>[^\s;&|)\"']+)")
 # htpasswd -b [-c] file user password
 _RE_HTPASSWD = re.compile(
-    r"(?P<head>\bhtpasswd\s+(?:-[A-Za-z]+\s+)*?-[A-Za-z]*b[A-Za-z]*\s+(?:-[A-Za-z]+\s+)*\S+\s+\S+\s+)"
+    r"(?P<head>\bhtpasswd[ \t]+(?:-[A-Za-z]+[ \t]+)*?-[A-Za-z]*b[A-Za-z]*[ \t]+(?:-[A-Za-z]+[ \t]+)*\S+[ \t]+\S+[ \t]+)"
     r"(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
 )
-# echo SECRET | docker login --password-stdin: the secret is the piped text.
+# echo SECRET | docker login --password-stdin, or | sudo -S: the secret is the
+# piped text. The tail may cross pipes but not ; or &, so an earlier echo
+# does not claim a login further along the line.
 _RE_PIPED_SECRET = re.compile(
     r"(?P<head>\b(?:echo|printf)\s+(?:-[A-Za-z]+\s+)*"
     r"(?:(?:\"[^\"]*%[^\"]*\"|'[^']*%[^']*'|[^\s;&|)]*%[^\s;&|)]*)\s+)?)(?P<value>\"[^\"]*\"|'[^']*'|[^\s;&|)]+)"
-    r"(?P<tail>\s*\|[^\n]*?--[A-Za-z-]*(?:password|token|secret)[A-Za-z-]*-stdin)",
+    r"(?P<tail>\s*\|[^\n;&]*?(?:--[A-Za-z-]*(?:password|token|secret)[A-Za-z-]*-stdin|\bsudo\b[^\n;&|]*?\s-[A-Za-z]*S\b))",
     re.IGNORECASE,
 )
 
@@ -263,10 +312,11 @@ def redact_command(command: str) -> str:
     out = _RE_PIPED_SECRET.sub(lambda m: f"{m['head']}{REDACTED}{m['tail']}", out)
     out = _RE_COOKIE_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_JSON_FIELD.sub(lambda m: f"{m['name']}{m['sep']}{REDACTED}", out)
+    out = _RE_SMB_USER.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_OPENSSL_PASS.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_HTPASSWD.sub(lambda m: f"{m['head']}{REDACTED}", out)
     out = _RE_SECRET_SHORT_WORD.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
-    out = _RE_QUOTED_ASSIGN.sub(lambda m: f"{m['dashes']}{m['name']}={REDACTED}", out)
+    out = _RE_QUOTED_ASSIGN.sub(_redact_quoted_assign, out)
     out = _RE_ASSIGN.sub(lambda m: f"{m['prefix']}{m['dashes']}{m['name']}={REDACTED}", out)
     out = _RE_LONG_OPTION.sub(lambda m: f"{m['opt']}{m['sep']}{REDACTED}", out)
     out = _RE_SHORT_P.sub(lambda m: f"{m['opt']}{REDACTED}", out)

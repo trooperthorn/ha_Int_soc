@@ -934,6 +934,38 @@ async def test_a_run_refused_before_anything_was_sent_is_not_audited(
         ("openssl rsa -passin 'pass:hunter2'", "openssl rsa -passin 'pass:[redacted]'"),
         ("docker login -p hunter2 reg", "docker login -p [redacted] reg"),
         ("curl -b 'session=abc' x", "curl -b [redacted] x"),
+        # A command string for another shell keeps every command after the assignment.
+        ("sh -c 'TOKEN=x; rm -rf /config'", "sh -c 'TOKEN=[redacted]; rm -rf /config'"),
+        (
+            'sh -c "API_KEY=abc curl -X DELETE http://h/api/x; rm -rf /backup"',
+            'sh -c "API_KEY=[redacted] curl -X DELETE http://h/api/x; rm -rf /backup"',
+        ),
+        ("ssh root@h 'password=x; shred -u /config/*'", "ssh root@h 'password=[redacted]; shred -u /config/*'"),
+        (
+            "docker exec c sh -c 'PGPASSWORD=x psql -c \"DROP DATABASE ha\"'",
+            "docker exec c sh -c 'PGPASSWORD=[redacted] psql -c \"DROP DATABASE ha\"'",
+        ),
+        ("echo \"'\"token=x; rm -rf /config", "echo \"'\"token=[redacted]; rm -rf /config"),
+        # --password-stdin takes no value; the registry name stays visible.
+        (
+            "echo 'hunter2' | docker login -u u --password-stdin reg",
+            "echo [redacted] | docker login -u u --password-stdin reg",
+        ),
+        ("redis-cli -a hunter2 ping", "redis-cli -a [redacted] ping"),
+        ("curl https://hunter2:x-oauth-basic@github.com/x", "curl https://[redacted]:[redacted]@github.com/x"),
+        ("curl https://u:p@ss@host/", "curl https://u:[redacted]@host/"),
+        # Text that only looks like a header or a credential name is kept verbatim.
+        ("cat /etc/x | grep 'token: '; rm -rf /", "cat /etc/x | grep 'token: '; rm -rf /"),
+        ("git log --author=auth", "git log --author=auth"),
+        # The match stays on one line, and an earlier echo does not claim a later login.
+        ("htpasswd -b f u\nrm -rf /config", "htpasswd -b f u\nrm -rf /config"),
+        (
+            "echo x | tee f; printf hi | docker login --password-stdin",
+            "echo x | tee f; printf [redacted] | docker login --password-stdin",
+        ),
+        ("smbclient -U user%hunter2 //h/s", "smbclient -U user%[redacted] //h/s"),
+        ("echo hunter2 | sudo -S ls", "echo [redacted] | sudo -S ls"),
+        ("mount -o username=u,password=pw //h/s /m", "mount -o username=u,password=[redacted] //h/s /m"),
     ],
 )
 def test_redact_command(command: str, expected: str) -> None:
