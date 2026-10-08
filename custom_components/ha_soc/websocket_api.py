@@ -184,6 +184,27 @@ def _runtime(hass: HomeAssistant):
     return get_runtime_data(hass)
 
 
+ERR_NOT_LOADED = "not_loaded"
+
+
+def _reject_if_not_loaded(hass: HomeAssistant, connection, msg: dict) -> bool:
+    """Send the documented ``not_loaded`` error and return True when the entry has no runtime.
+
+    The panel and any other client can still hold a connection after the entry
+    is unloaded, failed its setup, or is being reloaded. With no HA SOC entry at
+    all the command runs as before: handlers that need the runtime raise, and the
+    rest do not need it.
+    """
+    if not hass.config_entries.async_entries(DOMAIN):
+        return False
+    try:
+        _runtime(hass)
+    except RuntimeError:
+        connection.send_error(msg["id"], ERR_NOT_LOADED, "HA SOC is not set up")
+        return True
+    return False
+
+
 def require_soc_access(func):
     """Admin-gate every ha_soc/* command, then apply HA SOC's own access_level.
 
@@ -204,6 +225,8 @@ def require_soc_access(func):
                 access_level = DEFAULT_ACCESS_LEVEL
             if access_level != ACCESS_LEVEL_OWNER_AND_ADMINS:
                 raise Unauthorized
+        if _reject_if_not_loaded(hass, connection, msg):
+            return
         func(hass, connection, msg)
 
     return with_soc_access
@@ -217,6 +240,8 @@ def require_owner(func):
         user = connection.user
         if user is None or not user.is_owner:
             raise Unauthorized
+        if _reject_if_not_loaded(hass, connection, msg):
+            return
         func(hass, connection, msg)
 
     return with_owner

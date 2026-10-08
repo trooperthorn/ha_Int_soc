@@ -725,6 +725,8 @@ in the form:
 | Host name | The host name the key is bound to. Observe refuses data whose host name differs. |
 | Push interval | 30 to 3600 seconds, 60 by default. |
 
+If the settings cannot be written to disk, the form stays open with the error "The settings could not be written to disk" and nothing is changed; check the free space and permissions of the `.storage` folder. HA SOC also writes its store when it unloads or reloads, so a setting changed in the last 15 seconds before a reload is kept.
+
 Every interval HA SOC gathers what it already holds, builds the two OTLP
 JSON requests ([`otlp_mapper.py`](custom_components/ha_soc/otlp_mapper.py))
 and sends them to `POST /v1/metrics` and `POST /v1/logs` on Home Assistant's

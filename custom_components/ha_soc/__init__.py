@@ -4,12 +4,14 @@ Wiring only: composes the feature managers and owns the periodic analysis loop.
 """
 from __future__ import annotations
 
+import inspect
 import logging
-from dataclasses import dataclass
+from functools import partial
+from dataclasses import dataclass, field
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
@@ -82,6 +84,40 @@ class HaSocRuntimeData:
     terminal: TerminalSessions
     crash_forensics: CrashForensics
     observe: ObservePusher
+    _stopped: bool = field(default=False, init=False, repr=False)
+
+    async def async_stop_services(self) -> None:
+        """Stop every service this entry started, in dependency order, once.
+
+        Called from the unload path and registered with ``entry.async_on_unload``
+        before the first service starts, so a setup that fails or is retried
+        leaves no timer, listener or log handler behind. Every stop is safe on a
+        service that never started. A stop that raises is logged and the rest
+        still run.
+        """
+        if self._stopped:
+            return
+        self._stopped = True
+        # The audit log stops before the exporter so its last flush still reaches
+        # the exporter's drain; the store is written last because the stops above
+        # (the audit head mirror, the health records) change it.
+        for label, stop in (
+            ("terminal sessions", self.terminal.async_close_all),
+            ("audit log", self.audit.async_stop),
+            ("syslog exporter", partial(self.syslog.async_stop, drain=True)),
+            ("permissions", self.permissions.async_stop),
+            ("health", self.health.async_stop),
+            ("scanner", self.scanner.async_stop),
+            ("resource watchdog", self.watchdog.async_stop),
+            ("Observe push", self.observe.async_stop),
+            ("store", self.store.async_flush),
+        ):
+            try:
+                result = stop()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception:  # noqa: BLE001 - one failed stop must not strand the others
+                _LOGGER.exception("HA SOC could not stop %s", label)
 
 
 # Plain alias, not a PEP 695 type statement: keeps Python 3.11 importable.
@@ -89,11 +125,17 @@ HaSocConfigEntry = ConfigEntry[HaSocRuntimeData]
 
 
 def get_runtime_data(hass: HomeAssistant) -> HaSocRuntimeData:
-    """HA SOC is single-instance; fetch the one loaded entry's runtime data."""
+    """HA SOC is single-instance; fetch the one loaded entry's runtime data.
+
+    Raises ``RuntimeError("HA SOC is not set up")`` when there is no entry or it
+    is not loaded (never set up, failed setup, or unloaded).
+    """
     entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries or entries[0].runtime_data is None:
+    # Core deletes the attribute on unload, so a plain read raises AttributeError.
+    runtime = getattr(entries[0], "runtime_data", None) if entries else None
+    if runtime is None:
         raise RuntimeError("HA SOC is not set up")
-    return entries[0].runtime_data
+    return runtime
 
 
 def _scrub_entry_options_once(hass: HomeAssistant, entry: HaSocConfigEntry) -> None:
@@ -166,6 +208,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         observe=observe,
     )
 
+    # Registered before anything starts: core runs these callbacks when this setup
+    # fails or is retried as well as on unload, so no service outlives a failed
+    # attempt. They run in reverse order: unregister, stop, then drop the runtime.
+    entry.async_on_unload(lambda: _async_forget_runtime(entry))
+    entry.async_on_unload(entry.runtime_data.async_stop_services)
+    entry.async_on_unload(lambda: _async_unregister_everything(hass))
+
     await audit.async_start()
     syslog.async_start(entry)
     await permissions.async_start()
@@ -177,9 +226,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     watchdog.async_start()
     crash_forensics.async_start(entry)
     # Off by default: a no-op unless the owner enabled it and filled in the options.
-    # Registered first so a setup that fails after the push started (for example with
-    # ConfigEntryNotReady) cancels the timer; core runs these callbacks on a failed setup.
-    entry.async_on_unload(observe.async_stop)
     await observe.async_start(entry)
 
     async_register_websocket_api(hass)
@@ -281,24 +327,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     return True
 
 
+@callback
+def _async_forget_runtime(entry: HaSocConfigEntry) -> None:
+    """Drop the runtime of an entry whose setup failed, so lookups see "not set up".
+
+    Core deletes it itself after a successful unload; it does not after a failed setup.
+    """
+    if hasattr(entry, "runtime_data"):
+        object.__delattr__(entry, "runtime_data")
+
+
+async def _async_unregister_everything(hass: HomeAssistant) -> None:
+    """Remove the services and the panel; each call is safe when nothing is registered."""
+    async_unregister_probe_service(hass)
+    async_unregister_external_audit_service(hass)
+    async_unregister_pairing_service(hass)
+    await async_unregister_panel(hass)
+
+
 async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bool:
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if not unload_ok:
         return False
 
-    runtime = entry.runtime_data
+    runtime = getattr(entry, "runtime_data", None)
     if runtime is not None:
-        await runtime.terminal.async_close_all()
-        await runtime.audit.async_stop()
-        await runtime.syslog.async_stop(drain=True)
-        await runtime.permissions.async_stop()
-        await runtime.health.async_stop()
-        runtime.scanner.async_stop()
-        runtime.watchdog.async_stop()
-        runtime.observe.async_stop()
+        await runtime.async_stop_services()
 
-    async_unregister_probe_service(hass)
-    async_unregister_external_audit_service(hass)
-    async_unregister_pairing_service(hass)
-    await async_unregister_panel(hass)
+    await _async_unregister_everything(hass)
     return True

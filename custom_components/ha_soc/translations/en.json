@@ -39,7 +39,8 @@
       "key_required": "Enter the ingest key.",
       "invalid_key": "The ingest key must start with wpi_ and contain no spaces.",
       "invalid_host_name": "Enter the host name the ingest key is bound to, without spaces.",
-      "invalid_interval": "The interval must be between 30 and 3600 seconds."
+      "invalid_interval": "The interval must be between 30 and 3600 seconds.",
+      "save_failed": "The settings could not be written to disk, so nothing was changed. Check the free space and permissions of the Home Assistant storage folder and the log, then submit again."
     },
     "abort": {
       "not_loaded": "HA SOC is not loaded, so its options cannot be changed. Reload the integration and try again."

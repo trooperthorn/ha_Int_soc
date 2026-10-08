@@ -8,11 +8,13 @@ re-registers the panel with the bundle currently on disk (see docs/operations.md
 """
 from __future__ import annotations
 
+from copy import deepcopy
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
 from homeassistant.core import callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import selector
 
 from .const import (
@@ -78,7 +80,18 @@ class HaSocOptionsFlow(OptionsFlow):
                 user_input, key_already_set=key_set and not clear_key
             )
             if not errors:
+                before = deepcopy(runtime.store.data["settings"])
                 runtime.store.async_update_settings(**changes)
+                # The reload builds a fresh store that reads the file, and the store
+                # normally debounces its writes, so write now. A write that fails
+                # must not look like success: put the settings back and say so.
+                try:
+                    await runtime.store.async_save_now()
+                except HomeAssistantError:
+                    settings.clear()
+                    settings.update(before)
+                    errors["base"] = "save_failed"
+            if not errors:
                 audited: dict[str, Any] = dict(changes)
                 if new_key:
                     await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, new_key)
@@ -90,9 +103,6 @@ class HaSocOptionsFlow(OptionsFlow):
                     "soc_config_change",
                     detail={"action": "observe_push_changed", "changes": audited},
                 )
-                # The reload builds a fresh store that reads the file, and the store
-                # normally debounces its writes, so flush before scheduling the reload.
-                await runtime.store.async_save_now()
                 self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
                 return self.async_create_entry(title="", data={})
 

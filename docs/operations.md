@@ -33,7 +33,7 @@ Every setting is edited from the panel's Settings tab; Home Assistant's Configur
 | `pihole_host`, `pihole_verify_ssl`, `pihole_iot_cidr` | unset, False, unset | Pi-hole v6 direct connection for the Network Security tab (http or https, no userinfo, a real hostname; a bare host defaults to https); the app password (Settings, then API, then App password in Pi-hole's UI) is a secret. Both host and password are required before the overview reports configured. `iot_cidr` is the subnet whose DNS the UniFi gateway forwards to Pi-hole; it is used only to check whether Pi-hole has a dedicated client group scoped to it, never to configure DNS. A snapshot exceeding 30 s reports partial data with an explanatory error. |
 | `snmp_enabled`, `snmp_listen_address`, `snmp_port`, `snmp_username` | False, unset, 161, unset | The optional Net-SNMP agent in the Probe. Enabling requires listen address, username, and both passphrases (secrets), which must differ; the listener must be an explicit IP address, never a hostname, wildcard, or multicast address. There is deliberately no v1/v2c mode. |
 
-`STORAGE_SAVE_DELAY` is 15 seconds, debounced; the secret store saves immediately.
+`STORAGE_SAVE_DELAY` is 15 seconds, debounced; the secret store saves immediately. The store is also written when the entry unloads or reloads, so a change made inside the 15 seconds is kept. If that write fails it is logged as "HA SOC could not flush its store while stopping" and the change is lost with the restart. In the Configure dialog a failed write shows the error "The settings could not be written to disk" and changes nothing; check the free space and permissions of the `.storage` folder.
 
 ## Detection thresholds
 

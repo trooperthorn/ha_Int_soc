@@ -12,7 +12,9 @@ from typing import Any, TypedDict
 
 import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
+from homeassistant.util.file import WriteError
 
 from .const import (
     DEFAULT_ACCESS_LEVEL,
@@ -302,8 +304,28 @@ def default_store_data() -> StoreData:
     )
 
 
+class StoreSaveError(HomeAssistantError):
+    """The HA SOC store could not be written to disk."""
+
+
 class HaSocStore(Store[StoreData]):
-    """Store subclass carrying HA SOC's migration history."""
+    """Store subclass carrying HA SOC's migration history.
+
+    Core's Store logs a failed write and swallows it, so a caller that saves
+    "now" cannot tell success from failure. The subclass counts failures so
+    ``HaSocData.async_save_now`` can raise.
+    """
+
+    save_failures = 0
+    last_save_error: str | None = None
+
+    async def _async_write_data(self, data: dict[str, Any]) -> None:
+        try:
+            await super()._async_write_data(data)
+        except (WriteError, OSError) as err:
+            self.save_failures += 1
+            self.last_save_error = str(err)
+            raise
 
     async def _async_migrate_func(
         self,
@@ -374,7 +396,32 @@ class HaSocData:
         self._store.async_delay_save(lambda: self.data, STORAGE_SAVE_DELAY)
 
     async def async_save_now(self) -> None:
-        await self._store.async_save(self.data)
+        """Write the store immediately, cancelling any pending debounced save.
+
+        Raises StoreSaveError when the file could not be written. The in-memory
+        data is kept, and the next change schedules another attempt.
+        """
+        failures = self._store.save_failures
+        try:
+            await self._store.async_save(self.data)
+        except StoreSaveError:
+            raise
+        except Exception as err:  # noqa: BLE001 - any write failure is one error to callers
+            raise StoreSaveError(f"Could not save the HA SOC store: {err}") from err
+        if self._store.save_failures != failures:
+            raise StoreSaveError(
+                f"Could not save the HA SOC store: {self._store.last_save_error}"
+            )
+
+    async def async_flush(self) -> None:
+        """Write now so a reload or unload keeps changes made inside the debounce window.
+
+        Never raises: teardown must finish, and the failure is logged.
+        """
+        try:
+            await self.async_save_now()
+        except StoreSaveError:
+            _LOGGER.exception("HA SOC could not flush its store while stopping")
 
     @property
     def settings(self) -> SettingsData:

@@ -96,12 +96,5 @@ async def test_setup_failure_after_push_start_leaves_no_timer(hass) -> None:
     assert created[0]._unsub is None
     assert created[0].status["active"] is False
 
-    # Other components that setup started before the failure are outside this slice's
-    # contract; stop them here so the harness does not report their timers as lingering.
-    runtime = entry.runtime_data
-    await runtime.audit.async_stop()
-    await runtime.syslog.async_stop(drain=True)
-    await runtime.permissions.async_stop()
-    await runtime.health.async_stop()
-    runtime.scanner.async_stop()
-    runtime.watchdog.async_stop()
+    # A failed setup also stops the other services, so nothing is left to clean up here.
+    assert not hasattr(entry, "runtime_data")

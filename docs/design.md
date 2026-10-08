@@ -10,6 +10,8 @@ Each feature manager is independently testable and knows nothing about the other
 
 In `async_setup_entry`, the private secret store is loaded before anything else can want a credential, legacy plaintext copies are drained into it exactly once, and a first analysis pass, config check, and (when enabled) scanner sweep are kicked off shortly after startup rather than after a full interval, so the dashboard is not empty on a fresh install. `async_register_probe_service` is handed the audit log (so a rejected Probe callback is recorded as `probe_auth_rejected`) and the secret store (the pairing secret is pinned and verified there); on non-Supervisor installs it registers nothing. In `_async_vuln_scan`, the tracker fetches the NVD API key from the secret store right before each request (SEC-3); nothing is passed from `__init__.py`.
 
+Setup failure, retry and unload. Right after the runtime object is built, and before any service starts, `async_setup_entry` registers three callbacks with `entry.async_on_unload`. Core runs them when a setup fails or is retried as well as on unload, in reverse order of registration: the first removes the probe, external-audit and pairing services and the panel; the second is `HaSocRuntimeData.async_stop_services`; the third drops the half-built `runtime_data`, which core leaves in place after a failed setup. `async_stop_services` runs once and in order: terminal sessions close, the audit log stops and flushes, the syslog exporter drains, then the permissions, health, scanner, watchdog and Observe push stop, and the store is written last because the stops change it (the audit head mirror, the health records). The store write matters because `HaSocData` debounces saves by 15 seconds and core never writes a pending delayed save on unload or reload, so a setting changed shortly before a reload used to revert. A stop that raises is logged and the rest still run. Without these callbacks a failed attempt left its audit listeners, the failed-login handler and the timers running, and the retry built a second `AuditLog` that continued the same chain from the same head, so two writers produced duplicate sequence numbers and a broken hash chain. `get_runtime_data` raises `RuntimeError("HA SOC is not set up")` when there is no entry or no runtime, including after an unload (core deletes the attribute, so a plain read raised `AttributeError`). `require_soc_access` and `require_owner` answer a WebSocket command with the error code `not_loaded` when an HA SOC entry exists but has no runtime; an administrator who is not the owner still gets `unauthorized`, because the access level cannot be read and the default is owner-only. `HaSocData.async_save_now` raises `StoreSaveError` when the file could not be written; core's `Store` logs and swallows that failure, so `HaSocStore` counts failed writes to let the caller see one.
+
 ## Audit chain
 
 External sources: `external_audit.py` lets another tool on the host push its own
@@ -449,9 +451,12 @@ masking path covers it). `entry.options` stays `{}`; the options flow writes
 the store, flushes it to disk with `async_save_now` (the store normally
 debounces writes and the reload builds a fresh store that reads the file),
 and only then schedules the reload, which restarts the push with the new
-values. Setup registers `observe.async_stop` with `entry.async_on_unload`
-before starting the push, so a setup that fails afterwards (for example with
-`ConfigEntryNotReady`) cancels the timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
+values. A write that fails is shown as the form error `save_failed`, the
+settings are put back as they were, and no reload is scheduled. Setup
+registers the stop of every service with `entry.async_on_unload` before the
+first one starts (see "Setup failure, retry and unload" below), so a setup
+that fails afterwards (for example with `ConfigEntryNotReady`) cancels the
+push timer and leaves the status inactive. Disabled, or enabled with an incomplete or invalid
 configuration, the pusher arms no timer and opens no connection.
 
 Each tick runs under one lock, so a slow cycle makes the next tick skip
