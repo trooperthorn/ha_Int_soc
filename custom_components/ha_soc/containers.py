@@ -54,6 +54,39 @@ def _flags_for(container: dict[str, Any]) -> list[str]:
     return flags
 
 
+def installed_addons(hass: HomeAssistant) -> list[dict[str, Any]] | None:
+    """The Supervisor's cached list of installed add-ons, or None.
+
+    None means the list is not available: hassio is not loaded, its first
+    refresh has not finished (core raises HassioNotReadyError until then),
+    or the helper is missing. Callers treat that as "Supervisor not ready"
+    and never see an exception. This replaces reading the ``addons`` key of
+    ``get_supervisor_info()``, which core deprecated in 2026.4.
+    """
+    try:
+        from homeassistant.components.hassio import get_addons_list
+
+        return list(get_addons_list(hass))
+    except Exception as err:  # noqa: BLE001 - HassioNotReadyError or a missing helper
+        _LOGGER.debug("Supervisor add-on list not available: %s", err)
+        return None
+
+
+def cached_addons_info(hass: HomeAssistant) -> dict[str, dict[str, Any] | None] | None:
+    """The Supervisor's cached per-add-on detail, or None when not ready.
+
+    Core's get_addons_info() raises HassioNotReadyError until the first
+    refresh completes; callers get None instead and skip their check.
+    """
+    try:
+        from homeassistant.components.hassio import get_addons_info
+
+        return get_addons_info(hass)
+    except Exception as err:  # noqa: BLE001 - HassioNotReadyError or a missing helper
+        _LOGGER.debug("Supervisor add-on info not available: %s", err)
+        return None
+
+
 async def async_container_resources(hass: HomeAssistant) -> dict[str, Any]:
     """Live per-container resource usage. Never raises: an unavailable
     Supervisor comes back as available=False with a reason."""
@@ -70,10 +103,7 @@ async def async_container_resources(hass: HomeAssistant) -> dict[str, Any]:
         return result
 
     try:
-        from homeassistant.components.hassio import (
-            get_supervisor_client,
-            get_supervisor_info,
-        )
+        from homeassistant.components.hassio import get_supervisor_client
     except Exception:  # noqa: BLE001 - hassio internals not guaranteed stable
         result["reason"] = "hassio_unavailable"
         return result
@@ -86,8 +116,11 @@ async def async_container_resources(hass: HomeAssistant) -> dict[str, Any]:
         result["reason"] = "no_supervisor_client"
         return result
 
-    supervisor_info = get_supervisor_info(hass) or {}
-    all_addons = supervisor_info.get("addons") or []
+    installed = installed_addons(hass)
+    if installed is None:
+        result["reason"] = "supervisor_not_ready"
+        return result
+    all_addons = installed
     addons = all_addons[:MAX_ADDONS]
     result["truncated"] = len(all_addons) - len(addons)
     if result["truncated"]:

@@ -136,7 +136,8 @@ URL a parser actually needs stays visible.
   logged Core crash), and auto-collect the previous boot's journal tail,
   Supervisor/host status, and container state into a bundle with a ranked
   list of suspects, before the next boot's log churn rotates the evidence
-  away. See docs/CRASH-FORENSICS.md.
+  away. No heartbeat is written once a clean stop has begun, so a normal
+  shutdown is never mistaken for a crash. See docs/CRASH-FORENSICS.md.
 - **Risk Scoring & Security Posture**: an explainable, additive per-user
   risk score (0–100) and an install-wide posture score/grade, both shown
   with their contributing factors, never as an opaque number. Every

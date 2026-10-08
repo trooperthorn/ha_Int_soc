@@ -459,6 +459,19 @@ def frame_rfc6587(message: bytes) -> bytes:
     return str(len(message)).encode("ascii") + b" " + message
 
 
+def _build_ssl_context(verify: bool) -> ssl.SSLContext:
+    """Build a TLS client context. Blocking: loads the CA bundle from disk."""
+    if verify:
+        return ssl.create_default_context()
+    # Explicit compatibility mode for today's self-signed certificates. The
+    # UI labels this unverified and TLS verification remains the secure
+    # default.
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE  # nosec B323
+    return context
+
+
 class SyslogExporter:
     """Lifecycle-managed, bounded Syslog delivery worker."""
 
@@ -476,6 +489,9 @@ class SyslogExporter:
         self._task: asyncio.Task[None] | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._udp_transport: asyncio.DatagramTransport | None = None
+        # TLS client contexts keyed by "verify". Building one loads the CA
+        # bundle from disk, so it is built once, in the executor.
+        self._ssl_contexts: dict[bool, ssl.SSLContext] = {}
         self._sent = 0
         self._dropped = 0
         self._last_sent_at: str | None = None
@@ -639,16 +655,9 @@ class SyslogExporter:
                 verify = bool(
                     settings.get(CONF_SYSLOG_TLS_VERIFY, DEFAULT_SYSLOG_TLS_VERIFY)
                 )
+                ssl_context = await self._async_ssl_context(verify)
                 if verify:
-                    ssl_context = ssl.create_default_context()
                     server_hostname = host
-                else:
-                    # Explicit compatibility mode for today's self-signed
-                    # certificates. The UI labels this unverified and TLS
-                    # verification remains the secure default.
-                    ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-                    ssl_context.check_hostname = False
-                    ssl_context.verify_mode = ssl.CERT_NONE  # nosec B323
             _reader, self._writer = await asyncio.wait_for(
                 asyncio.open_connection(
                     host,
@@ -660,6 +669,14 @@ class SyslogExporter:
             )
         self._writer.write(frame_rfc6587(message))
         await asyncio.wait_for(self._writer.drain(), timeout=_CONNECT_TIMEOUT)
+
+    async def _async_ssl_context(self, verify: bool) -> ssl.SSLContext:
+        """The TLS client context for this verification mode, built once."""
+        context = self._ssl_contexts.get(verify)
+        if context is None:
+            context = await self.hass.async_add_executor_job(_build_ssl_context, verify)
+            self._ssl_contexts[verify] = context
+        return context
 
     async def _async_close_connection(self) -> None:
         if self._udp_transport is not None:

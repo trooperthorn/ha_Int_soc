@@ -37,6 +37,7 @@ from homeassistant.helpers.hassio import is_hassio
 import homeassistant.util.dt as dt_util
 
 from .const import DOMAIN
+from .containers import installed_addons
 from .probe import async_supervisor_call_rejection
 from .secrets_store import TERMINAL_SECRET_KEY, HaSocSecretStore
 from .store import HaSocData
@@ -221,13 +222,7 @@ def _installed_addon(hass: HomeAssistant) -> dict[str, Any] | None:
     The slug the Supervisor assigns is ``{repository}_{slug}``; matching on
     the suffix avoids knowing the repository hash.
     """
-    try:
-        from homeassistant.components.hassio import get_supervisor_info
-
-        info = get_supervisor_info(hass) or {}
-    except Exception:  # noqa: BLE001 - not a Supervisor install, or hassio not set up yet
-        return None
-    for addon in info.get("addons") or []:
+    for addon in installed_addons(hass) or []:
         slug = str(addon.get("slug") or "")
         if slug == APP_SLUG or slug.endswith(f"_{APP_SLUG}"):
             return dict(addon)

@@ -894,7 +894,7 @@ async def test_watchdog_off_100_add_ons_call_count_is_bounded(hass, entry) -> No
     )
     with (
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
-        patch("homeassistant.components.hassio.get_supervisor_info", return_value=info),
+        patch("homeassistant.components.hassio.get_addons_list", return_value=info["addons"]),
     ):
         for _ in range(3):
             snap = await collector.async_collect()

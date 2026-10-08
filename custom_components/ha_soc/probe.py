@@ -35,6 +35,7 @@ from .const import (
     SYSLOG_RECEIVER_MESSAGE_MAX,
     SYSLOG_RECEIVER_STATUS_ERROR_MAX,
 )
+from .containers import cached_addons_info
 from .firewall import (
     async_next_addon_command,
     async_report_from_addon,
@@ -254,9 +255,7 @@ async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
 
 def _addon_info(hass: HomeAssistant) -> dict[str, Any] | None:
     """This project's own add-on's cached info dict, or None if absent."""
-    from homeassistant.components.hassio import get_addons_info
-
-    addons = get_addons_info(hass)
+    addons = cached_addons_info(hass)
     if not addons:
         return None
     for info in addons.values():

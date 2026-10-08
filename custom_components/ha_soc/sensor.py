@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceEntryType
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -19,7 +20,7 @@ def _device_info() -> DeviceInfo:
         identifiers={(DOMAIN, "ha_soc")},
         name="HA SOC",
         manufacturer="HA SOC",
-        entry_type="service",
+        entry_type=DeviceEntryType.SERVICE,
     )
 
 

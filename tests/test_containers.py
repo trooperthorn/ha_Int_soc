@@ -1,6 +1,6 @@
 """Tests for per-container CPU/memory resource collection.
 
-Never touches a real Supervisor: get_supervisor_client / get_supervisor_info
+Never touches a real Supervisor: get_supervisor_client / get_addons_list
 are patched. Pins the not-Supervisor degradation, the on-demand stat fetch
 (only for started add-ons), the high-memory/high-cpu flagging, and the
 suspicious-first sort.
@@ -53,7 +53,7 @@ async def test_resources_flags_and_sort(hass: HomeAssistant) -> None:
 
     with (
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
-        patch("homeassistant.components.hassio.get_supervisor_info", return_value=supervisor_info),
+        patch("homeassistant.components.hassio.get_addons_list", return_value=supervisor_info["addons"]),
     ):
         out = await async_container_resources(hass)
 
@@ -106,7 +106,7 @@ async def test_add_ons_beyond_the_cap_are_counted_and_warned(hass: HomeAssistant
     client.supervisor.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
     with (
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
-        patch("homeassistant.components.hassio.get_supervisor_info", return_value=supervisor_info),
+        patch("homeassistant.components.hassio.get_addons_list", return_value=supervisor_info["addons"]),
     ):
         out = await async_container_resources(hass)
     assert out["truncated"] == 5
@@ -125,9 +125,43 @@ async def test_100_add_ons_are_all_sampled(hass: HomeAssistant) -> None:
     client.supervisor.stats = AsyncMock(return_value=_stats(cpu=1.0, mem_pct=1.0))
     with (
         patch("homeassistant.components.hassio.get_supervisor_client", return_value=client),
-        patch("homeassistant.components.hassio.get_supervisor_info", return_value=supervisor_info),
+        patch("homeassistant.components.hassio.get_addons_list", return_value=supervisor_info["addons"]),
     ):
         out = await async_container_resources(hass)
     assert out["truncated"] == 0
     assert len(out["containers"]) == 102
     assert client.addons.addon_stats.await_count == 100
+
+
+async def test_supervisor_not_ready_gives_available_false(hass: HomeAssistant) -> None:
+    """Core raises HassioNotReadyError until its first refresh; we must not."""
+    from homeassistant.components.hassio import HassioNotReadyError
+
+    hass.config.components.add("hassio")
+    with (
+        patch("homeassistant.components.hassio.get_supervisor_client", return_value=MagicMock()),
+        patch(
+            "homeassistant.components.hassio.get_addons_list",
+            side_effect=HassioNotReadyError,
+        ),
+    ):
+        out = await async_container_resources(hass)
+    assert out["available"] is False
+    assert out["reason"] == "supervisor_not_ready"
+    assert out["containers"] == []
+
+
+async def test_supervisor_not_ready_with_real_core_helper(hass: HomeAssistant) -> None:
+    """The audit probe: no patching of the add-on list, core's real helper raises."""
+    hass.config.components.add("hassio")
+    with patch("homeassistant.components.hassio.get_supervisor_client", return_value=MagicMock()):
+        out = await async_container_resources(hass)
+    assert out["available"] is False
+    assert out["reason"] == "supervisor_not_ready"
+
+
+def test_cached_addons_info_is_none_when_not_ready(hass: HomeAssistant) -> None:
+    from custom_components.ha_soc.containers import cached_addons_info, installed_addons
+
+    assert cached_addons_info(hass) is None
+    assert installed_addons(hass) is None

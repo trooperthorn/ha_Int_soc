@@ -48,6 +48,7 @@ from .const import (
     STATUS_DISMISSED,
     STATUS_RESOLVED,
 )
+from .containers import cached_addons_info
 from .store import HaSocData
 
 _LOGGER = logging.getLogger(__name__)
@@ -994,9 +995,7 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("addon_unprotected", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass) or {}
         items: list[tuple[dict, str, dict[str, str]]] = []
         hard_caps_configured = bool(
             (self._store.data.get("resource_watchdog") or {}).get("hard_limits")
@@ -1078,9 +1077,7 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("ssh_addon_inventory", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass) or {}
         ssh_addons = [
             {"slug": slug, "name": info.get("name") or slug, "state": info.get("state")}
             for slug, info in addons.items()
@@ -1116,9 +1113,7 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("ssh_addon_exposed", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass) or {}
         items: list[tuple[dict, str, dict[str, str]]] = []
 
         for slug, info in addons.items():
@@ -1182,9 +1177,7 @@ class IntegrationHealth:
             self._probe_unreported_since = None
             return self._async_finalize_check("probe_addon_not_reporting", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass) or {}
         probe = next(
             (
                 (slug, i)
@@ -1336,9 +1329,7 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("config_mapping_addon", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass)
+        addons = cached_addons_info(self.hass)
         if addons is None:
             _LOGGER.debug(
                 "Skipping config_mapping_addon check: add-on info not cached yet"
@@ -1479,9 +1470,7 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("samba_unauthenticated", [])
 
-        from homeassistant.components.hassio import get_addons_info
-
-        addons = get_addons_info(self.hass)
+        addons = cached_addons_info(self.hass)
         if addons is None:
             _LOGGER.debug(
                 "Skipping samba_unauthenticated check: add-on info not cached yet"

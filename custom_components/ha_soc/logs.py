@@ -9,6 +9,8 @@ from typing import Any
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util
 
+from .containers import installed_addons
+
 _LOGGER = logging.getLogger(__name__)
 
 FAULT_LOG_FILENAME = "home-assistant.log.fault"
@@ -77,14 +79,9 @@ _MIN_BOOT_OFFSET = -20
 
 def _addons_by_slug(hass: HomeAssistant) -> dict[str, str]:
     """{slug: name} for installed add-ons, from the hassio cache (free)."""
-    try:
-        from homeassistant.components.hassio import get_supervisor_info
-    except Exception:  # noqa: BLE001
-        return {}
-    info = get_supervisor_info(hass) or {}
     return {
         str(a["slug"]): str(a.get("name") or a["slug"])
-        for a in info.get("addons", [])
+        for a in installed_addons(hass) or []
         if a.get("slug")
     }
 

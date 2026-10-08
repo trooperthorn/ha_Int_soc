@@ -239,3 +239,78 @@ def test_syslog_destination_accepts_only_host_literals(host: str) -> None:
 def test_syslog_destination_rejects_urls_paths_and_userinfo(host: str) -> None:
     with pytest.raises(vol.Invalid):
         _syslog_host(host)
+
+
+async def test_tls_reconnect_builds_the_ssl_context_once_in_the_executor(hass) -> None:
+    """Building a TLS context loads the CA bundle from disk, which must never
+    happen on the event loop, and a reconnect must reuse the built context."""
+    import threading
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    import ssl as ssl_module
+
+    from custom_components.ha_soc import syslog_export
+
+    loop_thread = threading.get_ident()
+    build_threads: list[int] = []
+    real_create = ssl_module.create_default_context
+
+    def recording_create(*args, **kwargs):
+        build_threads.append(threading.get_ident())
+        return real_create(*args, **kwargs)
+
+    settings = {
+        "syslog_transport": "tls",
+        "syslog_host": "sem.example.lan",
+        "syslog_port": 6514,
+        "syslog_tls_verify": True,
+    }
+    exporter = SyslogExporter(hass, SimpleNamespace(settings=settings), "1")
+    opened: list[dict] = []
+
+    async def fake_open_connection(host, port, **kwargs):
+        opened.append(kwargs)
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        return MagicMock(), writer
+
+    item = {"record": _record(), "payload_format": "rfc5424"}
+    with (
+        patch.object(syslog_export.ssl, "create_default_context", recording_create),
+        patch.object(syslog_export.asyncio, "open_connection", fake_open_connection),
+    ):
+        await exporter._async_send(item)  # noqa: SLF001
+        exporter._writer = None  # noqa: SLF001 - simulate a dropped connection
+        await exporter._async_send(item)  # noqa: SLF001
+
+    assert len(build_threads) == 1
+    assert build_threads[0] != loop_thread
+    assert len(opened) == 2
+    assert opened[0]["ssl"] is opened[1]["ssl"]
+    assert opened[0]["server_hostname"] == "sem.example.lan"
+
+
+async def test_tls_unverified_context_is_built_off_the_loop_and_cached(hass) -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from custom_components.ha_soc import syslog_export
+
+    settings = {
+        "syslog_transport": "tls",
+        "syslog_host": "sem.example.lan",
+        "syslog_tls_verify": False,
+    }
+    exporter = SyslogExporter(hass, SimpleNamespace(settings=settings), "1")
+    seen: list[dict] = []
+
+    async def fake_open_connection(host, port, **kwargs):
+        seen.append(kwargs)
+        writer = MagicMock()
+        writer.drain = AsyncMock()
+        return MagicMock(), writer
+
+    with patch.object(syslog_export.asyncio, "open_connection", fake_open_connection):
+        await exporter._async_send({"record": _record(), "payload_format": "rfc5424"})  # noqa: SLF001
+    assert seen[0]["server_hostname"] is None
+    assert seen[0]["ssl"].check_hostname is False
+    assert exporter._ssl_contexts[False] is seen[0]["ssl"]  # noqa: SLF001

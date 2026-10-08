@@ -451,3 +451,65 @@ async def test_ws_status_lists_bundles(
     status = connection.send_result.call_args[0][1]
     assert status["bundles"][0]["id"] == bundle_id
     assert status["bundles"][0]["classification"] == "core_restart"
+
+
+async def test_heartbeat_tick_during_shutdown_still_classifies_as_clean(
+    hass: HomeAssistant, entry: MockConfigEntry, freezer
+) -> None:
+    """Timers are not cancelled on the stop event, so a heartbeat tick can
+    arrive after the clean-stop marker. It must not be written, or the next
+    boot sees a heartbeat newer than the marker and calls the stop unclean."""
+    from datetime import timedelta
+
+    run1: CrashForensics = entry.runtime_data.crash_forensics
+    await run1._async_write_heartbeat()
+    freezer.tick(timedelta(seconds=300))
+    await run1._async_on_stop(None)
+    stop_marker = await hass.async_add_executor_job(sync_read_json, run1._last_stop_path)
+    heartbeat_before = await hass.async_add_executor_job(sync_read_json, run1._heartbeat_path)
+
+    freezer.tick(timedelta(seconds=12))
+    await run1._async_write_heartbeat()
+    heartbeat_after = await hass.async_add_executor_job(sync_read_json, run1._heartbeat_path)
+    assert heartbeat_after == heartbeat_before
+    assert heartbeat_after["ts"] < stop_marker["ts"]
+
+    run2 = CrashForensics(hass, run1.store, MagicMock(), MagicMock())
+    prior = await hass.async_add_executor_job(run2._sync_read_prior_state)
+    with patch.object(run2, "async_collect_bundle", new=AsyncMock()) as collect:
+        result = await run2.async_check_and_collect(prior=prior)
+    assert result["unclean"] is False
+    collect.assert_not_called()
+
+
+async def test_heartbeat_in_flight_when_stop_arrives_is_ordered_before_the_marker(
+    hass: HomeAssistant, entry: MockConfigEntry, freezer
+) -> None:
+    """A heartbeat write already running in the executor when the stop event
+    fires must finish before the marker is written."""
+    import asyncio
+    import threading
+    from datetime import timedelta
+
+    run1: CrashForensics = entry.runtime_data.crash_forensics
+    started = threading.Event()
+    release = threading.Event()
+    real_write = run1._sync_write_heartbeat
+
+    def slow_write() -> None:
+        started.set()
+        release.wait(5)
+        real_write()
+
+    with patch.object(run1, "_sync_write_heartbeat", slow_write):
+        beat = hass.async_create_task(run1._async_write_heartbeat())
+        await hass.async_add_executor_job(started.wait, 5)
+        freezer.tick(timedelta(seconds=5))
+        stop = hass.async_create_task(run1._async_on_stop(None))
+        await asyncio.sleep(0)
+        release.set()
+        await asyncio.gather(beat, stop)
+
+    heartbeat = await hass.async_add_executor_job(sync_read_json, run1._heartbeat_path)
+    marker = await hass.async_add_executor_job(sync_read_json, run1._last_stop_path)
+    assert heartbeat["ts"] <= marker["ts"]
