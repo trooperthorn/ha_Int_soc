@@ -59,7 +59,16 @@ def _scan_custom_components_sync(root: str) -> tuple[list[str], dict[str, bool]]
             for entry in it:
                 if entry.name.startswith((".", "_")):
                     continue
-                names.append((entry.name, entry.stat().st_mtime_ns))
+                try:
+                    mtime = entry.stat().st_mtime_ns
+                except OSError:
+                    # A dangling link or an unreadable entry: keep scanning the rest and
+                    # let the manifest probe below decide whether it counts.
+                    try:
+                        mtime = entry.stat(follow_symlinks=False).st_mtime_ns
+                    except OSError:
+                        mtime = 0
+                names.append((entry.name, mtime))
     except OSError:
         _SCAN_CACHE.pop(root, None)
         return [], {}

@@ -271,8 +271,8 @@ class ResourceWatchdog:
             _LOGGER.exception("Resource watchdog sample failed")
 
     async def async_run_once(self) -> None:
-        """One sampling pass that always asks the Supervisor. Public for tests and the
-        WS refresh path; the timer goes through the shared sample instead."""
+        """One sampling pass that always asks the Supervisor. Public for tests; the
+        timer goes through the shared sample instead."""
         async with self._sample_lock:
             overview = await async_container_resources(self.hass)
             if not overview.get("available"):

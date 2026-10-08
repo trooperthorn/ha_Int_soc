@@ -17,7 +17,7 @@ import pytest
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from homeassistant.auth.const import GROUP_ID_ADMIN
-from homeassistant.const import HASSIO_USER_NAME
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, HASSIO_USER_NAME
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
 
@@ -422,8 +422,10 @@ async def test_history_persists_across_a_restart(
         new=AsyncMock(return_value=_overview([_addon("ma", mem=42.0)])),
     ):
         await wd.async_run_once()
-    # Stopping the entry writes the ring, whatever the write throttle says.
-    await wd.async_flush_history()
+    # A normal Home Assistant restart fires the stop event and never unloads the entry;
+    # the ring must reach the disk then, whatever the write throttle says.
+    hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+    await hass.async_block_till_done()
 
     # A second watchdog instance (standing in for a fresh restart) loads
     # what the first one wrote.

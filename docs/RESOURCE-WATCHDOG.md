@@ -48,11 +48,12 @@ intact.
 
 The write happens at most every `HISTORY_SAVE_INTERVAL_SECONDS` (10
 minutes), and only when the ring changed, plus once when the entry stops or
-reloads (`async_flush_history`). Writing after every sample rewrote the whole
+reloads (`async_flush_history`), and when Home Assistant itself stops (a listener on the stop event, because core does not unload entries on shutdown). Writing after every sample rewrote the whole
 file about 60 times an hour for data that changes by one sample at a time. A
-crash loses at most the last ten minutes of samples; the ring as it stood at
-the end of the previous boot is in the `.prev` file described below, which is
-what the crash bundle reads. A slug that is no longer in the overview of a
+crash or power loss loses at most the last ten minutes of samples, and the
+first write of a boot comes ten minutes after startup. The ring as the last
+write left it is copied to the `.prev` file described below, which is what the
+crash bundle reads, so after a crash it can be up to ten minutes old. A slug that is no longer in the overview of a
 complete (not truncated) sample, because the add-on was uninstalled, is
 removed from the ring and from the file.
 
@@ -67,7 +68,7 @@ before a watchdog tick is evaluated by the watchdog on that tick instead of
 being fetched again, and is evaluated once. With the watchdog off nothing
 evaluates thresholds; the push alone drives the sample at the three-minute
 gap. `async_run_once` still always asks the Supervisor and is kept for the
-tests and the refresh path.
+tests; the panel's resource request calls the collector directly and does not use the shared sample.
 
 The write goes through `atomic_json.sync_write_json_atomic` (temp file +
 `os.replace`, mode 0600) rather than the HA SOC `Store` helper. `Store` is

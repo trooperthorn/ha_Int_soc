@@ -187,7 +187,7 @@ and its next periodic batch POST to Core, since Core is only pushed to every
 (`SYSLOG_RECEIVER_MESSAGE_MAX`, `SYSLOG_RECEIVER_FIELD_MAX`) before anything
 reaches the store. Core-side storage is a bounded ring buffer
 (`syslog_receiver_entries`, stored in its own Store file `ha_soc.syslog_ring`,
-most recent `SYSLOG_RECEIVER_MAX_ENTRIES` kept, oldest dropped first) — deliberately not the audit.py hash-chain machinery,
+most recent `SYSLOG_RECEIVER_MAX_ENTRIES` kept, oldest dropped first), deliberately not the audit.py hash-chain machinery,
 which exists for tamper-evident security records at security-audit
 retention timescales, not arbitrary container noise; there is no
 rotation-to-disk or long-term persistence in this phase.

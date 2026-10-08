@@ -1336,8 +1336,9 @@ class AuditLog:
                 self._last_retention is None
                 or abs((now - self._last_retention).total_seconds()) >= _RETENTION_INTERVAL
             ):
-                self._last_retention = now
                 self._sync_apply_retention()
+                # Set only after a pass that finished, so one that failed is retried.
+                self._last_retention = now
         except OSError:
             _LOGGER.exception("HA SOC audit log: retention failed")
         finally:

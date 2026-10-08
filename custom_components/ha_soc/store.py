@@ -7,6 +7,7 @@ state. It never holds the audit log (audit.py) or any secret value
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timedelta
 from typing import Any, TypedDict
 
@@ -342,6 +343,10 @@ class HaSocStore(Store[StoreData]):
 
     save_failures = 0
     last_save_error: str | None = None
+    # Called with True after a write succeeds and False after it fails, whichever path
+    # (delayed or direct) started it. Core swallows delayed write errors, so this is the
+    # only way for the owner to learn that a delayed write did not happen.
+    on_write_result: Callable[[bool], None] | None = None
 
     async def _async_write_data(self, data: dict[str, Any]) -> None:
         try:
@@ -349,7 +354,11 @@ class HaSocStore(Store[StoreData]):
         except (WriteError, SerializationError, OSError) as err:
             self.save_failures += 1
             self.last_save_error = str(err)
+            if self.on_write_result is not None:
+                self.on_write_result(False)
             raise
+        if self.on_write_result is not None:
+            self.on_write_result(True)
 
     async def _async_migrate_func(
         self,
@@ -388,13 +397,34 @@ class HaSocData:
             minor_version=STORAGE_VERSION_MINOR,
         )
         self._ring_dirty = False
+        self._ring_flushing = False
+        self._ring_store.on_write_result = self._on_ring_write_result
+        # True while the ring has been found in the monolithic file and the ring file has
+        # not yet been written; the main payload keeps the entries until it has.
+        self._ring_in_main = False
         self.data: StoreData = default_store_data()
         # Runtime-only cache resolved lazily by probe.py; never persisted.
         self.supervisor_user_id: str | None = None
 
     def _main_payload(self) -> dict[str, Any]:
-        """The data written to the monolithic store: everything except the syslog ring."""
+        """The data written to the monolithic store: everything except the syslog ring.
+
+        While a ring found in an older monolithic file has not yet reached its own file,
+        it stays in the payload so that a crash at any moment leaves it in one of the two.
+        """
+        if self._ring_in_main:
+            return dict(self.data)
         return {k: v for k, v in self.data.items() if k != _RING_FIELD}
+
+    def _on_ring_write_result(self, ok: bool) -> None:
+        """Track the ring file's state after every write attempt, delayed or direct."""
+        if ok:
+            self._ring_in_main = False
+            return
+        self._ring_dirty = True
+        if not self._ring_flushing:
+            # A delayed write failed: try again later rather than waiting for the next line.
+            self._ring_store.async_delay_save(self._ring_payload, SYSLOG_RING_SAVE_DELAY)
 
     def _ring_payload(self) -> dict[str, Any]:
         # Core calls this when it writes, so the flag clears exactly when the data is taken.
@@ -405,8 +435,11 @@ class HaSocData:
         """Load the ring from its own file.
 
         An older install kept the ring inside the monolithic store. That copy is used when
-        the ring file does not exist yet, and a save of the monolithic store is scheduled so
-        the entries leave it and the next flush writes them to the ring file.
+        the ring file does not exist yet. The ring file is written first, and only after that
+        write succeeds does the monolithic store stop carrying the entries and get a save
+        scheduled, so at every point in time at least one of the two files holds them. If
+        the write fails the entries stay in the monolithic store and the write is retried
+        on flush.
         """
         stored = await self._ring_store.async_load()
         entries = stored.get("entries") if isinstance(stored, dict) else None
@@ -414,9 +447,11 @@ class HaSocData:
             self.data[_RING_FIELD] = entries[-SYSLOG_RECEIVER_MAX_ENTRIES:]  # type: ignore[literal-required]
         elif isinstance(legacy, list) and legacy:
             self.data[_RING_FIELD] = legacy[-SYSLOG_RECEIVER_MAX_ENTRIES:]  # type: ignore[literal-required]
+            self._ring_in_main = True
             self._ring_dirty = True
-            self.async_schedule_save()
-            self._ring_store.async_delay_save(self._ring_payload, SYSLOG_RING_SAVE_DELAY)
+            await self._async_flush_ring()
+            if not self._ring_in_main:
+                self.async_schedule_save()
         else:
             self.data[_RING_FIELD] = []  # type: ignore[literal-required]
 
@@ -522,11 +557,14 @@ class HaSocData:
         """Write the syslog ring now if it changed since its last write. Never raises."""
         if not self._ring_dirty:
             return
+        self._ring_flushing = True
         try:
             await self._ring_store.async_save(self._ring_payload())
         except Exception:  # noqa: BLE001 - teardown must finish
             self._ring_dirty = True
-            _LOGGER.exception("HA SOC could not flush the syslog ring while stopping")
+            _LOGGER.exception("HA SOC could not write the syslog ring file")
+        finally:
+            self._ring_flushing = False
 
     @property
     def settings(self) -> SettingsData:

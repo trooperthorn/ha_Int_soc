@@ -12,7 +12,8 @@ from dataclasses import dataclass, field
 from datetime import timedelta
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
@@ -246,6 +247,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     # runtime drop completes before the stop finishes awaiting.
     entry.async_on_unload(lambda: _async_forget_runtime(entry))
     entry.async_on_unload(entry.runtime_data.async_stop_services)
+
+    # Core does not unload config entries when Home Assistant stops, so the stop path
+    # above never runs on a restart. Write the throttled history ring on the stop event
+    # as well; it is a plain listener so removing it on unload is always safe.
+    async def _async_flush_history_on_stop(_event: Event) -> None:
+        await entry.runtime_data.watchdog.async_flush_history()
+
+    entry.async_on_unload(
+        hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_flush_history_on_stop)
+    )
     entry.async_on_unload(lambda: _async_unregister_everything(hass))
 
     async_sync_tls_verify_issue(hass, store.settings)

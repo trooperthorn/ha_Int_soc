@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import HomeAssistant
+from homeassistant.util.file import WriteError
 from pytest_homeassistant_custom_component.common import async_fire_time_changed
 
 from custom_components.ha_soc import integration_security as isec
@@ -127,7 +128,15 @@ async def test_watchdog_off_supervisor_calls_per_minute_at_most_a_third(
             snapshot = await collector.async_collect()
             assert len(snapshot["containers"]["containers"]) == CALLS_PER_PASS
             freezer.tick(timedelta(seconds=60))
-    before = BEFORE_CALLS_PER_MINUTE * minutes
+        # Before the change every push asked the Supervisor itself, which is what
+        # async_run_once still does; measure that here instead of assuming it.
+        baseline = _Supervisor()
+        old_patches = baseline.patches()
+    with old_patches[0], old_patches[1]:
+        for _ in range(minutes):
+            await _watchdog(hass, enabled=False).async_run_once()
+    before = baseline.calls
+    assert before == BEFORE_CALLS_PER_MINUTE * minutes
     print(f"OPT-1 watchdog off: {supervisor.calls / minutes:.1f} calls/min (before {before / minutes:.1f})")
     assert supervisor.calls * 3 <= before
 
@@ -408,6 +417,32 @@ def _write_integration(root: str, name: str, *, license_file: bool = False) -> s
     return path
 
 
+def test_unreadable_entry_does_not_empty_the_custom_integration_scan(tmp_path) -> None:
+    root = str(tmp_path)
+    _write_integration(root, "good")
+
+    class _Unreadable:
+        name = "dangling"
+
+        def stat(self, follow_symlinks: bool = True) -> Any:
+            raise OSError("broken link")
+
+    real_scandir = os.scandir
+
+    class _Listing:
+        def __enter__(self) -> Any:
+            self._real = real_scandir(root)
+            return iter([*self._real.__enter__(), _Unreadable()])
+
+        def __exit__(self, *exc: Any) -> None:
+            self._real.__exit__(*exc)
+
+    isec._SCAN_CACHE.clear()
+    with patch.object(isec.os, "scandir", lambda _path: _Listing()):
+        domains, _licenses = isec._scan_custom_components_sync(root)
+    assert domains == ["good"]
+
+
 def _age(path: str, seconds: int = 3600) -> None:
     """Back-date a path, so the scan treats it as settled and caches it."""
     old = os.stat(path).st_mtime_ns - seconds * 1_000_000_000
@@ -559,11 +594,91 @@ async def test_ring_left_in_the_old_store_is_moved_out(
     store = await _loaded_store(hass)
     assert len(store.data["syslog_receiver_entries"]) == 3
 
+    # The ring file is written during load, before the main file stops carrying it.
+    assert len(hass_storage[SYSLOG_RING_KEY]["data"]["entries"]) == 3
+
     freezer.tick(timedelta(seconds=SYSLOG_RING_SAVE_DELAY + 1))
     async_fire_time_changed(hass)
     await hass.async_block_till_done()
     assert "syslog_receiver_entries" not in hass_storage[STORAGE_KEY]["data"]
     assert len(hass_storage[SYSLOG_RING_KEY]["data"]["entries"]) == 3
+
+
+def _holders(hass_storage: dict[str, Any]) -> int:
+    ring = len((hass_storage.get(SYSLOG_RING_KEY) or {}).get("data", {}).get("entries", []))
+    main = len((hass_storage.get(STORAGE_KEY) or {}).get("data", {}).get("syslog_receiver_entries", []))
+    return max(ring, main)
+
+
+async def test_migrated_ring_is_in_a_file_at_every_moment(
+    hass: HomeAssistant, hass_storage: dict[str, Any], freezer
+) -> None:
+    """A crash at any time between the first boot and the long ring delay loses nothing."""
+    legacy = default_store_data()
+    legacy["syslog_receiver_entries"] = _syslog_entries(3)
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 0,
+        "key": STORAGE_KEY,
+        "data": dict(legacy),
+    }
+    store = await _loaded_store(hass)
+    assert _holders(hass_storage) == 3
+    # A settings change inside the debounce window writes the main file at once.
+    store.async_update_settings(audit_retention_days=9)
+    await store.async_save_now()
+    assert _holders(hass_storage) == 3
+    for _ in range(SYSLOG_RING_SAVE_DELAY // 5 + 2):
+        freezer.tick(timedelta(seconds=5))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+        assert _holders(hass_storage) == 3
+
+
+async def test_migrated_ring_stays_in_the_main_file_when_the_ring_write_fails(
+    hass: HomeAssistant, hass_storage: dict[str, Any]
+) -> None:
+    legacy = default_store_data()
+    legacy["syslog_receiver_entries"] = _syslog_entries(3)
+    hass_storage[STORAGE_KEY] = {
+        "version": 1,
+        "minor_version": 0,
+        "key": STORAGE_KEY,
+        "data": dict(legacy),
+    }
+    with patch(
+        "custom_components.ha_soc.store.Store._async_write_data",
+        new=AsyncMock(side_effect=WriteError("disk full")),
+    ):
+        store = await _loaded_store(hass)
+    assert SYSLOG_RING_KEY not in hass_storage
+    await store.async_save_now()
+    assert len(hass_storage[STORAGE_KEY]["data"]["syslog_receiver_entries"]) == 3
+    # The disk recovers; the next flush moves the ring and the main file lets go of it.
+    await store.async_flush()
+    assert len(hass_storage[SYSLOG_RING_KEY]["data"]["entries"]) == 3
+    await store.async_save_now()
+    assert "syslog_receiver_entries" not in hass_storage[STORAGE_KEY]["data"]
+
+
+async def test_failed_delayed_ring_write_is_retried(
+    hass: HomeAssistant, hass_storage: dict[str, Any], freezer
+) -> None:
+    store = await _loaded_store(hass)
+    store.async_append_syslog_entries(_syslog_entries(4))
+    with patch(
+        "custom_components.ha_soc.store.Store._async_write_data",
+        new=AsyncMock(side_effect=WriteError("disk full")),
+    ):
+        freezer.tick(timedelta(seconds=SYSLOG_RING_SAVE_DELAY + 1))
+        async_fire_time_changed(hass)
+        await hass.async_block_till_done()
+    assert SYSLOG_RING_KEY not in hass_storage
+    assert store._ring_dirty
+    freezer.tick(timedelta(seconds=SYSLOG_RING_SAVE_DELAY + 1))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert len(hass_storage[SYSLOG_RING_KEY]["data"]["entries"]) == 4
 
 
 async def test_main_store_save_still_carries_everything_else(
