@@ -28,6 +28,8 @@ from custom_components.ha_soc.probe import _async_supervisor_user_id, async_prob
 from custom_components.ha_soc.secrets_store import PROBE_PAIRING_SECRET_KEY
 from custom_components.ha_soc.store import HaSocData
 
+ISOLATED_CONFIG_DIR = True
+
 # The secret the fake add-on presents. The first Supervisor-context call
 # pins it; later calls must match it.
 PROBE_SECRET = "unit-test-probe-secret"

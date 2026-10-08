@@ -399,27 +399,41 @@ class HaSocData:
         """Write the store immediately, cancelling any pending debounced save.
 
         Raises StoreSaveError when the file could not be written. The in-memory
-        data is kept, and the next change schedules another attempt.
+        data is kept and another debounced save is scheduled, because core clears
+        the pending save before it writes: without that, changes still waiting
+        in the debounce window would reach the disk only if a later change
+        happened to schedule a save.
         """
+        await self._async_write_now(rearm=True)
+
+    async def _async_write_now(self, *, rearm: bool) -> None:
         failures = self._store.save_failures
+        error: StoreSaveError | None = None
         try:
             await self._store.async_save(self.data)
-        except StoreSaveError:
-            raise
+        except StoreSaveError as err:
+            error = err
         except Exception as err:  # noqa: BLE001 - any write failure is one error to callers
-            raise StoreSaveError(f"Could not save the HA SOC store: {err}") from err
-        if self._store.save_failures != failures:
-            raise StoreSaveError(
+            error = StoreSaveError(f"Could not save the HA SOC store: {err}")
+            error.__cause__ = err
+        if error is None and self._store.save_failures != failures:
+            error = StoreSaveError(
                 f"Could not save the HA SOC store: {self._store.last_save_error}"
             )
+        if error is not None:
+            if rearm:
+                self.async_schedule_save()
+            raise error
 
     async def async_flush(self) -> None:
         """Write now so a reload or unload keeps changes made inside the debounce window.
 
-        Never raises: teardown must finish, and the failure is logged.
+        Never raises: teardown must finish, and the failure is logged. Does not
+        schedule a retry, because a timer or final-write listener left behind by
+        a stopped entry could later overwrite what the next instance wrote.
         """
         try:
-            await self.async_save_now()
+            await self._async_write_now(rearm=False)
         except StoreSaveError:
             _LOGGER.exception("HA SOC could not flush its store while stopping")
 

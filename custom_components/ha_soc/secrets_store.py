@@ -122,10 +122,11 @@ async def async_migrate_legacy_secrets(secrets: HaSocSecretStore, store) -> list
                 "HA SOC could not remove the old secret copies from the store file; "
                 "they stay until the next successful save."
             )
-        _LOGGER.info(
-            "HA SOC: moved %d secret value(s) into the private secret store "
-            "and removed the old copies from %s.",
-            len(moved),
-            f"{DOMAIN}.storage",
-        )
+        else:
+            _LOGGER.info(
+                "HA SOC: moved %d secret value(s) into the private secret store "
+                "and removed the old copies from %s.",
+                len(moved),
+                f"{DOMAIN}.storage",
+            )
     return moved

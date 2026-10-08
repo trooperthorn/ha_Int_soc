@@ -386,8 +386,11 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
 async def ws_access_info(hass: HomeAssistant, connection, msg: dict) -> None:
     """Tell the frontend (and a blocked admin) exactly where it stands.
 
-    Stays on plain require_admin so a blocked admin can learn why.
+    Stays on plain require_admin so a blocked admin can learn why, but still
+    answers ``not_loaded`` when the entry has no runtime.
     """
+    if _reject_if_not_loaded(hass, connection, msg):
+        return
     runtime = _runtime(hass)
     user = connection.user
     access_level = runtime.store.settings.get("access_level", DEFAULT_ACCESS_LEVEL)

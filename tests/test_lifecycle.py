@@ -1,6 +1,7 @@
 """Setup failure, retry, unload and reload: nothing is left running and nothing is lost."""
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -34,6 +35,7 @@ from custom_components.ha_soc.const import (
     DOMAIN,
 )
 from custom_components.ha_soc.observe_push import ObservePusher
+from custom_components.ha_soc.store import StoreSaveError
 
 ISOLATED_CONFIG_DIR = True
 
@@ -118,7 +120,11 @@ async def test_setup_failure_then_retry_leaves_one_audit_log_and_no_timers(
         await hass.async_block_till_done()
         assert entry.state is ConfigEntryState.SETUP_RETRY
         assert len(created) == 1
-        # The failed attempt released everything it started.
+        # The failed attempt released everything it started, timers included,
+        # before the retry runs.
+        assert created[0]._cancel_flush_timer is None
+        assert created[0]._cancel_poll_timer is None
+        assert not created[0]._unsubs
         assert len(ban_logger.handlers) == ban_before
         assert health_handlers() == 0
         assert not hasattr(entry, "runtime_data")
@@ -288,6 +294,15 @@ async def test_unloaded_entry_gives_the_documented_error(hass) -> None:
         9, "not_loaded", "HA SOC is not set up"
     )
 
+    # ha_soc/access/info stays on plain require_admin but gives the same answer.
+    connection = MagicMock(user=owner)
+    wa.ws_access_info(hass, connection, {"id": 10, "type": "ha_soc/access/info"})
+    await hass.async_block_till_done()
+    connection.send_error.assert_called_once_with(
+        10, "not_loaded", "HA SOC is not set up"
+    )
+    connection.send_result.assert_not_called()
+
 
 async def test_unload_twice_is_harmless(hass) -> None:
     entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
@@ -351,4 +366,64 @@ async def test_options_flow_shows_a_form_error_when_the_save_fails(
             "https://observe.example.com"
         )
         assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_failed_save_schedules_another_attempt_and_flush_does_not(
+    hass, hass_storage
+) -> None:
+    """Core clears the pending save before it writes, so a failure must re-arm it."""
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    entry.add_to_hass(hass)
+    with patch.object(ObservePusher, "async_push_once", return_value=None):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        store = entry.runtime_data.store
+        inner = store._store
+
+        store.async_schedule_save()
+        with patch.object(Store, "_async_write_data", side_effect=WriteError("disk full")):
+            with pytest.raises(StoreSaveError):
+                await store.async_save_now()
+        assert inner._delay_handle is not None
+
+        # A flush during teardown must not leave a timer behind.
+        inner._async_cleanup_delay_listener()
+        with patch.object(Store, "_async_write_data", side_effect=WriteError("disk full")):
+            await store.async_flush()
+        assert inner._delay_handle is None
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+        await hass.async_block_till_done()
+
+
+async def test_stop_services_bounds_a_stalled_stop_and_still_flushes_the_store(
+    hass, caplog
+) -> None:
+    entry = MockConfigEntry(domain=DOMAIN, data={}, title="HA SOC")
+    entry.add_to_hass(hass)
+    with patch.object(ObservePusher, "async_push_once", return_value=None):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        runtime = entry.runtime_data
+
+        async def stalled(*_args, **_kwargs) -> None:
+            await asyncio.sleep(3600)
+
+        flushed = []
+        real_flush = runtime.store.async_flush
+
+        async def recording_flush() -> None:
+            flushed.append(True)
+            await real_flush()
+
+        with (
+            patch("custom_components.ha_soc.SERVICE_STOP_BUDGET", 0.2),
+            patch.object(runtime.syslog, "async_stop", stalled),
+            patch.object(runtime.store, "async_flush", recording_flush),
+        ):
+            await asyncio.wait_for(runtime.async_stop_services(), timeout=5)
+        assert flushed == [True]
+        assert "gave up waiting for syslog exporter" in caplog.text
+        await hass.config_entries.async_unload(entry.entry_id)
         await hass.async_block_till_done()

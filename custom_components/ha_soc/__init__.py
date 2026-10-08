@@ -4,6 +4,7 @@ Wiring only: composes the feature managers and owns the periodic analysis loop.
 """
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from functools import partial
@@ -56,6 +57,9 @@ ANALYSIS_INTERVAL = timedelta(minutes=5)
 VULN_SCAN_INTERVAL = timedelta(hours=24)
 SCANNER_SWEEP_INTERVAL = timedelta(days=7)
 CONFIG_CHECK_INTERVAL = timedelta(hours=6)
+# Core waits at most 10 seconds for a failed setup's unload tasks. The stops before
+# the store write share this budget so the write always starts inside that window.
+SERVICE_STOP_BUDGET = 7.0
 # The ledger records transitions, not samples, so a slow cadence loses
 # nothing: a change that persists is still caught on the next pass.
 UNIFI_LEDGER_INTERVAL = timedelta(hours=6)
@@ -101,6 +105,8 @@ class HaSocRuntimeData:
         # The audit log stops before the exporter so its last flush still reaches
         # the exporter's drain; the store is written last because the stops above
         # (the audit head mirror, the health records) change it.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + SERVICE_STOP_BUDGET
         for label, stop in (
             ("terminal sessions", self.terminal.async_close_all),
             ("audit log", self.audit.async_stop),
@@ -115,7 +121,13 @@ class HaSocRuntimeData:
             try:
                 result = stop()
                 if inspect.isawaitable(result):
-                    await result
+                    if label == "store":
+                        await result
+                    else:
+                        async with asyncio.timeout(max(deadline - loop.time(), 0.1)):
+                            await result
+            except TimeoutError:
+                _LOGGER.error("HA SOC gave up waiting for %s to stop", label)
             except Exception:  # noqa: BLE001 - one failed stop must not strand the others
                 _LOGGER.exception("HA SOC could not stop %s", label)
 
