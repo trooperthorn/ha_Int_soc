@@ -1,4 +1,4 @@
-pytest-homeassistant-custom-component==0.13.365
+pytest-homeassistant-custom-component==0.13.368
 home-assistant-frontend==20260826.7
 aiousbwatcher==1.1.2
 # The suite needs it to generate and import keys. The manifest declares a range
