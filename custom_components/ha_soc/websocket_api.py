@@ -99,6 +99,7 @@ from .dashboard_files import (
 from .detections import THRESHOLD_SPECS, secure_default_thresholds, thresholds
 from .netscan import validate_max_concurrency as validate_netscan_max_concurrency
 from .netscan import validate_port_list as validate_netscan_port_list
+from .repairs import async_sync_tls_verify_issue
 from .resource_watchdog import ADDON_SLUG_PATTERN
 from .snmp import (
     snmp_ip_address,
@@ -2319,6 +2320,7 @@ async def ws_settings_set(hass: HomeAssistant, connection, msg: dict) -> None:
 
     if changes:
         runtime.store.async_update_settings(**changes)
+        async_sync_tls_verify_issue(hass, runtime.store.settings)
 
     if any(
         key in changes

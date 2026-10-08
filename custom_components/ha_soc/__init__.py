@@ -38,6 +38,7 @@ from .terminal import (
 from .repairs import (
     async_sync_admin_mfa_issues,
     async_sync_stale_token_issues,
+    async_sync_tls_verify_issue,
     async_sync_vuln_issues,
 )
 from .risk import RiskEngine
@@ -117,7 +118,6 @@ class HaSocRuntimeData:
         deadline = loop.time() + SERVICE_STOP_BUDGET
         for label, stop in (
             ("syslog exporter", partial(self.syslog.async_stop, drain=True)),
-            ("permissions", self.permissions.async_stop),
             ("health", self.health.async_stop),
             ("scanner", self.scanner.async_stop),
             ("resource watchdog", self.watchdog.async_stop),
@@ -247,9 +247,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     entry.async_on_unload(entry.runtime_data.async_stop_services)
     entry.async_on_unload(lambda: _async_unregister_everything(hass))
 
+    async_sync_tls_verify_issue(hass, store.settings)
     await audit.async_start()
     syslog.async_start(entry)
-    await permissions.async_start()
     await health.async_start()
     scanner.async_start(hass)
     # Load the persisted ring (and snapshot it to .prev) before the watchdog

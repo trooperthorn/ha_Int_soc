@@ -76,7 +76,6 @@ def _assert_runtime_stopped(runtime) -> None:
     assert runtime.health._log_handler is None
     assert runtime.watchdog._unsub is None
     assert runtime.scanner._unsub_config_entry_changed is None
-    assert runtime.permissions._unsub_bus is None
     assert runtime.observe._unsub is None
     assert runtime.crash_forensics._unsub_interval is None
 

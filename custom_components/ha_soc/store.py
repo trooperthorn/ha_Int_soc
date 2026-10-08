@@ -47,6 +47,7 @@ from .const import (
     DEFAULT_SYSLOG_RECEIVER_PORT,
     DEFAULT_SYSLOG_TLS_VERIFY,
     DEFAULT_SYSLOG_TRANSPORT,
+    DEFAULT_TECHNITIUM_VERIFY_SSL,
     DEFAULT_UNIFI_NETWORK_WRITE_ENABLED,
     DEFAULT_UNIFI_VERIFY_SSL,
     DETECTION_RESOLVED,
@@ -123,6 +124,8 @@ class SettingsData(TypedDict):
     pihole_host: str | None
     pihole_verify_ssl: bool
     pihole_iot_cidr: str | None
+    # Technitium: host and token are optional keys written by the panel; only the flag is defaulted.
+    technitium_verify_ssl: bool
     # SNMP credentials live in the secret store.
     snmp_enabled: bool
     snmp_listen_address: str | None
@@ -250,6 +253,7 @@ def default_store_data() -> StoreData:
             pihole_host=None,
             pihole_verify_ssl=DEFAULT_PIHOLE_VERIFY_SSL,
             pihole_iot_cidr=None,
+            technitium_verify_ssl=DEFAULT_TECHNITIUM_VERIFY_SSL,
             snmp_enabled=DEFAULT_SNMP_ENABLED,
             snmp_listen_address=None,
             snmp_port=DEFAULT_SNMP_PORT,
@@ -307,6 +311,15 @@ def default_store_data() -> StoreData:
         syslog_receiver_entries=[],
         syslog_receiver_status=None,
     )
+
+
+# (host key, verify key) of each direct connection whose verify default changed to True.
+_TLS_VERIFY_PAIRS = (
+    ("unifi_network_host", "unifi_network_verify_ssl"),
+    ("unifi_protect_host", "unifi_protect_verify_ssl"),
+    ("pihole_host", "pihole_verify_ssl"),
+    ("technitium_host", "technitium_verify_ssl"),
+)
 
 
 class StoreSaveError(HomeAssistantError):
@@ -373,9 +386,24 @@ class HaSocData:
             settings_defaults = default_store_data()["settings"]
             settings_defaults.update(stored.get("settings") or {})  # type: ignore[typeddict-item]
             self._migrate_legacy_learning_period(settings_defaults)
+            self._pin_legacy_tls_verification(settings_defaults, stored.get("settings") or {})
             defaults["settings"] = settings_defaults
             self.data = defaults
         return stored is not None
+
+    @staticmethod
+    def _pin_legacy_tls_verification(merged: dict[str, Any], stored: dict[str, Any]) -> None:
+        """Keep an existing connection's old behaviour when the default turned on.
+
+        Before the default changed, a connection whose verify flag was never saved
+        ran unverified. For a connection with a host and no saved flag, write the
+        old value (False) so the upgrade does not break it; the Repairs issue
+        raised from the same data tells the owner. A connection with no host has
+        nothing to keep and takes the new default.
+        """
+        for host_key, verify_key in _TLS_VERIFY_PAIRS:
+            if stored.get(host_key) and verify_key not in stored:
+                merged[verify_key] = False
 
     @staticmethod
     def _migrate_legacy_learning_period(settings: dict[str, Any]) -> None:

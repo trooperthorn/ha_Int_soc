@@ -115,6 +115,10 @@
       "title": "Home Assistant restarted after an unclean stop",
       "description": "The previous run ended without a clean-stop marker (classification: {classification}, gap {gap_seconds}s). HA SOC collected a forensics bundle at {bundle_path}. Top suspects: {top_suspects}. Review the bundle in the HA SOC Health view's Crash forensics card, then dismiss this issue."
     },
+    "tls_verification_disabled": {
+      "title": "Certificate checking is off for a device connection",
+      "description": "HA SOC does not check the TLS certificate of: {connections}. Anyone who can intercept traffic between Home Assistant and that device can read the API key or password HA SOC sends and can answer with false data. Installs from before verification became the default keep their old setting so nothing stops working. If the device has a certificate your system trusts, turn on \"Verify TLS certificate\" for it in the HA SOC settings. If it uses a self-signed certificate, replace it with a trusted one where you can, or ignore this issue to accept the risk."
+    },
     "observe_key_rejected": {
       "title": "Observe refused the ingest key",
       "description": "Observe answered 401 or 403 to the HA SOC push, so the ingest key is wrong, was revoked, or is bound to a different host name than the one configured. Nothing is being delivered. Open the HA SOC options, enter a valid key and the host name it is bound to, and submit. The issue clears itself on the next accepted push."

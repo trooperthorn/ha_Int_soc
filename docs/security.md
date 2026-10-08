@@ -164,8 +164,9 @@ documented follow-up, not an oversight.
 Parsing is best-effort, not RFC-compliant: the Probe's listener
 (`ha_soc_probe_syslog_receiver`, `usr/lib/ha_soc/syslog_receiver.py`)
 recognizes RFC 3164 (BSD syslog) and RFC 5424 headers well enough to extract
-PRI (facility/severity), timestamp (falling back to receipt time when the
-header's own timestamp cannot be parsed), hostname, and app-name/tag. A line
+PRI (facility/severity), timestamp (RFC 3164 has no year or zone, so both are
+inferred from the receipt time; the receipt time is used when the header's own
+timestamp cannot be parsed or is in the future), hostname, and app-name/tag. A line
 whose header matches neither pattern is never dropped: the whole line is
 kept as the message with a `raw` fallback shape, so a malformed or
 unexpected line is still visible in the panel rather than silently lost.

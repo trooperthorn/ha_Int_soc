@@ -279,7 +279,7 @@ URL a parser actually needs stays visible.
   honestly editable or not, a reference living only inside a Jinja
   template is detected but never auto-rewritten, since a text edit there
   risks corrupting the template or missing a dynamic reference. Applying
-  a remap backs everything up first: YAML files are copied aside and
+  a remap backs everything up first: YAML files are copied aside (owner-only, kept 30 days) and
   storage dashboards and helpers get JSON snapshots under
   `.storage/ha_soc_remap/` (kept 30 days), and a YAML file containing
   `!secret` or `!include` is refused as "manual edit required" because a
@@ -896,8 +896,10 @@ changes controller state.
 
 Configure it in **Settings** (owner-only), where UniFi Network and UniFi
 Protect each get a host, a local API key (stored as a secret, masked in
-the API, redacted in the audit log), and a TLS-verify toggle (off by
-default, since consoles ship a self-signed certificate).
+the API, redacted in the audit log), and a TLS-verify toggle (on by
+default; turn it off only for a console that uses its self-signed certificate.
+An install from before the change keeps its old setting, and a Repairs issue
+names every connection that does not check the certificate).
 
 The tab shows, close to the Dashboard's layout: network status, WAN-port
 bandwidth, internet-connected, wireless-client count, per-SSID totals, and

@@ -174,8 +174,10 @@ CONF_UNIFI_PROTECT_HOST = "unifi_protect_host"
 CONF_UNIFI_PROTECT_API_KEY = "unifi_protect_api_key"
 CONF_UNIFI_PROTECT_VERIFY_SSL = "unifi_protect_verify_ssl"
 
-# Off by default: UniFi consoles ship self-signed certificates; see docs/operations.md.
-DEFAULT_UNIFI_VERIFY_SSL = False
+# On for a new install; an owner whose console uses a self-signed certificate opts out
+# explicitly. An existing install keeps the value it had (see HaSocData.async_load and
+# docs/decisions.md).
+DEFAULT_UNIFI_VERIFY_SSL = True
 
 # Hardcoded literals; only the host ever comes from the user.
 UNIFI_NETWORK_API_PATH = "/proxy/network/integration/v1"
@@ -185,7 +187,7 @@ CONF_PIHOLE_HOST = "pihole_host"
 CONF_PIHOLE_API_KEY = "pihole_api_key"
 CONF_PIHOLE_VERIFY_SSL = "pihole_verify_ssl"
 CONF_PIHOLE_IOT_CIDR = "pihole_iot_cidr"
-DEFAULT_PIHOLE_VERIFY_SSL = False
+DEFAULT_PIHOLE_VERIFY_SSL = True
 PIHOLE_API_PATH = "/api"
 
 # Technitium DNS Server: a parallel, independently-configurable DNS visibility
@@ -193,7 +195,7 @@ PIHOLE_API_PATH = "/api"
 CONF_TECHNITIUM_HOST = "technitium_host"
 CONF_TECHNITIUM_API_TOKEN = "technitium_api_token"
 CONF_TECHNITIUM_VERIFY_SSL = "technitium_verify_ssl"
-DEFAULT_TECHNITIUM_VERIFY_SSL = False
+DEFAULT_TECHNITIUM_VERIFY_SSL = True
 TECHNITIUM_API_PATH = "/api"
 
 # Observe push (docs/design.md, "Observe push"). Off by default; the options flow writes

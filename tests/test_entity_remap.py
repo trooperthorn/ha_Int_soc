@@ -568,3 +568,61 @@ async def test_remap_reloads_scripts_and_scenes_once_per_domain(hass: HomeAssist
     calls = [(e.data["domain"], e.data["service"]) for e in events]
     assert calls.count(("script", "reload")) == 1
     assert calls.count(("scene", "reload")) == 1
+
+
+def _bak_name(base: str, age_days: float) -> str:
+    stamp = (dt_util.utcnow() - timedelta(days=age_days)).strftime("%Y%m%dT%H%M%S%f")[:-3]
+    return f"{base}.ha_soc-{stamp}.bak"
+
+
+async def test_apply_prunes_old_yaml_bak_copies_and_locks_the_rest(hass: HomeAssistant) -> None:
+    ha_yaml.save_yaml(hass.config.path("automations.yaml"), AUTOMATION_YAML)
+    assert await async_setup_component(hass, "automation", {"automation": AUTOMATION_YAML})
+    await hass.async_block_till_done()
+
+    old = hass.config.path(_bak_name("automations.yaml", 31))
+    old_scripts = hass.config.path(_bak_name("scripts.yaml", 90))
+    recent = hass.config.path(_bak_name("scenes.yaml", 29))
+    unrelated = hass.config.path("automations.yaml.ha_soc-notastamp.bak")
+    other = hass.config.path("notes.yaml.ha_soc-20200101T000000000.bak")
+    for path in (old, old_scripts, recent, unrelated, other):
+        with open(path, "w", encoding="utf-8") as file:
+            file.write("x: 1\n")
+        os.chmod(path, 0o644)
+    # copy2 keeps the source's modification time, so a fresh copy of a file nobody
+    # edited for a year looks old by mtime; the age comes from the name instead.
+    year_ago = time.time() - 365 * 24 * 3600
+    os.utime(recent, (year_ago, year_ago))
+
+    result = await remap.async_apply_remap(
+        hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True
+    )
+    assert result["fixed"]["automation"] == 1
+
+    assert not os.path.exists(old)
+    assert not os.path.exists(old_scripts)
+    assert os.path.exists(recent)
+    assert stat.S_IMODE(os.stat(recent).st_mode) == 0o600
+    # Names the apply did not write are left alone.
+    assert os.path.exists(unrelated)
+    assert os.path.exists(other)
+
+
+async def test_new_yaml_bak_copy_is_owner_only(hass: HomeAssistant) -> None:
+    path = hass.config.path("automations.yaml")
+    ha_yaml.save_yaml(path, AUTOMATION_YAML)
+    os.chmod(path, 0o644)
+    assert await async_setup_component(hass, "automation", {"automation": AUTOMATION_YAML})
+    await hass.async_block_till_done()
+
+    await remap.async_apply_remap(
+        hass, "sensor.old_name", "sensor.new_name", backup_acknowledged=True
+    )
+
+    baks = [
+        name
+        for name in os.listdir(hass.config.config_dir)
+        if name.startswith("automations.yaml.ha_soc-") and name.endswith(".bak")
+    ]
+    assert len(baks) == 1
+    assert stat.S_IMODE(os.stat(hass.config.path(baks[0])).st_mode) == 0o600

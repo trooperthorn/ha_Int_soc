@@ -695,7 +695,7 @@ export class HaSocSettingsView extends LitElement {
           <span>
             Verify TLS certificate
             <span class="muted" style="display:block;font-size:11.5px;"
-              >Off by default — UniFi consoles ship a self-signed certificate.</span
+              >On by default. Turn it off only for a console that uses its self-signed certificate.</span
             >
           </span>
           <input
@@ -732,7 +732,7 @@ export class HaSocSettingsView extends LitElement {
           <span>
             Verify TLS certificate
             <span class="muted" style="display:block;font-size:11.5px;"
-              >Off by default — UniFi consoles ship a self-signed certificate.</span
+              >On by default. Turn it off only for a console that uses its self-signed certificate.</span
             >
           </span>
           <input
@@ -772,7 +772,7 @@ export class HaSocSettingsView extends LitElement {
           <span>
             Verify TLS certificate
             <span class="muted" style="display:block;font-size:11.5px;"
-              >Off by default — most home Pi-hole instances are plain HTTP on the LAN.</span
+              >On by default. Turn it off only for an instance that uses a self-signed certificate.</span
             >
           </span>
           <input
@@ -831,7 +831,7 @@ export class HaSocSettingsView extends LitElement {
           <span>
             Verify TLS certificate
             <span class="muted" style="display:block;font-size:11.5px;"
-              >Off by default — most home Technitium instances are plain HTTP on the LAN.</span
+              >On by default. Turn it off only for an instance that uses a self-signed certificate.</span
             >
           </span>
           <input
