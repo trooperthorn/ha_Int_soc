@@ -55,6 +55,8 @@ from .const import (
     STATUS_RESOLVED,
     STORAGE_KEY,
     STORAGE_SAVE_DELAY,
+    SYSLOG_RING_KEY,
+    SYSLOG_RING_SAVE_DELAY,
     STORAGE_VERSION_MAJOR,
     STORAGE_VERSION_MINOR,
     SYSLOG_RECEIVER_MAX_ENTRIES,
@@ -322,6 +324,10 @@ _TLS_VERIFY_PAIRS = (
 )
 
 
+# The StoreData field that is persisted in its own file (see HaSocData._ring_store).
+_RING_FIELD = "syslog_receiver_entries"
+
+
 class StoreSaveError(HomeAssistantError):
     """The HA SOC store could not be written to disk."""
 
@@ -371,13 +377,53 @@ class HaSocData:
             atomic_writes=True,
             minor_version=STORAGE_VERSION_MINOR,
         )
+        # The syslog ring lives in its own file so that log traffic never rewrites the
+        # monolithic store (about 1.2 MB of the ring at the default bound).
+        self._ring_store = HaSocStore(
+            hass,
+            STORAGE_VERSION_MAJOR,
+            SYSLOG_RING_KEY,
+            private=True,
+            atomic_writes=True,
+            minor_version=STORAGE_VERSION_MINOR,
+        )
+        self._ring_dirty = False
         self.data: StoreData = default_store_data()
         # Runtime-only cache resolved lazily by probe.py; never persisted.
         self.supervisor_user_id: str | None = None
 
+    def _main_payload(self) -> dict[str, Any]:
+        """The data written to the monolithic store: everything except the syslog ring."""
+        return {k: v for k, v in self.data.items() if k != _RING_FIELD}
+
+    def _ring_payload(self) -> dict[str, Any]:
+        # Core calls this when it writes, so the flag clears exactly when the data is taken.
+        self._ring_dirty = False
+        return {"entries": self.data.get(_RING_FIELD) or []}
+
+    async def _async_load_ring(self, legacy: Any) -> None:
+        """Load the ring from its own file.
+
+        An older install kept the ring inside the monolithic store. That copy is used when
+        the ring file does not exist yet, and a save of the monolithic store is scheduled so
+        the entries leave it and the next flush writes them to the ring file.
+        """
+        stored = await self._ring_store.async_load()
+        entries = stored.get("entries") if isinstance(stored, dict) else None
+        if isinstance(entries, list):
+            self.data[_RING_FIELD] = entries[-SYSLOG_RECEIVER_MAX_ENTRIES:]  # type: ignore[literal-required]
+        elif isinstance(legacy, list) and legacy:
+            self.data[_RING_FIELD] = legacy[-SYSLOG_RECEIVER_MAX_ENTRIES:]  # type: ignore[literal-required]
+            self._ring_dirty = True
+            self.async_schedule_save()
+            self._ring_store.async_delay_save(self._ring_payload, SYSLOG_RING_SAVE_DELAY)
+        else:
+            self.data[_RING_FIELD] = []  # type: ignore[literal-required]
+
     async def async_load(self) -> bool:
         """Load persisted state. Returns True if a prior save existed."""
         stored = await self._store.async_load()
+        legacy_ring = stored.get(_RING_FIELD) if isinstance(stored, dict) else None
         if stored is not None:
             # Merge onto defaults so a Store from an older minor version cannot KeyError.
             defaults = default_store_data()
@@ -389,6 +435,7 @@ class HaSocData:
             self._pin_legacy_tls_verification(settings_defaults, stored.get("settings") or {})
             defaults["settings"] = settings_defaults
             self.data = defaults
+        await self._async_load_ring(legacy_ring)
         return stored is not None
 
     @staticmethod
@@ -426,7 +473,7 @@ class HaSocData:
 
     def async_schedule_save(self) -> None:
         """Debounced save, safe to call after every small mutation."""
-        self._store.async_delay_save(lambda: self.data, STORAGE_SAVE_DELAY)
+        self._store.async_delay_save(self._main_payload, STORAGE_SAVE_DELAY)
 
     async def async_save_now(self) -> None:
         """Write the store immediately, cancelling any pending debounced save.
@@ -443,7 +490,7 @@ class HaSocData:
         failures = self._store.save_failures
         error: StoreSaveError | None = None
         try:
-            await self._store.async_save(self.data)
+            await self._store.async_save(self._main_payload())
         except StoreSaveError as err:
             error = err
         except Exception as err:  # noqa: BLE001 - any write failure is one error to callers
@@ -469,6 +516,17 @@ class HaSocData:
             await self._async_write_now(rearm=False)
         except StoreSaveError:
             _LOGGER.exception("HA SOC could not flush its store while stopping")
+        await self._async_flush_ring()
+
+    async def _async_flush_ring(self) -> None:
+        """Write the syslog ring now if it changed since its last write. Never raises."""
+        if not self._ring_dirty:
+            return
+        try:
+            await self._ring_store.async_save(self._ring_payload())
+        except Exception:  # noqa: BLE001 - teardown must finish
+            self._ring_dirty = True
+            _LOGGER.exception("HA SOC could not flush the syslog ring while stopping")
 
     @property
     def settings(self) -> SettingsData:
@@ -735,7 +793,9 @@ class HaSocData:
         buffer.extend(entries)
         if len(buffer) > max_entries:
             del buffer[: len(buffer) - max_entries]
-        self.async_schedule_save()
+        # Only the ring file is written, on a long delay; the monolithic store is untouched.
+        self._ring_dirty = True
+        self._ring_store.async_delay_save(self._ring_payload, SYSLOG_RING_SAVE_DELAY)
 
     def async_request_netscan_rescan(self, at: str) -> None:
         """Record an owner "rescan now" request; the Probe picks it up on its

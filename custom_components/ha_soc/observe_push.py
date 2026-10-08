@@ -95,11 +95,6 @@ AUTH_BACKOFF_SECONDS = 300
 # Consecutive payload rejections (4xx other than 401/403/408/429) before the push backs off and
 # raises a Repairs issue. Fewer than this are treated as one bad payload and just dropped.
 REJECT_THRESHOLD = 3
-# Container samples younger than this are taken from the resource watchdog.
-WATCHDOG_SAMPLE_MAX_AGE_SECONDS = 90
-# With the watchdog off the push fetches container stats itself, and no more often than the
-# watchdog would sample (its configured interval, clamped the way the watchdog clamps it).
-DEFAULT_FETCH_INTERVAL_SECONDS = 60
 # Crash bundles and the Supervisor resolution state change rarely; refreshed this often.
 SLOW_REFRESH_SECONDS = 600
 SUPERVISOR_TIMEOUT_SECONDS = 10
@@ -417,8 +412,6 @@ class SnapshotCollector:
         self._clock = clock
         self._slow: dict[str, Any] = {}
         self._slow_at: float | None = None
-        self._fetched: dict[str, Any] | None = None
-        self._fetched_at: float | None = None
 
     async def async_collect(self) -> dict[str, Any]:
         snapshot: dict[str, Any] = {}
@@ -439,31 +432,9 @@ class SnapshotCollector:
         return snapshot
 
     async def _containers(self) -> dict[str, Any] | None:
-        sampled_at = getattr(self._watchdog, "last_overview_at", None)
-        overview = getattr(self._watchdog, "last_overview", None)
-        if (
-            overview is not None
-            and sampled_at is not None
-            and self._clock() - sampled_at < WATCHDOG_SAMPLE_MAX_AGE_SECONDS
-        ):
-            return overview
-        now = self._clock()
-        if self._fetched_at is not None and now - self._fetched_at < self._fetch_interval():
-            return self._fetched
-        from .containers import async_container_resources
-
-        fresh = await async_container_resources(self.hass)
-        self._fetched = fresh if fresh.get("available") else None
-        self._fetched_at = now
-        return self._fetched
-
-    def _fetch_interval(self) -> int:
-        try:
-            raw = self._store.data["resource_watchdog"].get("interval_seconds")
-            interval = int(raw or DEFAULT_FETCH_INTERVAL_SECONDS)
-        except (KeyError, TypeError, ValueError):
-            interval = DEFAULT_FETCH_INTERVAL_SECONDS
-        return max(30, min(3600, interval))
+        # One sample, shared with the watchdog: it is taken at most once per sample gap
+        # (three minutes, or the watchdog interval when that is shorter).
+        return await self._watchdog.async_shared_overview()
 
     def _repairs(self) -> list[dict[str, Any]]:
         return [

@@ -121,6 +121,7 @@ class HaSocRuntimeData:
             ("health", self.health.async_stop),
             ("scanner", self.scanner.async_stop),
             ("resource watchdog", self.watchdog.async_stop),
+            ("resource watchdog history", self.watchdog.async_flush_history),
             ("Observe push", self.observe.async_stop),
         ):
             await self._stop_one(label, stop, max(deadline - loop.time(), 0.1))

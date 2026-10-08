@@ -956,6 +956,14 @@ async def test_collector_builds_a_snapshot_the_mapper_accepts(hass, entry) -> No
     assert otlp_mapper.has_points(metrics)
 
 
+def _wd_clock(runtime, clock):
+    """Make the watchdog read the test clock, so ages are controlled."""
+    return patch(
+        "custom_components.ha_soc.resource_watchdog.time",
+        SimpleNamespace(monotonic=clock),
+    )
+
+
 async def test_collector_reuses_a_fresh_watchdog_sample(hass, entry) -> None:
     runtime = entry.runtime_data
     clock = Clock()
@@ -970,21 +978,32 @@ async def test_collector_reuses_a_fresh_watchdog_sample(hass, entry) -> None:
         crash_forensics=runtime.crash_forensics,
         clock=clock,
     )
-    with patch("custom_components.ha_soc.containers.async_container_resources") as fresh:
+    gap = runtime.watchdog.sample_gap()
+    with (
+        _wd_clock(runtime, clock),
+        patch("custom_components.ha_soc.resource_watchdog.async_container_resources") as fresh,
+    ):
         assert (await collector.async_collect())["containers"] is sample
         fresh.assert_not_called()
-        clock.now += op.WATCHDOG_SAMPLE_MAX_AGE_SECONDS
+        clock.now += gap
         fresh.return_value = {"available": False}
         assert "containers" not in await collector.async_collect()
         fresh.assert_called_once()
 
 
-async def test_watchdog_off_push_fetches_at_most_once_per_watchdog_interval(hass, entry) -> None:
-    """Audit push-polls-supervisor-when-watchdog-off: 100 add-ons, watchdog off."""
+async def test_watchdog_off_push_fetches_at_most_once_per_three_minutes(hass, entry) -> None:
+    """Audit push-polls-supervisor-when-watchdog-off: 100 add-ons, watchdog off.
+
+    The push shares the watchdog's sample, and the sample is taken no more often than
+    every STATS_MIN_INTERVAL_SECONDS while the watchdog is off.
+    """
+    from custom_components.ha_soc.resource_watchdog import STATS_MIN_INTERVAL_SECONDS
+
     runtime = entry.runtime_data
     clock = Clock()
     runtime.watchdog.last_overview = None
     runtime.watchdog.last_overview_at = None
+    runtime.store.data["resource_watchdog"]["enabled"] = False
     runtime.store.data["resource_watchdog"]["interval_seconds"] = 60
     collector = op.SnapshotCollector(
         hass,
@@ -995,14 +1014,18 @@ async def test_watchdog_off_push_fetches_at_most_once_per_watchdog_interval(hass
         clock=clock,
     )
     sample = {"available": True, "containers": [], "reason": None, "truncated": 0}
-    with patch(
-        "custom_components.ha_soc.containers.async_container_resources", return_value=sample
-    ) as fresh:
+    with (
+        _wd_clock(runtime, clock),
+        patch(
+            "custom_components.ha_soc.resource_watchdog.async_container_resources",
+            return_value=sample,
+        ) as fresh,
+    ):
         for _ in range(5):
             assert (await collector.async_collect())["containers"] is sample
             clock.now += 10
         assert fresh.call_count == 1
-        clock.now += 60
+        clock.now += STATS_MIN_INTERVAL_SECONDS
         await collector.async_collect()
         assert fresh.call_count == 2
 

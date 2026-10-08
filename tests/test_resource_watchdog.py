@@ -422,6 +422,8 @@ async def test_history_persists_across_a_restart(
         new=AsyncMock(return_value=_overview([_addon("ma", mem=42.0)])),
     ):
         await wd.async_run_once()
+    # Stopping the entry writes the ring, whatever the write throttle says.
+    await wd.async_flush_history()
 
     # A second watchdog instance (standing in for a fresh restart) loads
     # what the first one wrote.
@@ -450,6 +452,11 @@ async def test_history_write_is_skipped_when_nothing_changed(
             new=AsyncMock(return_value=_overview([_addon("ma", mem=1.0)])),
         ):
             await wd.async_run_once()
+        # The ring changed, but the write is throttled; stopping the entry writes it.
+        write_mock.assert_not_called()
+        await wd.async_flush_history()
+        write_mock.assert_called_once()
+        await wd.async_flush_history()
         write_mock.assert_called_once()
     assert wd.status()["history_last_write"] is not None
 
@@ -466,6 +473,7 @@ async def test_load_history_preserves_previous_file_before_overwrite(
         new=AsyncMock(return_value=_overview([_addon("ma", mem=7.0)])),
     ):
         await wd.async_run_once()
+    await wd.async_flush_history()
 
     wd2 = ResourceWatchdog(hass, entry.runtime_data.store, entry.runtime_data.audit)
     await wd2.async_load_history()

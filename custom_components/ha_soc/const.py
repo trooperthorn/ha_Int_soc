@@ -14,6 +14,11 @@ STORAGE_KEY = f"{DOMAIN}.storage"
 STORAGE_VERSION_MAJOR = 1
 STORAGE_VERSION_MINOR = 0
 STORAGE_SAVE_DELAY = 15  # seconds, debounced
+# The syslog receiver ring has its own storage file so log traffic never rewrites the main store.
+SYSLOG_RING_KEY = f"{DOMAIN}.syslog_ring"
+# Log lines are low value and arrive constantly, so the ring file is written at most this often
+# (and once more when the entry stops or reloads).
+SYSLOG_RING_SAVE_DELAY = 300  # seconds, debounced
 
 # Audit JSONL files and the chain head live here; never written on the event loop.
 AUDIT_STORAGE_SUBDIR = f"{DOMAIN}_audit"

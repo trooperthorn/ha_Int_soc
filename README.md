@@ -724,10 +724,11 @@ series sent once as 0, and log records Observe partly rejects are offered one
 more time and then reported in the log and the diagnostics. The requests name
 the platform (`os.type` `homeassistant`), the Core version and the send time.
 
-When the resource watchdog is off, the push asks the Supervisor for container
-stats itself, at most once per watchdog interval (60 seconds by default), and
-covers up to 300 add-ons. Add-ons past that limit are counted and logged as a
-warning.
+The push and the resource watchdog share one container sample. The Supervisor
+is asked for stats at most every three minutes, or at the watchdog interval when
+the watchdog is on and that is shorter, and the sample covers up to 300 add-ons.
+Add-ons past that limit are counted and logged as a warning. With 30 add-ons and
+the watchdog off this is about 11 Supervisor calls a minute instead of 32.
 
 To enable it, open Settings, Devices and services, HA SOC, Configure, and fill
 in the form:

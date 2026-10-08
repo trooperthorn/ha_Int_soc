@@ -42,10 +42,32 @@ soft-path actions above.
 The 60-sample ring per container used to live only in
 `ResourceWatchdog._history` (a `dict[slug, deque]`), which meant a Core
 restart lost the last hour of usage history. It is now written to
-`<config>/ha_soc/watchdog_history.json` after every sample cycle that
-actually changed it (an interval tick with no containers to sample writes
-nothing), and reloaded on startup before the first new sample lands, so
-the ring survives a restart with its `maxlen` intact.
+`<config>/ha_soc/watchdog_history.json` and reloaded on startup before the
+first new sample lands, so the ring survives a restart with its `maxlen`
+intact.
+
+The write happens at most every `HISTORY_SAVE_INTERVAL_SECONDS` (10
+minutes), and only when the ring changed, plus once when the entry stops or
+reloads (`async_flush_history`). Writing after every sample rewrote the whole
+file about 60 times an hour for data that changes by one sample at a time. A
+crash loses at most the last ten minutes of samples; the ring as it stood at
+the end of the previous boot is in the `.prev` file described below, which is
+what the crash bundle reads. A slug that is no longer in the overview of a
+complete (not truncated) sample, because the add-on was uninstalled, is
+removed from the ring and from the file.
+
+## Shared container sample
+
+The watchdog and the Observe push share one container sample
+(`ResourceWatchdog.async_shared_overview`). It is taken at most every
+`STATS_MIN_INTERVAL_SECONDS` (3 minutes), or at the watchdog interval when
+the watchdog is on and that interval is shorter (`sample_gap()`). Callers that
+arrive while a sample is in flight wait for it. A sample the push took just
+before a watchdog tick is evaluated by the watchdog on that tick instead of
+being fetched again, and is evaluated once. With the watchdog off nothing
+evaluates thresholds; the push alone drives the sample at the three-minute
+gap. `async_run_once` still always asks the Supervisor and is kept for the
+tests and the refresh path.
 
 The write goes through `atomic_json.sync_write_json_atomic` (temp file +
 `os.replace`, mode 0600) rather than the HA SOC `Store` helper. `Store` is

@@ -123,6 +123,9 @@ _DEFAULT_QUERY_LOOKBACK = timedelta(days=7)
 _BUFFER_MAX_RECORDS = 20000
 # A repeating flush failure logs its traceback at most this often (seconds).
 _FLUSH_ERROR_LOG_INTERVAL = 600.0
+# Retention lists the audit directory, so it runs at most this often (seconds), and only on a
+# flush that has records to write.
+_RETENTION_INTERVAL = 3600.0
 DROPPED_CATEGORY = "audit_records_dropped"
 
 # Exact key match, case-insensitive, any depth: "token_id" stays visible, "token" does not.
@@ -460,6 +463,11 @@ class AuditLog:
         self._dropped_last_ts: str | None = None
         # time.monotonic() of the last logged flush traceback; executor-side only.
         self._last_flush_error_log: float | None = None
+        # When the last retention pass ran; None until the first one.
+        self._last_retention: datetime | None = None
+        # (directory, day, path) of the file the last append went to, so a flush does not
+        # list the directory again to find it.
+        self._target_cache: tuple[str, str, str] | None = None
         self._flush_lock = asyncio.Lock()
         self._seq = 0
         # (seq, hash) of the records written by the flush in progress; executor-side only.
@@ -1132,6 +1140,9 @@ class AuditLog:
     async def _async_flush(self, _now: Any = None) -> None:
         async with self._flush_lock:
             records = self._prepare_buffered()
+            if not records:
+                # Nothing to write: no executor job, no directory listing, no retention pass.
+                return
             written_count = await self.hass.async_add_executor_job(
                 self._sync_flush, records
             )
@@ -1319,7 +1330,14 @@ class AuditLog:
             self._flush_head = (last["seq"], last["hash"])
             self._head_file_written = self._sync_write_chain_head()
         try:
-            self._sync_apply_retention()
+            # Wall clock, so a clock set backwards cannot hold retention off for hours.
+            now = dt_util.utcnow()
+            if (
+                self._last_retention is None
+                or abs((now - self._last_retention).total_seconds()) >= _RETENTION_INTERVAL
+            ):
+                self._last_retention = now
+                self._sync_apply_retention()
         except OSError:
             _LOGGER.exception("HA SOC audit log: retention failed")
         finally:
@@ -1394,6 +1412,18 @@ class AuditLog:
         """The file the next append for ``day`` should go to, rolling to a
         fresh segment when the current one has crossed _SEGMENT_MAX_BYTES.
         """
+        cached = self._target_cache
+        if cached is not None and cached[:2] == (self._dir_path, day):
+            try:
+                if os.path.getsize(cached[2]) < _SEGMENT_MAX_BYTES:
+                    return cached[2]
+            except OSError:
+                pass
+        path = self._sync_find_target_day_file(day)
+        self._target_cache = (self._dir_path, day, path)
+        return path
+
+    def _sync_find_target_day_file(self, day: str) -> str:
         base = os.path.join(self._dir_path, f"audit-{day}.jsonl")
         segments: list[tuple[int, str]] = []
         for name in os.listdir(self._dir_path) if os.path.isdir(self._dir_path) else []:
