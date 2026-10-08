@@ -11,6 +11,7 @@ import asyncio
 from datetime import date, datetime, timedelta
 from functools import partial
 import hashlib
+import heapq
 import json
 import logging
 import os
@@ -470,6 +471,11 @@ class AuditLog:
         # (directory, day, path) of the file the last append went to, so a flush does not
         # list the directory again to find it.
         self._target_cache: tuple[str, str, str] | None = None
+        # (directory, day) of the newest day file, so the day key of a record never moves
+        # backwards when the wall clock does; executor-side only.
+        self._day_floor: tuple[str, str] | None = None
+        # Repairs found while loading the chain; logged by async_start once listeners exist.
+        self._recovery_events: list[tuple[str, dict[str, Any]]] = []
         self._flush_lock = asyncio.Lock()
         self._seq = 0
         # (seq, hash) of the records written by the flush in progress; executor-side only.
@@ -512,6 +518,7 @@ class AuditLog:
         await self.hass.async_add_executor_job(self._sync_load_chain_head)
         # Must run after the head loads and before any listener logs, so the reset record is first.
         self._async_detect_chain_reset()
+        self._async_log_recovery_events()
 
         self._unsubs.append(
             self.hass.bus.async_listen(EVENT_CALL_SERVICE, self._handle_call_service)
@@ -672,6 +679,13 @@ class AuditLog:
             store_seq=mirror_seq,
             disk_seq=self._reset["disk_head_seq"],
         )
+
+    @callback
+    def _async_log_recovery_events(self) -> None:
+        """Record the repairs the load made, once, as chained audit events."""
+        events, self._recovery_events = self._recovery_events, []
+        for category, detail in events:
+            self.async_log(category, detail={**detail, "actor_source": "system"})
 
     @callback
     def _resolve_actor(self, event: Event) -> tuple[str | None, str]:
@@ -1220,6 +1234,18 @@ class AuditLog:
         return os.fdopen(fd, "w", encoding="utf-8")
 
     def _sync_load_chain_head(self) -> None:
+        """Load the head, then repair what a crash can leave behind the head."""
+        self._sync_load_chain_head_file()
+        try:
+            self._sync_recover_from_disk()
+        except OSError:
+            _LOGGER.warning(
+                "HA SOC audit log: could not check the newest audit file for a "
+                "torn tail or a stale chain head",
+                exc_info=True,
+            )
+
+    def _sync_load_chain_head_file(self) -> None:
         # Whatever this concludes is the real starting point, so immediate flushing is now safe.
         self._head_loaded = True
         path = os.path.join(self._dir_path, _CHAIN_HEAD_FILENAME)
@@ -1248,6 +1274,118 @@ class AuditLog:
         self._seq = 0
         self._anchor = None
         self._reset = None
+
+    @staticmethod
+    def _sync_read_tail_window(path: str) -> tuple[int, bytes, int]:
+        """Return (file size, tail bytes, offset of the first tail byte).
+
+        The window grows until it holds two newlines or reaches the file start, so the
+        last line and the line before it are both whole inside it.
+        """
+        with open(path, "rb") as handle:
+            size = os.fstat(handle.fileno()).st_size
+            window = _REVERSE_READ_BLOCK
+            while True:
+                start = max(0, size - window)
+                handle.seek(start)
+                buf = handle.read(size - start)
+                if start == 0 or buf.count(b"\n") >= 2:
+                    return size, buf, start
+                window *= 2
+
+    def _sync_repair_torn_tail(self, path: str) -> dict[str, Any] | None:
+        """Cut an unterminated, unparseable last line off ``path``.
+
+        A power loss during an append leaves a partial line that no later write can
+        remove. Only that final fragment is cut; a bad line anywhere else is left for
+        verification to report. Returns what was removed, or None.
+        """
+        size, buf, start = self._sync_read_tail_window(path)
+        if not size or buf.endswith(b"\n"):
+            return None
+        newline = buf.rfind(b"\n")
+        fragment = buf[newline + 1 :]
+        if not fragment.strip():
+            return None
+        try:
+            if isinstance(json.loads(fragment), dict):
+                # Whole record that only lost its newline; the next append ends the line.
+                return None
+        except (ValueError, UnicodeDecodeError):
+            pass
+        keep = start + newline + 1
+        fd = os.open(path, os.O_RDWR)
+        try:
+            os.ftruncate(fd, keep)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        return {
+            "file": os.path.basename(path),
+            "bytes_removed": len(fragment),
+            "fragment_sha256": hashlib.sha256(fragment).hexdigest(),
+            "truncated_to": keep,
+        }
+
+    def _sync_last_durable_record(self) -> dict[str, Any] | None:
+        """The last record of the newest non-empty audit file, or None if unusable."""
+        for _file_date, path in reversed(self._sync_list_day_files()):
+            for line in self._read_jsonl_reversed(path):
+                try:
+                    record = json.loads(line)
+                except (ValueError, TypeError):
+                    return None
+                return record if isinstance(record, dict) else None
+        return None
+
+    def _sync_recover_from_disk(self) -> None:
+        """Repair a torn tail and rebuild a head that lags the durable records.
+
+        The records are fsynced before the head is rewritten, so a crash between the
+        two leaves the head behind the files; continuing from the stale head would
+        number the next record with a seq already on disk. The head is advanced only
+        to a last record whose hash is consistent with its own contents. A head that is
+        ahead of the files is not touched: that is truncation, and verification reports it.
+        """
+        entries = self._sync_list_day_files()
+        if not entries:
+            return
+        self._day_floor = (self._dir_path, entries[-1][0].isoformat())
+        repair = self._sync_repair_torn_tail(entries[-1][1])
+        if repair is not None:
+            _LOGGER.warning(
+                "HA SOC audit log: removed a torn last line (%d bytes) from %s",
+                repair["bytes_removed"],
+                repair["file"],
+            )
+            self._recovery_events.append(("audit_tail_repaired", repair))
+        record = self._sync_last_durable_record()
+        if record is None:
+            return
+        seq = record.get("seq")
+        record_hash = record.get("hash")
+        prev_hash = record.get("prev_hash")
+        if (
+            not isinstance(seq, int)
+            or isinstance(seq, bool)
+            or not isinstance(record_hash, str)
+            or not isinstance(prev_hash, str)
+            or seq <= self._seq
+        ):
+            return
+        payload = {k: v for k, v in record.items() if k != "hash"}
+        expected = hashlib.sha256(
+            (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
+        ).hexdigest()
+        if expected != record_hash:
+            return
+        before = self._seq
+        self._seq = seq
+        self._prev_hash = record_hash
+        self._sync_write_chain_head()
+        self._recovery_events.append(
+            ("audit_head_rebuilt", {"head_seq_before": before, "head_seq_after": seq})
+        )
 
     def _sync_write_chain_head(
         self, seq: int | None = None, prev_hash: str | None = None
@@ -1296,8 +1434,12 @@ class AuditLog:
         try:
             os.makedirs(self._dir_path, mode=0o700, exist_ok=True)
             by_day: list[tuple[str, list[dict[str, Any]]]] = []
+            floor = self._sync_day_floor()
             for record in records:
-                day = record["ts"][:10]
+                # A clock stepped back must not send a record to an older file: the day
+                # key never moves backwards, so file order stays append order.
+                day = max(record["ts"][:10], floor)
+                floor = day
                 if by_day and by_day[-1][0] == day:
                     by_day[-1][1].append(record)
                 else:
@@ -1309,6 +1451,7 @@ class AuditLog:
                 )
                 self._sync_append_durable(file_path, text)
                 written += len(day_records)
+                self._day_floor = (self._dir_path, day)
         except OSError as err:
             # An outage repeats this every attempt, often on the full disk itself, so the
             # traceback is rate limited and the other attempts log one short line.
@@ -1346,6 +1489,16 @@ class AuditLog:
         finally:
             self._flush_head = None
         return written
+
+    def _sync_day_floor(self) -> str:
+        """Day key of the newest day file; empty when there is none."""
+        cached = self._day_floor
+        if cached is not None and cached[0] == self._dir_path:
+            return cached[1]
+        entries = self._sync_list_day_files()
+        floor = entries[-1][0].isoformat() if entries else ""
+        self._day_floor = (self._dir_path, floor)
+        return floor
 
     @staticmethod
     def _sync_append_durable(file_path: str, text: str) -> None:
@@ -1833,39 +1986,43 @@ class AuditLog:
                 checkpoint_seq=head_seq,
             )
 
-        for _file_date, path in self._sync_list_day_files():
-            for line in self._read_jsonl(path):
-                try:
-                    record = json.loads(line)
-                except (ValueError, TypeError):
-                    return _fail("corrupt_record", None)
+        # Each file is in seq order, so merging them by seq walks the chain in append order
+        # whatever the file names say (files written before the day key was monotonic can
+        # hold records out of name order).
+        streams = [
+            self._iter_verify_records(path)
+            for _file_date, path in self._sync_list_day_files()
+        ]
+        for _key, record in heapq.merge(*streams, key=lambda item: item[0]):
+            if record is None:
+                return _fail("corrupt_record", None)
 
-                checked += 1
-                seq = record.get("seq")
-                stored_hash = record.get("hash")
+            checked += 1
+            seq = record.get("seq")
+            stored_hash = record.get("hash")
 
-                if start_seq is not None and isinstance(seq, int):
-                    # No surviving record may sit at or before the start point.
-                    if seq <= start_seq:
-                        return _fail(start_break_reason, seq)
-                    # The first surviving record must be the start point's direct successor.
-                    if checked == 1 and seq != start_seq + 1:
-                        return _fail(start_break_reason, seq)
+            if start_seq is not None and isinstance(seq, int):
+                # No surviving record may sit at or before the start point.
+                if seq <= start_seq:
+                    return _fail(start_break_reason, seq)
+                # The first surviving record must be the start point's direct successor.
+                if checked == 1 and seq != start_seq + 1:
+                    return _fail(start_break_reason, seq)
 
-                if record.get("prev_hash") != prev_hash:
-                    return _fail("hash_mismatch", seq)
+            if record.get("prev_hash") != prev_hash:
+                return _fail("hash_mismatch", seq)
 
-                payload = {k: v for k, v in record.items() if k != "hash"}
-                recomputed = hashlib.sha256(
-                    (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
-                ).hexdigest()
+            payload = {k: v for k, v in record.items() if k != "hash"}
+            recomputed = hashlib.sha256(
+                (prev_hash + json.dumps(payload, sort_keys=True)).encode("utf-8")
+            ).hexdigest()
 
-                if recomputed != stored_hash:
-                    return _fail("hash_mismatch", seq)
+            if recomputed != stored_hash:
+                return _fail("hash_mismatch", seq)
 
-                prev_hash = stored_hash
-                if isinstance(seq, int):
-                    last_seq = seq
+            prev_hash = stored_hash
+            if isinstance(seq, int):
+                last_seq = seq
 
         # Completeness check: a checkpoint ahead of disk means the tail was truncated.
         if head_seq is not None and (last_seq < head_seq or prev_hash != head_hash):
@@ -1888,6 +2045,22 @@ class AuditLog:
             "verified_from_seq": verified_from_seq,
             "expired_through": expired_through,
         }
+
+    def _iter_verify_records(self, path: str):
+        """Yield (seq, record) per line; (previous seq, None) for an unreadable line."""
+        last = 0
+        for line in self._read_jsonl(path):
+            try:
+                record = json.loads(line)
+            except (ValueError, TypeError):
+                record = None
+            if not isinstance(record, dict):
+                yield (last, None)
+                continue
+            seq = record.get("seq")
+            if isinstance(seq, int) and not isinstance(seq, bool):
+                last = seq
+            yield (last, record)
 
     def _sync_read_chain_head_file(self) -> dict[str, Any] | None:
         """Read chain_head.json straight from disk, ignoring the in-memory head.

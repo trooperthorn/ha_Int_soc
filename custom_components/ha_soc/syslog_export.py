@@ -69,6 +69,8 @@ _CEF_EVENT_NAMES = {
     "dashboard_file_denied": "Dashboard File Access Denied",
     "area_registry_change": "Area Registry Change",
     "audit_chain_reset": "Audit Chain Reset",
+    "audit_head_rebuilt": "Audit Chain Head Rebuilt",
+    "audit_tail_repaired": "Audit Torn Tail Repaired",
     "category_registry_change": "Category Registry Change",
     "config_entry_change": "Configuration Entry Change",
     "core_config_change": "Core Configuration Change",
