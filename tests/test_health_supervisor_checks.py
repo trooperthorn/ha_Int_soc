@@ -642,3 +642,37 @@ async def test_config_check_flags_invalid_config_and_resolves(
     assert findings == []
     resolved = entry.runtime_data.store.data["misconfig_findings"]["misconfig:ha_config_invalid"]
     assert resolved["status"] == "resolved"
+
+
+async def test_supervisor_checks_skip_without_touching_findings_when_not_ready(
+    hass: HomeAssistant, health: IntegrationHealth
+) -> None:
+    """Supervisor data not loaded: the four add-on checks skip, so open findings stay open."""
+    from homeassistant.components.hassio import HassioNotReadyError
+
+    fake_addons = {
+        "local_some_addon": {"name": "Some Addon", "protected": False, "host_network": False},
+    }
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", return_value=fake_addons),
+    ):
+        opened = await health._check_addon_protection_mode()
+    assert len(opened) == 1
+    finding_id = opened[0]["id"]
+    before = dict(health._store.data["misconfig_findings"][finding_id])
+    health._probe_unreported_since = dt_util.utcnow() - timedelta(minutes=5)
+    grace_start = health._probe_unreported_since
+
+    with (
+        patch("homeassistant.helpers.hassio.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", side_effect=HassioNotReadyError),
+    ):
+        assert await health._check_addon_protection_mode() == []
+        assert await health._check_ssh_addon_inventory() == []
+        assert await health._check_ssh_addon_exposed() == []
+        assert await health._check_probe_addon_not_reporting() == []
+
+    after = health._store.data["misconfig_findings"][finding_id]
+    assert after["status"] == before["status"]
+    assert health._probe_unreported_since == grace_start

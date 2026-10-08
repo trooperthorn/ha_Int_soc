@@ -418,3 +418,16 @@ async def test_ws_probe_status_returns_overview(hass: HomeAssistant, entry: Mock
     result = connection.send_result.call_args[0][1]
     assert result["supervisor"] is False
     assert result["installed"] is False
+
+
+async def test_on_supervisor_not_ready_is_flagged_not_ready(hass: HomeAssistant, store: HaSocData) -> None:
+    from homeassistant.components.hassio import HassioNotReadyError
+
+    with (
+        patch("custom_components.ha_soc.probe.is_hassio", return_value=True),
+        patch("homeassistant.components.hassio.get_addons_info", side_effect=HassioNotReadyError),
+    ):
+        overview = await async_probe_overview(hass, store)
+    assert overview["supervisor"] is True
+    assert overview["supervisor_ready"] is False
+    assert overview["installed"] is False

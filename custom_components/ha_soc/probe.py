@@ -279,6 +279,8 @@ async def async_probe_overview(hass: HomeAssistant, store: HaSocData) -> dict[st
     info = _addon_info(hass)
     return {
         "supervisor": True,
+        # False while the Supervisor data is not loaded: "installed" is then unknown, not absent.
+        "supervisor_ready": cached_addons_info(hass) is not None,
         "installed": info is not None,
         "running": bool(info is not None and info.get("state") == "started"),
         "version": info.get("version") if info is not None else None,

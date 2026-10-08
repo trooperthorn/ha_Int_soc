@@ -995,7 +995,12 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("addon_unprotected", [])
 
-        addons = cached_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping %s check: add-on info not cached yet", "addon_unprotected"
+            )
+            return []
         items: list[tuple[dict, str, dict[str, str]]] = []
         hard_caps_configured = bool(
             (self._store.data.get("resource_watchdog") or {}).get("hard_limits")
@@ -1077,7 +1082,12 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("ssh_addon_inventory", [])
 
-        addons = cached_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping %s check: add-on info not cached yet", "ssh_addon_inventory"
+            )
+            return []
         ssh_addons = [
             {"slug": slug, "name": info.get("name") or slug, "state": info.get("state")}
             for slug, info in addons.items()
@@ -1113,7 +1123,12 @@ class IntegrationHealth:
         if not is_hassio(self.hass):
             return self._async_finalize_check("ssh_addon_exposed", [])
 
-        addons = cached_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping %s check: add-on info not cached yet", "ssh_addon_exposed"
+            )
+            return []
         items: list[tuple[dict, str, dict[str, str]]] = []
 
         for slug, info in addons.items():
@@ -1177,7 +1192,12 @@ class IntegrationHealth:
             self._probe_unreported_since = None
             return self._async_finalize_check("probe_addon_not_reporting", [])
 
-        addons = cached_addons_info(self.hass) or {}
+        addons = cached_addons_info(self.hass)
+        if addons is None:
+            _LOGGER.debug(
+                "Skipping %s check: add-on info not cached yet", "probe_addon_not_reporting"
+            )
+            return []
         probe = next(
             (
                 (slug, i)
