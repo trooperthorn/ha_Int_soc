@@ -509,7 +509,8 @@ values. The flow resolves the acting user (the flow context `user_id`, else
 aborts with `owner_required` when a non-owner acts under the owner-only access
 level, and writes that user into the `observe_push_changed` audit record.
 `validate_options` takes the stored URL: with a stored key, a different URL
-needs the key typed again (`key_required_for_url_change`). A write that fails is shown as the form error `save_failed`, the
+needs the key typed again (`key_required_for_url_change`), and so does setting or changing
+the pasted CA or the pinned fingerprint (`key_required_for_trust_change`). A write that fails is shown as the form error `save_failed`, the
 settings are put back as they were, and no reload is scheduled. Setup
 registers the stop of every service with `entry.async_on_unload` before the
 first one starts (see "Setup failure, retry and unload" near the top of this file), so a setup
@@ -532,11 +533,16 @@ into one new payload (`compact_metrics`, in the executor). The merged payload
 keeps, for each series (scope, metric name, unit, attribute set), the newest
 point of every interval of 300 seconds, judged by the point's own timestamp, and
 uses the resource of the newest request. All points are gauges, so the newest
-value of an interval stands for it. If the queue is still over its byte bound, or the
-merged payload is over 512 KiB (Observe caps a request at 1 MiB), the merge is
+value of an interval stands for it. A merge is cut into as many payloads as Observe's
+limits need (`compact_metrics_requests`): at most 5,000 points (`MAX_POINTS` of the
+mapper) and 900 KiB of plain JSON each, so a large install never builds a request
+Observe refuses. If the queue is still over its byte bound, or a merged payload is over
+512 KiB gzipped (Observe caps a request at 1 MiB, plain and gzipped), the merge is
 repeated with 600, 1200, 2400 and 3600 seconds. A merge cannot reduce the
-number of log payloads; only if the queue is still over a bound is the oldest
-payload dropped and counted in `dropped_overflow`. With one push a minute the
+number of log payloads; only if the queue is still over a bound is a payload
+dropped and counted in `dropped_overflow`. The oldest payload that is not a merged
+one goes first, so a flood of distinct log records cannot remove the merged outage
+history; merged payloads are dropped, oldest first, only when nothing else is left. With one push a minute the
 queue therefore holds the whole outage as roughly one point per five minutes
 per series and a few tens of kilobytes, instead of the last 30 minutes at full
 resolution (measured in docs/decisions.md).
@@ -551,11 +557,16 @@ offered again the next cycle, because its key is neither sent nor queued.
 Reloads. `async_stop` hands the queue, the sent-key memory, the partial-retry
 memory and the integration series to a carry-over in `hass.data`
 (`DATA_QUEUE_CARRY`, by config entry id), and the next pusher of the entry
-adopts it in `async_start` when the URL and host name are unchanged. Otherwise,
+adopts it in `async_start` when the URL and host name are unchanged. A wait after a
+transient failure (`Retry-After` or the back-off) is carried with it, so a reload does
+not contact a server that asked for time; a rejected ingest key is not waited out,
+because the owner reloads after fixing it. Otherwise,
 or when the push is disabled or its settings are invalid, the old payloads are
 discarded, because they name the old host and were meant for the old server.
 The queue is not written to disk, so a restart of Home Assistant still loses it.
-Removing the entry clears the carry-over (`async_remove_entry`).
+Removing or disabling the entry clears the carry-over (`async_remove_entry`,
+`async_unload_entry`); an entry that is only unloaded keeps it for the reload that follows.
+The sent-key memory holds 5,000 keys and forgets the oldest first.
 
 Trust for a private certificate. `observe_ca_pem` and `observe_cert_sha256`
 are settings in the store (public data, not secrets), at most one of them set.

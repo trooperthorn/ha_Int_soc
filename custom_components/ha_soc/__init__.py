@@ -386,6 +386,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> bo
     if runtime is not None:
         await runtime.async_stop_services()
 
+    if entry.disabled_by is not None:
+        # A disabled entry is not coming back with a reload; do not hold its queue for nothing.
+        hass.data.get(DATA_QUEUE_CARRY, {}).pop(entry.entry_id, None)
+
     await _async_unregister_everything(hass)
     return True
 

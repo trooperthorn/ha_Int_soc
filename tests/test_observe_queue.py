@@ -93,11 +93,31 @@ async def test_reload_keeps_queued_payloads(hass, entry, observe) -> None:
 
     await _reload(hass, entry)
 
-    assert entry.runtime_data.observe.status["queue_length"] == 0  # taken over and delivered
+    # The wait the server asked for (Retry-After) survives the reload: nothing was sent.
+    pusher = entry.runtime_data.observe
+    assert [r["path"] for r in observe.requests] == ["/v1/metrics"]
+    assert set(queued) <= {p.idempotency_key for p in pusher._queue}
+    assert pusher._retry_at > 0.0
+
+    pusher._retry_at = 0.0  # the wait is over
+    await pusher.async_push_once()
+
+    assert pusher.status["queue_length"] == 0  # taken over and delivered
     sent = [r["headers"]["Idempotency-Key"] for r in observe.requests]
     assert set(queued) <= set(sent)
     # The logs went out once, although the second collection saw the same records.
     assert [r["path"] for r in observe.requests].count("/v1/logs") == 1
+
+
+async def test_reload_retries_at_once_after_a_rejected_key(hass, entry, observe) -> None:
+    """An auth backoff is not carried: the owner reloads because the key was just fixed."""
+    await _enable(entry, observe.url)
+    observe.script = [(401, {}, "")]
+    await _reload(hass, entry)
+    assert entry.runtime_data.observe.status["auth_rejected"] is True
+    observe.requests.clear()
+    await _reload(hass, entry)
+    assert observe.requests  # sent again straight away
 
 
 async def test_reload_with_a_new_destination_drops_the_queue(hass, entry, observe, caplog) -> None:
@@ -555,3 +575,199 @@ async def test_options_flow_stores_the_ca_and_audits_only_that_it_is_set(hass, e
     detail = audit_log.call_args.kwargs["detail"]
     assert detail["changes"][CONF_OBSERVE_CA_PEM] == "set"
     assert "BEGIN CERTIFICATE" not in json.dumps(detail)
+
+
+# --------------------------------------------------------------------------- review findings
+
+
+def _big_metrics(ts: float, series: int = 420) -> dict[str, Any]:
+    """One snapshot's metrics for a large install: ``series`` gauge series."""
+    points = [
+        {
+            "attributes": [{"key": "container", "value": {"stringValue": f"c{n}"}}],
+            "timeUnixNano": str(int(ts * 10**9)),
+            "asDouble": float(n),
+        }
+        for n in range(series)
+    ]
+    metric = {"name": "container.cpu.utilization", "unit": "1", "gauge": {"dataPoints": points}}
+    return {
+        "resourceMetrics": [
+            {
+                "resource": {"attributes": []},
+                "scopeMetrics": [{"scope": {"name": "ha_soc"}, "metrics": [metric]}],
+            }
+        ]
+    }
+
+
+def _point_total(request: dict[str, Any]) -> int:
+    return sum(
+        len(m["gauge"]["dataPoints"])
+        for rm in request["resourceMetrics"]
+        for sm in rm["scopeMetrics"]
+        for m in sm["metrics"]
+    )
+
+
+def test_a_merge_of_a_large_install_is_split_inside_observes_limits() -> None:
+    """About 420 series for 59 minutes is 12 buckets and 5,040 points: more than one request."""
+    requests = [_big_metrics(1_790_000_000 + 60 * i) for i in range(59)]
+    one = op.compact_metrics(requests, 300)
+    assert _point_total(one) > op.otlp_mapper.MAX_POINTS  # the unsplit merge would be refused
+
+    parts = op.compact_metrics_requests(requests, 300)
+    assert len(parts) >= 2
+    assert sum(_point_total(r) for r in parts) == _point_total(one)  # nothing lost by splitting
+    for part in parts:
+        assert _point_total(part) <= op.otlp_mapper.MAX_POINTS
+        assert len(json.dumps(part, separators=(",", ":"))) <= 1024 * 1024
+
+
+def test_a_merge_over_the_plain_size_cap_is_halved() -> None:
+    requests = [_big_metrics(1_790_000_000 + 60 * i, 50) for i in range(10)]
+    with patch.object(op, "MAX_MERGED_PLAIN_BYTES", 8000):
+        parts = op.compact_metrics_requests(requests, 300)
+    assert len(parts) > 1
+    assert all(len(json.dumps(p, separators=(",", ":"))) <= 8000 for p in parts)
+    assert sum(_point_total(p) for p in parts) == _point_total(op.compact_metrics(requests, 300))
+
+
+async def test_a_two_hour_outage_on_a_large_install_sends_only_valid_requests(
+    hass, entry, observe
+) -> None:
+    wall = {"now": 1_790_000_000.0}
+    observe.script = [OUTAGE] * 400
+    with patch.object(
+        op.otlp_mapper,
+        "build_metrics",
+        lambda identity, snapshot, now, dropped, series: _big_metrics(now),
+    ):
+        pusher, clock = await _pusher(hass, entry, observe.url, wall=lambda: wall["now"])
+        try:
+            for _ in range(130):
+                wall["now"] += 60
+                clock.now += op.BACKOFF_MAX_SECONDS + 1
+                await pusher.async_push_once()
+            assert pusher.status["dropped_overflow"] == 0
+            assert pusher.status["queue_bytes"] <= op.MAX_QUEUE_BYTES
+            observe.requests.clear()
+            observe.script = []
+            clock.now += op.BACKOFF_MAX_SECONDS + 1
+            await pusher.async_push_once()
+            assert pusher.status["queue_length"] == 0
+            metrics = [r["json"] for r in observe.requests if r["path"].endswith("/metrics")]
+            assert metrics
+            assert all(_point_total(m) <= op.otlp_mapper.MAX_POINTS for m in metrics)
+            assert pusher.status["dropped_rejected"] == 0
+            stamps = {
+                int(p["timeUnixNano"]) // 10**9
+                for m in metrics
+                for rm in m["resourceMetrics"]
+                for sm in rm["scopeMetrics"]
+                for mt in sm["metrics"]
+                for p in mt["gauge"]["dataPoints"]
+            }
+            assert max(stamps) - min(stamps) >= 2 * 3600
+        finally:
+            pusher.async_stop()
+
+
+async def test_a_flood_of_log_payloads_drops_logs_before_the_merged_metrics(
+    hass, entry, observe
+) -> None:
+    counter = {"n": 0}
+
+    async def collect() -> dict[str, Any]:
+        counter["n"] += 1
+        snapshot = _snapshot()
+        snapshot["crash_bundles"] = [_crash(counter["n"])]
+        return snapshot
+
+    wall = {"now": 1_790_000_000.0}
+    observe.script = [HELD]
+    with patch.object(op, "MAX_QUEUE", 6):
+        pusher, _ = await _pusher(
+            hass, entry, observe.url, collect=collect, wall=lambda: wall["now"]
+        )
+        try:
+            for _ in range(40):
+                wall["now"] += 60
+                await pusher.async_push_once()
+            assert pusher.status["dropped_overflow"] > 0
+            assert any(p.compacted for p in pusher._queue)  # the merged outage history is kept
+        finally:
+            pusher.async_stop()
+
+
+async def test_sent_keys_forget_the_oldest_first(hass, entry, observe) -> None:
+    pusher, _ = await _pusher(hass, entry, observe.url)
+    try:
+        pusher._sent_log_keys = {}
+        with patch.object(op, "SENT_KEYS_LIMIT", 3):
+            for n in range(5):
+                pusher._note_log_keys(
+                    op._Payload("logs", b"", f"i{n}", dedup_keys=frozenset({f"k{n}"}))
+                )
+        assert list(pusher._sent_log_keys) == ["k2", "k3", "k4"]  # not a reset to the last one
+    finally:
+        pusher.async_stop()
+
+
+async def test_changing_the_trust_asks_for_the_ingest_key_again(hass, entry, tmp_path) -> None:
+    pem = _certificate(tmp_path, "trust")[0]
+    runtime = entry.runtime_data
+    await runtime.secrets.async_set(CONF_OBSERVE_INGEST_KEY, KEY)
+    runtime.store.async_update_settings(**{CONF_OBSERVE_URL: "https://observe.example.com"})
+    form = {
+        CONF_OBSERVE_ENABLED: True,
+        CONF_OBSERVE_URL: "https://observe.example.com",
+        CONF_OBSERVE_HOST_NAME: HOST,
+        CONF_OBSERVE_INTERVAL: 60,
+    }
+    for trust in ({CONF_OBSERVE_CA_PEM: pem}, {CONF_OBSERVE_FINGERPRINT: "ab" * 32}):
+        result = await _open(hass, entry)
+        refused = await hass.config_entries.options.async_configure(
+            result["flow_id"], {**form, **trust}
+        )
+        assert refused["errors"] == {CONF_OBSERVE_INGEST_KEY: "key_required_for_trust_change"}
+        with patch.object(hass.config_entries, "async_schedule_reload"):
+            done = await hass.config_entries.options.async_configure(
+                result["flow_id"], {**form, **trust, CONF_OBSERVE_INGEST_KEY: KEY}
+            )
+            assert done["type"] == "create_entry"
+            # Saving the same trust again, or removing it, needs no key.
+            result = await _open(hass, entry)
+            again = await hass.config_entries.options.async_configure(
+                result["flow_id"], {**form, **trust}
+            )
+            assert again["type"] == "create_entry"
+            result = await _open(hass, entry)
+            cleared = await hass.config_entries.options.async_configure(result["flow_id"], form)
+            assert cleared["type"] == "create_entry"
+
+
+async def test_a_store_saved_before_the_trust_settings_still_starts(hass, entry, observe) -> None:
+    await _enable(entry, observe.url)
+    settings = entry.runtime_data.store.settings
+    settings.pop(CONF_OBSERVE_CA_PEM, None)
+    settings.pop(CONF_OBSERVE_FINGERPRINT, None)
+    await entry.runtime_data.store.async_save_now()
+    await _reload(hass, entry)
+    pusher = entry.runtime_data.observe
+    assert pusher.status["active"] is True
+    assert pusher.status["sent_ok"] >= 1
+    result = await _open(hass, entry)
+    assert result["type"] == "form"
+
+
+async def test_disabling_the_entry_forgets_the_queue(hass, entry, observe) -> None:
+    from homeassistant.config_entries import ConfigEntryDisabler
+
+    await _enable(entry, observe.url)
+    observe.script = [HELD]
+    await _reload(hass, entry)
+    assert entry.runtime_data.observe._queue
+    await hass.config_entries.async_set_disabled_by(entry.entry_id, ConfigEntryDisabler.USER)
+    await hass.async_block_till_done()
+    assert entry.entry_id not in hass.data.get(op.DATA_QUEUE_CARRY, {})

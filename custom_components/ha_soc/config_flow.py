@@ -105,6 +105,8 @@ class HaSocOptionsFlow(OptionsFlow):
                 user_input,
                 key_already_set=key_set and not clear_key,
                 stored_url=settings.get(CONF_OBSERVE_URL),
+                stored_ca_pem=settings.get(CONF_OBSERVE_CA_PEM),
+                stored_fingerprint=settings.get(CONF_OBSERVE_FINGERPRINT),
             )
             if not errors and changes[CONF_OBSERVE_CA_PEM]:
                 # The certificates parse as PEM; make sure the TLS library accepts them too.

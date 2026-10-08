@@ -42,6 +42,7 @@
       "insecure_url": "Plain http is accepted only for a private IP address or localhost. Use https for any other address.",
       "key_required": "Enter the ingest key.",
       "key_required_for_url_change": "Enter the ingest key again to change the Observe URL. The stored key is never sent to a new address.",
+      "key_required_for_trust_change": "Enter the ingest key again to set or change the trusted certificate or fingerprint. The stored key is never sent to a server you have just chosen to trust.",
       "invalid_key": "The ingest key must start with wpi_ and contain no spaces.",
       "invalid_host_name": "Enter the host name the ingest key is bound to, without spaces.",
       "invalid_interval": "The interval must be between 30 and 3600 seconds.",

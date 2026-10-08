@@ -105,11 +105,15 @@ SLOW_REFRESH_SECONDS = 600
 SUPERVISOR_TIMEOUT_SECONDS = 10
 RESPONSE_READ_LIMIT = 65536
 MESSAGE_LIMIT = 200
-SENT_KEYS_LIMIT = 5000
+SENT_KEYS_LIMIT = 5000  # The oldest accepted keys are forgotten first, one at a time.
 # Memory bound of the queue: payload count and total compressed body size.
 MAX_QUEUE_BYTES = 4 * 1024 * 1024
-# A merged metrics payload stays well under Observe's 1 MiB request cap.
+# A merged metrics payload stays well under Observe's 1 MiB request cap, which Observe checks
+# on the gzipped body and on the plain JSON. A merge is split into several payloads so that
+# none holds more than the mapper's per-request point limit or more plain JSON than this.
 MAX_MERGED_BYTES = 512 * 1024
+MAX_MERGED_PLAIN_BYTES = 900 * 1024
+MAX_MERGED_POINTS = otlp_mapper.MAX_POINTS
 # Merged metric payloads keep the newest point per series per interval of this many seconds;
 # the interval doubles until the result fits, up to the last one.
 COMPACT_INTERVALS_SECONDS = (300, 600, 1200, 2400, 3600)
@@ -122,6 +126,7 @@ ERROR_INVALID_URL = "invalid_url"
 ERROR_INSECURE_URL = "insecure_url"
 ERROR_KEY_REQUIRED = "key_required"
 ERROR_KEY_REQUIRED_FOR_URL = "key_required_for_url_change"
+ERROR_KEY_REQUIRED_FOR_TRUST = "key_required_for_trust_change"
 ERROR_INVALID_KEY = "invalid_key"
 ERROR_INVALID_HOST_NAME = "invalid_host_name"
 ERROR_INVALID_INTERVAL = "invalid_interval"
@@ -150,8 +155,8 @@ def _is_private_host(host: str) -> bool:
     Accepted: RFC1918, IPv6 unique local (fc00::/7), loopback and link-local (169.254.0.0/16,
     fe80::/10) and the shared address space 100.64.0.0/10 that Tailscale uses; see
     docs/decisions.md. Everything else is refused, including the unspecified address,
-    240.0.0.0/4, broadcast and 6to4 or other IPv6 forms that embed an IPv4 address. A DNS name is never accepted for plain http because it can resolve
-    anywhere.
+    240.0.0.0/4, broadcast and 6to4 or other IPv6 forms that embed an IPv4 address. A DNS
+    name is never accepted for plain http because it can resolve anywhere.
     """
     if host.lower() == "localhost":
         return True
@@ -289,7 +294,12 @@ _UNSET: Any = object()
 
 
 def validate_options(
-    user_input: dict[str, Any], *, key_already_set: bool, stored_url: Any = _UNSET
+    user_input: dict[str, Any],
+    *,
+    key_already_set: bool,
+    stored_url: Any = _UNSET,
+    stored_ca_pem: Any = _UNSET,
+    stored_fingerprint: Any = _UNSET,
 ) -> tuple[dict[str, str], dict[str, Any], str | None]:
     """Check one options-flow submission.
 
@@ -299,7 +309,9 @@ def validate_options(
 
     When ``stored_url`` is given and a stored key exists, pointing the push at a different
     URL requires the key to be typed again, so a blank field can never send the stored key
-    to a new destination.
+    to a new destination. The same holds when a CA or a fingerprint is newly set or changed
+    (pass ``stored_ca_pem`` and ``stored_fingerprint``): trust that no longer checks the chain
+    or the name could otherwise send the stored key to a server the submitter chose.
     """
     errors: dict[str, str] = {}
     enabled = bool(user_input.get(CONF_OBSERVE_ENABLED, DEFAULT_OBSERVE_ENABLED))
@@ -351,6 +363,19 @@ def validate_options(
         errors[CONF_OBSERVE_FINGERPRINT] = fingerprint_error
     if ca_pem and fingerprint:
         errors[CONF_OBSERVE_FINGERPRINT] = ERROR_TRUST_CONFLICT
+    if (
+        key_already_set
+        and not key_raw
+        and CONF_OBSERVE_INGEST_KEY not in errors
+        and stored_ca_pem is not _UNSET
+        and stored_fingerprint is not _UNSET
+        and not (ca_error or fingerprint_error)
+        and (
+            (ca_pem and ca_pem != (stored_ca_pem or None))
+            or (fingerprint and fingerprint != (stored_fingerprint or None))
+        )
+    ):
+        errors[CONF_OBSERVE_INGEST_KEY] = ERROR_KEY_REQUIRED_FOR_TRUST
 
     changes = {
         CONF_OBSERVE_ENABLED: enabled,
@@ -527,9 +552,12 @@ class _Carry:
     url: str
     host_name: str
     queue: deque[_Payload]
-    sent_log_keys: set[str]
+    sent_log_keys: dict[str, None]
     partial_retried: set[str]
     integration_series: set[tuple[str, str]]
+    # A transient failure's wait (Retry-After or backoff) survives the reload; 0 when none.
+    retry_at: float = 0.0
+    failures: int = 0
 
 
 # Send outcomes.
@@ -580,15 +608,13 @@ def _series_id(scope: str, metric: dict[str, Any], point: dict[str, Any]) -> str
     return json.dumps([scope, metric.get("name"), metric.get("unit"), attributes])
 
 
-def compact_metrics(requests: list[dict[str, Any]], interval_seconds: int) -> dict[str, Any]:
-    """Merge metrics requests into one that keeps the newest point per series per interval.
+_Entry = tuple[int, str, str, str, dict[str, Any]]  # stamp, scope, metric name, unit, point
 
-    A series is a scope, metric name, unit and attribute set. Points are bucketed by their own
-    timestamp, so a payload that was already merged is merged again without drift. The
-    resource of the newest request is used. All points are gauges (otlp_mapper).
-    """
+
+def _newest_per_interval(requests: list[dict[str, Any]], interval_seconds: int) -> list[_Entry]:
+    """The newest point of every series in every interval, oldest first."""
     width = interval_seconds * 1_000_000_000
-    kept: dict[str, tuple[int, str, str, str, dict[str, Any]]] = {}
+    kept: dict[str, _Entry] = {}
     for request in requests:
         for resource in request.get("resourceMetrics", []):
             for scope in resource.get("scopeMetrics", []):
@@ -601,10 +627,13 @@ def compact_metrics(requests: list[dict[str, Any]], interval_seconds: int) -> di
                             kept[key] = (
                                 stamp, scope_name, metric.get("name", ""), metric.get("unit", ""), point
                             )
+    return sorted(kept.values(), key=lambda v: v[0])
+
+
+def _assemble(resource: dict[str, Any], entries: list[_Entry]) -> dict[str, Any]:
     scopes: dict[str, dict[tuple[str, str], list[dict[str, Any]]]] = {}
-    for _stamp, scope_name, name, unit, point in sorted(kept.values(), key=lambda v: v[0]):
+    for _stamp, scope_name, name, unit, point in entries:
         scopes.setdefault(scope_name, {}).setdefault((name, unit), []).append(point)
-    resource = requests[-1]["resourceMetrics"][0]["resource"]
     return {
         "resourceMetrics": [
             {
@@ -624,9 +653,56 @@ def compact_metrics(requests: list[dict[str, Any]], interval_seconds: int) -> di
     }
 
 
-def _compact_bodies(bodies: list[bytes], interval_seconds: int) -> bytes:
+def compact_metrics(requests: list[dict[str, Any]], interval_seconds: int) -> dict[str, Any]:
+    """Merge metrics requests into one that keeps the newest point per series per interval.
+
+    A series is a scope, metric name, unit and attribute set. Points are bucketed by their own
+    timestamp, so a payload that was already merged is merged again without drift. The
+    resource of the newest request is used. All points are gauges (otlp_mapper). The result
+    is not limited in size; the queue uses compact_metrics_requests, which splits it.
+    """
+    resource = requests[-1]["resourceMetrics"][0]["resource"]
+    return _assemble(resource, _newest_per_interval(requests, interval_seconds))
+
+
+def _split_to_fit(resource: dict[str, Any], entries: list[_Entry]) -> list[dict[str, Any]]:
+    """Cut time-ordered entries into requests within Observe's per-request limits.
+
+    Each request holds at most MAX_MERGED_POINTS points and at most MAX_MERGED_PLAIN_BYTES of
+    plain JSON; a request over the plain size is halved until it fits (or holds one point).
+    """
+    out: list[dict[str, Any]] = []
+    pending = [
+        entries[i : i + MAX_MERGED_POINTS] for i in range(0, len(entries), MAX_MERGED_POINTS)
+    ]
+    while pending:
+        chunk = pending.pop(0)
+        request = _assemble(resource, chunk)
+        plain = len(json.dumps(request, separators=(",", ":")).encode("utf-8"))
+        if plain > MAX_MERGED_PLAIN_BYTES and len(chunk) > 1:
+            half = len(chunk) // 2
+            pending[:0] = [chunk[:half], chunk[half:]]
+            continue
+        out.append(request)
+    return out
+
+
+def compact_metrics_requests(
+    requests: list[dict[str, Any]], interval_seconds: int
+) -> list[dict[str, Any]]:
+    """compact_metrics, split into requests that each stay inside Observe's limits.
+
+    The requests are in time order. A long outage on a large install can hold more points
+    than one request may carry, so the result loses resolution but never a whole outage to a
+    refused request.
+    """
+    resource = requests[-1]["resourceMetrics"][0]["resource"]
+    return _split_to_fit(resource, _newest_per_interval(requests, interval_seconds))
+
+
+def _compact_bodies(bodies: list[bytes], interval_seconds: int) -> list[bytes]:
     requests = [json.loads(gzip.decompress(body)) for body in bodies]
-    return _encode(compact_metrics(requests, interval_seconds))
+    return [_encode(r) for r in compact_metrics_requests(requests, interval_seconds)]
 
 
 class ObservePusher:
@@ -656,7 +732,7 @@ class ObservePusher:
         self._lock = asyncio.Lock()
         self._retry_at = 0.0
         self._failures = 0
-        self._sent_log_keys: set[str] = set()
+        self._sent_log_keys: dict[str, None] = {}
         # Log keys whose payload Observe partly rejected once; a second rejection gives up.
         self._partial_retried: set[str] = set()
         # The (domain, category) integration error series sent so far, to zero a recovered one.
@@ -776,6 +852,8 @@ class ObservePusher:
         self._sent_log_keys = carry.sent_log_keys
         self._partial_retried = carry.partial_retried
         self._integration_series = carry.integration_series
+        self._retry_at = carry.retry_at
+        self._failures = carry.failures
         if carry.queue:
             _LOGGER.info("Observe push kept %d queued payload(s) across the reload", len(carry.queue))
 
@@ -792,10 +870,13 @@ class ObservePusher:
                 sent_log_keys=self._sent_log_keys,
                 partial_retried=self._partial_retried,
                 integration_series=self._integration_series,
+                # A rejected key is retried at once after a reload: the owner may have fixed it.
+                retry_at=0.0 if self._auth_rejected or not self._failures else self._retry_at,
+                failures=0 if self._auth_rejected else self._failures,
             )
         self._config = None
         self._queue = deque()
-        self._sent_log_keys = set()
+        self._sent_log_keys = {}
         self._partial_retried = set()
         self._integration_series = set()
         self._trust = None
@@ -894,7 +975,7 @@ class ObservePusher:
             # A record is queued once: keys Observe already accepted and keys waiting in the
             # queue are left out, so an outage does not repeat every record in every payload.
             # A record without a key cannot be told apart and is always sent.
-            fresh = keys - self._sent_log_keys - self._queued_log_keys()
+            fresh = keys.difference(self._sent_log_keys) - self._queued_log_keys()
             if not keys or fresh:
                 if keys and fresh != keys:
                     logs = _only_logs(logs, fresh)
@@ -940,7 +1021,14 @@ class ObservePusher:
                 break
         dropped = 0
         while self._over_bound() and len(self._queue) > 1:
-            self._queue.popleft()
+            # The oldest payload goes first, but a merged payload holds hours of metrics, so
+            # it is only dropped when nothing else is left to drop.
+            for index, payload in enumerate(self._queue):
+                if not payload.compacted:
+                    del self._queue[index]
+                    break
+            else:
+                self._queue.popleft()
             dropped += 1
         return dropped
 
@@ -950,19 +1038,25 @@ class ObservePusher:
         )
 
     async def _async_compact(self, interval: int) -> bool:
-        """Merge every queued metrics payload but the head into one; True when anything changed."""
+        """Merge every queued metrics payload but the head; True when anything changed.
+
+        The merge may come out as several payloads (see compact_metrics_requests), placed where
+        the first merged payload was.
+        """
         indexes = [i for i, p in enumerate(self._queue) if i > 0 and p.signal == "metrics"]
         picked = set(indexes)
         if not indexes:
             return False
         bodies = [self._queue[i].body for i in indexes]
-        body = await self.hass.async_add_executor_job(_compact_bodies, bodies, interval)
-        merged = _Payload("metrics", body, uuid.uuid4().hex, compacted=True)
+        merged_bodies = await self.hass.async_add_executor_job(_compact_bodies, bodies, interval)
+        merged = [
+            _Payload("metrics", body, uuid.uuid4().hex, compacted=True) for body in merged_bodies
+        ]
         first = indexes[0]
         rebuilt: deque[_Payload] = deque()
         for i, payload in enumerate(self._queue):
             if i == first:
-                rebuilt.append(merged)
+                rebuilt.extend(merged)
             elif i not in picked:
                 rebuilt.append(payload)
         self._queue = rebuilt
@@ -1047,9 +1141,9 @@ class ObservePusher:
                 return
         else:
             self._partial_retried -= keys
-        self._sent_log_keys |= keys
-        if len(self._sent_log_keys) > SENT_KEYS_LIMIT:
-            self._sent_log_keys = set(keys)
+        self._sent_log_keys.update(dict.fromkeys(sorted(keys)))
+        while len(self._sent_log_keys) > SENT_KEYS_LIMIT:
+            del self._sent_log_keys[next(iter(self._sent_log_keys))]
 
     # -- one request ----------------------------------------------------------
 
