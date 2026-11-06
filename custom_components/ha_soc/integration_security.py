@@ -22,6 +22,7 @@ from .const import (
     INTEGRATION_TIER_CUSTOM,
     INTEGRATION_TIER_HACS,
 )
+from .marketplace_compat import get_manager, is_default_repository
 from .secrets_store import HaSocSecretStore
 from .store import HaSocData
 
@@ -107,9 +108,9 @@ def _repo_url_from_integration(documentation: str | None, issue_tracker: str | N
 
 
 def _hacs_domain_origins(hass: HomeAssistant) -> dict[str, str] | None:
-    """Best-effort {domain: origin} from HACS runtime data ('default' or the
+    """Best-effort {domain: origin} from Marketplace (or legacy HACS) runtime data ('default' or the
     custom-repo flag); None when HACS is absent or not introspectable."""
-    hacs = hass.data.get("hacs")
+    hacs = get_manager(hass)
     if hacs is None:
         return None
     try:
@@ -126,9 +127,7 @@ def _hacs_domain_origins(hass: HomeAssistant) -> dict[str, str] | None:
             if not domain:
                 continue
             # HACS marks curated-store repos; anything else is user-added.
-            is_default = bool(getattr(data, "default", False)) or bool(
-                getattr(repo, "is_default", False)
-            )
+            is_default = is_default_repository(hacs, repo)
             origins[str(domain)] = "default" if is_default else INTEGRATION_FLAG_CUSTOM_REPO
     except Exception:  # noqa: BLE001
         return None
@@ -145,7 +144,7 @@ async def async_integration_security_overview(
     """
     github_configured = bool(await secrets.async_get(CONF_GITHUB_TOKEN))
     hacs_origins = _hacs_domain_origins(hass)
-    hacs_installed = hacs_origins is not None or "hacs" in hass.config.components
+    hacs_installed = hacs_origins is not None or "hacs" in hass.config.components or "marketplace" in hass.config.components
 
     # Disk I/O off the event loop.
     custom_domains, license_map = await hass.async_add_executor_job(
