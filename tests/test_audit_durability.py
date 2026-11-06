@@ -175,10 +175,14 @@ async def test_torn_tail_is_repaired_once_with_an_audit_event(hass, tmp_path):
     with open(path, "a", encoding="utf-8") as handle:
         handle.write(torn)
 
-    restarted = await _restart(hass, audit)
+    # The restart and the flush run under the same frozen clock as the log calls. The
+    # recovery event takes its day from the clock, so on the real clock it lands in a
+    # later day file than the October one this test reads.
+    with _at(8, 13):
+        restarted = await _restart(hass, audit)
     with _at(8, 14):
         restarted.async_log("login_ok", user_id="u", detail={"after": "restart"})
-    await restarted._async_flush()
+        await restarted._async_flush()
 
     with open(path, encoding="utf-8") as handle:
         content = handle.read()
