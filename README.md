@@ -88,7 +88,8 @@ URL a parser actually needs stays visible.
   because `lovelace/config` has no permission check at all; visibility
   changes what a user's UI renders, never what their account can fetch.
 - **HACS Updates**: a card on the Integration Security view that forces HACS
-  to re-check every downloaded repository now and installs everything
+  (the Marketplace on Home Assistant 2026.11 and newer) to re-check every
+  downloaded repository now and installs everything
   pending in one confirmed, audited, owner-only action, through the same
   `update.install` path a click on each update entity runs. HACS re-checks
   on its own schedule, which made keeping many custom integrations current a
@@ -352,7 +353,7 @@ placeholder instead, that's expected, not a bug here.
 
 ## Installation
 
-1. Copy `custom_components/ha_soc/` into your Home Assistant `config/custom_components/` directory (or add this repo to HACS as a custom repository).
+1. Copy `custom_components/ha_soc/` into your Home Assistant `config/custom_components/` directory (or add this repo as a custom repository in the Marketplace on Home Assistant 2026.11 and newer, or in HACS on older versions).
 2. Restart Home Assistant.
 3. Settings → Devices & Services → Add Integration → **HA SOC**.
 4. A **SOC** panel appears in the sidebar (admin accounts only).

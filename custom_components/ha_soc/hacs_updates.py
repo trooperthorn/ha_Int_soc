@@ -31,11 +31,16 @@ from datetime import datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.dispatcher import async_dispatcher_send
 import homeassistant.util.dt as dt_util
 
 from .const import SIGNAL_UPDATE
+from .marketplace_compat import (
+    get_manager,
+    installed_repositories,
+    manager_label,
+    update_entity_id,
+)
 
 if TYPE_CHECKING:
     from .audit import AuditLog
@@ -69,21 +74,23 @@ class HacsBusy(Exception):
 
 
 def _hacs(hass: HomeAssistant) -> Any:
-    hacs = hass.data.get("hacs")
+    """The Marketplace manager (core 2026.11+) or the legacy HACS object."""
+    label = manager_label(hass)
+    hacs = get_manager(hass)
     if hacs is None:
-        raise HacsUnavailable("HACS is not installed or not loaded")
+        raise HacsUnavailable(f"{label} is not installed or not loaded")
     try:
         if hacs.system.disabled:
             reason = getattr(hacs.system, "disabled_reason", None)
-            raise HacsUnavailable(f"HACS is disabled ({reason})" if reason else "HACS is disabled")
+            raise HacsUnavailable(f"{label} is disabled ({reason})" if reason else f"{label} is disabled")
     except AttributeError as err:
-        raise HacsUnavailable("HACS runtime data is not shaped as expected") from err
+        raise HacsUnavailable(f"{label} runtime data is not shaped as expected") from err
     return hacs
 
 
 def _downloaded(hacs: Any) -> list[Any]:
     try:
-        repos = list(hacs.repositories.list_downloaded)
+        repos = installed_repositories(hacs)
     except AttributeError as err:
         raise HacsUnavailable("HACS repositories are not readable") from err
     repos.sort(key=lambda r: str(getattr(getattr(r, "data", None), "full_name", "")).lower())
@@ -91,9 +98,8 @@ def _downloaded(hacs: Any) -> list[Any]:
 
 
 def _entity_id(hass: HomeAssistant, repo: Any) -> str | None:
-    """The HACS update entity for a repository: platform hacs, unique id = the repository id."""
-    registry = er.async_get(hass)
-    return registry.async_get_entity_id("update", "hacs", str(repo.data.id))
+    """The update entity for a repository: platform marketplace (or hacs on older cores), unique id = the repository id."""
+    return update_entity_id(hass, repo)
 
 
 def _release_date(data: Any) -> str | None:
