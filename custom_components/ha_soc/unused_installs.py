@@ -16,6 +16,7 @@ from homeassistant.core import HomeAssistant
 
 from .config_hygiene import HygieneResult, _could_not_evaluate
 from .integration_security import _scan_custom_components_sync
+from .marketplace_compat import get_manager, resource_markers
 
 # Integration types that legitimately own no entity or device.
 _ENTITYLESS_INTEGRATION_TYPES = frozenset({"system", "hardware", "service", "virtual"})
@@ -113,7 +114,7 @@ def _hacs_installed_repositories(hass: HomeAssistant) -> list[dict[str, Any]] | 
     """Best-effort rows from HACS runtime data, or None when HACS is present
     but its internals are not readable. HACS attribute names are unverified
     against a local source; see docs/design.md."""
-    hacs = hass.data.get("hacs")
+    hacs = get_manager(hass)
     if hacs is None:
         return []
     try:
@@ -175,14 +176,14 @@ async def async_hacs_not_loaded(hass: HomeAssistant) -> HygieneResult:
         if category == "integration":
             domain = row["domain"]
             if domain and domain not in loaded:
-                found.append({**row, "reason": "downloaded by HACS but not set up"})
+                found.append({**row, "reason": "downloaded by the Marketplace or HACS but not set up"})
         elif category == "plugin":
             if resource_urls is None:
                 return _could_not_evaluate()
             repo_name = row["full_name"].rsplit("/", 1)[-1].lower()
-            marker = f"{_HACSFILES_PREFIX}{repo_name}/"
-            if repo_name and not any(marker in url.lower() for url in resource_urls):
-                found.append({**row, "reason": "downloaded by HACS but no dashboard resource loads it"})
+            markers = resource_markers(repo_name)
+            if repo_name and not any(m in url.lower() for url in resource_urls for m in markers):
+                found.append({**row, "reason": "downloaded by the Marketplace or HACS but no dashboard resource loads it"})
     return HygieneResult(found)
 
 
