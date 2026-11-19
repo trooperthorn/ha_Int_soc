@@ -1797,8 +1797,8 @@ class IntegrationHealth:
         items = await async_hacs_not_loaded(self.hass)
         return self._async_hygiene_finding(
             "hacs_not_loaded", SEVERITY_INFO,
-            "HACS downloads that Home Assistant never loads",
-            f"{len(items)} HACS-managed download(s) are installed but inert: an integration "
+            "Marketplace/HACS downloads that Home Assistant never loads",
+            f"{len(items)} Marketplace/HACS-managed download(s) are installed but inert: an integration "
             "with no set-up domain, or a dashboard element with no resource entry.",
             items,
         )
