@@ -273,7 +273,7 @@ export interface NetscanHost {
 }
 
 // Mirrors probe.py's INGEST_SERVICE_SCHEMA netscan_capabilities allowlist (const.py's NETSCAN_CAPABILITIES).
-export type NetscanCapability = "tcp_connect";
+export type NetscanCapability = "tcp_connect" | "tls_der" | "presence";
 
 export interface NetscanResult {
   hosts: NetscanHost[];
@@ -287,6 +287,116 @@ export interface NetscanStatus {
   port_list: number[] | null;
   max_concurrency: number | null;
   result: NetscanResult | null;
+  // Owner-added networks. swept is null when the Probe does not report which networks it swept.
+  extra_networks: { network: string; swept: boolean | null; hosts: number }[];
+  trial: NetscanTrial | null;
+}
+
+// A try-before-add sweep of one network. hosts is null until the Probe answers.
+export interface NetscanTrial {
+  id: string;
+  network: string;
+  requested_at: string;
+  completed_at: string | null;
+  refused: string | null;
+  host_count?: number;
+  hosts: { ip: string; open_ports: number[] }[] | null;
+}
+
+// Mirrors inventory.py's NetworkInventory.overview(); see docs/NETWORK-INVENTORY-DESIGN.md.
+export type InventoryVerdict = "unacknowledged" | "acknowledged" | "ignored";
+
+export interface InventoryDevice {
+  id: string;
+  identity: "mac" | "address";
+  macs: string[];
+  mac_kind: "global" | "local" | null;
+  addresses: { ip: string; since: string }[];
+  names: { value: string; source: string; ts: string }[];
+  display_name: { value: string; source: string } | null;
+  label: string | null;
+  vendor: { value: string; source: string } | null;
+  first_seen: string;
+  last_seen: string;
+  verdict: InventoryVerdict;
+  sources: string[];
+  ports: Record<string, InventoryPort>;
+  baseline: boolean;
+  ha_device_id: string | null;
+  recent_changes: InventoryChange[];
+  // "gateway" is the host's default next hop, "dns" a DNS server the host is configured with.
+  roles: ("gateway" | "dns")[];
+  watched: boolean;
+  // Presence is judged only on cycles from a Probe that reports it; absent until then.
+  presence: { from: string; to: string }[];
+  missed_cycles?: number;
+  down_since?: string;
+  // A TCP connect or refusal time, not an ICMP round trip.
+  rtt_ms?: number;
+  // Present once the UniFi controller has listed the device.
+  unifi?: { vlan: number | string | null; ssid: string | null; wired: boolean };
+}
+
+export interface InventoryPort {
+  first_seen: string;
+  last_seen: string;
+  service: string | null;
+  confidence: string | null;
+  closed_at?: string | null;
+  cert_sha256?: string;
+  cert_since?: string;
+}
+
+// Mirrors inventory.py's CHANGE_EVENT_KINDS. `alert` is true when the change raised a detection.
+export interface InventoryChange {
+  ts: string;
+  device_id: string;
+  kind:
+    | "port_opened"
+    | "port_closed"
+    | "cert_changed"
+    | "cert_renewed"
+    | "identity_shift"
+    | "device_down"
+    | "device_back"
+    | "duplicate_address";
+  minutes_away?: number | null;
+  alert?: boolean;
+  port?: number;
+  previous?: string;
+  sha256?: string;
+  reasons?: ("two_addresses" | "ports_and_certificate")[];
+}
+
+// Mirrors netscan.py's parse_certificate(). self_signed means subject equals issuer.
+export interface InventoryCert {
+  sha256: string;
+  subject: string | null;
+  issuer: string | null;
+  not_before: string | null;
+  not_after: string | null;
+  self_signed: boolean | null;
+  unreadable: boolean;
+}
+
+export interface InventoryOverview {
+  devices: InventoryDevice[];
+  certs: Record<string, InventoryCert>;
+  events: { enabled: boolean; include_addresses: boolean };
+  network: {
+    gateway_ip: string | null;
+    dns_servers: string[];
+    roles_source: "probe" | "supervisor" | null;
+    wan: { kind: "public" | "private" | "cgnat"; at: string } | null;
+  };
+  counts: Record<InventoryVerdict, number>;
+  learning_started_at: string | null;
+  learning_hours: number;
+  last_cycle_at: string | null;
+  cycles: number;
+  cap: number;
+  cap_reached_at: string | null;
+  netscan_enabled: boolean;
 }
 
 // Mirrors peripherals.py's async_peripheral_overview(), built on core's own USB discovery data.
@@ -438,6 +548,11 @@ export interface HaSocSettings {
   technitium_verify_ssl: boolean;
   // Optional Probe-hosted SNMPv3 AuthPriv listener; passphrases are masked and never returned.
   snmp_enabled: boolean;
+  // Owner-only; the Scanner tab's Network Scan card sets it.
+  netscan_enabled?: boolean;
+  // Bus events about network devices, set in the Network Devices tab. Both default off.
+  network_events_enabled?: boolean;
+  network_events_include_addresses?: boolean;
   snmp_listen_address: string | null;
   snmp_port: number;
   snmp_username: string | null;
@@ -1487,6 +1602,16 @@ export const fetchNetscanStatus = (hass: HomeAssistant) =>
 export const requestNetscanRescan = (hass: HomeAssistant) =>
   ws<{ ok: boolean; requested_at: string }>(hass, { type: "ha_soc/netscan/rescan" });
 
+export const tryNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; trial: NetscanTrial }>(hass, { type: "ha_soc/netscan/network_try", network });
+
+// Refused by the server unless the latest trial swept this network.
+export const addNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; extra_networks: string[] }>(hass, { type: "ha_soc/netscan/network_add", network });
+
+export const removeNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; extra_networks: string[] }>(hass, { type: "ha_soc/netscan/network_remove", network });
+
 // Owner-only, paginated: forwarded container logs (logspout-compatible syslog receiver).
 // Most recent first; `limit` defaults server-side to 200, capped at 500.
 export const fetchSyslogReceiverEntries = (hass: HomeAssistant, limit?: number) =>
@@ -1564,6 +1689,22 @@ export const fetchWatchdogStatus = (hass: HomeAssistant) =>
 
 export const setWatchdog = (hass: HomeAssistant, changes: WatchdogSetPayload) =>
   ws<WatchdogStatus>(hass, { type: "ha_soc/watchdog/set", ...changes });
+
+export const fetchInventory = (hass: HomeAssistant) =>
+  ws<InventoryOverview>(hass, { type: "ha_soc/inventory/list" });
+
+export const setInventoryVerdict = (hass: HomeAssistant, deviceId: string, verdict: InventoryVerdict) =>
+  ws(hass, { type: "ha_soc/inventory/set_verdict", device_id: deviceId, verdict });
+
+export const setInventoryLabel = (hass: HomeAssistant, deviceId: string, label: string | null) =>
+  ws(hass, { type: "ha_soc/inventory/set_label", device_id: deviceId, label });
+
+// Audited as a privileged read on the server.
+export const exportInventory = (hass: HomeAssistant, format: "csv" | "json") =>
+  ws<{ format: string; devices: number; content: string }>(hass, { type: "ha_soc/inventory/export", format });
+
+export const setInventoryWatch = (hass: HomeAssistant, deviceId: string, watched: boolean) =>
+  ws(hass, { type: "ha_soc/inventory/set_watch", device_id: deviceId, watched });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

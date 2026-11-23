@@ -4,6 +4,7 @@
   "after_dependencies": [
     "alert",
     "automation",
+    "dhcp",
     "energy",
     "group",
     "hassio",

@@ -103,7 +103,13 @@ already requires. A successful connect gets one best-effort banner read;
 TLS-typical ports (443, 8443, 993, 995, 465, 636, 8883, 9443) get one
 additional TLS handshake to read the peer certificate, verification
 disabled on purpose because a self-signed certificate on a LAN device is
-the expected, common case, not a finding. Both reuse the same TCP
+the expected, common case, not a finding. The Probe reports the certificate
+as a SHA-256 fingerprint and, until the integration holds that fingerprint,
+its DER bytes; the integration parses the DER in the executor with
+`cryptography`, on input bounded to 8,192 bytes, and any parser failure
+becomes "certificate unreadable" (`netscan.py` `parse_certificate`). The
+certificate is chosen by the LAN device, so its subject and issuer are
+length-bounded, shown as text, and used in no access decision. Both reuse the same TCP
 connection's data path, nothing separate is opened for banners versus
 certificates. A small, explicitly non-exhaustive curated regex table
 (`SERVICE_SIGNATURES`) turns a banner into a best-effort service guess, and
@@ -125,6 +131,79 @@ already use. Reading the last result (`ha_soc/netscan/status`) is
 a discovered host/port/service/vendor map for the whole LAN is itself a
 reconnaissance asset, so no account but the owner may even look, regardless
 of `access_level`.
+
+### Network inventory
+
+The inventory (`inventory.py`) turns netscan cycles and the UniFi controller's
+client list into one record per device. What it does and does not establish:
+
+- **Enforced:** every inventory command is owner-only, checked server-side per
+  command. The Store file is private. Detections name a device by its
+  inventory id and carry no MAC, address, name, port or fingerprint.
+- **Advisory:** the verdict. "Acknowledged" records that the owner recognized
+  a MAC address once. It authenticates nothing. A device that presents an
+  acknowledged MAC is treated as the acknowledged device.
+- **Weak by design:** `network_identity_shift` catches a cloned MAC only when
+  the clone shows different ports together with a different certificate, or
+  answers while the original is also answering. A careful clone is not seen.
+- **False positives to expect:** a device given a second address, a router
+  that answers ARP for other hosts, a service restarted on a new port, a
+  self-signed certificate regenerated well before its expiry.
+- **Evasion to expect:** a new device that joins during the learning window
+  is recorded as baseline and raises nothing; a certificate swapped for one
+  with the same subject and issuer within 30 days of the old one's expiry is
+  recorded as a renewal; a port outside the configured scan list is never
+  looked at.
+- **Names are text the device chose, except two.** The owner's label and
+  the Home Assistant registry name are set by the owner. The controller
+  name may be either. A DHCP hostname, a router tracker's hostname and a
+  certificate's common name are announced by the device. All are bounded
+  to 128 characters, shown with their source, and used for display only;
+  the precedence puts the owner's names first so an announced name cannot
+  replace one.
+- **Sources are trusted equally.** A compromised Probe or controller can add
+  or withhold devices. Each record lists which source reported it.
+
+### Network events and sensors
+
+The inventory is owner-only, but an event on the bus and an entity state are
+not: any automation, any user who can open Developer Tools, and any
+integration in the same process can read them. What HA SOC puts there is
+therefore chosen for that audience.
+
+- **Sensors** carry four counts and no attributes (decision D-19).
+- **Events are off by default.** When on, an event names the device by its
+  inventory id and by the owner's label, if one is set. The id means nothing
+  without the inventory. The label is text the owner wrote, so the owner
+  decides what it gives away.
+- **MAC and IP address are in the event only with a second switch**, which
+  the owner turns on knowingly; the panel says who can read an event.
+- Subscribing to these event types over the WebSocket API needs an admin
+  connection, because they are not in Core's allowlist
+  (`websocket_api/commands.py`, `handle_subscribe_events`). An automation
+  trigger has no such check, which is why the default payload is minimal.
+
+### Routed networks
+
+The owner can have the Probe sweep up to 8 further private networks. This
+widens what the scan touches, so it is bounded in three places:
+
+- **Enforced in the Probe:** only RFC 1918 networks from /22 to /30, never a
+  container network of the host, at most 8, under the existing 4,096 host cap.
+  A poll response that asks for anything else is ignored for that entry.
+- **Enforced in the integration:** the same address rule, owner-only commands,
+  and no way to add a network that has not first been swept once as a trial.
+  The trial's hosts are shown to the owner and are neither stored nor
+  recorded as devices.
+- **Audited:** each trial, addition and removal, with the network.
+- **Weak identity:** a host behind a router has no MAC here, so its record is
+  keyed by address and labelled "address-keyed, weak identity". Whatever
+  holds the address is that record. A watched or acknowledged address-keyed
+  device says less than a MAC-keyed one.
+- **What it sends there:** TCP connection attempts to each address on the
+  configured ports every cycle, from the Home Assistant host's address. A
+  firewall or intrusion detection system on the far network may log or block
+  this as a port scan.
 
 OS fingerprinting and UDP scanning are explicitly out of scope, both for the
 same underlying reason. Real OS fingerprinting (TCP/IP stack quirks, TTL and

@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Fixed the netscan never reporting a TLS certificate. The handshake runs
+  with verification off, and in that mode Python's `getpeercert()` returns
+  an empty dict, so subject, issuer and expiry were always empty. The Probe
+  now reads the certificate in DER form and reports its SHA-256 fingerprint,
+  plus the DER until the integration has parsed it (at most 8,192 bytes per
+  certificate and 262,144 bytes per cycle). The integration does the
+  parsing. An integration older than this change does not ask for
+  certificates and gets the previous report shape.
+- The netscan can sweep up to 8 further private networks the owner adds in
+  the panel (each /22 to /30), and can sweep one candidate network once as
+  a trial before it is added. The Probe refuses anything that is not a
+  private IPv4 network or that overlaps a container network of the host,
+  whatever it is asked.
+- The netscan reports the host's default IPv4 gateway, read from
+  `/proc/net/route`, to an integration that asks for it.
+- The netscan reports whether each host answered. A refused TCP connection
+  now counts as an answer, the ARP table is read a second time 9 seconds
+  after the sweep to see which addresses resolved during it, and the
+  fastest TCP connect or refusal time per host is reported. A cycle takes
+  9 seconds longer. An integration older than this change gets the
+  previous report shape. No new privilege is used.
+- The netscan cycle writes the number of hosts found to the app log instead
+  of the full host list.
 - Fixed the AppArmor profile denying snmpd's reads of the per-interface
   sysctls under `/proc/sys/net` (`ipv6/conf/<if>/forwarding`,
   `ipv6/neigh/<if>/base_reachable_time_ms` and `retrans_time_ms`). Every

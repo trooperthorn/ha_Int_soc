@@ -14,14 +14,21 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
 
 from .audit import AuditLog
-from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    SIGNAL_UNIFI_CLIENTS,
+    SIGNAL_UNIFI_WAN,
+    SIGNAL_UPDATE,
+)
 from .crash_forensics import CrashForensics
 from .detections import DetectionEngine
+from .inventory import NetworkInventory
 from .health import IntegrationHealth
 from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
@@ -88,6 +95,7 @@ class HaSocRuntimeData:
     scanner: IntegrationScanner
     risk: RiskEngine
     detections: DetectionEngine
+    inventory: NetworkInventory
     watchdog: "ResourceWatchdog"
     syslog: SyslogExporter
     terminal: TerminalSessions
@@ -209,7 +217,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     vulns = DeviceVulnerabilityTracker(hass, store, secrets)
     scanner = IntegrationScanner(hass, store)
     risk = RiskEngine(hass, store, users=users)
-    detections = DetectionEngine(hass, store, audit=audit, users=users)
+    inventory = NetworkInventory(hass)
+    await inventory.async_load()
+    health.inventory = inventory
+    inventory.settings_provider = lambda: store.settings
+    entry.async_on_unload(inventory.async_flush)
+
+    @callback
+    def _async_unifi_clients(clients: list[dict]) -> None:
+        """The controller's client list is the inventory's second source."""
+        from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+
+        try:
+            inventory.async_merge_unifi_clients(
+                clients,
+                learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
+            )
+        except Exception:  # noqa: BLE001 - the inventory must never break a UniFi snapshot
+            _LOGGER.exception("HA SOC could not merge UniFi clients into the inventory")
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_UNIFI_CLIENTS, _async_unifi_clients)
+    )
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_UNIFI_WAN, inventory.async_note_wan_address)
+    )
+    detections = DetectionEngine(hass, store, audit=audit, users=users, inventory=inventory)
     watchdog = ResourceWatchdog(hass, store, audit)
     terminal = TerminalSessions(hass, audit, secrets)
     crash_forensics = CrashForensics(hass, store, audit, watchdog)
@@ -234,6 +267,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         scanner=scanner,
         risk=risk,
         detections=detections,
+        inventory=inventory,
         watchdog=watchdog,
         syslog=syslog,
         terminal=terminal,
@@ -253,6 +287,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     # as well; it is a plain listener so removing it on unload is always safe.
     async def _async_flush_history_on_stop(_event: Event) -> None:
         await entry.runtime_data.watchdog.async_flush_history()
+        await inventory.async_flush()
 
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_flush_history_on_stop)
@@ -273,7 +308,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     await observe.async_start(entry)
 
     async_register_websocket_api(hass)
-    async_register_probe_service(hass, store, audit, secrets)
+    async_register_probe_service(hass, store, audit, secrets, inventory)
     async_register_external_audit_service(hass, store, audit, secrets)
     async_register_pairing_service(hass, store, audit, secrets)
     await async_register_panel(hass)

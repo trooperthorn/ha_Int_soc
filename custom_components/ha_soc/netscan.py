@@ -14,7 +14,10 @@ against before they reach the store.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
+import ipaddress
 import json
 import re
 from typing import Any
@@ -23,12 +26,16 @@ import voluptuous as vol
 
 from .const import (
     CONF_NETSCAN_ENABLED,
+    CONF_NETSCAN_EXTRA_NETWORKS,
     CONF_NETSCAN_MAX_CONCURRENCY,
     CONF_NETSCAN_PORT_LIST,
     DEFAULT_NETSCAN_MAX_CONCURRENCY,
     DEFAULT_NETSCAN_PORT_LIST,
     NETSCAN_MAX_CONCURRENCY_MAX,
+    NETSCAN_EXTRA_PREFIX_MAX,
+    NETSCAN_EXTRA_PREFIX_MIN,
     NETSCAN_MAX_CONCURRENCY_MIN,
+    NETSCAN_MAX_EXTRA_NETWORKS,
     NETSCAN_MAX_PORT_LIST_ENTRIES,
     NETSCAN_PORT_MAX,
     NETSCAN_PORT_MIN,
@@ -43,6 +50,13 @@ _BANNER_MAX = 256
 _SERVICE_GUESS_MAX = 64
 _TLS_FIELD_MAX = 256
 _MAC_PATTERN = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+# The Probe never sends a certificate larger than this; base64 grows it by a third.
+NETSCAN_MAX_DER_BYTES = 8192
+_DER_B64_MAX = 4 * ((NETSCAN_MAX_DER_BYTES + 2) // 3)
+# Certificates parsed from one cycle. More than this wait for a later cycle,
+# because the Probe resends any fingerprint the integration does not hold.
+NETSCAN_MAX_DER_PER_RESULT = 256
 
 
 def validate_port_list(value: Any) -> list[int]:
@@ -63,6 +77,53 @@ def validate_port_list(value: Any) -> list[int]:
     if not ports:
         raise vol.Invalid("netscan port list must not be empty")
     return ports
+
+
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+# The Supervisor's internal Docker network (Supervisor API documentation, /network/info).
+_SUPERVISOR_NETWORK = ipaddress.ip_network("172.30.32.0/23")
+
+
+def validate_extra_network(value: Any) -> str:
+    """One further network to sweep, normalized to its CIDR form.
+
+    An IPv4 network from /22 to /30 inside the RFC 1918 ranges that does not
+    overlap the Supervisor's Docker network. The Probe applies the same rule and
+    also refuses the host's other container bridges, which only it can see.
+    """
+    try:
+        network = ipaddress.ip_network(str(value).strip(), strict=False)
+    except ValueError as err:
+        raise vol.Invalid("not an IPv4 network in CIDR form, for example 192.168.20.0/24") from err
+    if network.version != 4:
+        raise vol.Invalid("only IPv4 networks can be scanned")
+    if not NETSCAN_EXTRA_PREFIX_MIN <= network.prefixlen <= NETSCAN_EXTRA_PREFIX_MAX:
+        raise vol.Invalid(
+            f"the network must be between /{NETSCAN_EXTRA_PREFIX_MIN} and /{NETSCAN_EXTRA_PREFIX_MAX}"
+        )
+    if not any(network.subnet_of(private) for private in _PRIVATE_NETWORKS):
+        raise vol.Invalid("only private networks (10/8, 172.16/12, 192.168/16) can be scanned")
+    if network.overlaps(_SUPERVISOR_NETWORK):
+        raise vol.Invalid("that range is the Supervisor's internal container network")
+    return str(network)
+
+
+def validate_extra_networks(value: Any) -> list[str]:
+    """The stored list: de-duplicated, each entry valid, at most NETSCAN_MAX_EXTRA_NETWORKS."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise vol.Invalid("extra networks must be a list")
+    networks: list[str] = []
+    for item in value:
+        network = validate_extra_network(item)
+        if network not in networks:
+            networks.append(network)
+    if len(networks) > NETSCAN_MAX_EXTRA_NETWORKS:
+        raise vol.Invalid(f"at most {NETSCAN_MAX_EXTRA_NETWORKS} extra networks can be scanned")
+    return networks
 
 
 def validate_max_concurrency(value: Any) -> int:
@@ -89,6 +150,11 @@ _TLS_SCHEMA = vol.Schema(
         vol.Optional("issuer"): vol.Any(None, vol.All(str, vol.Length(max=_TLS_FIELD_MAX))),
         vol.Optional("not_after"): vol.Any(None, vol.All(str, vol.Length(max=64))),
         vol.Optional("self_signed"): vol.Any(None, bool),
+        # SHA-256 of the certificate's DER, and the DER itself (base64) while the
+        # integration does not hold that fingerprint. The DER never reaches the
+        # store: see NetworkInventory.async_absorb_certificates.
+        vol.Optional("sha256"): vol.All(str, vol.Match(_SHA256_PATTERN)),
+        vol.Optional("der"): vol.All(str, vol.Length(max=_DER_B64_MAX)),
     }
 )
 
@@ -120,12 +186,90 @@ NETSCAN_HOST_SCHEMA = vol.Schema(
         vol.Optional("mac"): vol.Any(None, validate_mac),
         vol.Optional("vendor"): vol.Any(None, vol.All(str, vol.Length(max=64))),
         vol.Optional("open_ports"): vol.Any(None, [NETSCAN_OPEN_PORT_SCHEMA]),
+        # Presence signals, sent only by a Probe that was offered them.
+        # The owner-added network the host was found in; absent on the Probe's own subnets.
+        vol.Optional("network"): vol.All(str, vol.Length(max=18)),
+        vol.Optional("responded"): bool,
+        vol.Optional("arp_after_sweep"): bool,
+        vol.Optional("rtt_ms"): vol.All(vol.Coerce(float), vol.Range(min=0, max=60000)),
+    }
+)
+
+# The Probe's answer to a trial sweep of one network (ha_soc/netscan/network_try).
+NETSCAN_TRIAL_SCHEMA = vol.Schema(
+    {
+        vol.Required("id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required("network"): vol.All(str, vol.Length(max=18)),
+        vol.Optional("refused"): vol.Any(None, vol.All(str, vol.Length(max=64))),
+        vol.Optional("hosts"): vol.All([NETSCAN_HOST_SCHEMA], vol.Length(max=1024)),
     }
 )
 
 # A whole cycle's worth of hosts; bounded so a misbehaving or hostile Probe
 # cannot use one ingest call to write an unbounded amount of scan data.
 NETSCAN_MAX_HOSTS_PER_RESULT = 1024
+
+
+def parse_certificate(der_b64: str) -> dict[str, Any] | None:
+    """Parse one base64 DER certificate into the fields the panel and the rules use.
+
+    Returns None for anything that is not a readable X.509 certificate. The
+    fingerprint is computed here from the bytes received, never taken from the
+    sender. ``self_signed`` means the subject equals the issuer; the signature is
+    not checked. Blocking: call it in the executor.
+    """
+    from cryptography import x509
+
+    try:
+        der = base64.b64decode(der_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not der or len(der) > NETSCAN_MAX_DER_BYTES:
+        return None
+    fingerprint = hashlib.sha256(der).hexdigest()
+    try:
+        cert = x509.load_der_x509_certificate(der)
+        subject = cert.subject.rfc4514_string()
+        issuer = cert.issuer.rfc4514_string()
+        return {
+            "sha256": fingerprint,
+            "subject": subject[:_TLS_FIELD_MAX] or None,
+            "issuer": issuer[:_TLS_FIELD_MAX] or None,
+            "not_before": cert.not_valid_before_utc.isoformat(),
+            "not_after": cert.not_valid_after_utc.isoformat(),
+            "self_signed": cert.subject == cert.issuer,
+            "unreadable": False,
+        }
+    except Exception:  # noqa: BLE001 - any parser failure on hostile input is "unreadable"
+        return {
+            "sha256": fingerprint,
+            "subject": None,
+            "issuer": None,
+            "not_before": None,
+            "not_after": None,
+            "self_signed": None,
+            "unreadable": True,
+        }
+
+
+def parse_certificates(ders: list[str]) -> list[dict[str, Any]]:
+    """parse_certificate over a bounded list, dropping what could not even be decoded."""
+    parsed = (parse_certificate(der) for der in ders[:NETSCAN_MAX_DER_PER_RESULT])
+    return [cert for cert in parsed if cert is not None]
+
+
+def strip_der(hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A copy of the hosts with every certificate's DER removed."""
+    out = []
+    for host in hosts:
+        ports = []
+        for entry in host.get("open_ports") or []:
+            tls = entry.get("tls")
+            if isinstance(tls, dict) and "der" in tls:
+                entry = {**entry, "tls": {k: v for k, v in tls.items() if k != "der"}}
+            ports.append(entry)
+        out.append({**host, "open_ports": ports} if "open_ports" in host else dict(host))
+    return out
 
 
 def candidate_hosts_for_service(
@@ -176,11 +320,18 @@ async def async_config_for_probe(settings: dict[str, Any]) -> dict[str, Any]:
     max_concurrency = validate_max_concurrency(
         settings.get(CONF_NETSCAN_MAX_CONCURRENCY, DEFAULT_NETSCAN_MAX_CONCURRENCY)
     )
-    material = {
+    material: dict[str, Any] = {
         "enabled": enabled,
         "port_list": port_list,
         "max_concurrency": max_concurrency,
     }
+    try:
+        extra_networks = validate_extra_networks(settings.get(CONF_NETSCAN_EXTRA_NETWORKS))
+    except vol.Invalid:
+        extra_networks = []
+    if extra_networks:
+        # Added only when set, so the generation of an install without any is unchanged.
+        material["extra_networks"] = extra_networks
     generation = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

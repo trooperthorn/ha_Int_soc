@@ -75,3 +75,30 @@ No TODO or FIXME comments remained in the integration, frontend, probe, scripts,
     <slug>` subcommands exist with those exact names, based on the one
     example DOCS.md already documented; not run against a real Supervisor
     CLI.
+
+## Network inventory (2026-11-23)
+
+Left open when the ten phases of `NETWORK-INVENTORY-DESIGN.md` were built.
+
+- Panel text is not translatable. Measured 2026-11-23: the panel source has
+  34 TypeScript files, 16 of them views, and no call to `hass.localize`;
+  `translations/en.json` holds 83 strings, all for the config flow, options,
+  entities, Repairs issues and services. Every string the panel shows,
+  including all inventory text, is English in the TypeScript. Translating
+  the panel is its own project and was not started.
+- Unexpected DHCP server probe (`network_rogue_dhcp`): waits on the owner's
+  decision, open decision 3 in the design.
+- Integration-side vendor table from the IEEE registry: waits on a download
+  and a size decision.
+- mDNS names: no verified way to read core's zeroconf cache without sending
+  queries.
+- Suggested merge and reset inventory (phase 1), a device detail page, a
+  control for the netscan port list and concurrency, and a posture score
+  term for network detections (open decision 1).
+- A finding when the record cap is reached, and one when the Probe and the
+  UniFi controller disagree about a device.
+- Not verified on a real install: everything. The list per phase is under
+  each "What phase N built" heading in the design.
+- From the Vedetta comparison, outside this feature: an OpenSSF Scorecard
+  workflow. Signed Probe images are already listed above as deferred.
+
