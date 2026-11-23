@@ -115,6 +115,9 @@ _CONFIG_MAPPING_ADDON_MARKERS = (
 
 # Generous: the add-on itself retries every 30s-5min, so this only fires for a stuck setup.
 PROBE_NOT_REPORTING_GRACE = timedelta(minutes=30)
+# Most findings one network check writes in a pass, so a large or hostile LAN
+# cannot fill the findings table.
+NETWORK_FINDINGS_CAP = 100
 
 
 def _iso_now() -> str:
@@ -212,6 +215,8 @@ class IntegrationHealth:
     def __init__(self, hass: HomeAssistant, store: HaSocData) -> None:
         self.hass = hass
         self._store = store
+        # Set by __init__.py once the inventory is loaded; None means no network checks.
+        self.inventory: Any = None
 
         self._logger_prefixes: list[tuple[str, str]] = []
         self._entities_by_entry: dict[str, list[str]] = {}
@@ -616,6 +621,8 @@ class IntegrationHealth:
             self._check_ssh_addon_inventory,
             self._check_ssh_addon_exposed,
             self._check_probe_addon_not_reporting,
+            self._check_network_cleartext_service,
+            self._check_network_cert_expiry,
             self._check_audit_ban_logger,
             self._check_storage_file_modes,
             self._check_config_mapping_addons,
@@ -1273,6 +1280,96 @@ class IntegrationHealth:
                 "title": finding["title"], "summary": finding["summary"],
             })],
         )
+
+    async def _check_network_cleartext_service(self) -> list[dict]:
+        """check="network_cleartext_service": Telnet, FTP or VNC open on a network device.
+
+        A finding names the device by its inventory id, with the service and port and
+        nothing else, because findings follow the panel's access level and reach
+        Repairs while the inventory is owner-only. Plain HTTP beside HTTPS is one
+        informational row for all devices, since it is common and rarely actionable.
+        """
+        check = "network_cleartext_service"
+        if self.inventory is None:
+            return self._async_finalize_check(check, [])
+        from .inventory import BASIS_PORT, CLEARTEXT_SERVICES, cleartext_exposures
+
+        rows = cleartext_exposures(self.inventory.state)
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        for row in [r for r in rows if r["service"] != "http"][:NETWORK_FINDINGS_CAP]:
+            label = CLEARTEXT_SERVICES[row["service"]]["label"]
+            how = (
+                f"Port {row['port']} is open and is the registered {label} port; the service "
+                "sent no banner, so this is a guess from the port number."
+                if row["basis"] == BASIS_PORT
+                else f"Port {row['port']} answered with a {label} banner."
+            )
+            finding = _new_finding(
+                f"misconfig:{check}:{row['device_id']}:{row['port']}", check, row["severity"],
+                title=f"{label} is open on network device {row['device_id']}",
+                summary=(
+                    f"{how} {label} sends logins and everything after them unencrypted, so "
+                    "anyone on the same network can read them. Turn the service off on the "
+                    "device or replace it with an encrypted one, or ignore the device in "
+                    "Assets > Network Devices if it is not yours to change."
+                ),
+                detail={k: row[k] for k in ("device_id", "port", "service", "basis")},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+
+        http_rows = [r for r in rows if r["service"] == "http"]
+        if http_rows:
+            device_ids = sorted({r["device_id"] for r in http_rows})
+            finding = _new_finding(
+                f"misconfig:{check}:http", check, SEVERITY_INFO,
+                title=f"{len(device_ids)} network device(s) serve plain HTTP beside HTTPS",
+                summary=(
+                    "These devices have an HTTP port open as well as an HTTPS one. That is "
+                    "often only a redirect to HTTPS, which HA SOC does not test, so this is "
+                    "information and not a fault."
+                ),
+                detail=_capped_detail("device_ids", device_ids),
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check(check, items)
+
+    async def _check_network_cert_expiry(self) -> list[dict]:
+        """check="network_cert_expiry": a certificate on a network device expired or is about to.
+
+        Expired is medium, 14 days or less is low, 30 days or less is informational.
+        A self-signed certificate is not a finding by itself (docs/security.md).
+        """
+        check = "network_cert_expiry"
+        if self.inventory is None:
+            return self._async_finalize_check(check, [])
+        from .inventory import certificate_expiries
+
+        items: list[tuple[dict, str, dict[str, str]]] = []
+        for row in certificate_expiries(self.inventory.state, dt.utcnow())[:NETWORK_FINDINGS_CAP]:
+            if row["expired"]:
+                title = f"Certificate expired on network device {row['device_id']}"
+                when = f"expired on {row['not_after'][:10]}"
+            else:
+                title = f"Certificate expires soon on network device {row['device_id']}"
+                when = f"expires on {row['not_after'][:10]}, in {row['days_left']} day(s)"
+            finding = _new_finding(
+                f"misconfig:{check}:{row['device_id']}:{row['port']}", check, row["severity"],
+                title=title,
+                summary=(
+                    f"The certificate on port {row['port']} {when}. Clients that check "
+                    "certificates will refuse the connection once it has expired. Renew it on "
+                    "the device. The certificate itself is shown in Assets > Network Devices."
+                ),
+                detail={k: row[k] for k in ("device_id", "port", "not_after", "days_left")},
+            )
+            items.append((finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            }))
+        return self._async_finalize_check(check, items)
 
     async def _check_audit_ban_logger(self) -> list[dict]:
         """check="audit_ban_logger_silenced" - LOW. The value read is a logging level integer, nothing else."""

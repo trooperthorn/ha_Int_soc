@@ -213,6 +213,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     risk = RiskEngine(hass, store, users=users)
     inventory = NetworkInventory(hass)
     await inventory.async_load()
+    health.inventory = inventory
     entry.async_on_unload(inventory.async_flush)
 
     @callback

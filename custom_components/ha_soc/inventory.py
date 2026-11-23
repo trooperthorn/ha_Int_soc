@@ -95,6 +95,21 @@ CHANGE_EVENT_KINDS = (
 SHIFT_TWO_ADDRESSES = "two_addresses"
 SHIFT_PORTS_AND_CERTIFICATE = "ports_and_certificate"
 RECENT_CHANGE_DAYS = 7
+
+# Exposure findings (phase 3). A service is recognized by the Probe's banner guess
+# or, failing that, by its registered port; the finding says which.
+CLEARTEXT_SERVICES: dict[str, dict[str, Any]] = {
+    "telnet": {"port": 23, "severity": "high", "label": "Telnet"},
+    "ftp": {"port": 21, "severity": "medium", "label": "FTP"},
+    "vnc": {"port": 5900, "severity": "medium", "label": "VNC"},
+}
+_CLEARTEXT_BY_PORT = {spec["port"]: name for name, spec in CLEARTEXT_SERVICES.items()}
+HTTP_PORTS = (80, 8080)
+HTTPS_PORTS = (443, 8443)
+CERT_EXPIRY_LOW_DAYS = 14
+CERT_EXPIRY_INFO_DAYS = 30
+BASIS_BANNER = "banner"
+BASIS_PORT = "port"
 RECENT_CHANGES_PER_DEVICE = 5
 
 
@@ -651,6 +666,98 @@ def merge_unifi_clients(
     if outcome.created:
         outcome.changed = True
     return outcome
+
+
+def _open_ports(device: dict[str, Any]) -> dict[int, dict[str, Any]]:
+    return {
+        int(key): record
+        for key, record in (device.get("ports") or {}).items()
+        if record.get("closed_at") is None
+    }
+
+
+def cleartext_exposures(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Open cleartext management services, one row per device and port.
+
+    Ignored devices are left out: ignoring a device is the owner saying it is not
+    theirs to fix. Plain HTTP beside HTTPS is reported as ``service: "http"`` with
+    severity "info"; every other row takes its severity from CLEARTEXT_SERVICES.
+    """
+    rows: list[dict[str, Any]] = []
+    for device in state["devices"].values():
+        if device.get("verdict") == VERDICT_IGNORED:
+            continue
+        ports = _open_ports(device)
+        for port, record in ports.items():
+            guess = record.get("service")
+            if guess in CLEARTEXT_SERVICES:
+                service, basis = guess, BASIS_BANNER
+            elif port in _CLEARTEXT_BY_PORT and guess in (None, "tls") and not record.get("cert_sha256"):
+                service, basis = _CLEARTEXT_BY_PORT[port], BASIS_PORT
+            else:
+                continue
+            rows.append(
+                {
+                    "device_id": device["id"],
+                    "port": port,
+                    "service": service,
+                    "basis": basis,
+                    "severity": CLEARTEXT_SERVICES[service]["severity"],
+                }
+            )
+        if any(port in ports for port in HTTPS_PORTS):
+            for port in HTTP_PORTS:
+                record = ports.get(port)
+                if record is not None and not record.get("cert_sha256"):
+                    basis = BASIS_BANNER if record.get("service") == "http" else BASIS_PORT
+                    rows.append(
+                        {
+                            "device_id": device["id"],
+                            "port": port,
+                            "service": "http",
+                            "basis": basis,
+                            "severity": "info",
+                        }
+                    )
+    return rows
+
+
+def certificate_expiries(state: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    """Certificates on open ports that have expired or expire within 30 days.
+
+    A certificate that could not be parsed has no expiry to judge and is left out.
+    """
+    now = dt_util.as_utc(now)
+    certs = state.get("certs") or {}
+    rows: list[dict[str, Any]] = []
+    for device in state["devices"].values():
+        if device.get("verdict") == VERDICT_IGNORED:
+            continue
+        for port, record in _open_ports(device).items():
+            cert = certs.get(record.get("cert_sha256") or "")
+            expiry = _parse(cert.get("not_after")) if cert else None
+            if expiry is None:
+                continue
+            days_left = (expiry - now).days
+            if expiry <= now:
+                severity = "medium"
+            elif days_left <= CERT_EXPIRY_LOW_DAYS:
+                severity = "low"
+            elif days_left <= CERT_EXPIRY_INFO_DAYS:
+                severity = "info"
+            else:
+                continue
+            rows.append(
+                {
+                    "device_id": device["id"],
+                    "port": port,
+                    "not_after": cert["not_after"],
+                    "days_left": days_left,
+                    "expired": expiry <= now,
+                    "severity": severity,
+                }
+            )
+    return rows
 
 
 def best_name(device: dict[str, Any]) -> dict[str, str] | None:

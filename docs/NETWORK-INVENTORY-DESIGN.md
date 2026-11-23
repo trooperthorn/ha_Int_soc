@@ -1,9 +1,8 @@
 # Network inventory, presence and network health: design
 
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
-and 2 are built (see "What phase 1 built" and "What phase 2 built" below) and
-have not run against a live Supervisor or a real Probe; phases 3 to 10 are
-design only. This document owns
+to 3 are built (see the "What phase N built" sections below) and have not run
+against a live Supervisor or a real Probe; phases 4 to 10 are design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -452,6 +451,36 @@ Integration only (certificate checks need phase 2).
 
 Vedetta lists both as planned, not built. They are here because HA SOC already
 holds the data.
+
+#### What phase 3 built
+
+Built 2026-11-23: `cleartext_exposures` and `certificate_expiries` in
+`inventory.py`, the two checks in `health.py` that turn their rows into
+misconfiguration findings on the five-minute sweep, and
+`tests/test_inventory_exposure.py`. The per-check notes are in
+`operations.md`. It differs from the text above in these ways:
+
+- **A service is also recognized by its registered port.** The Probe reads
+  without sending, so most Telnet servers match no banner signature. A
+  finding made from the port number alone says so in its summary.
+- **HTTP is one informational row for all devices**, not one per device, and
+  it is judged by the ports being open, not by a banner. Whether port 80
+  only redirects is not tested.
+- **The finding carries the device id, port and service or expiry date.** The
+  owner looks the device up by id in the Network Devices tab. No panel work
+  was needed: the findings appear in the existing misconfiguration table and
+  in Repairs.
+- **Ignored devices are skipped**, and a finding resolves when the port
+  closes or the device is ignored.
+- **At most 100 findings per check per pass.** Rows past the cap are not
+  reported and nothing says the cap was hit.
+- **The default scan list limits what can be found.** It contains 23 but not
+  21 or 5900, and TLS is attempted on eight fixed ports only, so FTP and VNC are
+  seen only if the owner adds their ports, and a certificate on any other
+  port is never seen.
+
+Not verified: the findings in a running panel and in Repairs, and how many
+informational HTTP rows a real network produces.
 
 ### Phase 4: presence history, latency, and gone/back alerts
 
