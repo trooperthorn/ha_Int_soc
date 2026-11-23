@@ -33,6 +33,7 @@ async def async_setup_entry(
             PostureScoreSensor(runtime),
             OpenDetectionsSensor(runtime),
             UsersAtRiskSensor(runtime),
+            *(NetworkDeviceCountSensor(runtime, key) for key in NETWORK_COUNT_SENSORS),
         ]
     )
 
@@ -77,6 +78,42 @@ class _BaseSocSensor(SensorEntity):
     @callback
     def _handle_update(self, *_args) -> None:
         self.async_write_ha_state()
+
+
+# count key -> icon. Counts only: the inventory is owner-only and an entity state
+# is readable by every user and automation, so no device detail becomes an attribute.
+NETWORK_COUNT_SENSORS = {
+    "known": "mdi:lan",
+    "unacknowledged": "mdi:lan-pending",
+    "watched": "mdi:eye",
+    "offline": "mdi:lan-disconnect",
+}
+
+
+class NetworkDeviceCountSensor(_BaseSocSensor):
+    """One number from the network inventory: known, unacknowledged, watched or offline.
+
+    "offline" counts watched devices that stopped answering; an unwatched device
+    is never reported down, so it is not counted there either.
+    """
+
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, runtime, key: str) -> None:
+        super().__init__(runtime)
+        self._key = key
+        self._attr_translation_key = f"network_devices_{key}"
+        self._attr_unique_id = f"{DOMAIN}_network_devices_{key}"
+        self._attr_icon = NETWORK_COUNT_SENSORS[key]
+
+    async def async_added_to_hass(self) -> None:
+        self._unsub = async_dispatcher_connect(
+            self.hass, f"{SIGNAL_UPDATE}_inventory", self._handle_update
+        )
+
+    @property
+    def native_value(self) -> int:
+        return self._runtime.inventory.counts()[self._key]
 
 
 class PostureScoreSensor(_BaseSocSensor):

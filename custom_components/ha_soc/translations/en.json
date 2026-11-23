@@ -66,6 +66,18 @@
       },
       "users_at_risk": {
         "name": "Users at risk"
+      },
+      "network_devices_known": {
+        "name": "Network devices"
+      },
+      "network_devices_unacknowledged": {
+        "name": "Unacknowledged network devices"
+      },
+      "network_devices_watched": {
+        "name": "Watched network devices"
+      },
+      "network_devices_offline": {
+        "name": "Watched network devices offline"
       }
     },
     "binary_sensor": {

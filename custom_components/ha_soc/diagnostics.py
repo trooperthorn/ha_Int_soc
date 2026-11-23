@@ -11,12 +11,13 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
 from .const import REDACTED_PLACEHOLDER, SECRET_SETTING_KEYS
+from .inventory import diagnostics_summary
 from .secrets_store import PROBE_PAIRING_SECRET_KEY, HaSocSecretStore
 
 # Not credentials, but they identify the installation; redacted to a presence flag.
 _PRIVATE_SETTING_KEYS = frozenset(
     {"unifi_network_host", "unifi_protect_host", "observe_url", "observe_host_name",
-     "observe_ca_pem", "observe_cert_sha256"}
+     "observe_ca_pem", "observe_cert_sha256", "netscan_extra_networks"}
 )
 
 
@@ -89,6 +90,8 @@ async def async_get_config_entry_diagnostics(
             # Presence only, never the value.
             "addon_paired": bool(await secrets.async_get(PROBE_PAIRING_SECRET_KEY)),
         },
+        # Counts only: see inventory.diagnostics_summary for why nothing is masked instead.
+        "network_inventory": diagnostics_summary(runtime.inventory.state),
         # Counters and state only; the URL, host name and key are in the settings block as flags.
         "observe_push": runtime.observe.status,
         "resource_watchdog": {

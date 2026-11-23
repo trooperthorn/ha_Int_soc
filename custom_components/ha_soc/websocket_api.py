@@ -33,8 +33,11 @@ from .const import (
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
     CONF_NETSCAN_ENABLED,
+    CONF_NETSCAN_EXTRA_NETWORKS,
     CONF_NETSCAN_MAX_CONCURRENCY,
     CONF_NETSCAN_PORT_LIST,
+    CONF_NETWORK_EVENTS_ENABLED,
+    CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES,
     CONF_NVD_API_KEY,
     CONF_PIHOLE_API_KEY,
     CONF_PIHOLE_HOST,
@@ -341,6 +344,14 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_status,
         ws_netscan_status,
         ws_netscan_rescan,
+        ws_netscan_network_try,
+        ws_netscan_network_add,
+        ws_netscan_network_remove,
+        ws_inventory_list,
+        ws_inventory_set_verdict,
+        ws_inventory_set_label,
+        ws_inventory_set_watch,
+        ws_inventory_export,
         ws_syslog_receiver_entries,
         ws_unifi_network_test_connection,
         ws_probe_restart,
@@ -1472,8 +1483,120 @@ async def ws_netscan_status(hass: HomeAssistant, connection, msg: dict) -> None:
             "port_list": runtime.store.settings.get(CONF_NETSCAN_PORT_LIST),
             "max_concurrency": runtime.store.settings.get(CONF_NETSCAN_MAX_CONCURRENCY),
             "result": runtime.store.data.get("netscan_result"),
+            "extra_networks": _extra_networks_status(runtime),
+            "trial": runtime.inventory.trial,
         },
     )
+
+
+def _extra_networks_status(runtime) -> list[dict[str, Any]]:
+    """Each owner-added network with whether the last cycle swept it and what it found.
+
+    ``swept`` is None when the Probe does not say which networks it swept, which is
+    "not known", and False when it listed others but not this one.
+    """
+    result = runtime.store.data.get("netscan_result") or {}
+    swept = result.get("networks_swept")
+    hosts = result.get("hosts") or []
+    return [
+        {
+            "network": network,
+            "swept": None if swept is None else network in swept,
+            "hosts": sum(1 for host in hosts if host.get("network") == network),
+        }
+        for network in runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or []
+    ]
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_try", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_try(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: have the Probe sweep one candidate network once, saving nothing.
+
+    The result is held in memory and shown to the owner; it reaches neither the
+    stored scan result nor the inventory. Adding the network is a separate command
+    that requires this trial to have completed.
+    """
+    from .netscan import validate_extra_network
+
+    runtime = _runtime(hass)
+    try:
+        network = validate_extra_network(msg["network"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_network", str(err))
+        return
+    trial = runtime.inventory.async_request_trial(network)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_trial", "network": network},
+    )
+    connection.send_result(msg["id"], {"ok": True, "trial": trial})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_add", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_add(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: add a network to the regular sweep, after its trial."""
+    from .const import NETSCAN_MAX_EXTRA_NETWORKS
+    from .netscan import validate_extra_network
+
+    runtime = _runtime(hass)
+    try:
+        network = validate_extra_network(msg["network"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_network", str(err))
+        return
+    current = list(runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or [])
+    if network in current:
+        connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
+        return
+    if not runtime.inventory.trial_passed(network):
+        connection.send_error(
+            msg["id"], "trial_required", "Try the network first; it is added only after a completed trial"
+        )
+        return
+    if len(current) >= NETSCAN_MAX_EXTRA_NETWORKS:
+        connection.send_error(
+            msg["id"], "too_many", f"At most {NETSCAN_MAX_EXTRA_NETWORKS} extra networks can be scanned"
+        )
+        return
+    current.append(network)
+    runtime.store.async_update_settings(**{CONF_NETSCAN_EXTRA_NETWORKS: current})
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_added", "network": network},
+    )
+    connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_remove", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_remove(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: stop sweeping a network. Devices already recorded there are kept."""
+    runtime = _runtime(hass)
+    current = list(runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or [])
+    if msg["network"] not in current:
+        connection.send_error(msg["id"], "not_found", "That network is not being scanned")
+        return
+    current.remove(msg["network"])
+    runtime.store.async_update_settings(**{CONF_NETSCAN_EXTRA_NETWORKS: current})
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_removed", "network": msg["network"]},
+    )
+    connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
 
 
 @require_owner
@@ -1496,6 +1619,186 @@ async def ws_netscan_rescan(hass: HomeAssistant, connection, msg: dict) -> None:
         detail={"action": "netscan_rescan_requested", "requested_at": at},
     )
     connection.send_result(msg["id"], {"ok": True, "requested_at": at})
+
+
+# The inventory is built from the netscan result and is owner-only for the same reason
+# (docs/NETWORK-INVENTORY-DESIGN.md, "Access control and audit").
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/inventory/list"})
+@websocket_api.async_response
+async def ws_inventory_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+
+    runtime = _runtime(hass)
+    overview = runtime.inventory.overview()
+    overview["netscan_enabled"] = bool(runtime.store.settings.get(CONF_NETSCAN_ENABLED, False))
+    overview["learning_hours"] = thresholds(runtime.store, RULE_NETWORK_DEVICE_NEW)["learning_hours"]
+    overview["events"] = {
+        "enabled": bool(runtime.store.settings.get(CONF_NETWORK_EVENTS_ENABLED, False)),
+        "include_addresses": bool(
+            runtime.store.settings.get(CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES, False)
+        ),
+    }
+    connection.send_result(msg["id"], overview)
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_verdict",
+        vol.Required("device_id"): str,
+        vol.Required("verdict"): vol.In(["unacknowledged", "acknowledged", "ignored"]),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_verdict(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: record that a device is recognized, or is to be left out of counts.
+
+    Acknowledging or ignoring a device resolves its open new-device detection, because
+    the verdict is the owner's answer to it.
+    """
+    from homeassistant.util import dt as dt_util
+
+    from .const import DETECTION_RESOLVED
+    from .detections import network_device_detection_id
+
+    runtime = _runtime(hass)
+    at = dt_util.utcnow().isoformat()
+    existing = runtime.inventory.state["devices"].get(msg["device_id"])
+    previous = existing.get("verdict") if existing else None
+    device = runtime.inventory.async_set_verdict(
+        msg["device_id"], msg["verdict"], by_user_id=connection.user.id, at=at
+    )
+    if device is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    resolved_detection = None
+    if msg["verdict"] != "unacknowledged":
+        detection_id = network_device_detection_id(msg["device_id"])
+        detection = runtime.store.data["detections"].get(detection_id)
+        if detection is not None and detection.get("status") != DETECTION_RESOLVED:
+            runtime.store.async_set_detection_status(
+                detection_id, DETECTION_RESOLVED, by_user_id=connection.user.id, at=at
+            )
+            resolved_detection = detection_id
+    runtime.audit.async_log(
+        "inventory_verdict_changed",
+        user_id=connection.user.id,
+        detail={
+            "device_id": msg["device_id"],
+            "old_verdict": previous,
+            "new_verdict": msg["verdict"],
+            "resolved_detection_id": resolved_detection,
+        },
+    )
+    connection.send_result(msg["id"], {"ok": True, "resolved_detection_id": resolved_detection})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/export",
+        vol.Required("format"): vol.In(["csv", "json"]),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_export(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: the whole device list as one file. Audited as a privileged read.
+
+    The list command is not audited because the panel calls it on every refresh;
+    an export is the inventory leaving the panel, so it is.
+    """
+    from homeassistant.util import dt as dt_util
+
+    from .inventory import export_csv, export_json
+
+    runtime = _runtime(hass)
+    devices = runtime.inventory.overview()["devices"]
+    runtime.audit.async_log(
+        "privileged_read",
+        user_id=connection.user.id,
+        detail={
+            "target": "network_inventory",
+            "read": "export",
+            "format": msg["format"],
+            "devices": len(devices),
+        },
+    )
+    exported_at = dt_util.utcnow().isoformat()
+    content = (
+        export_csv(devices)
+        if msg["format"] == "csv"
+        else export_json(devices, exported_at=exported_at)
+    )
+    connection.send_result(
+        msg["id"], {"format": msg["format"], "devices": len(devices), "content": content}
+    )
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_watch",
+        vol.Required("device_id"): str,
+        vol.Required("watched"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_watch(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: turn gone-and-back alerts for one device on or off.
+
+    A device with a randomized MAC cannot be watched: a phone leaving the house is
+    not an outage, and its record does not follow it to its next address.
+    """
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    existing = runtime.inventory.state["devices"].get(msg["device_id"])
+    if existing is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    if msg["watched"] and existing.get("mac_kind") == "local":
+        connection.send_error(
+            msg["id"], "not_supported", "A device with a randomized MAC address cannot be watched"
+        )
+        return
+    at = dt_util.utcnow().isoformat()
+    runtime.inventory.async_set_watch(msg["device_id"], msg["watched"], at=at)
+    runtime.audit.async_log(
+        "inventory_watch_changed",
+        user_id=connection.user.id,
+        detail={"device_id": msg["device_id"], "watched": msg["watched"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_label",
+        vol.Required("device_id"): str,
+        vol.Required("label"): vol.Any(None, vol.All(str, vol.Length(max=64))),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_label(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: set or clear the owner's own name for a device."""
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    device = runtime.inventory.async_set_label(
+        msg["device_id"], msg["label"], at=dt_util.utcnow().isoformat()
+    )
+    if device is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    # The label text stays out of the audit chain: it is the owner's free text.
+    runtime.audit.async_log(
+        "inventory_label_changed",
+        user_id=connection.user.id,
+        detail={"device_id": msg["device_id"], "label_set": device.get("label") is not None},
+    )
+    connection.send_result(msg["id"], {"ok": True, "label": device.get("label")})
 
 
 # Owner-only, same reasoning as netscan/firewall status: forwarded container
@@ -2232,6 +2535,9 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SNMP_PRIV_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
         # Netscan carries no credentials, so all three fields are plain settings.
         vol.Optional(CONF_NETSCAN_ENABLED): bool,
+        # Bus events about network devices; both default off.
+        vol.Optional(CONF_NETWORK_EVENTS_ENABLED): bool,
+        vol.Optional(CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES): bool,
         vol.Optional(CONF_NETSCAN_PORT_LIST): validate_netscan_port_list,
         vol.Optional(CONF_NETSCAN_MAX_CONCURRENCY): validate_netscan_max_concurrency,
     }

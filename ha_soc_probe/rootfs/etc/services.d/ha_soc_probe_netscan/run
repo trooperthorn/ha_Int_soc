@@ -20,6 +20,8 @@ CHECK_INTERVAL_SECONDS=10
 PROBE_SECRET=""
 LAST_RESCAN_SEEN=""
 LAST_SCAN_AT=0
+# In memory only: a trial not run before a restart is simply asked for again.
+LAST_TRIAL_SEEN=""
 
 # Shared with the firewall and SNMP services via /data; see ensure_probe_secret's twin comments there.
 ensure_probe_secret() {
@@ -61,6 +63,26 @@ while true; do
     enabled=$(printf '%s' "${response}" | jq -r '.service_response.enabled // false' 2>/dev/null || echo "false")
     if [ "${enabled}" = "true" ]; then
         rescan_at=$(printf '%s' "${response}" | jq -r '.service_response.rescan_requested_at // ""' 2>/dev/null || echo "")
+        # A one-off sweep of a network the owner is considering adding. It is
+        # reported on its own and never merged into the regular result.
+        trial_id=$(printf '%s' "${response}" | jq -r '.service_response.trial.id // ""' 2>/dev/null || echo "")
+        if [ -n "${trial_id}" ] && [ "${trial_id}" != "${LAST_TRIAL_SEEN}" ]; then
+            trial_network=$(printf '%s' "${response}" | jq -r '.service_response.trial.network // ""' 2>/dev/null || echo "")
+            trial_ports=$(printf '%s' "${response}" | jq -c '.service_response.port_list // []' 2>/dev/null || echo "[]")
+            trial_concurrency=$(printf '%s' "${response}" | jq -r '.service_response.max_concurrency // 32' 2>/dev/null || echo "32")
+            bashio::log.info "Netscan: owner asked for a trial sweep of ${trial_network}."
+            if ! SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN}" PROBE_SECRET="${PROBE_SECRET}" \
+                python3 /usr/lib/ha_soc/netscan.py \
+                    --ports "${trial_ports}" \
+                    --max-concurrency "${trial_concurrency}" \
+                    --ingest-url "${INGEST_URL}" \
+                    --trial-id "${trial_id}" \
+                    --trial-network "${trial_network}"
+            then
+                bashio::log.warning "Netscan: trial sweep exited non-zero."
+            fi
+            LAST_TRIAL_SEEN="${trial_id}"
+        fi
         now=$(date +%s)
         elapsed=$((now - LAST_SCAN_AT))
         rescan_requested=0
@@ -77,11 +99,31 @@ while true; do
             else
                 bashio::log.info "Netscan: starting a scan cycle (ports=${port_list}, max_concurrency=${max_concurrency})."
             fi
+            # Present only when the integration accepts certificate fingerprints and
+            # DER (docs/protocol.md "Netscan certificate delivery"). An integration
+            # from before that rejects the new keys, so the flag is left off for it.
+            cert_args=()
+            if printf '%s' "${response}" | jq -e '.service_response | has("known_cert_sha256")' >/dev/null 2>&1; then
+                known_certs=$(printf '%s' "${response}" | jq -c '.service_response.known_cert_sha256 // []' 2>/dev/null || echo "[]")
+                cert_args=(--known-certs "${known_certs}")
+            fi
+            # Optional report fields this integration accepts; absent from an older
+            # one, which then gets the report shape it knows.
+            accepts=$(printf '%s' "${response}" | jq -c '.service_response.accepts // []' 2>/dev/null || echo "[]")
+            # Further networks to sweep; an older integration sends none.
+            network_args=()
+            extra_networks=$(printf '%s' "${response}" | jq -c '.service_response.extra_networks // []' 2>/dev/null || echo "[]")
+            if [ "${extra_networks}" != "[]" ]; then
+                network_args=(--extra-networks "${extra_networks}")
+            fi
             if ! SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN}" PROBE_SECRET="${PROBE_SECRET}" \
                 python3 /usr/lib/ha_soc/netscan.py \
                     --ports "${port_list}" \
                     --max-concurrency "${max_concurrency}" \
-                    --ingest-url "${INGEST_URL}"
+                    --ingest-url "${INGEST_URL}" \
+                    --accepts "${accepts}" \
+                    ${network_args[@]+"${network_args[@]}"} \
+                    ${cert_args[@]+"${cert_args[@]}"}
             then
                 bashio::log.warning "Netscan: scan cycle exited non-zero; will retry next cycle."
             fi

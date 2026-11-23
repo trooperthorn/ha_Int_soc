@@ -1,0 +1,74 @@
+{
+  "description": "A phone with a randomized MAC rotates it. The two records are not merged.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.30",
+          "mac": "da:11:22:33:44:01",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 15,
+      "unifi": [
+        {
+          "mac": "da:11:22:33:44:01",
+          "ipv4": "192.0.2.30",
+          "name": "Pixel"
+        }
+      ]
+    },
+    {
+      "minute": 1440,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.30",
+          "mac": "da:11:22:33:44:02",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 1455,
+      "unifi": [
+        {
+          "mac": "da:11:22:33:44:02",
+          "ipv4": "192.0.2.30",
+          "name": "Pixel"
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 2,
+    "by_mac": {
+      "da:11:22:33:44:01": {
+        "mac_kind": "local",
+        "best_name": "Pixel",
+        "vendor": null
+      },
+      "da:11:22:33:44:02": {
+        "mac_kind": "local",
+        "best_name": "Pixel",
+        "vendor": null
+      }
+    },
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "created",
+        null
+      ]
+    ]
+  }
+}

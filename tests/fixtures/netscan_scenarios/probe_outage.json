@@ -1,0 +1,67 @@
+{
+  "description": "The Probe stops reporting for two hours. A watched device is not reported down.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.2",
+          "mac": "00:11:22:33:44:02",
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 10,
+      "watch": "00:11:22:33:44:55"
+    },
+    {
+      "minute": 135,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.2",
+          "mac": "00:11:22:33:44:02",
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 2,
+    "by_mac": {
+      "00:11:22:33:44:55": {
+        "presence_segments": 2,
+        "missed_cycles": 0,
+        "down": false
+      }
+    },
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "created",
+        null
+      ],
+      [
+        "watch",
+        null
+      ]
+    ]
+  }
+}

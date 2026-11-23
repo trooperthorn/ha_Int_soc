@@ -1,0 +1,272 @@
+{
+  "description": "After learning, forty unknown MACs appear in one cycle.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 2,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 2880,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.100",
+          "mac": "da:00:00:00:00:00",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.101",
+          "mac": "da:00:00:00:00:01",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.102",
+          "mac": "da:00:00:00:00:02",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.103",
+          "mac": "da:00:00:00:00:03",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.104",
+          "mac": "da:00:00:00:00:04",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.105",
+          "mac": "da:00:00:00:00:05",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.106",
+          "mac": "da:00:00:00:00:06",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.107",
+          "mac": "da:00:00:00:00:07",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.108",
+          "mac": "da:00:00:00:00:08",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.109",
+          "mac": "da:00:00:00:00:09",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.110",
+          "mac": "da:00:00:00:00:0a",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.111",
+          "mac": "da:00:00:00:00:0b",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.112",
+          "mac": "da:00:00:00:00:0c",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.113",
+          "mac": "da:00:00:00:00:0d",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.114",
+          "mac": "da:00:00:00:00:0e",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.115",
+          "mac": "da:00:00:00:00:0f",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.116",
+          "mac": "da:00:00:00:00:10",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.117",
+          "mac": "da:00:00:00:00:11",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.118",
+          "mac": "da:00:00:00:00:12",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.119",
+          "mac": "da:00:00:00:00:13",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.120",
+          "mac": "da:00:00:00:00:14",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.121",
+          "mac": "da:00:00:00:00:15",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.122",
+          "mac": "da:00:00:00:00:16",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.123",
+          "mac": "da:00:00:00:00:17",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.124",
+          "mac": "da:00:00:00:00:18",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.125",
+          "mac": "da:00:00:00:00:19",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.126",
+          "mac": "da:00:00:00:00:1a",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.127",
+          "mac": "da:00:00:00:00:1b",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.128",
+          "mac": "da:00:00:00:00:1c",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.129",
+          "mac": "da:00:00:00:00:1d",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.130",
+          "mac": "da:00:00:00:00:1e",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.131",
+          "mac": "da:00:00:00:00:1f",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.132",
+          "mac": "da:00:00:00:00:20",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.133",
+          "mac": "da:00:00:00:00:21",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.134",
+          "mac": "da:00:00:00:00:22",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.135",
+          "mac": "da:00:00:00:00:23",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.136",
+          "mac": "da:00:00:00:00:24",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.137",
+          "mac": "da:00:00:00:00:25",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.138",
+          "mac": "da:00:00:00:00:26",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.139",
+          "mac": "da:00:00:00:00:27",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 41,
+    "created_after_learning": 40
+  }
+}
