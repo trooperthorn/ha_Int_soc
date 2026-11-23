@@ -213,15 +213,15 @@ async def test_supervisor_user_id_prefers_hassio_supervisor_user(
     auth-registry fallback."""
     from types import SimpleNamespace
 
-    from homeassistant.components.hassio.const import DATA_HASSIO_SUPERVISOR_USER
+    from homeassistant.components.http.const import DATA_SUPERVISOR_USER
 
-    hass.data[DATA_HASSIO_SUPERVISOR_USER] = SimpleNamespace(
+    hass.data[DATA_SUPERVISOR_USER] = SimpleNamespace(
         id="preferred-id-from-config-store"
     )
     try:
         assert await _async_supervisor_user_id(hass) == "preferred-id-from-config-store"
     finally:
-        del hass.data[DATA_HASSIO_SUPERVISOR_USER]
+        del hass.data[DATA_SUPERVISOR_USER]
 
     # Without the hassio record, the system-generated user named Supervisor
     # is found through the public auth registry.
