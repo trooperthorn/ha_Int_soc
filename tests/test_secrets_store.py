@@ -18,7 +18,7 @@ import json
 import logging
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from homeassistant.helpers.storage import Store
@@ -64,8 +64,9 @@ async def test_secret_store_is_private_and_separate(hass: HomeAssistant) -> None
     await secrets.async_load()
 
     inner = secrets._store
-    assert inner._private is True
-    assert inner._atomic_writes is True
+    # Core 2026.11 keeps the two flags on the Store's file IO object.
+    assert inner._io._private is True
+    assert inner._io._atomic_writes is True
     assert inner.key == SECRET_STORAGE_KEY
     assert inner.key != STORAGE_KEY
 

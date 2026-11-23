@@ -260,9 +260,10 @@ async def test_audit_files_and_store_are_private(
     head_path = os.path.join(audit._dir_path, "chain_head.json")
     assert os.stat(head_path).st_mode & 0o777 == 0o600
 
-    # The general store: private=True, atomic_writes=True on the Store.
-    assert audit._store._store._private is True
-    assert audit._store._store._atomic_writes is True
+    # The general store: private=True, atomic_writes=True on the Store. Core 2026.11
+    # keeps both on the Store's file IO object.
+    assert audit._store._store._io._private is True
+    assert audit._store._store._io._atomic_writes is True
 
 
 async def test_service_data_redaction_is_deep(

@@ -61,7 +61,7 @@ async def test_empty_areas_check_info_severity_not_mirrored(hass: HomeAssistant,
 
 async def test_empty_areas_check_clears_once_populated(hass: HomeAssistant, health: IntegrationHealth) -> None:
     from homeassistant.helpers import area_registry as ar, device_registry as dr
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
+    from pytest_homeassistant.common import MockConfigEntry
 
     area = ar.async_get(hass).async_get_or_create("Fills Up")
     findings = await health._check_empty_areas_and_floors()

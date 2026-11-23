@@ -14,7 +14,7 @@ import os
 from unittest.mock import MagicMock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
@@ -55,9 +55,8 @@ def _write(hass: HomeAssistant, relative: str, text: str) -> str:
 def isolated_config_dir(hass: HomeAssistant, tmp_path) -> str:
     """Give each test its own config dir.
 
-    The harness's config dir lives inside site-packages and survives between
-    runs, so a test that creates files there leaks into the next test and
-    into every later use of that venv.
+    The default config dir is shared by the whole test session and survives between
+    tests, so a test that creates files there leaks into the next test.
     """
     hass.config.config_dir = str(tmp_path)
     return str(tmp_path)

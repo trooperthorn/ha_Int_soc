@@ -257,7 +257,8 @@ async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
     """Resolve the Supervisor system user's id, or None when there is none."""
     try:
         # Core 2026.10 moved the key from hassio.const (DATA_HASSIO_SUPERVISOR_USER)
-        # to http.const; the older location is kept for the 2026.9 floor in hacs.json.
+        # to http.const. The hacs.json floor is 2026.11, where only the new location
+        # exists; the fallback covers a manual install on an older core.
         try:
             from homeassistant.components.http.const import DATA_SUPERVISOR_USER
         except ImportError:

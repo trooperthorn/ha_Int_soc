@@ -3,46 +3,45 @@ import shutil
 
 import pytest
 
-pytest_plugins = "pytest_homeassistant_custom_component"
-
-
-@pytest.fixture(autouse=True)
-def auto_enable_custom_integrations(enable_custom_integrations):
-    yield
-
 
 @pytest.fixture
 def hass_config_dir(request) -> str:
     """Give tests that write into the config directory a private one.
 
-    The default is one directory inside site-packages shared by all pytest-xdist workers,
-    so concurrent tests that write automations.yaml or set up the automation component
-    (which copies example blueprints there) race and fail at random. A module opts in with
-    ISOLATED_CONFIG_DIR = True. Other modules keep the shared directory because the
-    scanner tests rely on the custom integrations it ships.
+    The default is one directory per pytest session (per pytest-xdist worker), shared by
+    every test that does not opt out, so files one test writes there are still present
+    for the next. A module opts in to a private directory with ISOLATED_CONFIG_DIR = True,
+    a single test with the isolated_config_dir marker.
     """
     if getattr(request.module, "ISOLATED_CONFIG_DIR", False) or request.node.get_closest_marker(
         "isolated_config_dir"
     ):
         # Requested lazily: it populates tmp_path, which other tests count files in.
         return request.getfixturevalue("hass_tmp_config_dir")
-    from pytest_homeassistant_custom_component.common import get_test_config_dir
+    return request.getfixturevalue("shared_config_dir")
 
-    return get_test_config_dir()
+
+@pytest.fixture(scope="session")
+def shared_config_dir(tmp_path_factory: pytest.TempPathFactory) -> str:
+    """One config directory for the whole session, outside the repository.
+
+    pytest-homeassistant defaults to tests/testing_config and creates nothing there. This
+    suite writes into the config directory (audit files, the crash forensics heartbeat),
+    so the default is a temporary directory instead of a path inside the working tree.
+    """
+    return str(tmp_path_factory.mktemp("shared_config"))
 
 
 @pytest.fixture
-def hass_tmp_config_dir(tmp_path: pathlib.Path) -> str:
+def hass_tmp_config_dir(tmp_path: pathlib.Path, shared_config_dir: str) -> str:
     """Copy the shared test config directory, leaving out what other tests write into it.
 
     Non-isolated modules run the integration against the shared directory, so HA SOC's own
     runtime files (``ha_soc`` with the crash forensics heartbeat and its temp file, and
     ``.storage``) appear and disappear there while another worker copies it. The copy only
-    needs the static files the harness ships, so the runtime entries are skipped.
+    needs whatever else is there, so the runtime entries are skipped.
     """
-    from pytest_homeassistant_custom_component.common import get_test_config_dir
-
-    source = get_test_config_dir()
+    source = shared_config_dir
 
     def _skip_runtime(directory: str, names: list[str]) -> list[str]:
         if pathlib.Path(directory) != pathlib.Path(source):

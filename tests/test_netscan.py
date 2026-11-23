@@ -13,7 +13,7 @@ from homeassistant.auth.const import GROUP_ID_ADMIN
 from homeassistant.const import HASSIO_USER_NAME
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
-from pytest_homeassistant_custom_component.common import MockConfigEntry, MockUser
+from pytest_homeassistant.common import MockConfigEntry, MockUser
 
 from custom_components.ha_soc.const import CONF_NETSCAN_ENABLED, DOMAIN
 from custom_components.ha_soc.netscan import (

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.util.yaml import parse_yaml
-from pytest_homeassistant_custom_component.common import MockConfigEntry, async_capture_events
+from pytest_homeassistant.common import MockConfigEntry, async_capture_events
 
 from custom_components.ha_soc.const import (
     CONF_NETWORK_EVENTS_ENABLED,

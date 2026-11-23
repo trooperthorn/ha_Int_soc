@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 import voluptuous as vol
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.auth.const import GROUP_ID_ADMIN
 from homeassistant.const import HASSIO_USER_NAME

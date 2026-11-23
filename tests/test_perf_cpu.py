@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 import homeassistant.util.dt as dt_util
 from homeassistant import loader
 from homeassistant.setup import async_setup_component
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import scanner as scanner_mod
 from custom_components.ha_soc.audit import AuditLog

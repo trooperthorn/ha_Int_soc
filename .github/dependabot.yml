@@ -19,4 +19,12 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # The harness pins its core exactly; they only resolve together. The
+      # frontend pin must equal the line in that core's package_constraints.txt.
+      home-assistant:
+        patterns:
+          - homeassistant
+          - pytest-homeassistant
+          - home-assistant-frontend
 
