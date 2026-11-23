@@ -46,6 +46,18 @@ The Supervisor exposes a live `/stats` per container. `_STAT_FIELDS` are aiohasu
 - The `ha` CLI wraps every `--raw-json` payload in `{"result": ..., "data": {...}}`; `.data` must be unwrapped first or every field prints null (seen on Supervisor 2026.08.0). The add-on info keys `ha_soc_verify_supervisor.sh` extracts (`name, version, state, rating, protected, host_network, host_pid, host_uts, host_dbus, privileged, docker_api, full_access, apparmor, auth_api, homeassistant_api, hassio_api, hassio_role, ingress, network, signed, repository, auto_update, watchdog, boot, ip_address`) are what `get_addons_info()` caches.
 - `PROBE_ADDON_NAME` is matched exactly against `get_addons_info()`'s per-addon `name` field, since slugs are repository-derived.
 
+### Supervisor network information
+
+- Read with `homeassistant.components.hassio.get_network_info(hass)`, which returns core's cached copy of the Supervisor's `GET /network/info` as a dict and raises `HassioNotReadyError` before the first fetch. Present in core 2026.11.0 (`hassio/coordinator.py`, exported from `hassio/__init__.py`); not checked in older cores, so the call is wrapped and a failure reads as "not known".
+- Shape used (`aiohasupervisor` 0.6.0 `models/network.py`, and the Supervisor API documentation): `interfaces[]` with `primary`, `connected` and `ipv4`; `ipv4.gateway` is one address or null and `ipv4.nameservers` a list. `inventory.py` `host_network_roles` takes the primary connected interface, or the first connected one with IPv4 settings.
+- These are the gateway and DNS servers the Home Assistant host is configured to use. The Supervisor does not report a DHCP server, and nothing here says which servers other devices on the network use.
+
+### Names Home Assistant already holds
+
+- DHCP: `homeassistant.components.dhcp.async_discovered_service_info(hass)` returns a list of `DhcpServiceInfo` with `ip`, `hostname` (lowercased by core) and `macaddress` (lowercase, no colons). Exported from `dhcp/__init__.py` in core 2026.11.0 and in 2026.9.3. It reads what core's own DHCP watcher has seen since start; it sends nothing. Called only when `dhcp` is loaded, and `dhcp` is in `after_dependencies`.
+- Router trackers: a `device_tracker` state whose `source_type` attribute is `router` carries `mac`, `ip` and `host_name` when the integration provides them (`ScannerEntity.state_attributes` in core 2026.11.0, `device_tracker/entity.py`). The MAC spelling is whatever the integration reports, so it is normalized before matching.
+- Neither source is asked for anything new, and neither creates an inventory record: a name is attached only to a device already held by that MAC.
+
 ### Core auth, lovelace, and config facts
 
 - `trusted_users` maps a network to a list of user-id hex strings or `{"group": group_id}` dicts (verified against core 2026.2.3's trusted_networks provider). `.storage/backup` carries `config.create_backup.password` and `config.agents[<id>].protected` (verified against core 2026.2.3 components/backup/config.py and store.py).
@@ -142,6 +154,37 @@ Network reports MACs as `aa:bb:cc:dd:ee:ff` and Protect uppercase without separa
 - Resource-limit report: `{resource_limit_state: {<slug>: {status, detail}}, probe_secret}`.
 - Docker Engine API over `/var/run/docker.sock`: `POST http://localhost/containers/addon_<slug>/update` with `Memory`, `MemorySwap`, `NanoCpus` (memory bytes = memory_mb x 1048576, NanoCpus = cpus x 1e9). `0` means unlimited (the reset body also sends `CpuShares: 0`). `MemorySwap` must equal `Memory` or Docker rejects the update, and a cap the container can dodge by swapping is not a cap. HTTP 200 is applied, 404 container not found, curl `000` socket unreachable.
 - s6 behavior relied on: every service starts as root; SIGTERM on every stop, restart, and update; the finish script receives the exit code as `$1`; a non-zero exit is restarted once finish returns.
+
+### Netscan certificate delivery
+
+- Poll: `POST .../services/ha_soc/poll_netscan_config?return_response` returns `{enabled, port_list, max_concurrency, generation, rescan_requested_at, known_cert_sha256}`. `known_cert_sha256` is a list of at most 512 lowercase hex SHA-256 fingerprints, the certificates the integration has already parsed, most recently seen first. It is not part of `generation`.
+- The key's presence is the negotiation. An integration from before 2026-11-23 does not send it, and its result schema rejects unknown TLS keys, so the run script passes `--known-certs` only when the key is present. Without the flag the Probe reports every TLS entry in the old shape, `{subject: null, issuer: null, not_after: null, self_signed: null}`.
+- With the flag, a TLS entry is `{sha256}` or `{sha256, der}`. `sha256` is the fingerprint of the leaf certificate's DER. `der` is that DER in base64, sent the first time in a cycle a fingerprint appears that is not in the known list. A handshake that yields no certificate is reported as `{}`.
+- Bounds on the Probe: a certificate over 8,192 bytes is reported by fingerprint only, and one cycle carries at most 262,144 bytes of DER. A certificate left out for the cycle bound is sent in a later cycle, because it stays unknown.
+- Bounds on the integration: `der` is at most 10,924 base64 characters, `sha256` must match `^[0-9a-f]{64}$`, and at most 256 certificates are parsed per cycle. The fingerprint stored is computed from the bytes received; DER whose hash differs from the `sha256` beside it is dropped.
+- `netscan_capabilities.tls_der` is true on a report made with the flag. `scanner_version` is `netscan/1.1`.
+- The stored result (`ha_soc/netscan/status`) never contains `der`. Each TLS entry with a held fingerprint is `{sha256, subject, issuer, not_after, self_signed}`: subject and issuer as RFC 4514 strings cut to 256 characters, `not_after` as an ISO 8601 UTC time, `self_signed` true when subject equals issuer (the signature is not checked).
+- The Probe keeps no state for this. A reinstalled integration holds no fingerprints, sends an empty list, and receives every certificate again.
+
+### Netscan presence
+
+- Poll: the `poll_netscan_config` response carries `accepts`, a list of optional report fields this integration's schema takes. It is `["presence"]` since 2026-11-23 and absent from older integrations. The run script passes it to the scanner as `--accepts`; an absent or malformed list means none.
+- With `presence` accepted, each host may carry `responded` (true when any swept port completed or refused a TCP connection), `arp_after_sweep` (true when `/proc/net/arp` holds a complete entry for the address after the sweep) and `rtt_ms` (the fastest connect or refusal time over the swept ports, one decimal). A host that only refused connections, or only shows in the post-sweep ARP table, is listed with an empty `open_ports`. `netscan_capabilities.presence` is true on such a report and `scanner_version` is `netscan/1.2`.
+- Without it the report has the earlier shape: no presence keys, and a host that only refused connections is not listed.
+- `/proc/net/arp` columns: IP address, HW type, Flags, HW address, Mask, Device. Flags bit `0x2` (ATF_COM) marks an entry with a resolved hardware address. The scanner reads the table once before the sweep (as before, for the address list and MACs) and once 9 seconds after it, and takes a MAC from the second read when the first had none.
+- The 9 second wait rests on Linux's default neighbour timers: an entry that was stale when the sweep touched it waits 5 seconds (`delay_first_probe_time`), then gets 3 unicast probes 1 second apart, and is marked failed, which clears the complete flag. UNVERIFIED: these timer values were written from memory of the kernel's neighbour defaults, not looked up in this session and not read on a HAOS host (`/proc/sys/net/ipv4/neigh/<if>/delay_first_probe_time`, `retrans_time_ms` and `ucast_solicit` show them). If a host sets them longer, a device that has left reads as present for one more cycle.
+- `rtt_ms` is a TCP round trip measured in the Probe's event loop under a concurrency limit. It includes scheduling delay and is not comparable with an ICMP ping.
+- Bounds on the integration: `responded` and `arp_after_sweep` are booleans, `rtt_ms` is 0 to 60,000.
+- `accepts` also lists `gateway` since 2026-11-23. The scanner then adds `netscan_gateway` to the report: the IPv4 next hop of the default route, or nothing when there is none. `scanner_version` is `netscan/1.3`. The integration accepts a string of at most 45 characters and keeps it only if it parses as an IPv4 address.
+- `/proc/net/route` columns: Iface, Destination, Gateway, Flags, RefCnt, Use, Metric, Mask, MTU, Window, IRTT. Destination and Gateway are 8 hex digits in the kernel's little-endian word order, the same convention as `/proc/net/tcp` above. The default route has Destination `00000000` and flag bit `0x2` (RTF_GATEWAY). Verified 2026-11-23 on a Linux 6.x host (WSL2), where the row `eth0 00000000 01801BAC 0003` matched `ip route` reading `default via 172.27.128.1`. Not read on a HAOS host. With more than one default route the first row is used.
+
+### Netscan routed networks
+
+- Poll: `poll_netscan_config` carries `extra_networks`, a list of at most 8 IPv4 networks in CIDR form, only when the owner has added any. It is part of `generation`. The run script passes it as `--extra-networks`.
+- The scanner sweeps those networks after its own subnets, under the same host cap, and marks each host found in one with `network` (the CIDR). It reports `netscan_networks`, the list it actually swept, so a network it refused shows as not swept. `scanner_version` is `netscan/1.4`.
+- Refusal, applied by the Probe whatever the poll response says (`_refusal_reason`): the value must be an IPv4 network from /22 to /30 that lies inside 10.0.0.0/8, 172.16.0.0/12 or 192.168.0.0/16 and overlaps neither 172.30.32.0/23 (the Supervisor's Docker network in the Supervisor API documentation) nor the subnet of any host interface named `docker*`, `hassio*`, `br-*` or `veth*`. The integration applies the same rule except for the interface check, which only the Probe can make.
+- Trial: while the owner has a try-before-add sweep pending, the poll response carries `trial: {id, network}`, outside `generation`. The run script runs the scanner once with `--trial-id` and `--trial-network` when it sees an id it has not run, and remembers the id in memory only. The scanner sweeps that one network, reads no ARP table, and reports `netscan_trial: {id, network, refused, hosts}` with no `netscan_result`. `refused` is a reason string or null. The integration holds the answer in memory, offers the trial for 10 minutes, and ignores an answer whose id is not the current one.
+- No ARP entry exists for a host behind a router, so such hosts carry no MAC. Presence for them is `responded` only.
 
 ## Terminal app
 

@@ -4,6 +4,7 @@
   "after_dependencies": [
     "alert",
     "automation",
+    "dhcp",
     "energy",
     "group",
     "hassio",
@@ -33,5 +34,5 @@
     "asyncssh>=2.24.0,<3"
   ],
   "single_config_entry": true,
-  "version": "2026.11.23.1"
+  "version": "2026.11.23.3"
 }

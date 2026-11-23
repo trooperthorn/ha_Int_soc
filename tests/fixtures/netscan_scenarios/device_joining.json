@@ -1,0 +1,57 @@
+{
+  "description": "A network is learned, then a new device joins two days later.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 2880,
+      "repeat": 2,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.11",
+          "mac": "00:11:22:33:44:66",
+          "open_ports": [],
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 2,
+    "by_mac": {
+      "00:11:22:33:44:55": {
+        "baseline": true
+      },
+      "00:11:22:33:44:66": {
+        "baseline": false,
+        "verdict": "unacknowledged"
+      }
+    },
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "created",
+        null
+      ]
+    ]
+  }
+}

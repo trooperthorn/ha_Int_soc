@@ -17,6 +17,9 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers.hassio import is_hassio
 
 from .const import (
+    CONF_NETSCAN_PORT_LIST,
+    NETSCAN_ACCEPTS,
+    NETSCAN_CAPABILITY_PRESENCE,
     DOMAIN,
     FIREWALL_CAPABILITIES,
     FIREWALL_REPORT_REASON_MAX,
@@ -41,7 +44,13 @@ from .firewall import (
     async_report_from_addon,
     async_verify_or_pin_secret,
 )
-from .netscan import NETSCAN_HOST_SCHEMA, NETSCAN_MAX_HOSTS_PER_RESULT
+from .netscan import (
+    NETSCAN_HOST_SCHEMA,
+    NETSCAN_MAX_HOSTS_PER_RESULT,
+    NETSCAN_TRIAL_SCHEMA,
+    strip_der,
+    validate_port_list,
+)
 from .netscan import async_config_for_probe as async_netscan_config_for_probe
 from .secrets_store import HaSocSecretStore
 from .snmp import async_config_for_probe
@@ -51,6 +60,7 @@ from .syslog_receiver import async_config_for_probe as async_syslog_receiver_con
 if TYPE_CHECKING:
     # Type-only import: this module must stay importable without audit.py at runtime.
     from .audit import AuditLog
+    from .inventory import NetworkInventory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -121,6 +131,13 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         # Netscan capability negotiation, same shape as firewall_capabilities: a Probe
         # build too old to send this reports nothing and the panel treats it as absent.
         vol.Optional("netscan_capabilities"): vol.Any(None, {str: bool}),
+        # The Probe host's default IPv4 next hop; checked as an address by the inventory.
+        vol.Optional("netscan_gateway"): vol.Any(None, vol.All(str, vol.Length(max=45))),
+        # The owner-added networks the Probe swept this cycle, and a trial sweep's answer.
+        vol.Optional("netscan_networks"): vol.Any(
+            None, vol.All([vol.All(str, vol.Length(max=18))], vol.Length(max=8))
+        ),
+        vol.Optional("netscan_trial"): vol.Any(None, NETSCAN_TRIAL_SCHEMA),
         # One cycle's worth of discovered hosts; bounded so an ingest call cannot write
         # an unbounded amount of scan data.
         vol.Optional("netscan_result"): vol.Any(
@@ -315,7 +332,11 @@ async def async_supervisor_call_rejection(
 
 
 def async_register_probe_service(
-    hass: HomeAssistant, store: HaSocData, audit: "AuditLog", secrets: HaSocSecretStore
+    hass: HomeAssistant,
+    store: HaSocData,
+    audit: "AuditLog",
+    secrets: HaSocSecretStore,
+    inventory: "NetworkInventory | None" = None,
 ) -> None:
     """Register the add-on's authenticated service endpoints.
 
@@ -410,17 +431,55 @@ def async_register_probe_service(
             status = dict(call.data["snmp_status"])
             status["reported_at"] = dt_util.utcnow().isoformat()
             store.async_set_snmp_status(status)
+        if call.data.get("netscan_trial") is not None and inventory is not None:
+            # Kept in memory for the owner to look at; never stored and never merged.
+            inventory.async_trial_result(
+                {**call.data["netscan_trial"], "hosts": strip_der(call.data["netscan_trial"].get("hosts") or [])}
+            )
         if call.data.get("netscan_result") is not None:
+            # Certificate DER is parsed and dropped before anything is stored.
+            hosts = strip_der(call.data["netscan_result"])
+            if inventory is not None:
+                try:
+                    hosts = await inventory.async_absorb_certificates(call.data["netscan_result"])
+                except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
+                    _LOGGER.exception("HA SOC could not read the netscan cycle's certificates")
             store.async_set_netscan_result(
                 {
-                    "hosts": call.data["netscan_result"],
+                    "hosts": hosts,
                     "capabilities": _known_netscan_capabilities(
                         call.data.get("netscan_capabilities")
                     ),
                     "scanner_version": call.data.get("scanner_version"),
                     "reported_at": dt_util.utcnow().isoformat(),
+                    # None from a Probe that does not sweep further networks.
+                    "networks_swept": call.data.get("netscan_networks"),
                 }
             )
+            if inventory is not None:
+                from .detections import (
+                    RULE_NETWORK_DUPLICATE_ADDRESS,
+                    RULE_NETWORK_DEVICE_DOWN,
+                    RULE_NETWORK_DEVICE_NEW,
+                    thresholds,
+                )
+
+                capabilities = _known_netscan_capabilities(
+                    call.data.get("netscan_capabilities")
+                )
+
+                try:
+                    inventory.async_merge_cycle(
+                        hosts,
+                        learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
+                        port_list=validate_port_list(store.settings.get(CONF_NETSCAN_PORT_LIST)),
+                        presence=bool((capabilities or {}).get(NETSCAN_CAPABILITY_PRESENCE)),
+                        down_cycles=thresholds(store, RULE_NETWORK_DEVICE_DOWN)["down_cycles"],
+                        duplicate_flips=thresholds(store, RULE_NETWORK_DUPLICATE_ADDRESS)["flips"],
+                        gateway_ip=call.data.get("netscan_gateway"),
+                    )
+                except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
+                    _LOGGER.exception("HA SOC could not merge the netscan cycle into the inventory")
         if call.data.get("syslog_entries"):
             store.async_append_syslog_entries(call.data["syslog_entries"])
         if call.data.get("syslog_receiver_status") is not None:
@@ -460,6 +519,15 @@ def async_register_probe_service(
         # an on-demand rescan request the run script diffs against every poll,
         # independent of whether the port list or concurrency cap changed.
         config["rescan_requested_at"] = store.data.get("netscan_rescan_requested_at")
+        # Also outside the generation. Its presence tells the Probe this build accepts
+        # certificate fingerprints and DER; its content tells it which DER to leave out.
+        config["known_cert_sha256"] = (
+            inventory.known_cert_fingerprints() if inventory is not None else []
+        )
+        config["accepts"] = list(NETSCAN_ACCEPTS)
+        trial = inventory.pending_trial() if inventory is not None else None
+        if trial is not None:
+            config["trial"] = trial
         return config
 
     async def _handle_poll_syslog_receiver(call: ServiceCall) -> dict:

@@ -325,6 +325,8 @@ IMMEDIATE_FLUSH_CATEGORIES = frozenset(
         "unifi_baseline_accepted",
         "dashboard_file_denied",
         "detection_status_changed",
+        "inventory_verdict_changed",
+        "inventory_watch_changed",
         "probe_auth_rejected",
         "audit_chain_reset",
         "privileged_read",

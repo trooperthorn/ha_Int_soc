@@ -38,6 +38,10 @@ import {
   discardFirewallPending,
   fetchNetscanStatus,
   requestNetscanRescan,
+  tryNetscanNetwork,
+  addNetscanNetwork,
+  removeNetscanNetwork,
+  updateSettings,
   fetchNetworkOverview,
 } from "../data/ha-soc-ws";
 
@@ -219,6 +223,8 @@ export class HaSocScannerView extends HaSocCustomizableView {
   @state() private _netscan: NetscanStatus | null = null;
   @state() private _netscanRescanSubmitting = false;
   @state() private _netscanError: string | null = null;
+  @state() private _netscanBusy = false;
+  @state() private _netscanNetworkDraft = "";
 
   // Column sort state per table; null keeps each table's default order.
   @state() private _misconfigSort: SortState | null = null;
@@ -547,6 +553,112 @@ export class HaSocScannerView extends HaSocCustomizableView {
     } finally {
       this._netscanRescanSubmitting = false;
     }
+  }
+
+  /** Runs one owner action on the network scan and reloads its status. */
+  private async _netscanAction(action: () => Promise<unknown>, failure: string) {
+    this._netscanError = null;
+    this._netscanBusy = true;
+    try {
+      await action();
+      this._netscan = await fetchNetscanStatus(this.hass).catch(() => this._netscan);
+    } catch (err: any) {
+      this._netscanError = err?.message ?? failure;
+    } finally {
+      this._netscanBusy = false;
+    }
+  }
+
+  private _renderNetscanNetworks(netscan: NetscanStatus) {
+    const trial = netscan.trial;
+    const draft = this._netscanNetworkDraft.trim();
+    return html`
+      <h4 style="margin:14px 0 4px;">Other networks</h4>
+      <p class="muted" style="font-size:12.5px;">
+        The Probe scans the networks its own host is on. Add up to 8 further private networks behind a router here,
+        each between /22 and /30. Devices there are recorded by address, because a MAC address does not cross a
+        router.
+      </p>
+      ${netscan.extra_networks.length === 0
+        ? html`<div class="muted" style="font-size:12.5px;">None added.</div>`
+        : netscan.extra_networks.map(
+            (n) => html`
+              <div style="font-size:13px;margin:2px 0;">
+                ${n.network}
+                <span class="muted">
+                  ${n.swept === true
+                    ? `scanned, ${n.hosts} host(s) answered`
+                    : n.swept === false
+                      ? "not scanned in the last cycle"
+                      : "not scanned yet, or the Probe is too old to say"}
+                </span>
+                <button
+                  class="ha-btn"
+                  ?disabled=${this._netscanBusy}
+                  @click=${() =>
+                    this._netscanAction(() => removeNetscanNetwork(this.hass, n.network), "Failed to remove the network.")}
+                >
+                  Remove
+                </button>
+              </div>
+            `
+          )}
+      <div class="toolbar" style="margin-top:8px;">
+        <input
+          type="text"
+          placeholder="192.168.20.0/24"
+          aria-label="Network to try, in CIDR form"
+          .value=${this._netscanNetworkDraft}
+          @input=${(ev: Event) => (this._netscanNetworkDraft = (ev.target as HTMLInputElement).value)}
+        />
+        <button
+          class="ha-btn"
+          ?disabled=${this._netscanBusy || !draft || !netscan.enabled}
+          title="Scan this network once and show what answers. Nothing is saved."
+          @click=${() => this._netscanAction(() => tryNetscanNetwork(this.hass, draft), "Failed to start the trial.")}
+        >
+          Try
+        </button>
+      </div>
+      ${trial
+        ? html`
+            <div style="font-size:13px;margin-top:8px;">
+              Trial of ${trial.network}:
+              ${trial.completed_at === null
+                ? html`waiting for the Probe, which checks for requests every 10 seconds and then needs time to scan.
+                    <button
+                      class="ha-btn"
+                      ?disabled=${this._netscanBusy}
+                      @click=${() => this._netscanAction(async () => undefined, "Failed to refresh.")}
+                    >
+                      Refresh
+                    </button>`
+                : trial.refused
+                  ? html`the Probe refused it (${trial.refused}).`
+                  : html`${trial.host_count ?? 0} host(s)
+                      answered${trial.hosts && trial.hosts.length
+                        ? `: ${trial.hosts
+                            .slice(0, 20)
+                            .map((h) => h.ip)
+                            .join(", ")}${(trial.host_count ?? 0) > 20 ? ", ..." : ""}`
+                        : ""}.
+                      ${netscan.extra_networks.some((n) => n.network === trial.network)
+                        ? nothing
+                        : html`<button
+                            class="ha-btn"
+                            ?disabled=${this._netscanBusy}
+                            @click=${() =>
+                              this._netscanAction(
+                                () => addNetscanNetwork(this.hass, trial.network),
+                                "Failed to add the network."
+                              )}
+                          >
+                            Add to the regular scan
+                          </button>`}`}
+            </div>
+          `
+        : nothing}
+    `;
   }
 
   private async _onScanIntegrations() {
@@ -1522,7 +1634,20 @@ export class HaSocScannerView extends HaSocCustomizableView {
                     ? html`<div class="empty">No hosts discovered.</div>`
                     : this._renderNetscanHostsTable(result.hosts)}
                 `}
+        ${this._renderNetscanNetworks(netscan)}
         <div class="toolbar" style="margin-top:12px;">
+          <button
+            class="ha-btn"
+            ?disabled=${this._netscanBusy}
+            title="The scan connects to every address on the Probe's networks on the configured ports, every 5 minutes."
+            @click=${() =>
+              this._netscanAction(
+                () => updateSettings(this.hass, { netscan_enabled: !netscan.enabled }),
+                "Failed to change the setting."
+              )}
+          >
+            ${netscan.enabled ? "Turn the scan off" : "Turn the scan on"}
+          </button>
           <button
             class="ha-btn"
             ?disabled=${this._netscanRescanSubmitting || !netscan.enabled}

@@ -25,6 +25,12 @@ AUDIT_STORAGE_SUBDIR = f"{DOMAIN}_audit"
 
 # A topic is appended to the signal, e.g. f"{SIGNAL_UPDATE}_users".
 SIGNAL_UPDATE = f"{DOMAIN}_update"
+# Sent with the normalized client list each time a UniFi network snapshot yields
+# one, so the inventory can use the controller as a second source without a
+# fetch of its own.
+SIGNAL_UNIFI_CLIENTS = f"{DOMAIN}_unifi_clients"
+# Sent with the gateway's WAN address when a UniFi snapshot reports one.
+SIGNAL_UNIFI_WAN = f"{DOMAIN}_unifi_wan"
 
 # Custom bus event fired for user-built automations (ha_soc_alert).
 EVENT_ALERT = f"{DOMAIN}_alert"
@@ -129,6 +135,19 @@ CONF_NETSCAN_PORT_LIST = "netscan_port_list"
 DEFAULT_NETSCAN_PORT_LIST: list[int] = [22, 23, 80, 443, 445, 3389, 8080, 8443]
 CONF_NETSCAN_MAX_CONCURRENCY = "netscan_max_concurrency"
 DEFAULT_NETSCAN_MAX_CONCURRENCY = 32
+# Bus events for automations, off by default (docs/NETWORK-INVENTORY-DESIGN.md, phase 9).
+# The second switch adds the MAC and address to the payload; any automation can
+# read a bus event, so the default payload names the device by id and label only.
+CONF_NETWORK_EVENTS_ENABLED = "network_events_enabled"
+CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES = "network_events_include_addresses"
+EVENT_NETWORK_DEVICE_NEW = "ha_soc_network_device_new"
+EVENT_NETWORK_DEVICE_DOWN = "ha_soc_network_device_down"
+EVENT_NETWORK_DEVICE_BACK = "ha_soc_network_device_back"
+# Further private IPv4 networks the Probe sweeps besides its own subnets.
+CONF_NETSCAN_EXTRA_NETWORKS = "netscan_extra_networks"
+NETSCAN_MAX_EXTRA_NETWORKS = 8
+NETSCAN_EXTRA_PREFIX_MIN = 22
+NETSCAN_EXTRA_PREFIX_MAX = 30
 NETSCAN_PORT_MIN = 1
 NETSCAN_PORT_MAX = 65535
 NETSCAN_MAX_PORT_LIST_ENTRIES = 64
@@ -324,7 +343,20 @@ SERVICE_INGEST_NETSCAN_RESULT = "netscan_result"
 # What the Probe negotiates about its own netscan capability on ingest, so the panel
 # never shows netscan controls for a Probe build too old to run it.
 NETSCAN_CAPABILITY_TCP_CONNECT = "tcp_connect"
-NETSCAN_CAPABILITIES = [NETSCAN_CAPABILITY_TCP_CONNECT]
+# True when the Probe reports certificates by fingerprint and DER, which only a
+# Probe that was offered a known-fingerprint list does (docs/protocol.md,
+# "Netscan certificate delivery").
+NETSCAN_CAPABILITY_TLS_DER = "tls_der"
+# True when the cycle carries responded, arp_after_sweep and rtt_ms per host
+# (docs/protocol.md, "Netscan presence"). Presence is only judged on such cycles.
+NETSCAN_CAPABILITY_PRESENCE = "presence"
+NETSCAN_CAPABILITIES = [
+    NETSCAN_CAPABILITY_TCP_CONNECT,
+    NETSCAN_CAPABILITY_TLS_DER,
+    NETSCAN_CAPABILITY_PRESENCE,
+]
+# Optional report fields offered to the Probe in the netscan poll response.
+NETSCAN_ACCEPTS = [NETSCAN_CAPABILITY_PRESENCE, "gateway"]
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
 # "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.

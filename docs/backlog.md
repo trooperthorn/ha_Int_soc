@@ -36,7 +36,6 @@ Open items moved out of code comments, dated when they were recorded. Larger spr
 ## Deferred work
 
 - 2026-09-08 UniFi diagnostics sibling integration: not created. Port profiles and effective native/tagged VLAN, device Network Override, the inform URL a device holds, STUN 3478 state, Mesh Parent, association tables, spectrum occupancy and DHCP leases have no route in the Network API at v10.4.57 (checked against the saved OpenAPI: `Port overview` carries connector, idx, maxSpeedMbps, poe, speedMbps, state only; `Adopted device details` carries no override or inform field; `Device uplink interface overview` carries deviceId only; `Wireless radio overview` carries the device's own channel, width, band and standard). All of it depends on read-only SSH whose command output has not been verified against real hardware, and the sibling's name is unconfirmed.
-- 2026-09-11 `.grype.yaml` carries two scoped ignores for the Supervisor CLI binary in the Terminal image (GO-2026-5942 in golang.org/x/net, GO-2026-5970 in golang.org/x/text, both fixed upstream but not yet in a home-assistant/cli release). Re-check each cli release; drop the entries and the file once 5.5.x or later ships the fixed modules.
 - 2026-09-11 SFTP logins into the audit chain: sshd logs "Accepted publickey for root from <ip> ... <fingerprint>" and refusals to the app log; a reader of that log (the Logs tab's Supervisor gateway, or the external audit ingest from inside the app) could turn them into `terminal_sftp_login` records. Not started.
 - 2026-09-11 Terminal transcript hash into the audit chain: the app writes `{id, started, ended, bytes, sha256}` to `/data/sessions/index.jsonl` at session end; wiring it through `ha_soc.ingest_audit` (per-source secret, hash-chained) would put the transcript hash beside the `terminal_session_close` record. The app would need to keep its own chain head; not started.
 - 2026-09-11 Terminal `core` and `addon` targets: need `docker_api` on the app (rating 1) and Protection Mode off, plus ttyd `-a` URL arguments to the wrapper (unverified); a privilege decision on its own.
@@ -75,3 +74,30 @@ No TODO or FIXME comments remained in the integration, frontend, probe, scripts,
     <slug>` subcommands exist with those exact names, based on the one
     example DOCS.md already documented; not run against a real Supervisor
     CLI.
+
+## Network inventory (2026-11-23)
+
+Left open when the ten phases of `NETWORK-INVENTORY-DESIGN.md` were built.
+
+- Panel text is not translatable. Measured 2026-11-23: the panel source has
+  34 TypeScript files, 16 of them views, and no call to `hass.localize`;
+  `translations/en.json` holds 83 strings, all for the config flow, options,
+  entities, Repairs issues and services. Every string the panel shows,
+  including all inventory text, is English in the TypeScript. Translating
+  the panel is its own project and was not started.
+- Unexpected DHCP server probe (`network_rogue_dhcp`): waits on the owner's
+  decision, open decision 3 in the design.
+- Integration-side vendor table from the IEEE registry: waits on a download
+  and a size decision.
+- mDNS names: no verified way to read core's zeroconf cache without sending
+  queries.
+- Suggested merge and reset inventory (phase 1), a device detail page, a
+  control for the netscan port list and concurrency, and a posture score
+  term for network detections (open decision 1).
+- A finding when the record cap is reached, and one when the Probe and the
+  UniFi controller disagree about a device.
+- Not verified on a real install: everything. The list per phase is under
+  each "What phase N built" heading in the design.
+- From the Vedetta comparison, outside this feature: an OpenSSF Scorecard
+  workflow. Signed Probe images are already listed above as deferred.
+

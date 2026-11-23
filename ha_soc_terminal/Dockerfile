@@ -7,9 +7,9 @@ ARG BUILD_ARCH=amd64
 # The Supervisor CLI, pinned by release and checksum per architecture. It
 # is installed as ha.real; /usr/local/bin/ha is the wrapper that hands it
 # the Supervisor token without exporting it into the shell.
-ARG HA_CLI_VERSION=5.5.0
-ARG HA_CLI_SHA256_AMD64=fb2e2177bd7bc014f029b807cd1cc7d74484ecfed1e90d5f9b2a61d65ff5393d
-ARG HA_CLI_SHA256_AARCH64=af390ab7f91a8135668ace7b1425d8e53800b6a1fc3b36fc588df701d2ab3db5
+ARG HA_CLI_VERSION=6.0.0
+ARG HA_CLI_SHA256_AMD64=faab39046723cb68d43e9d5c8ac5a2cf105f3ecb3f5c8a01c0999c2699c56489
+ARG HA_CLI_SHA256_AARCH64=514cd052627358d673842e6132d4d0fc88f246c1af767a895c2b529a153c0c59
 
 # The terminal server, the shell, the transcript recorder, and the readers.
 # Nothing that opens a connection to another host is installed; CI asserts

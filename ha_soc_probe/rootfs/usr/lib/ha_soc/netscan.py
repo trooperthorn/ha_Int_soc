@@ -17,7 +17,10 @@ What one cycle does:
      TLS-typical ports, one additional TLS handshake to read the peer
      certificate (verification disabled on purpose: a self-signed cert on
      a LAN device is the expected case, and the point is to read what is
-     presented, not to validate a chain).
+     presented, not to validate a chain). The certificate is reported as
+     its SHA-256 fingerprint, plus the DER bytes when the integration does
+     not hold that fingerprint yet; the integration parses it. See
+     docs/protocol.md "Netscan certificate delivery".
   4. Matches whatever text was read against a small curated regex table
      (SERVICE_SIGNATURES) for a best-effort service guess.
   5. Looks up a best-effort vendor label for each discovered MAC against
@@ -36,7 +39,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -45,13 +50,14 @@ import socket
 import ssl
 import struct
 import sys
+import time
 import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from oui_prefixes import vendor_for_mac
 
-SCANNER_VERSION = "netscan/1.0"
+SCANNER_VERSION = "netscan/1.4"
 
 # Bounds independent of whatever the owner configures, so a misconfigured or
 # hostile poll response cannot turn this into an unbounded sweep.
@@ -63,6 +69,32 @@ CONNECT_TIMEOUT_SECONDS = 0.75
 BANNER_READ_TIMEOUT_SECONDS = 0.75
 TLS_HANDSHAKE_TIMEOUT_SECONDS = 1.5
 BANNER_MAX_BYTES = 256
+# One certificate larger than this is reported by fingerprint only, and one
+# cycle never carries more DER than the second bound, whatever the LAN presents.
+MAX_DER_BYTES = 8192
+MAX_DER_BYTES_PER_CYCLE = 262144
+MAX_KNOWN_CERTS = 512
+# How long to wait after the sweep before reading the ARP table a second time.
+# The sweep's own connection attempts make the kernel resolve every on-link
+# target; an address that does not answer is marked failed once the kernel's
+# neighbour probes run out, which with Linux's default timers (5 s delay, then
+# 3 probes 1 s apart) takes about 8 seconds. See docs/protocol.md "Netscan
+# presence" for what is and is not verified about this.
+ARP_SETTLE_SECONDS = 9
+ACCEPT_PRESENCE = "presence"
+ACCEPT_GATEWAY = "gateway"
+# Further networks the owner asked to have swept (docs/protocol.md "Netscan
+# routed networks"). These bounds are enforced here as well as in the
+# integration, so a bad poll response cannot widen the sweep.
+MAX_EXTRA_NETWORKS = 8
+EXTRA_NETWORK_PREFIX_MIN = 22
+EXTRA_NETWORK_PREFIX_MAX = 30
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+# The Supervisor's internal Docker network, from the Supervisor API documentation.
+_SUPERVISOR_NETWORK = ipaddress.ip_network("172.30.32.0/23")
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 # Ports where a TLS handshake is attempted after (or instead of) a plaintext
 # banner read; anything not in this set is never wrapped in TLS.
@@ -148,6 +180,65 @@ def _read_arp_table() -> dict[str, str]:
     return table
 
 
+def _read_arp_complete() -> dict[str, str]:
+    """IP -> MAC for the ARP entries the kernel currently marks complete.
+
+    Column 3 of /proc/net/arp is the flags word; bit 0x2 (ATF_COM) is set while
+    the kernel holds a resolved hardware address for the entry. Read after the
+    sweep and the settle wait, a complete entry means the host answered ARP
+    during this cycle. Never raises.
+    """
+    table: dict[str, str] = {}
+    try:
+        with open("/proc/net/arp", encoding="ascii", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return table
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        ip, flags, mac = parts[0], parts[2], parts[3]
+        try:
+            complete = bool(int(flags, 16) & 0x2)
+            ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if not complete or mac in ("00:00:00:00:00:00", "<incomplete>"):
+            continue
+        table[ip] = mac.lower()
+    return table
+
+
+def _default_gateway() -> str | None:
+    """The IPv4 next hop of the default route, from /proc/net/route, or None.
+
+    Columns: Iface, Destination, Gateway, Flags, ... Destination and Gateway
+    are 8 hex digits in the kernel's little-endian word order (01801BAC is
+    172.27.128.1). The default route has destination 00000000 and the
+    RTF_GATEWAY flag (0x2). With several default routes the first listed is
+    taken, which is the order the kernel prints them in. Never raises.
+    """
+    try:
+        with open("/proc/net/route", encoding="ascii", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 4 or parts[1] != "00000000":
+            continue
+        try:
+            if not int(parts[3], 16) & 0x2:
+                continue
+            raw = bytes.fromhex(parts[2])
+        except ValueError:
+            continue
+        if len(raw) == 4 and any(raw):
+            return socket.inet_ntoa(raw[::-1])
+    return None
+
+
 def _ioctl_ifaddr(sock: socket.socket, ifname: str, request: int) -> str | None:
     """One SIOCGIFADDR/SIOCGIFNETMASK ioctl; None on any failure (no IPv4,
     interface down, permission, etc.) rather than raising."""
@@ -190,6 +281,69 @@ def _local_ipv4_networks() -> list[ipaddress.IPv4Network]:
     return networks
 
 
+def _container_networks() -> list[ipaddress.IPv4Network]:
+    """The subnets of this host's container bridges, which are never swept."""
+    networks: list[ipaddress.IPv4Network] = [_SUPERVISOR_NETWORK]
+    try:
+        ifnames = os.listdir("/sys/class/net")
+    except OSError:
+        return networks
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for ifname in ifnames:
+            if not ifname.startswith(("docker", "hassio", "br-", "veth")):
+                continue
+            addr = _ioctl_ifaddr(sock, ifname, 0x8915)
+            netmask = _ioctl_ifaddr(sock, ifname, 0x891B)
+            if not addr or not netmask:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(f"{addr}/{netmask}", strict=False))
+            except ValueError:
+                continue
+    return networks
+
+
+def _refusal_reason(
+    raw: object, container_networks: list[ipaddress.IPv4Network]
+) -> tuple[ipaddress.IPv4Network | None, str | None]:
+    """(network, None) when the network may be swept, else (None, why not).
+
+    Allowed: an IPv4 network from /22 to /30 that lies inside the RFC 1918
+    private ranges and does not overlap a container bridge. That rules out
+    loopback, link-local, multicast and every public range by construction.
+    """
+    try:
+        network = ipaddress.ip_network(str(raw), strict=False)
+    except ValueError:
+        return None, "not a network"
+    if network.version != 4:
+        return None, "not IPv4"
+    if not EXTRA_NETWORK_PREFIX_MIN <= network.prefixlen <= EXTRA_NETWORK_PREFIX_MAX:
+        return None, "prefix outside /22 to /30"
+    if not any(network.subnet_of(private) for private in _PRIVATE_NETWORKS):
+        return None, "not a private network"
+    if any(network.overlaps(container) for container in container_networks):
+        return None, "overlaps a container network"
+    return network, None
+
+
+def _parse_extra_networks(raw: str | None) -> list[ipaddress.IPv4Network]:
+    """The owner's further networks that pass _refusal_reason, at most MAX_EXTRA_NETWORKS."""
+    try:
+        parsed = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    containers = _container_networks()
+    networks: list[ipaddress.IPv4Network] = []
+    for item in parsed[:MAX_EXTRA_NETWORKS]:
+        network, _reason = _refusal_reason(item, containers)
+        if network is not None and network not in networks:
+            networks.append(network)
+    return networks
+
+
 def _sweep_targets(networks: list[ipaddress.IPv4Network], arp_ips: set[str]) -> list[str]:
     """The bounded address list to sweep: every host in each local subnet
     (skipped if a network is implausibly large for a bounded sweep) unioned
@@ -226,7 +380,16 @@ async def _read_banner(reader: asyncio.StreamReader) -> str:
 async def _read_tls_cert(ip: str, port: int) -> dict[str, object] | None:
     """One additional TLS handshake, verification disabled on purpose: a
     self-signed certificate is the expected shape on a LAN, and the point
-    is to read whatever is presented, not to validate a chain."""
+    is to read whatever is presented, not to validate a chain.
+
+    Returns None when there was no TLS handshake, an empty dict when the
+    handshake succeeded without a leaf certificate, and otherwise the
+    fingerprint plus the raw DER under "_der" (removed again by
+    _attach_certificates before anything is reported).
+
+    With verify_mode CERT_NONE the dict form of getpeercert() is always
+    empty, so only binary_form=True yields the certificate.
+    """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -238,42 +401,73 @@ async def _read_tls_cert(ip: str, port: int) -> dict[str, object] | None:
         return None
     try:
         ssl_object = writer.get_extra_info("ssl_object")
-        cert = ssl_object.getpeercert() if ssl_object is not None else None
+        der = ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
     finally:
         writer.close()
         try:
             await writer.wait_closed()
-        except OSError:
+        except (OSError, ssl.SSLError):
             pass
-    if not cert:
-        # A handshake with no leaf certificate available (anonymous cipher,
-        # or getpeercert() unsupported for this connection) still proves TLS.
-        return {"subject": None, "issuer": None, "not_after": None, "self_signed": None}
-    subject = ", ".join(
-        f"{k}={v}" for pair in cert.get("subject", ()) for k, v in pair
-    ) or None
-    issuer = ", ".join(
-        f"{k}={v}" for pair in cert.get("issuer", ()) for k, v in pair
-    ) or None
-    self_signed = bool(subject and issuer and subject == issuer)
-    return {
-        "subject": subject,
-        "issuer": issuer,
-        "not_after": cert.get("notAfter"),
-        "self_signed": self_signed,
-    }
+    if not der:
+        return {}
+    return {"sha256": hashlib.sha256(der).hexdigest(), "_der": der}
+
+
+def _attach_certificates(
+    hosts: list[dict[str, object]], known: set[str] | None
+) -> None:
+    """Decide, in place, what each TLS entry reports.
+
+    ``known`` is the set of fingerprints the integration already holds, or
+    None when the integration did not send one. None means an integration
+    build from before certificate delivery, whose schema rejects the new
+    keys, so every TLS entry is reported in the old shape.
+
+    Otherwise each entry carries "sha256", and "der" (base64) the first time
+    a fingerprint the integration does not hold appears in this cycle, while
+    the per-certificate and per-cycle size bounds allow.
+    """
+    budget = MAX_DER_BYTES_PER_CYCLE
+    sent: set[str] = set()
+    for host in hosts:
+        for entry in host.get("open_ports") or []:  # type: ignore[union-attr]
+            tls = entry.get("tls")
+            if not isinstance(tls, dict):
+                continue
+            der = tls.pop("_der", None)
+            fingerprint = tls.get("sha256")
+            if known is None:
+                entry["tls"] = {
+                    "subject": None,
+                    "issuer": None,
+                    "not_after": None,
+                    "self_signed": None,
+                }
+                continue
+            if not der or fingerprint in known or fingerprint in sent:
+                continue
+            if len(der) > MAX_DER_BYTES or len(der) > budget:
+                continue
+            budget -= len(der)
+            sent.add(fingerprint)
+            tls["der"] = base64.b64encode(der).decode("ascii")
 
 
 async def _probe_one(
     ip: str, port: int, semaphore: asyncio.Semaphore
 ) -> dict[str, object] | None:
     async with semaphore:
+        started = time.monotonic()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port), timeout=CONNECT_TIMEOUT_SECONDS
             )
+        except ConnectionRefusedError:
+            # A refusal is an answer: the host is there, the port is shut.
+            return {"_refused": True, "_rtt_ms": (time.monotonic() - started) * 1000}
         except (asyncio.TimeoutError, OSError):
             return None
+        rtt_ms = (time.monotonic() - started) * 1000
         banner = ""
         try:
             banner = await _read_banner(reader)
@@ -289,7 +483,7 @@ async def _probe_one(
         async with semaphore:
             tls_info = await _read_tls_cert(ip, port)
 
-    entry: dict[str, object] = {"port": port}
+    entry: dict[str, object] = {"port": port, "_rtt_ms": rtt_ms}
     if banner:
         entry["banner"] = banner.strip()
     service_guess, confidence = _guess_service(banner)
@@ -305,10 +499,31 @@ async def _probe_one(
     return entry
 
 
-async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[str, object]]:
-    arp_table = _read_arp_table()
-    networks = _local_ipv4_networks()
-    targets = _sweep_targets(networks, set(arp_table))
+async def _run_cycle(
+    port_list: list[int],
+    max_concurrency: int,
+    known_certs: set[str] | None = None,
+    presence: bool = False,
+    extra_networks: list[ipaddress.IPv4Network] | None = None,
+    only_extra: bool = False,
+) -> list[dict[str, object]]:
+    """One sweep. With ``presence`` each host also reports whether it answered
+    (``responded``: a completed or refused connection), whether the kernel held
+    a resolved ARP entry for it after the sweep (``arp_after_sweep``), and the
+    fastest TCP connect or refusal time (``rtt_ms``). Without it the result has
+    the shape older integrations accept.
+
+    ``extra_networks`` are swept as well as the local ones and each host found
+    in one carries ``network``. ``only_extra`` sweeps them alone, with no ARP
+    read at all: that is the trial of one network before the owner adds it."""
+    extra_networks = extra_networks or []
+    if only_extra:
+        arp_table: dict[str, str] = {}
+        targets = _sweep_targets(extra_networks, set())
+    else:
+        arp_table = _read_arp_table()
+        networks = _local_ipv4_networks()
+        targets = _sweep_targets(networks + extra_networks, set(arp_table))
 
     semaphore = asyncio.Semaphore(max_concurrency)
     tasks = {
@@ -322,8 +537,17 @@ async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[st
     for (ip, _port), entry in zip(tasks.keys(), results):
         if entry is None:
             continue
+        rtt_ms = entry.pop("_rtt_ms", None)
+        refused = entry.pop("_refused", False)
+        if refused and not presence:
+            continue
         host = hosts.setdefault(ip, {"ip": ip, "open_ports": []})
-        host["open_ports"].append(entry)  # type: ignore[union-attr]
+        if not refused:
+            host["open_ports"].append(entry)  # type: ignore[union-attr]
+        if presence:
+            host["responded"] = True
+            if isinstance(rtt_ms, float) and rtt_ms < float(host.get("rtt_ms", 1e9)):  # type: ignore[arg-type]
+                host["rtt_ms"] = round(rtt_ms, 1)
 
     # Include ARP-known hosts with no open port in the configured list too,
     # so the panel can show "seen on the network, nothing scanned open"
@@ -331,7 +555,21 @@ async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[st
     for ip in arp_table:
         hosts.setdefault(ip, {"ip": ip, "open_ports": []})
 
+    if presence and not only_extra:
+        await asyncio.sleep(ARP_SETTLE_SECONDS)
+        for ip, mac in _read_arp_complete().items():
+            host = hosts.setdefault(ip, {"ip": ip, "open_ports": []})
+            host["arp_after_sweep"] = True
+            # The first read ran before the sweep, so a host that only now
+            # resolved gets its MAC in this cycle instead of the next.
+            arp_table.setdefault(ip, mac)
+
     for ip, host in hosts.items():
+        address = ipaddress.ip_address(ip)
+        for network in extra_networks:
+            if address in network:
+                host["network"] = str(network)
+                break
         mac = arp_table.get(ip)
         if mac:
             host["mac"] = mac
@@ -339,16 +577,27 @@ async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[st
             if vendor:
                 host["vendor"] = vendor
 
-    return sorted(hosts.values(), key=lambda h: tuple(int(x) for x in str(h["ip"]).split(".")))
+    ordered = sorted(hosts.values(), key=lambda h: tuple(int(x) for x in str(h["ip"]).split(".")))
+    _attach_certificates(ordered, known_certs)
+    return ordered
 
 
 def _post_result(
-    ingest_url: str, supervisor_token: str, probe_secret: str, hosts: list[dict[str, object]]
+    ingest_url: str,
+    supervisor_token: str,
+    probe_secret: str,
+    hosts: list[dict[str, object]],
+    tls_der: bool = False,
+    presence: bool = False,
+    gateway: str | None = None,
+    networks_swept: list[str] | None = None,
 ) -> int:
     payload = json.dumps(
         {
+            **({"netscan_gateway": gateway} if gateway else {}),
+            **({"netscan_networks": networks_swept} if networks_swept is not None else {}),
             "netscan_result": hosts,
-            "netscan_capabilities": {"tcp_connect": True},
+            "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der, "presence": presence},
             "scanner_version": SCANNER_VERSION,
             "probe_secret": probe_secret,
         }
@@ -386,11 +635,79 @@ def _parse_port_list(raw: str) -> list[int]:
     return ports[:MAX_PORT_LIST_ENTRIES]
 
 
+def _post_trial(
+    ingest_url: str, supervisor_token: str, probe_secret: str, trial: dict[str, object]
+) -> int:
+    payload = json.dumps(
+        {"netscan_trial": trial, "scanner_version": SCANNER_VERSION, "probe_secret": probe_secret}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        ingest_url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {supervisor_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status
+    except urllib.error.URLError:
+        return 0
+
+
+def _parse_known_certs(raw: str | None) -> set[str] | None:
+    """The fingerprints the integration already holds, or None when it sent
+    no list at all (see _attach_certificates). A malformed list is treated
+    as empty rather than absent: the integration did ask for certificates."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    return {
+        item
+        for item in parsed[:MAX_KNOWN_CERTS]
+        if isinstance(item, str) and _SHA256_HEX.match(item)
+    }
+
+
+def _parse_accepts(raw: str | None) -> set[str]:
+    """The optional report fields the integration said it accepts. Anything
+    malformed is treated as nothing, so the report keeps the old shape."""
+    try:
+        parsed = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return set()
+    return {item for item in parsed if isinstance(item, str)} if isinstance(parsed, list) else set()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="HA SOC Probe netscan cycle")
     parser.add_argument("--ports", required=True, help="JSON list of TCP ports to sweep")
     parser.add_argument("--max-concurrency", type=int, default=32)
     parser.add_argument("--ingest-url", required=True)
+    parser.add_argument(
+        "--known-certs",
+        default=None,
+        help="JSON list of certificate SHA-256 fingerprints the integration already holds",
+    )
+    parser.add_argument(
+        "--extra-networks",
+        default=None,
+        help="JSON list of further private IPv4 networks (/22 to /30) to sweep",
+    )
+    parser.add_argument("--trial-id", default=None, help="Sweep --trial-network once and report it")
+    parser.add_argument("--trial-network", default=None)
+    parser.add_argument(
+        "--accepts",
+        default=None,
+        help="JSON list of optional report fields the integration accepts",
+    )
     args = parser.parse_args()
 
     port_list = _parse_port_list(args.ports)
@@ -405,10 +722,49 @@ def main() -> int:
         print("netscan: missing SUPERVISOR_TOKEN or PROBE_SECRET; refusing to run", file=sys.stderr)
         return 1
 
-    hosts = asyncio.run(_run_cycle(port_list, max_concurrency))
-    print(json.dumps({"hosts": hosts, "count": len(hosts)}))
+    if args.trial_id:
+        # One network, swept once, reported apart from the regular result so
+        # nothing about it reaches the inventory before the owner adds it.
+        network, reason = _refusal_reason(args.trial_network, _container_networks())
+        trial: dict[str, object] = {"id": args.trial_id, "network": str(args.trial_network)[:18]}
+        if network is None:
+            trial.update(refused=reason, hosts=[])
+        else:
+            trial["network"] = str(network)
+            found = asyncio.run(
+                _run_cycle(port_list, max_concurrency, set(), True, [network], only_extra=True)
+            )
+            trial.update(refused=None, hosts=found)
+        print(json.dumps({"trial": trial["network"], "count": len(trial["hosts"])}))  # type: ignore[arg-type]
+        status = _post_trial(args.ingest_url, supervisor_token, probe_secret, trial)
+        if status not in (200, 201):
+            print(f"netscan: trial POST returned status {status}", file=sys.stderr)
+            return 1
+        return 0
 
-    status = _post_result(args.ingest_url, supervisor_token, probe_secret, hosts)
+    known_certs = _parse_known_certs(args.known_certs)
+    accepts = _parse_accepts(args.accepts)
+    presence = ACCEPT_PRESENCE in accepts
+    extra_networks = _parse_extra_networks(args.extra_networks)
+    hosts = asyncio.run(
+        _run_cycle(port_list, max_concurrency, known_certs, presence, extra_networks)
+    )
+    # The count only: the result now carries certificate bytes, and the host
+    # list is a LAN map that does not belong in the app log.
+    print(json.dumps({"count": len(hosts)}))
+
+    status = _post_result(
+        args.ingest_url,
+        supervisor_token,
+        probe_secret,
+        hosts,
+        tls_der=known_certs is not None,
+        presence=presence,
+        gateway=_default_gateway() if ACCEPT_GATEWAY in accepts else None,
+        # Sent only when the integration asked for further networks, which only a
+        # build that accepts this key does.
+        networks_swept=[str(n) for n in extra_networks] if args.extra_networks else None,
+    )
     if status not in (200, 201):
         print(f"netscan: ingest POST returned status {status}", file=sys.stderr)
         return 1

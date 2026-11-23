@@ -1,0 +1,85 @@
+{
+  "description": "A watched device stops answering while the rest of the network keeps answering, then returns.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 3,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.2",
+          "mac": "00:11:22:33:44:02",
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 10,
+      "watch": "00:11:22:33:44:55"
+    },
+    {
+      "minute": 15,
+      "repeat": 4,
+      "hosts": [
+        {
+          "ip": "192.0.2.2",
+          "mac": "00:11:22:33:44:02",
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 35,
+      "repeat": 2,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [],
+          "arp_after_sweep": true
+        },
+        {
+          "ip": "192.0.2.2",
+          "mac": "00:11:22:33:44:02",
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 2,
+    "by_mac": {
+      "00:11:22:33:44:55": {
+        "down": false,
+        "presence_segments": 2
+      }
+    },
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "created",
+        null
+      ],
+      [
+        "watch",
+        null
+      ],
+      [
+        "device_down",
+        true
+      ],
+      [
+        "device_back",
+        true
+      ]
+    ]
+  }
+}

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Bumped the Supervisor `ha` CLI from 5.5.0 to 6.0.0 (checksum-pinned per
+  architecture). 5.5.0 was built with Go 1.26.7 and carried
+  golang.org/x/net 0.55.0 and golang.org/x/text 0.37.0, which the image scan
+  flags Critical and High; 6.0.0 is built with Go 1.26.11 and links neither
+  module. The two `.grype.yaml` ignores scoped to `/usr/bin/ha.real` are
+  removed with it.
+
 - The one-shot run endpoint now returns the output file unmodified together
   with its `sha256` and `bytes`. It used to read the output through command
   substitution, which strips trailing newlines, so the hash the integration

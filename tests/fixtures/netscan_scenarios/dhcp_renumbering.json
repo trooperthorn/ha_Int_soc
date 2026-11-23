@@ -1,0 +1,56 @@
+{
+  "description": "A device keeps its MAC and gets a new address from DHCP.",
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 4,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [
+            {
+              "port": 22
+            }
+          ],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 20,
+      "repeat": 4,
+      "hosts": [
+        {
+          "ip": "192.0.2.50",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [
+            {
+              "port": 22
+            }
+          ],
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 1,
+    "by_mac": {
+      "00:11:22:33:44:55": {
+        "current_ip": "192.0.2.50",
+        "address_count": 2
+      }
+    },
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "address_changed",
+        null
+      ]
+    ]
+  }
+}

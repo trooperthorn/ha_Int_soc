@@ -18,8 +18,10 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     DETECTION_OPEN,
+    DETECTION_RESOLVED,
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
+    SEVERITY_LOW,
     SEVERITY_MEDIUM,
 )
 from .store import HaSocData
@@ -27,6 +29,7 @@ from .store import HaSocData
 if TYPE_CHECKING:
     # Not imported at runtime so this module stays importable without audit.py/users.py.
     from .audit import AuditLog
+    from .inventory import NetworkInventory
     from .users import UsersManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +45,19 @@ RULE_TOKEN_MINTING_ANOMALY = "token_minting_anomaly"
 RULE_DISABLED_USER_ACTIVITY = "disabled_user_activity"
 RULE_PROBE_AUTH_REJECTED = "probe_auth_rejected"
 RULE_EXTERNAL_AUDIT_CHAIN_BREAK = "external_audit_chain_break"
+# Network inventory rules read inventory.py's records, not the audit log; see
+# docs/NETWORK-INVENTORY-DESIGN.md.
+RULE_NETWORK_DEVICE_NEW = "network_device_new"
+RULE_NETWORK_DEVICE_BURST = "network_device_burst"
+RULE_NETWORK_PORT_OPENED = "network_port_opened"
+RULE_NETWORK_CERT_CHANGED = "network_cert_changed"
+RULE_NETWORK_IDENTITY_SHIFT = "network_identity_shift"
+RULE_NETWORK_DEVICE_DOWN = "network_device_down"
+RULE_NETWORK_DUPLICATE_ADDRESS = "network_duplicate_address"
+# Health findings, not detections; their thresholds are tuned in the same place.
+CHECK_NETWORK_DROP_TOGETHER = "network_drop_together"
+CHECK_NETWORK_STEADY_RESTARTS = "network_steady_restarts"
+CHECK_NETWORK_SLOWER_GATEWAY = "network_slower_gateway"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -87,6 +103,29 @@ THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
     },
     RULE_PRIVILEGE_ESCALATION: {
         "risk_cap_points": {"default": 24, "min": 8, "max": 100},
+    },
+    RULE_NETWORK_DEVICE_NEW: {
+        "learning_hours": {"default": 24, "min": 1, "max": 168},
+        "burst_devices": {"default": 10, "min": 3, "max": 100},
+    },
+    # Consecutive netscan cycles without an answer before a watched device is down.
+    RULE_NETWORK_DEVICE_DOWN: {
+        "down_cycles": {"default": 3, "min": 2, "max": 24},
+    },
+    # How often two devices must swap one address within an hour.
+    RULE_NETWORK_DUPLICATE_ADDRESS: {
+        "flips": {"default": 3, "min": 2, "max": 10},
+    },
+    CHECK_NETWORK_DROP_TOGETHER: {
+        "min_devices": {"default": 5, "min": 2, "max": 100},
+        "percent": {"default": 10, "min": 1, "max": 100},
+    },
+    CHECK_NETWORK_STEADY_RESTARTS: {
+        "drops_per_day": {"default": 5, "min": 3, "max": 50},
+    },
+    CHECK_NETWORK_SLOWER_GATEWAY: {
+        "factor": {"default": 3, "min": 2, "max": 10},
+        "min_ms": {"default": 3, "min": 1, "max": 1000},
     },
 }
 
@@ -139,6 +178,13 @@ DISABLED_USER_ACTIVITY_CATEGORIES = ("login_ok", "service_call", "token_created"
 DISABLED_USER_ACTIVITY_QUERY_LIMIT = 5000
 
 PROBE_AUTH_REJECTED_LOOKBACK_HOURS = 24
+# A pass runs every few minutes, so a day is ample to raise each new device once; the
+# bound keeps a detection the owner resolved from reopening after evidence retention.
+NETWORK_DEVICE_NEW_LOOKBACK_HOURS = 24
+NETWORK_DEVICE_BURST_LISTED = 10
+# Change events older than this raise nothing, for the same reason as the
+# new-device lookback: a resolved detection must not reopen after pruning.
+NETWORK_CHANGE_LOOKBACK_HOURS = 24
 PROBE_AUTH_REJECTED_QUERY_LIMIT = 5000
 
 # Oldest trigger timestamps fall off the front; overflow only undercounts recurrences.
@@ -153,6 +199,11 @@ def _hour_bucket(moment: datetime) -> str:
 def _make_detection_id(rule_id: str, subject: str, bucket: str) -> str:
     raw = f"{rule_id}:{subject}:{bucket}"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def network_device_detection_id(device_id: str) -> str:
+    """The id of the one network_device_new detection a device can have."""
+    return _make_detection_id(RULE_NETWORK_DEVICE_NEW, device_id, "first")
 
 
 def _network_prefix(
@@ -205,11 +256,13 @@ class DetectionEngine:
         *,
         audit: "AuditLog",
         users: "UsersManager",
+        inventory: "NetworkInventory | None" = None,
     ) -> None:
         self.hass = hass
         self.store = store
         self.audit = audit
         self.users = users
+        self.inventory = inventory
 
     async def async_run_pass(self) -> list[dict[str, Any]]:
         now = dt_util.utcnow()
@@ -229,6 +282,8 @@ class DetectionEngine:
             self._rule_disabled_user_activity,
             self._rule_probe_auth_rejected,
             self._rule_external_audit_chain_break,
+            self._rule_network_device_new,
+            self._rule_network_changes,
         ):
             try:
                 touched.extend(await rule(now, users, users_by_id))
@@ -1034,5 +1089,170 @@ class DetectionEngine:
                     now=now,
                     event_ts=ts,
                 )
+            )
+        return results
+
+    async def _rule_network_device_new(self, now, users, users_by_id):
+        """A device recorded outside the learning window that nobody has acknowledged.
+
+        The detail carries the device id only. The inventory is owner-only, while
+        detections follow the panel's access level, so no MAC, address or name is
+        copied into a row an administrator may read.
+        """
+        if self.inventory is None:
+            return []
+        limits = thresholds(self.store, RULE_NETWORK_DEVICE_NEW)
+        since = now - timedelta(hours=NETWORK_DEVICE_NEW_LOOKBACK_HOURS)
+        by_hour: dict[str, list[tuple[datetime, dict[str, Any]]]] = defaultdict(list)
+        for device in self.inventory.state["devices"].values():
+            if device.get("baseline") or device.get("verdict") != "unacknowledged":
+                continue
+            first_seen = dt_util.parse_datetime(device.get("first_seen") or "")
+            if first_seen is None or first_seen < since:
+                continue
+            by_hour[_hour_bucket(first_seen)].append((first_seen, device))
+
+        results = []
+        for bucket, entries in by_hour.items():
+            # Oldest first, with the id as tie-break, so the same devices fall on the
+            # same side of the burst threshold on every pass.
+            entries.sort(key=lambda item: (item[0], item[1]["id"]))
+            individual = entries[: limits["burst_devices"]]
+            overflow = entries[limits["burst_devices"] :]
+            for first_seen, device in individual:
+                results.append(
+                    self._upsert_detection(
+                        rule_id=RULE_NETWORK_DEVICE_NEW,
+                        subject=device["id"],
+                        bucket="first",
+                        severity=SEVERITY_MEDIUM,
+                        title=f"New network device {device['id']}",
+                        user_id=None,
+                        ip=None,
+                        detail={
+                            "device_id": device["id"],
+                            "identity": device.get("identity"),
+                            "mac_kind": device.get("mac_kind"),
+                            "first_seen": device.get("first_seen"),
+                        },
+                        now=now,
+                        event_ts=first_seen,
+                    )
+                )
+            if overflow:
+                total = len(entries)
+                results.append(
+                    self._upsert_detection(
+                        rule_id=RULE_NETWORK_DEVICE_BURST,
+                        subject="burst",
+                        bucket=bucket,
+                        severity=SEVERITY_HIGH,
+                        title=f"{total} new network devices within one hour",
+                        user_id=None,
+                        ip=None,
+                        detail={
+                            "count": total,
+                            "threshold": limits["burst_devices"],
+                            "collapsed_device_ids": [
+                                device["id"] for _ts, device in overflow[:NETWORK_DEVICE_BURST_LISTED]
+                            ],
+                        },
+                        now=now,
+                        event_ts=overflow[-1][0],
+                    )
+                )
+        return results
+
+    async def _rule_network_changes(self, now, users, users_by_id):
+        """A change on an acknowledged device: a port opened, a certificate changed,
+        or both at once or two addresses at once (an identity shift).
+
+        The inventory decides what changed and marks the events worth raising; this
+        rule turns each marked event into one detection. As with new devices, the
+        detail names the device by id only. The port and the certificates are in the
+        owner-only device list.
+        """
+        if self.inventory is None:
+            return []
+        from .inventory import (
+            EVENT_CERT_CHANGED,
+            EVENT_DEVICE_BACK,
+            EVENT_DEVICE_DOWN,
+            EVENT_DUPLICATE_ADDRESS,
+            EVENT_IDENTITY_SHIFT,
+            EVENT_PORT_OPENED,
+            VERDICT_ACKNOWLEDGED,
+        )
+
+        specs = {
+            EVENT_PORT_OPENED: (RULE_NETWORK_PORT_OPENED, SEVERITY_MEDIUM, "New open port on network device"),
+            EVENT_CERT_CHANGED: (RULE_NETWORK_CERT_CHANGED, SEVERITY_MEDIUM, "Certificate changed on network device"),
+            EVENT_IDENTITY_SHIFT: (RULE_NETWORK_IDENTITY_SHIFT, SEVERITY_HIGH, "Identity shift on network device"),
+            EVENT_DEVICE_DOWN: (RULE_NETWORK_DEVICE_DOWN, SEVERITY_LOW, "Watched network device stopped answering"),
+            EVENT_DUPLICATE_ADDRESS: (RULE_NETWORK_DUPLICATE_ADDRESS, SEVERITY_HIGH, "Two devices are swapping one address, one of them"),
+        }
+        since = now - timedelta(hours=NETWORK_CHANGE_LOOKBACK_HOURS)
+        devices = self.inventory.state["devices"]
+        results = []
+        for event in self.inventory.state["events"]:
+            spec = specs.get(event.get("kind"))
+            if spec is None or not event.get("alert"):
+                continue
+            event_ts = dt_util.parse_datetime(event.get("ts") or "")
+            if event_ts is None or event_ts < since:
+                continue
+            device = devices.get(event.get("device_id"))
+            if device is None:
+                continue
+            if event["kind"] == EVENT_DUPLICATE_ADDRESS:
+                # Raised whatever the verdicts are: this is also what ARP spoofing looks like.
+                pass
+            elif event["kind"] == EVENT_DEVICE_DOWN:
+                # Watching is its own opt-in and does not depend on the verdict.
+                if not device.get("watched"):
+                    continue
+            elif device.get("verdict") != VERDICT_ACKNOWLEDGED:
+                # Withdrawing the acknowledgement puts the device back under network_device_new.
+                continue
+            rule_id, severity, title = spec
+            detail: dict[str, Any] = {"device_id": device["id"], "changed_at": event["ts"]}
+            if event.get("reasons"):
+                detail["reasons"] = list(event["reasons"])
+            if event.get("other_device_id"):
+                detail["other_device_id"] = event["other_device_id"]
+            results.append(
+                self._upsert_detection(
+                    rule_id=rule_id,
+                    subject=device["id"],
+                    # The port keeps two ports opening in one cycle apart. It is hashed
+                    # into the detection id and is not stored in the row.
+                    bucket=f"{event['ts']}:{event.get('port', '')}",
+                    severity=severity,
+                    title=f"{title} {device['id']}",
+                    user_id=None,
+                    ip=None,
+                    detail=detail,
+                    now=now,
+                    event_ts=event_ts,
+                )
+            )
+
+        # A watched device that answers again closes its own down detection.
+        for event in self.inventory.state["events"]:
+            if event.get("kind") != EVENT_DEVICE_BACK or not event.get("down_since"):
+                continue
+            detection_id = _make_detection_id(
+                RULE_NETWORK_DEVICE_DOWN, event.get("device_id") or "", f"{event['down_since']}:"
+            )
+            detection = self.store.data["detections"].get(detection_id)
+            if detection is None or detection.get("status") == DETECTION_RESOLVED:
+                continue
+            detection["detail"] = {
+                **detection.get("detail", {}),
+                "back_at": event["ts"],
+                "minutes_away": event.get("minutes_away"),
+            }
+            self.store.async_set_detection_status(
+                detection_id, DETECTION_RESOLVED, by_user_id=None, at=event["ts"]
             )
         return results
