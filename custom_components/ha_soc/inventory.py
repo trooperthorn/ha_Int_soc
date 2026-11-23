@@ -13,9 +13,11 @@ registry lookup.
 """
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 import secrets as _secrets
+import statistics
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -94,7 +96,23 @@ CHANGE_EVENT_KINDS = (
 )
 EVENT_DEVICE_DOWN = "device_down"
 EVENT_DEVICE_BACK = "device_back"
-PRESENCE_EVENT_KINDS = (EVENT_DEVICE_DOWN, EVENT_DEVICE_BACK)
+EVENT_DUPLICATE_ADDRESS = "duplicate_address"
+PRESENCE_EVENT_KINDS = (EVENT_DEVICE_DOWN, EVENT_DEVICE_BACK, EVENT_DUPLICATE_ADDRESS)
+
+# Network health (phase 5).
+DEFAULT_DUPLICATE_FLIPS = 3
+ADDRESS_FLIP_WINDOW = timedelta(hours=1)
+MAX_TRACKED_ADDRESSES = 4096
+# How many judged cycles of drop counts are kept; a drop older than this is forgotten.
+DROP_CYCLES_KEPT = 3
+DROP_WINDOW = timedelta(hours=24)
+MAX_DROPS_PER_DEVICE = 64
+RESTART_GAP_MIN = timedelta(minutes=2)
+RESTART_GAP_MAX = timedelta(hours=6)
+GATEWAY_RECENT = timedelta(minutes=15)
+GATEWAY_BASELINE = timedelta(hours=6)
+GATEWAY_BASELINE_MIN_SAMPLES = 12
+MAX_RTT_SAMPLES = 96
 DEFAULT_DOWN_CYCLES = 3
 # Two sightings this close together are one stay: one missed cycle does not split it.
 PRESENCE_JOIN = timedelta(minutes=11)
@@ -140,6 +158,13 @@ def empty_state() -> dict[str, Any]:
             "cap_reached_at": None,
             # port -> how many cycles it has been in the scan list, see merge_cycle.
             "scan_ports": {},
+            # The Probe host's default next hop, and the device last seen at it.
+            "gateway_ip": None,
+            "gateway_device_id": None,
+            # ip -> {"device_id": holder, "flips": [times the holder changed]}.
+            "address_holders": {},
+            # The last DROP_CYCLES_KEPT judged cycles: {"at", "dropped", "of"}.
+            "drop_cycles": [],
         },
         "devices": {},
         # fingerprint -> the parsed certificate, see async_absorb_certificates.
@@ -351,6 +376,8 @@ def merge_cycle(
     port_list: list[int] | None = None,
     presence: bool = False,
     down_cycles: int = DEFAULT_DOWN_CYCLES,
+    duplicate_flips: int = DEFAULT_DUPLICATE_FLIPS,
+    gateway_ip: str | None = None,
 ) -> MergeOutcome:
     """Fold one netscan cycle into the inventory state, in place.
 
@@ -514,6 +541,8 @@ def merge_cycle(
         seen_now["changes"].extend(port_changes)
         if ports_changed:
             outcome.changed = True
+        if mac and _note_address_holder(state, ip, device["id"], now, now_iso, duplicate_flips):
+            outcome.changed = True
         if mac and registry is not None:
             match = registry(mac)
             if match and match.get("name"):
@@ -566,6 +595,7 @@ def merge_cycle(
 
     if presence and _judge_presence(state, observed, now, now_iso, down_cycles):
         outcome.changed = True
+    _note_gateway(state, gateway_ip, observed, now, now_iso)
 
     # "Consecutive" means exactly that: an address that skipped this cycle starts over.
     for ip in [ip for ip in pending if ip not in seen_without_mac]:
@@ -584,6 +614,79 @@ def merge_cycle(
     if outcome.created:
         outcome.changed = True
     return outcome
+
+
+def _note_address_holder(
+    state: dict[str, Any], ip: str, device_id: str, now: datetime, now_iso: str, flips_needed: int
+) -> bool:
+    """Record which MAC-keyed device holds an address, and report two devices swapping it.
+
+    One change of holder is a DHCP lease moving on. ``flips_needed`` changes inside
+    ADDRESS_FLIP_WINDOW is two devices that both believe the address is theirs, or
+    one device answering ARP for another's address. Returns True when it wrote the
+    duplicate-address event, which happens once per window.
+    """
+    holders: dict[str, dict[str, Any]] = state["meta"].setdefault("address_holders", {})
+    entry = holders.pop(ip, None)
+    if entry is None:
+        entry = {"device_id": device_id, "flips": []}
+    raised = False
+    if entry["device_id"] != device_id:
+        previous = entry["device_id"]
+        cutoff = (now - ADDRESS_FLIP_WINDOW).isoformat()
+        entry["flips"] = [ts for ts in entry["flips"] if ts >= cutoff] + [now_iso]
+        entry["device_id"] = device_id
+        reported = entry.get("reported_at") or ""
+        if len(entry["flips"]) >= flips_needed and reported < cutoff:
+            entry["reported_at"] = now_iso
+            _append_event(
+                state,
+                now_iso,
+                device_id,
+                EVENT_DUPLICATE_ADDRESS,
+                alert=True,
+                other_device_id=previous,
+                flips=len(entry["flips"]),
+            )
+            raised = True
+    # Re-inserted last, so the cap below drops the addresses not seen for longest.
+    holders[ip] = entry
+    while len(holders) > MAX_TRACKED_ADDRESSES:
+        del holders[next(iter(holders))]
+    return raised
+
+
+def _note_gateway(
+    state: dict[str, Any],
+    gateway_ip: str | None,
+    observed: dict[str, dict[str, Any]],
+    now: datetime,
+    now_iso: str,
+) -> None:
+    """Remember the Probe host's default next hop and keep that device's latency history."""
+    meta = state["meta"]
+    if gateway_ip is not None:
+        try:
+            meta["gateway_ip"] = str(ipaddress.IPv4Address(gateway_ip))
+        except ValueError:
+            return
+    gateway = meta.get("gateway_ip")
+    if not gateway:
+        return
+    for device_id, seen in observed.items():
+        device = state["devices"].get(device_id)
+        if device is None or gateway not in seen["ips"]:
+            continue
+        if meta.get("gateway_device_id") != device_id:
+            # A different device at the gateway address starts a fresh baseline.
+            meta["gateway_device_id"] = device_id
+            device["rtt_history"] = []
+        if seen["rtt_ms"] is not None:
+            history = device.setdefault("rtt_history", [])
+            history.append([now_iso, seen["rtt_ms"]])
+            cutoff = (now - GATEWAY_BASELINE - GATEWAY_RECENT).isoformat()
+            history[:] = [sample for sample in history if sample[0] >= cutoff][-MAX_RTT_SAMPLES:]
+        return
 
 
 def _judge_presence(
@@ -606,9 +709,22 @@ def _judge_presence(
         return False
     changed = False
     cutoff = (now - timedelta(days=PRESENCE_RETENTION_DAYS)).isoformat()
+    drop_cutoff = (now - DROP_WINDOW).isoformat()
+    # Devices with a fixed MAC that answered last cycle, and how many of them did not now.
+    # A randomized MAC is a phone, and a phone leaving is not a fault.
+    were_present = 0
+    dropped = 0
     for device in state["devices"].values():
         if not any(s in device.get("sources", []) for s in (SOURCE_PROBE_ARP, SOURCE_PROBE_TCP)):
             continue
+        steady = device.get("mac_kind") != "local"
+        if steady and device.get("missed_cycles") == 0:
+            were_present += 1
+            if device["id"] not in present_ids:
+                dropped += 1
+                drops = device.setdefault("drops", [])
+                drops.append(now_iso)
+                drops[:] = [ts for ts in drops if ts >= drop_cutoff][-MAX_DROPS_PER_DEVICE:]
         if device["id"] in present_ids:
             segments = device.setdefault("presence", [])
             last_end = _parse(segments[-1]["to"]) if segments else None
@@ -647,7 +763,68 @@ def _judge_presence(
                 device["down_since"] = now_iso
                 _append_event(state, now_iso, device["id"], EVENT_DEVICE_DOWN, alert=True)
                 changed = True
-    return changed
+    drop_cycles = state["meta"].setdefault("drop_cycles", [])
+    drop_cycles.append({"at": now_iso, "dropped": dropped, "of": were_present})
+    del drop_cycles[:-DROP_CYCLES_KEPT]
+    return changed or dropped > 0
+
+
+def drop_together(state: dict[str, Any], *, min_devices: int, percent: int) -> dict[str, Any] | None:
+    """The worst recent cycle in which many devices stopped answering at once, or None."""
+    worst = None
+    for cycle in state["meta"].get("drop_cycles") or []:
+        if cycle["dropped"] < min_devices or cycle["of"] <= 0:
+            continue
+        if cycle["dropped"] * 100 < percent * cycle["of"]:
+            continue
+        if worst is None or cycle["dropped"] > worst["dropped"]:
+            worst = cycle
+    return worst
+
+
+def steady_restarts(state: dict[str, Any], now: datetime, *, drops_per_day: int) -> list[dict[str, Any]]:
+    """Devices that stopped answering ``drops_per_day`` times in the last day, each
+    drop between 2 minutes and 6 hours after the one before. Regularity beyond
+    those bounds is not tested."""
+    cutoff = dt_util.as_utc(now) - DROP_WINDOW
+    rows = []
+    for device in state["devices"].values():
+        if device.get("verdict") == VERDICT_IGNORED or device.get("mac_kind") == "local":
+            continue
+        times = [t for t in (_parse(ts) for ts in device.get("drops") or []) if t and t >= cutoff]
+        if len(times) < drops_per_day:
+            continue
+        gaps = [later - earlier for earlier, later in zip(times, times[1:])]
+        if all(RESTART_GAP_MIN <= gap <= RESTART_GAP_MAX for gap in gaps):
+            rows.append({"device_id": device["id"], "drops": len(times), "last_drop": times[-1].isoformat()})
+    return rows
+
+
+def slower_gateway(
+    state: dict[str, Any], now: datetime, *, factor: int, min_ms: int
+) -> dict[str, Any] | None:
+    """The gateway's recent TCP connect time against its own last six hours, or None.
+
+    Medians, because a connect time measured in a busy event loop has outliers.
+    """
+    device = state["devices"].get(state["meta"].get("gateway_device_id") or "")
+    if device is None:
+        return None
+    now = dt_util.as_utc(now)
+    recent_from = (now - GATEWAY_RECENT).isoformat()
+    baseline_from = (now - GATEWAY_RECENT - GATEWAY_BASELINE).isoformat()
+    recent = [ms for ts, ms in device.get("rtt_history") or [] if ts >= recent_from]
+    baseline = [ms for ts, ms in device.get("rtt_history") or [] if baseline_from <= ts < recent_from]
+    if len(recent) < 2 or len(baseline) < GATEWAY_BASELINE_MIN_SAMPLES:
+        return None
+    recent_ms, baseline_ms = statistics.median(recent), statistics.median(baseline)
+    if recent_ms >= factor * baseline_ms and recent_ms - baseline_ms >= min_ms:
+        return {
+            "device_id": device["id"],
+            "recent_ms": round(recent_ms, 1),
+            "baseline_ms": round(baseline_ms, 1),
+        }
+    return None
 
 
 def merge_unifi_clients(
@@ -929,6 +1106,8 @@ class NetworkInventory:
         port_list: list[int] | None = None,
         presence: bool = False,
         down_cycles: int = DEFAULT_DOWN_CYCLES,
+        duplicate_flips: int = DEFAULT_DUPLICATE_FLIPS,
+        gateway_ip: str | None = None,
     ) -> MergeOutcome:
         outcome = merge_cycle(
             self.state,
@@ -939,6 +1118,8 @@ class NetworkInventory:
             port_list=port_list,
             presence=presence,
             down_cycles=down_cycles,
+            duplicate_flips=duplicate_flips,
+            gateway_ip=gateway_ip,
         )
         # last_seen, the cycle counter and last_cycle_at change every cycle. They are
         # written on stop and with the next real change, not once per cycle, so after
@@ -1065,6 +1246,7 @@ class NetworkInventory:
                 {
                     **device,
                     "display_name": best_name(device),
+                    "is_gateway": device["id"] == self.state["meta"].get("gateway_device_id"),
                     "recent_changes": recent.get(device["id"], []),
                     # The last day only; the file keeps PRESENCE_RETENTION_DAYS.
                     "presence": [

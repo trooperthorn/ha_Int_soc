@@ -310,6 +310,8 @@ export interface InventoryDevice {
   baseline: boolean;
   ha_device_id: string | null;
   recent_changes: InventoryChange[];
+  // The Probe host's default next hop.
+  is_gateway: boolean;
   watched: boolean;
   // Presence is judged only on cycles from a Probe that reports it; absent until then.
   presence: { from: string; to: string }[];
@@ -342,7 +344,8 @@ export interface InventoryChange {
     | "cert_renewed"
     | "identity_shift"
     | "device_down"
-    | "device_back";
+    | "device_back"
+    | "duplicate_address";
   minutes_away?: number | null;
   alert?: boolean;
   port?: number;

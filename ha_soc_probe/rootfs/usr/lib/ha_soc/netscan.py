@@ -57,7 +57,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from oui_prefixes import vendor_for_mac
 
-SCANNER_VERSION = "netscan/1.2"
+SCANNER_VERSION = "netscan/1.3"
 
 # Bounds independent of whatever the owner configures, so a misconfigured or
 # hostile poll response cannot turn this into an unbounded sweep.
@@ -82,6 +82,7 @@ MAX_KNOWN_CERTS = 512
 # presence" for what is and is not verified about this.
 ARP_SETTLE_SECONDS = 9
 ACCEPT_PRESENCE = "presence"
+ACCEPT_GATEWAY = "gateway"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 # Ports where a TLS handshake is attempted after (or instead of) a plaintext
@@ -196,6 +197,35 @@ def _read_arp_complete() -> dict[str, str]:
             continue
         table[ip] = mac.lower()
     return table
+
+
+def _default_gateway() -> str | None:
+    """The IPv4 next hop of the default route, from /proc/net/route, or None.
+
+    Columns: Iface, Destination, Gateway, Flags, ... Destination and Gateway
+    are 8 hex digits in the kernel's little-endian word order (01801BAC is
+    172.27.128.1). The default route has destination 00000000 and the
+    RTF_GATEWAY flag (0x2). With several default routes the first listed is
+    taken, which is the order the kernel prints them in. Never raises.
+    """
+    try:
+        with open("/proc/net/route", encoding="ascii", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return None
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 4 or parts[1] != "00000000":
+            continue
+        try:
+            if not int(parts[3], 16) & 0x2:
+                continue
+            raw = bytes.fromhex(parts[2])
+        except ValueError:
+            continue
+        if len(raw) == 4 and any(raw):
+            return socket.inet_ntoa(raw[::-1])
+    return None
 
 
 def _ioctl_ifaddr(sock: socket.socket, ifname: str, request: int) -> str | None:
@@ -469,9 +499,11 @@ def _post_result(
     hosts: list[dict[str, object]],
     tls_der: bool = False,
     presence: bool = False,
+    gateway: str | None = None,
 ) -> int:
     payload = json.dumps(
         {
+            **({"netscan_gateway": gateway} if gateway else {}),
             "netscan_result": hosts,
             "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der, "presence": presence},
             "scanner_version": SCANNER_VERSION,
@@ -570,7 +602,8 @@ def main() -> int:
         return 1
 
     known_certs = _parse_known_certs(args.known_certs)
-    presence = ACCEPT_PRESENCE in _parse_accepts(args.accepts)
+    accepts = _parse_accepts(args.accepts)
+    presence = ACCEPT_PRESENCE in accepts
     hosts = asyncio.run(_run_cycle(port_list, max_concurrency, known_certs, presence))
     # The count only: the result now carries certificate bytes, and the host
     # list is a LAN map that does not belong in the app log.
@@ -583,6 +616,7 @@ def main() -> int:
         hosts,
         tls_der=known_certs is not None,
         presence=presence,
+        gateway=_default_gateway() if ACCEPT_GATEWAY in accepts else None,
     )
     if status not in (200, 201):
         print(f"netscan: ingest POST returned status {status}", file=sys.stderr)

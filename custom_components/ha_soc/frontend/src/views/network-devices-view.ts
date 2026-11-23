@@ -179,6 +179,7 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
         ? html`${name.value}
             <div class="muted" style="font-size:11.5px;">from ${NAME_SOURCE_LABELS[name.source] ?? name.source}</div>`
         : html`<span class="muted">no name known</span>`}
+      ${d.is_gateway ? html`<div class="muted" style="font-size:11.5px;">gateway (default route)</div>` : nothing}
       ${d.ha_device_id
         ? html`<div>
             <button class="ha-btn" style="font-size:11.5px;" @click=${() => navigateToHaPath(deviceDetailPath(d.ha_device_id!))}>
@@ -211,6 +212,8 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
         return `Certificate on port ${change.port} changed`;
       case "cert_renewed":
         return `Certificate on port ${change.port} renewed`;
+      case "duplicate_address":
+        return "Swapping its address with another device";
       case "device_down":
         return "Stopped answering";
       case "device_back":

@@ -1,8 +1,8 @@
 # Network inventory, presence and network health: design
 
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
-to 4 are built (see the "What phase N built" sections below) and have not run
-against a live Supervisor or a real Probe; phases 5 to 10 are design only. This document owns
+to 5 are built (see the "What phase N built" sections below) and have not run
+against a live Supervisor or a real Probe; phases 6 to 10 are design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -581,6 +581,36 @@ The Probe sees duplicate addresses only as far as `/proc/net/arp` shows them,
 which is one MAC per IP at a time, so the alternation form is the one it can
 catch. UniFi client data can show the simultaneous form. The finding states
 which source saw it.
+
+#### What phase 5 built
+
+Built 2026-11-23: holder tracking per address, drop counts per cycle, drop
+times per device and the gateway's latency history in `inventory.py`; the
+`network_duplicate_address` detection; one health check in `health.py` that
+writes the three findings; six thresholds in `THRESHOLD_SPECS`; the Probe's
+default-route read; and `tests/test_inventory_health.py`. There is no
+`network_health.py`: the rules are small functions beside the data they read.
+It differs from the text above in these ways:
+
+- **The gateway read came forward from phase 6**, because the slower-gateway
+  rule needs it. The tab marks the device "gateway (default route)".
+- **Duplicate address is the alternating form only**, reported once per hour
+  per address. UniFi is not used for the simultaneous form.
+- **No two-evaluation delay.** Each rule reads a window already. Drop
+  together clears after three judged cycles, as designed; the other two
+  clear when their window no longer holds.
+- **Steady restarts does not test regularity.** It applies the published
+  count and the 2 minute to 6 hour bounds between drops. A drop is one cycle
+  without an answer, so a single lost scan counts toward it.
+- **The gateway comparison uses medians** and needs 12 samples of baseline.
+- **All four threshold groups are tunable in Settings** through the existing
+  threshold table, including the three that belong to findings and not to
+  detections.
+
+Not verified: every threshold against a real network. The starting values
+are Vedetta's published ones and were chosen for its scanner, not for a 300
+second TCP sweep; expect to tune `drops_per_day` and the gateway factor
+after a week of real data.
 
 ### Phase 6: network roles
 

@@ -4742,6 +4742,7 @@ ${e.exception}</pre
       `;const t=e.display_name;return V`
       ${t?V`${t.value}
             <div class="muted" style="font-size:11.5px;">from ${hs[t.source]??t.source}</div>`:V`<span class="muted">no name known</span>`}
+      ${e.is_gateway?V`<div class="muted" style="font-size:11.5px;">gateway (default route)</div>`:j}
       ${e.ha_device_id?V`<div>
             <button class="ha-btn" style="font-size:11.5px;" @click=${()=>fe(ve(e.ha_device_id))}>
               Open in Home Assistant
@@ -4750,7 +4751,7 @@ ${e.exception}</pre
     `}_renderIdentity(e){return"address"===e.identity?V`<span class="pill medium"><span class="dot"></span>address-keyed, weak identity</span>`:V`
       <span style="font-size:12px;">${e.macs[0]??"unknown"}</span>
       ${"local"===e.mac_kind?V`<div class="muted" style="font-size:11.5px;">randomized address</div>`:j}
-    `}_changeText(e){switch(e.kind){case"port_opened":return`Port ${e.port} opened`;case"port_closed":return`Port ${e.port} closed`;case"cert_changed":return`Certificate on port ${e.port} changed`;case"cert_renewed":return`Certificate on port ${e.port} renewed`;case"device_down":return"Stopped answering";case"device_back":return null!=e.minutes_away?`Answering again after ${e.minutes_away} min`:"Answering again";case"identity_shift":return(e.reasons??[]).includes("two_addresses")?"Answered at two addresses at once":"Ports and certificate changed together"}}_renderPorts(e){const t=this._overview?.certs??{},s=Object.entries(e.ports).filter(([,e])=>!e.closed_at).sort(([e],[t])=>Number(e)-Number(t));return V`
+    `}_changeText(e){switch(e.kind){case"port_opened":return`Port ${e.port} opened`;case"port_closed":return`Port ${e.port} closed`;case"cert_changed":return`Certificate on port ${e.port} changed`;case"cert_renewed":return`Certificate on port ${e.port} renewed`;case"duplicate_address":return"Swapping its address with another device";case"device_down":return"Stopped answering";case"device_back":return null!=e.minutes_away?`Answering again after ${e.minutes_away} min`:"Answering again";case"identity_shift":return(e.reasons??[]).includes("two_addresses")?"Answered at two addresses at once":"Ports and certificate changed together"}}_renderPorts(e){const t=this._overview?.certs??{},s=Object.entries(e.ports).filter(([,e])=>!e.closed_at).sort(([e],[t])=>Number(e)-Number(t));return V`
       ${0===s.length?V`<span class="muted">none open</span>`:s.map(([e,s])=>{const i=s.cert_sha256?t[s.cert_sha256]:void 0,r=i?[i.unreadable?"certificate could not be read":null,i.subject&&`subject: ${i.subject}`,i.issuer&&`issuer: ${i.issuer}`,i.not_after&&`expires: ${this._when(i.not_after)}`,`sha256: ${i.sha256}`].filter(Boolean).join("\n"):s.cert_sha256?`sha256: ${s.cert_sha256}`:"";return V`<span class="pill info" title=${r} style="margin:0 4px 2px 0;"
               >${e}${s.service?` ${s.service}`:""}${s.cert_sha256?" (cert)":""}</span
             >`})}

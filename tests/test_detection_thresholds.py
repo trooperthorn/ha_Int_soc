@@ -79,6 +79,10 @@ PLAN_TABLE = {
         "burst_devices": (10, 3, 100),
     },
     "network_device_down": {"down_cycles": (3, 2, 24)},
+    "network_duplicate_address": {"flips": (3, 2, 10)},
+    "network_drop_together": {"min_devices": (5, 2, 100), "percent": (10, 1, 100)},
+    "network_steady_restarts": {"drops_per_day": (5, 3, 50)},
+    "network_slower_gateway": {"factor": (3, 2, 10), "min_ms": (3, 1, 1000)},
 }
 
 

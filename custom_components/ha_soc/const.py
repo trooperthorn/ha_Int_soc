@@ -341,7 +341,7 @@ NETSCAN_CAPABILITIES = [
     NETSCAN_CAPABILITY_PRESENCE,
 ]
 # Optional report fields offered to the Probe in the netscan poll response.
-NETSCAN_ACCEPTS = [NETSCAN_CAPABILITY_PRESENCE]
+NETSCAN_ACCEPTS = [NETSCAN_CAPABILITY_PRESENCE, "gateway"]
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
 # "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.

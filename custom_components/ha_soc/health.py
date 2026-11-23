@@ -623,6 +623,7 @@ class IntegrationHealth:
             self._check_probe_addon_not_reporting,
             self._check_network_cleartext_service,
             self._check_network_cert_expiry,
+            self._check_network_health,
             self._check_audit_ban_logger,
             self._check_storage_file_modes,
             self._check_config_mapping_addons,
@@ -1370,6 +1371,85 @@ class IntegrationHealth:
                 "title": finding["title"], "summary": finding["summary"],
             }))
         return self._async_finalize_check(check, items)
+
+    async def _check_network_health(self) -> list[dict]:
+        """checks "network_drop_together", "network_steady_restarts", "network_slower_gateway".
+
+        All three read presence the inventory already judged, so they say nothing
+        until the Probe reports presence. All are LOW: they describe a network that
+        is unwell, not an attack. Thresholds are in THRESHOLD_SPECS.
+        """
+        from .detections import (
+            CHECK_NETWORK_DROP_TOGETHER,
+            CHECK_NETWORK_SLOWER_GATEWAY,
+            CHECK_NETWORK_STEADY_RESTARTS,
+            thresholds,
+        )
+
+        checks = (CHECK_NETWORK_DROP_TOGETHER, CHECK_NETWORK_STEADY_RESTARTS, CHECK_NETWORK_SLOWER_GATEWAY)
+        if self.inventory is None:
+            return [f for check in checks for f in self._async_finalize_check(check, [])]
+        from .inventory import drop_together, slower_gateway, steady_restarts
+
+        state = self.inventory.state
+        now = dt.utcnow()
+
+        def _item(finding: dict) -> tuple[dict, str, dict[str, str]]:
+            return (finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+                "title": finding["title"], "summary": finding["summary"],
+            })
+
+        results: list[dict] = []
+
+        items = []
+        drop = drop_together(state, **thresholds(self._store, CHECK_NETWORK_DROP_TOGETHER))
+        if drop is not None:
+            items.append(_item(_new_finding(
+                f"misconfig:{CHECK_NETWORK_DROP_TOGETHER}", CHECK_NETWORK_DROP_TOGETHER, SEVERITY_LOW,
+                title=f"{drop['dropped']} network devices stopped answering at the same time",
+                summary=(
+                    f"In one scan {drop['dropped']} of {drop['of']} devices that had been answering "
+                    "stopped. Devices leaving together usually share something: a switch, an "
+                    "access point, a power strip or the uplink between them and Home Assistant. "
+                    "This clears after three scans without another drop like it."
+                ),
+                detail=dict(drop),
+            )))
+        results.extend(self._async_finalize_check(CHECK_NETWORK_DROP_TOGETHER, items))
+
+        items = []
+        restarts = steady_restarts(state, now, **thresholds(self._store, CHECK_NETWORK_STEADY_RESTARTS))
+        for row in restarts[:NETWORK_FINDINGS_CAP]:
+            items.append(_item(_new_finding(
+                f"misconfig:{CHECK_NETWORK_STEADY_RESTARTS}:{row['device_id']}",
+                CHECK_NETWORK_STEADY_RESTARTS, SEVERITY_LOW,
+                title=f"Network device {row['device_id']} keeps dropping off",
+                summary=(
+                    f"This device stopped answering {row['drops']} times in the last 24 hours. "
+                    "Repeated drops point at the device restarting, a weak wireless link or a "
+                    "failing power supply. A scan runs every 5 minutes, so shorter outages are "
+                    "missed and the real count may be higher."
+                ),
+                detail=row,
+            )))
+        results.extend(self._async_finalize_check(CHECK_NETWORK_STEADY_RESTARTS, items))
+
+        items = []
+        slow = slower_gateway(state, now, **thresholds(self._store, CHECK_NETWORK_SLOWER_GATEWAY))
+        if slow is not None:
+            items.append(_item(_new_finding(
+                f"misconfig:{CHECK_NETWORK_SLOWER_GATEWAY}", CHECK_NETWORK_SLOWER_GATEWAY, SEVERITY_LOW,
+                title="The gateway is answering more slowly than usual",
+                summary=(
+                    f"The gateway's TCP connect time is {slow['recent_ms']} ms over the last 15 "
+                    f"minutes against {slow['baseline_ms']} ms over the 6 hours before. This is "
+                    "a TCP connection timed from the Probe, not a ping, so a busy Home Assistant "
+                    "host raises it too."
+                ),
+                detail=slow,
+            )))
+        results.extend(self._async_finalize_check(CHECK_NETWORK_SLOWER_GATEWAY, items))
+        return results
 
     async def _check_audit_ban_logger(self) -> list[dict]:
         """check="audit_ban_logger_silenced" - LOW. The value read is a logging level integer, nothing else."""

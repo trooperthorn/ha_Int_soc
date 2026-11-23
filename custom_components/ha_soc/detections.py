@@ -53,6 +53,11 @@ RULE_NETWORK_PORT_OPENED = "network_port_opened"
 RULE_NETWORK_CERT_CHANGED = "network_cert_changed"
 RULE_NETWORK_IDENTITY_SHIFT = "network_identity_shift"
 RULE_NETWORK_DEVICE_DOWN = "network_device_down"
+RULE_NETWORK_DUPLICATE_ADDRESS = "network_duplicate_address"
+# Health findings, not detections; their thresholds are tuned in the same place.
+CHECK_NETWORK_DROP_TOGETHER = "network_drop_together"
+CHECK_NETWORK_STEADY_RESTARTS = "network_steady_restarts"
+CHECK_NETWORK_SLOWER_GATEWAY = "network_slower_gateway"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -106,6 +111,21 @@ THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
     # Consecutive netscan cycles without an answer before a watched device is down.
     RULE_NETWORK_DEVICE_DOWN: {
         "down_cycles": {"default": 3, "min": 2, "max": 24},
+    },
+    # How often two devices must swap one address within an hour.
+    RULE_NETWORK_DUPLICATE_ADDRESS: {
+        "flips": {"default": 3, "min": 2, "max": 10},
+    },
+    CHECK_NETWORK_DROP_TOGETHER: {
+        "min_devices": {"default": 5, "min": 2, "max": 100},
+        "percent": {"default": 10, "min": 1, "max": 100},
+    },
+    CHECK_NETWORK_STEADY_RESTARTS: {
+        "drops_per_day": {"default": 5, "min": 3, "max": 50},
+    },
+    CHECK_NETWORK_SLOWER_GATEWAY: {
+        "factor": {"default": 3, "min": 2, "max": 10},
+        "min_ms": {"default": 3, "min": 1, "max": 1000},
     },
 }
 
@@ -1158,6 +1178,7 @@ class DetectionEngine:
             EVENT_CERT_CHANGED,
             EVENT_DEVICE_BACK,
             EVENT_DEVICE_DOWN,
+            EVENT_DUPLICATE_ADDRESS,
             EVENT_IDENTITY_SHIFT,
             EVENT_PORT_OPENED,
             VERDICT_ACKNOWLEDGED,
@@ -1168,6 +1189,7 @@ class DetectionEngine:
             EVENT_CERT_CHANGED: (RULE_NETWORK_CERT_CHANGED, SEVERITY_MEDIUM, "Certificate changed on network device"),
             EVENT_IDENTITY_SHIFT: (RULE_NETWORK_IDENTITY_SHIFT, SEVERITY_HIGH, "Identity shift on network device"),
             EVENT_DEVICE_DOWN: (RULE_NETWORK_DEVICE_DOWN, SEVERITY_LOW, "Watched network device stopped answering"),
+            EVENT_DUPLICATE_ADDRESS: (RULE_NETWORK_DUPLICATE_ADDRESS, SEVERITY_HIGH, "Two devices are swapping one address, one of them"),
         }
         since = now - timedelta(hours=NETWORK_CHANGE_LOOKBACK_HOURS)
         devices = self.inventory.state["devices"]
@@ -1182,7 +1204,10 @@ class DetectionEngine:
             device = devices.get(event.get("device_id"))
             if device is None:
                 continue
-            if event["kind"] == EVENT_DEVICE_DOWN:
+            if event["kind"] == EVENT_DUPLICATE_ADDRESS:
+                # Raised whatever the verdicts are: this is also what ARP spoofing looks like.
+                pass
+            elif event["kind"] == EVENT_DEVICE_DOWN:
                 # Watching is its own opt-in and does not depend on the verdict.
                 if not device.get("watched"):
                     continue
@@ -1193,6 +1218,8 @@ class DetectionEngine:
             detail: dict[str, Any] = {"device_id": device["id"], "changed_at": event["ts"]}
             if event.get("reasons"):
                 detail["reasons"] = list(event["reasons"])
+            if event.get("other_device_id"):
+                detail["other_device_id"] = event["other_device_id"]
             results.append(
                 self._upsert_detection(
                     rule_id=rule_id,

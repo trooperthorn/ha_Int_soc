@@ -130,6 +130,8 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         # Netscan capability negotiation, same shape as firewall_capabilities: a Probe
         # build too old to send this reports nothing and the panel treats it as absent.
         vol.Optional("netscan_capabilities"): vol.Any(None, {str: bool}),
+        # The Probe host's default IPv4 next hop; checked as an address by the inventory.
+        vol.Optional("netscan_gateway"): vol.Any(None, vol.All(str, vol.Length(max=45))),
         # One cycle's worth of discovered hosts; bounded so an ingest call cannot write
         # an unbounded amount of scan data.
         vol.Optional("netscan_result"): vol.Any(
@@ -436,6 +438,7 @@ def async_register_probe_service(
             )
             if inventory is not None:
                 from .detections import (
+                    RULE_NETWORK_DUPLICATE_ADDRESS,
                     RULE_NETWORK_DEVICE_DOWN,
                     RULE_NETWORK_DEVICE_NEW,
                     thresholds,
@@ -452,6 +455,8 @@ def async_register_probe_service(
                         port_list=validate_port_list(store.settings.get(CONF_NETSCAN_PORT_LIST)),
                         presence=bool((capabilities or {}).get(NETSCAN_CAPABILITY_PRESENCE)),
                         down_cycles=thresholds(store, RULE_NETWORK_DEVICE_DOWN)["down_cycles"],
+                        duplicate_flips=thresholds(store, RULE_NETWORK_DUPLICATE_ADDRESS)["flips"],
+                        gateway_ip=call.data.get("netscan_gateway"),
                     )
                 except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
                     _LOGGER.exception("HA SOC could not merge the netscan cycle into the inventory")

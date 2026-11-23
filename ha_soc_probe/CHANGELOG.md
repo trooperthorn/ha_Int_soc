@@ -10,6 +10,8 @@
   certificate and 262,144 bytes per cycle). The integration does the
   parsing. An integration older than this change does not ask for
   certificates and gets the previous report shape.
+- The netscan reports the host's default IPv4 gateway, read from
+  `/proc/net/route`, to an integration that asks for it.
 - The netscan reports whether each host answered. A refused TCP connection
   now counts as an answer, the ARP table is read a second time 9 seconds
   after the sweep to see which addresses resolved during it, and the

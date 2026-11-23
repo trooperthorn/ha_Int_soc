@@ -356,7 +356,7 @@ async def test_presence_is_judged_only_when_the_probe_reports_the_capability(
         return_response=True,
         context=context,
     )
-    assert response["accepts"] == ["presence"]
+    assert response["accepts"] == ["presence", "gateway"]
 
 
 async def _entry(hass: HomeAssistant) -> MockConfigEntry:
