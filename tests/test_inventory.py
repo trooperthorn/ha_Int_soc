@@ -236,6 +236,103 @@ def test_event_ring_is_bounded(monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# UniFi clients as a second source
+# --------------------------------------------------------------------------
+
+
+def _unifi(state, clients, now, **kwargs):
+    kwargs.setdefault("new_id", state.setdefault("_test_ids", _ids()))
+    return inv.merge_unifi_clients(state, clients, now, **kwargs)
+
+
+def _client(mac=MAC_A, ip="198.51.100.20", name="Kitchen Tablet", **extra):
+    return {"mac": mac, "ipv4": ip, "name": name, "vlan": 30, "ssid": "home", "wired": False, **extra}
+
+
+def test_client_the_probe_never_saw_becomes_a_record():
+    state = _state()
+    outcome = _unifi(state, [_client()], T0)
+    assert outcome.created == ["d_0001"]
+    device = state["devices"]["d_0001"]
+    assert device["sources"] == ["unifi"]
+    assert device["macs"] == [MAC_A]
+    assert device["addresses"][0]["ip"] == "198.51.100.20"
+    assert device["baseline"] is True
+    assert device["unifi"] == {"vlan": 30, "ssid": "home", "wired": False}
+    assert inv.best_name(device) == {"value": "Kitchen Tablet", "source": "unifi"}
+
+
+def test_client_after_the_learning_window_is_not_baseline():
+    state = _state()
+    _unifi(state, [_client()], T0)
+    _unifi(state, [_client(mac=MAC_B, ip="198.51.100.21")], T0 + timedelta(hours=25))
+    assert state["devices"]["d_0002"]["baseline"] is False
+
+
+def test_controller_adds_to_a_probed_device_without_moving_it():
+    state = _state()
+    _merge(state, [{"ip": "192.0.2.10", "mac": MAC_A, "open_ports": [{"port": 22}]}], T0)
+    outcome = _unifi(state, [_client(ip="192.0.2.77")], T0 + CYCLE)
+    assert outcome.created == []
+    device = state["devices"]["d_0001"]
+    assert [a["ip"] for a in device["addresses"]] == ["192.0.2.10"]
+    assert sorted(device["ports"]) == ["22"]
+    assert device["sources"] == ["probe_arp", "probe_tcp", "unifi"]
+    assert inv.best_name(device)["value"] == "Kitchen Tablet"
+
+
+def test_registry_name_wins_over_the_controller_name():
+    state = _state()
+    _unifi(state, [_client()], T0)
+
+    def registry(mac):
+        return {"name": "Hallway NAS", "device_id": "abc"}
+
+    _merge(state, [{"ip": "192.0.2.10", "mac": MAC_A}], T0 + CYCLE, registry=registry)
+    assert inv.best_name(state["devices"]["d_0001"]) == {"value": "Hallway NAS", "source": "ha_registry"}
+
+
+def test_controller_mac_rekeys_an_address_keyed_record():
+    state = _state()
+    _merge(state, [{"ip": "192.0.2.50"}], T0)
+    _merge(state, [{"ip": "192.0.2.50"}], T0 + CYCLE)
+    assert state["devices"]["d_0001"]["identity"] == "address"
+    outcome = _unifi(state, [_client(ip="192.0.2.50")], T0 + 2 * CYCLE)
+    assert outcome.created == []
+    device = state["devices"]["d_0001"]
+    assert (device["identity"], device["macs"]) == ("mac", [MAC_A])
+
+
+def test_client_without_a_usable_mac_or_name_is_handled():
+    state = _state()
+    outcome = _unifi(
+        state,
+        [_client(mac=None), _client(mac="not-a-mac"), _client(mac=MAC_B, name=MAC_B, ip=None)],
+        T0,
+    )
+    assert outcome.created == ["d_0001"]
+    device = state["devices"]["d_0001"]
+    assert device["names"] == []
+    assert device["addresses"] == []
+
+
+def test_controller_last_seen_is_used_but_never_from_the_future():
+    state = _state()
+    _unifi(state, [_client()], T0)
+    later = T0 + timedelta(hours=2)
+    _unifi(state, [_client(last_seen=(T0 + timedelta(hours=1)).timestamp())], later)
+    assert state["devices"]["d_0001"]["last_seen"] == (T0 + timedelta(hours=1)).isoformat()
+    _unifi(state, [_client(last_seen=(later + timedelta(days=9)).timestamp())], later)
+    assert state["devices"]["d_0001"]["last_seen"] == later.isoformat()
+
+
+def test_repeating_the_same_client_list_changes_nothing():
+    state = _state()
+    _unifi(state, [_client(last_seen=T0.timestamp())], T0)
+    assert _unifi(state, [_client(last_seen=T0.timestamp())], T0 + CYCLE).changed is False
+
+
+# --------------------------------------------------------------------------
 # Probe ingest feeds the inventory
 # --------------------------------------------------------------------------
 
@@ -481,3 +578,23 @@ async def test_label_is_trimmed_cleared_and_kept_out_of_the_audit_record(
     ws_inventory_set_label(hass, connection, {"id": 2, "device_id": device_id, "label": None})
     await hass.async_block_till_done()
     assert runtime.inventory.state["devices"][device_id]["label"] is None
+
+
+async def test_unifi_snapshot_signal_feeds_the_inventory_and_raises_a_detection(
+    hass: HomeAssistant,
+) -> None:
+    from homeassistant.helpers.dispatcher import async_dispatcher_send
+
+    from custom_components.ha_soc.const import SIGNAL_UNIFI_CLIENTS
+
+    runtime = (await _entry(hass)).runtime_data
+    runtime.inventory.state["meta"]["learning_started_at"] = (
+        datetime.now(timezone.utc) - timedelta(days=3)
+    ).isoformat()
+    async_dispatcher_send(hass, SIGNAL_UNIFI_CLIENTS, [_client()])
+    await hass.async_block_till_done()
+
+    devices = list(runtime.inventory.state["devices"].values())
+    assert [d["sources"] for d in devices] == [["unifi"]]
+    await runtime.detections.async_run_pass()
+    assert [d["rule_id"] for d in _network_detections(runtime)] == [RULE_NETWORK_DEVICE_NEW]

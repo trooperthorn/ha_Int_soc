@@ -310,6 +310,8 @@ export interface InventoryDevice {
   baseline: boolean;
   ha_device_id: string | null;
   recent_changes: InventoryChange[];
+  // Present once the UniFi controller has listed the device.
+  unifi?: { vlan: number | string | null; ssid: string | null; wired: boolean };
 }
 
 export interface InventoryPort {

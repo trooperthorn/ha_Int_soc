@@ -22,6 +22,11 @@ NVD/GitHub; and HA to the SIEM.
 | HTTP/plaintext Syslog or unverified certificates | interception/tampering | visible findings/warnings; no forced migration | complete certificate plan and segmentation |
 | Malicious integration in shared HA process | secret/data theft | advisory static scanner and provenance findings | allowlist/review code; isolate high-risk workloads |
 | Dependency or CI compromise | shipped vulnerable code | lockfile, pinned Actions, CodeQL, npm audit, Bandit, ShellCheck, Dependabot, owner review | enable vulnerability alerts; add signed releases/SBOM/provenance |
+| A LAN device sets its own MAC, hostname, banner and certificate | misleading inventory, stored-text injection | every such string length-bounded at ingest and rendered as text; certificate DER bounded to 8,192 bytes and parsed in the executor with failures mapped to unreadable; none used in an access decision | none planned |
+| A device clones an acknowledged device's MAC | the clone inherits the owner's verdict and raises no new-device detection | `network_identity_shift` when ports and certificate change together or the MAC answers at two addresses; port and certificate change detections | weak by design: a clone that matches ports and never overlaps the original is not seen. 802.1X is the real control and is out of scope |
+| Alert flooding by MAC rotation | detection table filled, real alert buried | `network_device_burst` collapses new devices past the hourly threshold; 4,096 record cap that evicts only records the owner never touched | the cap being reached is recorded (`cap_reached_at`) and shown in the tab, but raises no finding yet |
+| Compromised Probe or UniFi controller fabricates or hides devices | false inventory, missed device | Probe reports authenticated by Supervisor context and pinned secret; the two sources are shown per device, so a device only one of them reports is visible as such | no cross-check raises a finding when the sources disagree |
+| Inventory read by a non-owner | a map of the house: devices, addresses, names, open ports | private Store file `ha_soc.inventory`; every `ha_soc/inventory/*` command owner-only server-side; detections carry the device id only; no entities or attributes | diagnostics redaction and export are not built (design phase 10) |
 | Availability attack or response amplification | HA/SIEM degradation | time/body/fan-out/queue bounds, cancellation-safe lifecycle, rate-conscious polling | load/failure drills and monitoring |
 
 ## Mechanism notes
@@ -79,6 +84,17 @@ but the LAN host/port/service/vendor map it produces is itself a
 reconnaissance asset, so no account but the owner may even read it. Enabling
 netscan and setting its port list/concurrency cap go through the same
 owner-only `ha_soc/settings/set` path as every other owner-only setting.
+
+### Network inventory verdicts
+
+"Acknowledged" in the Network Devices tab means the owner recognized this MAC
+address once. It does not mean the device is authenticated, and nothing in HA
+SOC treats it as an access decision: it only decides which detections a device
+can raise. An unacknowledged device raises `network_device_new`; an
+acknowledged one raises the change detections instead. A MAC address is chosen
+by the device that presents it, so a device that presents an acknowledged MAC
+is, to the inventory, that device. See `NETWORK-INVENTORY-DESIGN.md`,
+"Threat model additions", and `security.md`, "Network inventory".
 
 ### UniFi write-back gating
 

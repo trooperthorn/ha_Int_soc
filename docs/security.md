@@ -132,6 +132,31 @@ a discovered host/port/service/vendor map for the whole LAN is itself a
 reconnaissance asset, so no account but the owner may even look, regardless
 of `access_level`.
 
+### Network inventory
+
+The inventory (`inventory.py`) turns netscan cycles and the UniFi controller's
+client list into one record per device. What it does and does not establish:
+
+- **Enforced:** every inventory command is owner-only, checked server-side per
+  command. The Store file is private. Detections name a device by its
+  inventory id and carry no MAC, address, name, port or fingerprint.
+- **Advisory:** the verdict. "Acknowledged" records that the owner recognized
+  a MAC address once. It authenticates nothing. A device that presents an
+  acknowledged MAC is treated as the acknowledged device.
+- **Weak by design:** `network_identity_shift` catches a cloned MAC only when
+  the clone shows different ports together with a different certificate, or
+  answers while the original is also answering. A careful clone is not seen.
+- **False positives to expect:** a device given a second address, a router
+  that answers ARP for other hosts, a service restarted on a new port, a
+  self-signed certificate regenerated well before its expiry.
+- **Evasion to expect:** a new device that joins during the learning window
+  is recorded as baseline and raises nothing; a certificate swapped for one
+  with the same subject and issuer within 30 days of the old one's expiry is
+  recorded as a renewal; a port outside the configured scan list is never
+  looked at.
+- **Sources are trusted equally.** A compromised Probe or controller can add
+  or withhold devices. Each record lists which source reported it.
+
 OS fingerprinting and UDP scanning are explicitly out of scope, both for the
 same underlying reason. Real OS fingerprinting (TCP/IP stack quirks, TTL and
 window-size heuristics) needs a raw socket to see packet-level detail this

@@ -14,12 +14,12 @@ from datetime import timedelta
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.helpers.dispatcher import async_dispatcher_connect, async_dispatcher_send
 from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
 
 from .audit import AuditLog
-from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
+from .const import DOMAIN, PLATFORMS, SIGNAL_UNIFI_CLIENTS, SIGNAL_UPDATE
 from .crash_forensics import CrashForensics
 from .detections import DetectionEngine
 from .inventory import NetworkInventory
@@ -214,6 +214,23 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     inventory = NetworkInventory(hass)
     await inventory.async_load()
     entry.async_on_unload(inventory.async_flush)
+
+    @callback
+    def _async_unifi_clients(clients: list[dict]) -> None:
+        """The controller's client list is the inventory's second source."""
+        from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+
+        try:
+            inventory.async_merge_unifi_clients(
+                clients,
+                learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
+            )
+        except Exception:  # noqa: BLE001 - the inventory must never break a UniFi snapshot
+            _LOGGER.exception("HA SOC could not merge UniFi clients into the inventory")
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_UNIFI_CLIENTS, _async_unifi_clients)
+    )
     detections = DetectionEngine(hass, store, audit=audit, users=users, inventory=inventory)
     watchdog = ResourceWatchdog(hass, store, audit)
     terminal = TerminalSessions(hass, audit, secrets)

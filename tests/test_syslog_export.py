@@ -131,6 +131,8 @@ def test_cef_unknown_category_is_safely_preserved() -> None:
         ("user_removed", "7"),
         ("soc_config_change", "5"),
         ("watchdog_triggered", "5"),
+        ("inventory_verdict_changed", "5"),
+        ("inventory_label_changed", "5"),
         ("login_ok", "3"),
         ("service_call", "3"),
         ("future_category", "4"),

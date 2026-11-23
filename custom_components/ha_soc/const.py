@@ -25,6 +25,10 @@ AUDIT_STORAGE_SUBDIR = f"{DOMAIN}_audit"
 
 # A topic is appended to the signal, e.g. f"{SIGNAL_UPDATE}_users".
 SIGNAL_UPDATE = f"{DOMAIN}_update"
+# Sent with the normalized client list each time a UniFi network snapshot yields
+# one, so the inventory can use the controller as a second source without a
+# fetch of its own.
+SIGNAL_UNIFI_CLIENTS = f"{DOMAIN}_unifi_clients"
 
 # Custom bus event fired for user-built automations (ha_soc_alert).
 EVENT_ALERT = f"{DOMAIN}_alert"

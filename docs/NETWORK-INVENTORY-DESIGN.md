@@ -319,9 +319,12 @@ Built 2026-11-22: `inventory.py`, the `network_device_new` and
 `tests/test_inventory.py`. It differs from the text above in these ways, each
 deliberate:
 
-- **UniFi clients are not merged yet.** The only sources are the Probe's
-  cycle and the device registry. A device the controller sees and the Probe
-  does not has no record. This is the largest gap against the design.
+- **UniFi clients were not merged in the first build.** Added 2026-11-23:
+  `merge_unifi_clients` creates a record for a client the Probe never saw
+  (shown as "seen by UniFi only, not probed") and adds the controller's name,
+  VLAN and SSID to one it did. The merge runs when a UniFi snapshot is taken,
+  which is every six hours and whenever a tab that reads it is opened, not
+  every cycle. See `decisions.md`.
 - **Detections carry the device id and nothing else about the device.** The
   inventory is owner-only, while detection rows follow the panel's access
   level. A MAC, address or name in a detection would hand the inventory to
@@ -646,7 +649,8 @@ undone.
 
 ## Threat model additions
 
-These rows go into `THREAT-MODEL.md` when phase 1 ships.
+These rows were added to `THREAT-MODEL.md` on 2026-11-23, with the residual
+gaps as they stand after phase 2.
 
 - **A LAN device controls its own MAC, hostname, banner and certificate.**
   Every such string is length-bounded at ingest and rendered as text. None is

@@ -19,11 +19,13 @@ const SOURCE_LABELS: Record<string, string> = {
   probe_arp: "Probe (ARP table)",
   probe_tcp: "Probe (TCP connect)",
   ha_registry: "Home Assistant registry",
+  unifi: "UniFi controller",
 };
 
 const NAME_SOURCE_LABELS: Record<string, string> = {
   label: "your label",
   ha_registry: "Home Assistant registry",
+  unifi: "UniFi controller",
 };
 
 /** Design and limits: docs/NETWORK-INVENTORY-DESIGN.md. Every command behind this view is owner-only. */
@@ -282,6 +284,16 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                 <td>${this._renderPorts(d)}</td>
                 <td class="muted" style="font-size:12px;">
                   ${d.sources.map((s) => SOURCE_LABELS[s] ?? s).join(", ") || "unknown"}
+                  ${d.sources.includes("unifi") && !d.sources.some((s) => s.startsWith("probe_"))
+                    ? html`<div>seen by UniFi only, not probed</div>`
+                    : nothing}
+                  ${d.unifi && (d.unifi.ssid || d.unifi.vlan !== null)
+                    ? html`<div>
+                        ${[d.unifi.ssid && `SSID ${d.unifi.ssid}`, d.unifi.vlan !== null && `VLAN ${d.unifi.vlan}`]
+                          .filter(Boolean)
+                          .join(", ")}
+                      </div>`
+                    : nothing}
                 </td>
                 <td>${this._renderVerdict(d)}</td>
                 <td>${this._renderActions(d)}</td>

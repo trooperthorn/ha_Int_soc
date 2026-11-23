@@ -14,6 +14,7 @@ registry lookup.
 from __future__ import annotations
 
 import logging
+import re
 import secrets as _secrets
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -47,6 +48,11 @@ IDENTITY_ADDRESS = "address"
 SOURCE_PROBE_ARP = "probe_arp"
 SOURCE_PROBE_TCP = "probe_tcp"
 SOURCE_HA_REGISTRY = "ha_registry"
+SOURCE_UNIFI = "unifi"
+# Which name wins when the owner set no label: first in this list, then the rest
+# in the order they were learned.
+NAME_PRECEDENCE = (SOURCE_HA_REGISTRY, SOURCE_UNIFI)
+_MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
 # Fixed bounds, not owner-tunable: a hostile LAN must not be able to grow the file.
 MAX_DEVICES = 4096
@@ -538,11 +544,124 @@ def merge_cycle(
     return outcome
 
 
+def merge_unifi_clients(
+    state: dict[str, Any],
+    clients: list[dict[str, Any]],
+    now: datetime,
+    *,
+    learning_hours: int = DEFAULT_LEARNING_HOURS,
+    new_id: Callable[[], str] = _new_device_id,
+) -> MergeOutcome:
+    """Fold the UniFi controller's client list into the inventory, in place.
+
+    ``clients`` is unifi.py's normalized shape. A client with a MAC the inventory
+    does not hold becomes a record, so a device the controller sees and the Probe
+    cannot reach is still listed. For a device the Probe also sees, the controller
+    adds a name, the VLAN and SSID, and a later last-seen time, and nothing else:
+    the Probe's address stays the current one and ports are never touched.
+
+    The controller is trusted as far as the Probe is. A client name is set on the
+    device or in the controller, so it is length-bounded and only ever displayed.
+    """
+    outcome = MergeOutcome()
+    now = dt_util.as_utc(now)
+    now_iso = now.isoformat()
+    meta = state["meta"]
+    devices: dict[str, dict[str, Any]] = state["devices"]
+    if meta.get("learning_started_at") is None:
+        meta["learning_started_at"] = now_iso
+    started = _parse(meta["learning_started_at"]) or now
+    learning = now < started + timedelta(hours=learning_hours)
+
+    by_mac: dict[str, str] = {}
+    by_address: dict[str, str] = {}
+    for device in devices.values():
+        for mac in device.get("macs") or []:
+            by_mac[mac] = device["id"]
+        if device.get("identity") == IDENTITY_ADDRESS and device.get("addresses"):
+            by_address[device["addresses"][0]["ip"]] = device["id"]
+
+    for client in clients:
+        mac = str(client.get("mac") or "").lower()
+        if not _MAC_RE.match(mac):
+            continue
+        ip = client.get("ipv4") if isinstance(client.get("ipv4"), str) else None
+        device = devices.get(by_mac.get(mac, ""))
+        if device is None and ip and ip in by_address:
+            # The controller supplies the MAC for a host the Probe could only key by address.
+            device = devices.get(by_address.pop(ip))
+            if device is not None:
+                device["identity"] = IDENTITY_MAC
+                device["macs"] = [mac]
+                device["mac_kind"] = mac_kind(mac)
+                _append_event(state, now_iso, device["id"], "rekeyed_to_mac", source=SOURCE_UNIFI)
+                outcome.changed = True
+        if device is None:
+            if not _make_room(state, now_iso):
+                continue
+            device = {
+                "id": new_id(),
+                "identity": IDENTITY_MAC,
+                "macs": [mac],
+                "mac_kind": mac_kind(mac),
+                "addresses": [],
+                "names": [],
+                "label": None,
+                "vendor": None,
+                "first_seen": now_iso,
+                "last_seen": now_iso,
+                "verdict": VERDICT_UNACKNOWLEDGED,
+                "watched": False,
+                "sources": [],
+                "ports": {},
+                "baseline": learning,
+                "ha_device_id": None,
+                "seen_cycles": 0,
+            }
+            devices[device["id"]] = device
+            outcome.created.append(device["id"])
+            _append_event(state, now_iso, device["id"], "created", baseline=learning, source=SOURCE_UNIFI)
+        by_mac[mac] = device["id"]
+
+        if SOURCE_UNIFI not in device["sources"]:
+            device["sources"].append(SOURCE_UNIFI)
+            outcome.changed = True
+        probed = any(source in device["sources"] for source in (SOURCE_PROBE_ARP, SOURCE_PROBE_TCP))
+        if ip and not probed and _set_address(state, device, ip, now_iso):
+            outcome.changed = True
+        name = client.get("name")
+        if isinstance(name, str) and name.lower() not in (mac, "unknown"):
+            if _set_name(device, name, SOURCE_UNIFI, now_iso):
+                outcome.changed = True
+        seen = client.get("last_seen")
+        seen_at = now
+        if isinstance(seen, (int, float)) and seen > 0:
+            seen_at = min(now, dt_util.utc_from_timestamp(seen))
+        if seen_at > (_parse(device.get("last_seen")) or seen_at - timedelta(seconds=1)):
+            device["last_seen"] = seen_at.isoformat()
+        network = {
+            "vlan": client.get("vlan") if isinstance(client.get("vlan"), (int, str)) else None,
+            "ssid": str(client["ssid"])[:64] if client.get("ssid") else None,
+            "wired": bool(client.get("wired")),
+        }
+        if device.get("unifi") != network:
+            device["unifi"] = network
+            outcome.changed = True
+
+    if outcome.created:
+        outcome.changed = True
+    return outcome
+
+
 def best_name(device: dict[str, Any]) -> dict[str, str] | None:
     """The name to show and where it came from. The owner's label always wins."""
     if device.get("label"):
         return {"value": device["label"], "source": "label"}
     names = device.get("names") or []
+    for source in NAME_PRECEDENCE:
+        for name in names:
+            if name["source"] == source:
+                return {"value": name["value"], "source": source}
     return {"value": names[0]["value"], "source": names[0]["source"]} if names else None
 
 
@@ -622,6 +741,22 @@ class NetworkInventory:
         # last_seen, the cycle counter and last_cycle_at change every cycle. They are
         # written on stop and with the next real change, not once per cycle, so after
         # a crash they can be as old as the last real change.
+        self._dirty = True
+        if outcome.changed:
+            self._schedule_save()
+        return outcome
+
+    @callback
+    def async_merge_unifi_clients(
+        self,
+        clients: list[dict[str, Any]],
+        *,
+        learning_hours: int = DEFAULT_LEARNING_HOURS,
+        now: datetime | None = None,
+    ) -> MergeOutcome:
+        outcome = merge_unifi_clients(
+            self.state, clients, now or dt_util.utcnow(), learning_hours=learning_hours
+        )
         self._dirty = True
         if outcome.changed:
             self._schedule_save()
