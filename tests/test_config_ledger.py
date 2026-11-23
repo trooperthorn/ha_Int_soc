@@ -13,7 +13,7 @@ import asyncio
 from unittest.mock import MagicMock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
@@ -120,10 +120,10 @@ async def _call(hass: HomeAssistant, handler, connection: MagicMock, msg: dict) 
 def isolated_config_dir(hass: HomeAssistant, tmp_path) -> str:
     """Give each test its own config dir.
 
-    The harness's config dir lives inside site-packages and survives between
-    runs, so the audit chain one test writes is still on disk for the next
+    The default config dir is shared by the whole test session and survives between
+    tests, so the audit chain one test writes is still on disk for the next
     one, and a count of records becomes a count of every record this file has
-    ever written.
+    written so far.
     """
     hass.config.config_dir = str(tmp_path)
     return str(tmp_path)

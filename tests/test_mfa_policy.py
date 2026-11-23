@@ -10,7 +10,7 @@ happens (and doesn't) against the real auth store, not against a stub.
 from datetime import timedelta
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockUser
+from pytest_homeassistant.common import MockUser
 
 from homeassistant.core import HomeAssistant
 import homeassistant.util.dt as dt_util

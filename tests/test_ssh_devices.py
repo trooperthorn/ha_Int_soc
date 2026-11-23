@@ -16,7 +16,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
@@ -52,7 +52,7 @@ async def _call(hass: HomeAssistant, handler, connection: MagicMock, msg: dict) 
 
 @pytest.fixture(autouse=True)
 def isolated_config_dir(hass: HomeAssistant, tmp_path) -> str:
-    """The harness config dir lives in site-packages and persists between runs."""
+    """The default config dir is shared by the whole test session and persists between tests."""
     hass.config.config_dir = str(tmp_path)
     return str(tmp_path)
 

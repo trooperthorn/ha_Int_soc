@@ -1,5 +1,11 @@
-pytest-homeassistant-custom-component==0.13.375
-home-assistant-frontend==20260930.5
+# The official harness, published from home-assistant/core. Each release pins the exact
+# matching homeassistant version and its own pytest, so it moves together with
+# requirements-core.txt and no separate pytest pin is kept here.
+pytest-homeassistant==2026.11.2
+# Must equal the home-assistant-frontend line in that core's package_constraints.txt.
+home-assistant-frontend==20261028.6
+# core's hassio component imports it; the previous harness installed it, this one does not.
+aiohasupervisor==0.8.1
 aiousbwatcher==1.1.2
 # The suite needs it to generate and import keys. The manifest declares a range
 # (core depends on asyncssh, so hassfest refuses an exact pin); the tests pin the floor.

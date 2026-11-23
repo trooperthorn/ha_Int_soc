@@ -4,7 +4,7 @@ The mapper unit tests live in test_otlp_mapper.py. These run the real health and
 containers code and feed their output to the mapper, so a change in either producer
 that breaks a value in the payload fails here.
 """
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import otlp_mapper
 from custom_components.ha_soc.health import IntegrationHealth

@@ -14,7 +14,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryNotReady, Unauthorized
 from homeassistant.helpers.storage import Store
 from homeassistant.util.file import WriteError
-from pytest_homeassistant_custom_component.common import (
+from pytest_homeassistant.common import (
     MockConfigEntry,
     async_fire_time_changed,
 )

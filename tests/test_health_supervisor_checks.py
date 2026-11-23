@@ -15,7 +15,7 @@ from datetime import timedelta
 from unittest.mock import patch
 
 import pytest
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 import homeassistant.helpers.issue_registry as ir
 from homeassistant.core import HomeAssistant

@@ -15,7 +15,7 @@ from homeassistant.const import HASSIO_USER_NAME
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers import device_registry as dr
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import inventory as inv
 from custom_components.ha_soc.const import DETECTION_OPEN, DETECTION_RESOLVED, DOMAIN

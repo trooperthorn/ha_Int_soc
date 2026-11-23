@@ -12,7 +12,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from aiohttp.test_utils import make_mocked_request
 from homeassistant.components.http import KEY_HASS_USER
 from homeassistant.helpers.http import current_request
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import observe_push as op
 from custom_components.ha_soc import websocket_api as wa

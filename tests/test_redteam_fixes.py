@@ -130,7 +130,7 @@ def test_firewall_source_validation() -> None:
 
 
 async def test_delete_user_blocks_owner(hass: HomeAssistant) -> None:
-    from pytest_homeassistant_custom_component.common import MockUser
+    from pytest_homeassistant.common import MockUser
 
     from custom_components.ha_soc.users import UsersManager
 
@@ -145,7 +145,7 @@ async def test_delete_user_blocks_owner(hass: HomeAssistant) -> None:
 
 
 async def test_delete_user_blocks_self(hass: HomeAssistant) -> None:
-    from pytest_homeassistant_custom_component.common import MockUser
+    from pytest_homeassistant.common import MockUser
 
     from custom_components.ha_soc.users import UsersManager
 

@@ -12,7 +12,7 @@ import pytest
 import voluptuous as vol
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import Unauthorized
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import network_security as ns
 from custom_components.ha_soc import unifi

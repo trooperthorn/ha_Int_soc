@@ -12,7 +12,7 @@ from types import SimpleNamespace
 import pytest
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from custom_components.ha_soc import hacs_updates as hu
 from custom_components.ha_soc import marketplace_compat as mc

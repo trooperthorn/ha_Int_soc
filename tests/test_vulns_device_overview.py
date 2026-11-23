@@ -6,7 +6,7 @@ whether Home Assistant is actually hearing from the device right now
 CVE finding. These tests exercise both axes against real device/entity
 registries and live states.
 """
-from pytest_homeassistant_custom_component.common import MockConfigEntry
+from pytest_homeassistant.common import MockConfigEntry
 
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
