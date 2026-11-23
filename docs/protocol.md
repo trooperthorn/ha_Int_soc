@@ -52,6 +52,12 @@ The Supervisor exposes a live `/stats` per container. `_STAT_FIELDS` are aiohasu
 - Shape used (`aiohasupervisor` 0.6.0 `models/network.py`, and the Supervisor API documentation): `interfaces[]` with `primary`, `connected` and `ipv4`; `ipv4.gateway` is one address or null and `ipv4.nameservers` a list. `inventory.py` `host_network_roles` takes the primary connected interface, or the first connected one with IPv4 settings.
 - These are the gateway and DNS servers the Home Assistant host is configured to use. The Supervisor does not report a DHCP server, and nothing here says which servers other devices on the network use.
 
+### Names Home Assistant already holds
+
+- DHCP: `homeassistant.components.dhcp.async_discovered_service_info(hass)` returns a list of `DhcpServiceInfo` with `ip`, `hostname` (lowercased by core) and `macaddress` (lowercase, no colons). Exported from `dhcp/__init__.py` in core 2026.11.0 and in 2026.9.3. It reads what core's own DHCP watcher has seen since start; it sends nothing. Called only when `dhcp` is loaded, and `dhcp` is in `after_dependencies`.
+- Router trackers: a `device_tracker` state whose `source_type` attribute is `router` carries `mac`, `ip` and `host_name` when the integration provides them (`ScannerEntity.state_attributes` in core 2026.11.0, `device_tracker/entity.py`). The MAC spelling is whatever the integration reports, so it is normalized before matching.
+- Neither source is asked for anything new, and neither creates an inventory record: a name is attached only to a device already held by that MAC.
+
 ### Core auth, lovelace, and config facts
 
 - `trusted_users` maps a network to a list of user-id hex strings or `{"group": group_id}` dicts (verified against core 2026.2.3's trusted_networks provider). `.storage/backup` carries `config.create_backup.password` and `config.agents[<id>].protected` (verified against core 2026.2.3 components/backup/config.py and store.py).

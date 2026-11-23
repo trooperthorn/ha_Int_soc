@@ -154,6 +154,13 @@ client list into one record per device. What it does and does not establish:
   with the same subject and issuer within 30 days of the old one's expiry is
   recorded as a renewal; a port outside the configured scan list is never
   looked at.
+- **Names are text the device chose, except two.** The owner's label and
+  the Home Assistant registry name are set by the owner. The controller
+  name may be either. A DHCP hostname, a router tracker's hostname and a
+  certificate's common name are announced by the device. All are bounded
+  to 128 characters, shown with their source, and used for display only;
+  the precedence puts the owner's names first so an announced name cannot
+  replace one.
 - **Sources are trusted equally.** A compromised Probe or controller can add
   or withhold devices. Each record lists which source reported it.
 

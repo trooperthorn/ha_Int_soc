@@ -27,6 +27,9 @@ const NAME_SOURCE_LABELS: Record<string, string> = {
   label: "your label",
   ha_registry: "Home Assistant registry",
   unifi: "UniFi controller",
+  dhcp: "DHCP hostname",
+  tracker: "router tracker",
+  cert: "certificate subject",
 };
 
 /** Design and limits: docs/NETWORK-INVENTORY-DESIGN.md. Every command behind this view is owner-only. */
@@ -177,7 +180,15 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
     return html`
       ${name
         ? html`${name.value}
-            <div class="muted" style="font-size:11.5px;">from ${NAME_SOURCE_LABELS[name.source] ?? name.source}</div>`
+            <div
+              class="muted"
+              style="font-size:11.5px;"
+              title=${d.names.map((n) => `${n.value} (${NAME_SOURCE_LABELS[n.source] ?? n.source}, ${this._when(n.ts)})`).join("\n")}
+            >
+              from ${NAME_SOURCE_LABELS[name.source] ?? name.source}${d.names.length > 1
+                ? `, ${d.names.length} names known`
+                : ""}
+            </div>`
         : html`<span class="muted">no name known</span>`}
       ${d.roles.length
         ? html`<div class="muted" style="font-size:11.5px;">

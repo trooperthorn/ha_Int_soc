@@ -53,7 +53,13 @@ SOURCE_HA_REGISTRY = "ha_registry"
 SOURCE_UNIFI = "unifi"
 # Which name wins when the owner set no label: first in this list, then the rest
 # in the order they were learned.
-NAME_PRECEDENCE = (SOURCE_HA_REGISTRY, SOURCE_UNIFI)
+SOURCE_DHCP = "dhcp"
+SOURCE_TRACKER = "tracker"
+SOURCE_CERT = "cert"
+NAME_PRECEDENCE = (SOURCE_HA_REGISTRY, SOURCE_UNIFI, SOURCE_DHCP, SOURCE_TRACKER, SOURCE_CERT)
+# Sources that only ever add a name. They do not count as having seen the device.
+PASSIVE_NAME_SOURCES = (SOURCE_DHCP, SOURCE_TRACKER)
+_CERT_CN_RE = re.compile(r"(?:^|,)CN=((?:[^,\\]|\\.)+)")
 _MAC_RE = re.compile(r"^[0-9a-f]{2}(:[0-9a-f]{2}){5}$")
 
 # Fixed bounds, not owner-tunable: a hostile LAN must not be able to grow the file.
@@ -1099,6 +1105,55 @@ def certificate_expiries(state: dict[str, Any], now: datetime) -> list[dict[str,
     return rows
 
 
+def normalize_mac(value: Any) -> str | None:
+    """A MAC in any common spelling as lowercase with colons, or None."""
+    digits = re.sub(r"[^0-9a-fA-F]", "", str(value or ""))
+    if len(digits) != 12:
+        return None
+    digits = digits.lower()
+    return ":".join(digits[i : i + 2] for i in range(0, 12, 2))
+
+
+def apply_names(state: dict[str, Any], names: list[dict[str, Any]], now: datetime) -> bool:
+    """Add names other parts of Home Assistant already hold, and certificate names.
+
+    ``names`` is a list of ``{"mac", "name", "source"}`` with the source one of
+    PASSIVE_NAME_SOURCES. A name is only ever attached to a device the inventory
+    already holds by that MAC: these sources name devices, they do not discover
+    them. A name the device announced is attacker-chosen text, so it is
+    length-bounded, shown with its source, and ranks below the owner's label, the
+    registry and the controller. Returns True when anything changed.
+    """
+    now_iso = dt_util.as_utc(now).isoformat()
+    devices: dict[str, dict[str, Any]] = state["devices"]
+    by_mac = {mac: device for device in devices.values() for mac in device.get("macs") or []}
+    changed = False
+    for entry in names:
+        if entry.get("source") not in PASSIVE_NAME_SOURCES:
+            continue
+        mac = normalize_mac(entry.get("mac"))
+        device = by_mac.get(mac or "")
+        name = entry.get("name")
+        if device is None or not isinstance(name, str):
+            continue
+        if _set_name(device, name, entry["source"], now_iso):
+            changed = True
+
+    certs = state.get("certs") or {}
+    for device in devices.values():
+        subject = None
+        for key in sorted(device.get("ports") or {}, key=int):
+            record = device["ports"][key]
+            cert = certs.get(record.get("cert_sha256") or "")
+            if record.get("closed_at") is None and cert and cert.get("subject"):
+                subject = cert["subject"]
+                break
+        match = _CERT_CN_RE.search(subject) if subject else None
+        if match and _set_name(device, match.group(1), SOURCE_CERT, now_iso):
+            changed = True
+    return changed
+
+
 def best_name(device: dict[str, Any]) -> dict[str, str] | None:
     """The name to show and where it came from. The owner's label always wins."""
     if device.get("label"):
@@ -1202,6 +1257,8 @@ class NetworkInventory:
             duplicate_flips=duplicate_flips,
             gateway_ip=gateway_ip,
         )
+        if apply_names(self.state, self._passive_names(), now or dt_util.utcnow()):
+            outcome.changed = True
         # last_seen, the cycle counter and last_cycle_at change every cycle. They are
         # written on stop and with the next real change, not once per cycle, so after
         # a crash they can be as old as the last real change.
@@ -1225,6 +1282,36 @@ class NetworkInventory:
         if outcome.changed:
             self._schedule_save()
         return outcome
+
+    def _passive_names(self) -> list[dict[str, Any]]:
+        """Names Home Assistant already holds: DHCP hostnames and router trackers.
+
+        Nothing is sent or listened for here. Core's dhcp integration watches DHCP
+        traffic for discovery and keeps what it saw; router integrations expose the
+        hostname their router reports as a tracker attribute.
+        """
+        names: list[dict[str, Any]] = []
+        if "dhcp" in self.hass.config.components:
+            try:
+                from homeassistant.components.dhcp import async_discovered_service_info
+
+                for info in async_discovered_service_info(self.hass):
+                    names.append({"mac": info.macaddress, "name": info.hostname, "source": SOURCE_DHCP})
+            except Exception:  # noqa: BLE001 - a name source must never break a cycle
+                _LOGGER.debug("HA SOC could not read DHCP discovery names", exc_info=True)
+        for tracker in self.hass.states.async_all("device_tracker"):
+            attributes = tracker.attributes
+            if attributes.get("source_type") != "router":
+                continue
+            if attributes.get("mac") and attributes.get("host_name"):
+                names.append(
+                    {
+                        "mac": attributes["mac"],
+                        "name": str(attributes["host_name"]),
+                        "source": SOURCE_TRACKER,
+                    }
+                )
+        return names
 
     def _host_roles(self) -> dict[str, Any] | None:
         """Gateway and DNS servers from the Supervisor's cached network information.

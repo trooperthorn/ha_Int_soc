@@ -1,9 +1,9 @@
 # Network inventory, presence and network health: design
 
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
-to 6 are built, except phase 6's DHCP probe (see the "What phase N built"
-sections below), and have not run against a live Supervisor or a real Probe;
-phases 7 to 10 are design only. This document owns
+to 7 are built, except phase 6's DHCP probe and phase 7's vendor table (see
+the "What phase N built" sections below), and have not run against a live
+Supervisor or a real Probe; phases 8 to 10 are design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -691,6 +691,30 @@ is then retired and the Probe stops sending `vendor`. Size and format of the
 generated table are to be measured; Vedetta ships the raw registry at about
 1.9 MB, which is too large to add to the HACS download as plain text without
 checking. A locally administered MAC gets no vendor lookup.
+
+#### What phase 7 built
+
+Built 2026-11-23: `apply_names` and `normalize_mac` in `inventory.py`, the
+collection of DHCP and router tracker names on each cycle, the certificate
+common name as a name, the full precedence, a tooltip in the tab listing
+every name with its source and time, and `tests/test_inventory_names.py`.
+It differs from the text above in these ways:
+
+- **The router tracker row is now verified.** `device_tracker` was added to
+  the local core clone; `ScannerEntity` exposes `mac`, `ip` and `host_name`
+  for `source_type: router`. `protocol.md` records both sources.
+- **mDNS is not built.** The design left it undesigned, and which zeroconf
+  call reads the cache without sending a query is still unverified.
+- **The vendor table is not built.** It needs the IEEE registry downloaded
+  and a generated file shipped in the release. The Probe's table stays.
+- **Names never create records.** A device known only to DHCP or to a router
+  tracker is not listed.
+- **The tab lists names in a tooltip**, not on a device detail page; there
+  is no detail page yet.
+
+Not verified: real DHCP discovery data (the tests stand in for core's dhcp
+integration, whose dependencies the test environment lacks) and what a real
+router integration puts in `host_name`.
 
 ### Phase 8: routed networks
 
