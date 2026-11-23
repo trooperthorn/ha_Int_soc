@@ -22,6 +22,7 @@ from .audit import AuditLog
 from .const import DOMAIN, PLATFORMS, SIGNAL_UPDATE
 from .crash_forensics import CrashForensics
 from .detections import DetectionEngine
+from .inventory import NetworkInventory
 from .health import IntegrationHealth
 from .mfa_policy import async_enforce_mfa_policy
 from .panel import async_register_panel, async_unregister_panel
@@ -88,6 +89,7 @@ class HaSocRuntimeData:
     scanner: IntegrationScanner
     risk: RiskEngine
     detections: DetectionEngine
+    inventory: NetworkInventory
     watchdog: "ResourceWatchdog"
     syslog: SyslogExporter
     terminal: TerminalSessions
@@ -209,7 +211,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     vulns = DeviceVulnerabilityTracker(hass, store, secrets)
     scanner = IntegrationScanner(hass, store)
     risk = RiskEngine(hass, store, users=users)
-    detections = DetectionEngine(hass, store, audit=audit, users=users)
+    inventory = NetworkInventory(hass)
+    await inventory.async_load()
+    entry.async_on_unload(inventory.async_flush)
+    detections = DetectionEngine(hass, store, audit=audit, users=users, inventory=inventory)
     watchdog = ResourceWatchdog(hass, store, audit)
     terminal = TerminalSessions(hass, audit, secrets)
     crash_forensics = CrashForensics(hass, store, audit, watchdog)
@@ -234,6 +239,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
         scanner=scanner,
         risk=risk,
         detections=detections,
+        inventory=inventory,
         watchdog=watchdog,
         syslog=syslog,
         terminal=terminal,
@@ -253,6 +259,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     # as well; it is a plain listener so removing it on unload is always safe.
     async def _async_flush_history_on_stop(_event: Event) -> None:
         await entry.runtime_data.watchdog.async_flush_history()
+        await inventory.async_flush()
 
     entry.async_on_unload(
         hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, _async_flush_history_on_stop)
@@ -273,7 +280,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     await observe.async_start(entry)
 
     async_register_websocket_api(hass)
-    async_register_probe_service(hass, store, audit, secrets)
+    async_register_probe_service(hass, store, audit, secrets, inventory)
     async_register_external_audit_service(hass, store, audit, secrets)
     async_register_pairing_service(hass, store, audit, secrets)
     await async_register_panel(hass)

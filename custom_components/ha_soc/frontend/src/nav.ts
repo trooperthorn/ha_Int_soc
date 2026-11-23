@@ -2,6 +2,7 @@
 export type SocTab =
   | "dashboard"
   | "network"
+  | "network_devices"
   | "network_security"
   | "users"
   | "audit"
@@ -43,6 +44,7 @@ export const SOC_WORKSPACES: SocWorkspaceDefinition[] = [
     defaultTab: "network",
     tabs: [
       { id: "network", label: "Network" },
+      { id: "network_devices", label: "Network Devices" },
       { id: "peripherals", label: "Local Peripherals" },
       { id: "entity_remap", label: "Entity ReMap" },
       { id: "entity_map", label: "Entity Map" },

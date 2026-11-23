@@ -18,6 +18,7 @@ import "./views/network-view";
 import "./views/network-security-view";
 import "./views/logs-view";
 import "./views/peripherals-view";
+import "./views/network-devices-view";
 import "./views/entity-remap-view";
 import "./views/entity-map-view";
 import "./views/dashboard-files-view";
@@ -463,6 +464,16 @@ export class HaSocPanel extends LitElement {
         return html`<ha-soc-logs-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-logs-view>`;
       case "peripherals":
         return html`<ha-soc-peripherals-view .hass=${this.hass} .customizeMode=${cm}></ha-soc-peripherals-view>`;
+      case "network_devices":
+        // Defense in depth: every inventory command is owner-only and would reject a non-owner anyway.
+        if (!this._access?.is_owner) {
+          return html`<div class="denied"><div class="icon">🔒</div><h2>Owner only</h2>
+            <p>The network device inventory is available to the account owner only.</p></div>`;
+        }
+        return html`<ha-soc-network-devices-view
+          .hass=${this.hass}
+          .customizeMode=${cm}
+        ></ha-soc-network-devices-view>`;
       case "network":
         return html`<ha-soc-network-view
           .hass=${this.hass}

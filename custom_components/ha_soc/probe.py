@@ -51,6 +51,7 @@ from .syslog_receiver import async_config_for_probe as async_syslog_receiver_con
 if TYPE_CHECKING:
     # Type-only import: this module must stay importable without audit.py at runtime.
     from .audit import AuditLog
+    from .inventory import NetworkInventory
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -308,7 +309,11 @@ async def async_supervisor_call_rejection(
 
 
 def async_register_probe_service(
-    hass: HomeAssistant, store: HaSocData, audit: "AuditLog", secrets: HaSocSecretStore
+    hass: HomeAssistant,
+    store: HaSocData,
+    audit: "AuditLog",
+    secrets: HaSocSecretStore,
+    inventory: "NetworkInventory | None" = None,
 ) -> None:
     """Register the add-on's authenticated service endpoints.
 
@@ -414,6 +419,16 @@ def async_register_probe_service(
                     "reported_at": dt_util.utcnow().isoformat(),
                 }
             )
+            if inventory is not None:
+                from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+
+                try:
+                    inventory.async_merge_cycle(
+                        call.data["netscan_result"],
+                        learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
+                    )
+                except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
+                    _LOGGER.exception("HA SOC could not merge the netscan cycle into the inventory")
         if call.data.get("syslog_entries"):
             store.async_append_syslog_entries(call.data["syslog_entries"])
         if call.data.get("syslog_receiver_status") is not None:

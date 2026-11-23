@@ -341,6 +341,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_status,
         ws_netscan_status,
         ws_netscan_rescan,
+        ws_inventory_list,
+        ws_inventory_set_verdict,
+        ws_inventory_set_label,
         ws_syslog_receiver_entries,
         ws_unifi_network_test_connection,
         ws_probe_restart,
@@ -1496,6 +1499,102 @@ async def ws_netscan_rescan(hass: HomeAssistant, connection, msg: dict) -> None:
         detail={"action": "netscan_rescan_requested", "requested_at": at},
     )
     connection.send_result(msg["id"], {"ok": True, "requested_at": at})
+
+
+# The inventory is built from the netscan result and is owner-only for the same reason
+# (docs/NETWORK-INVENTORY-DESIGN.md, "Access control and audit").
+@require_owner
+@websocket_api.websocket_command({vol.Required("type"): "ha_soc/inventory/list"})
+@websocket_api.async_response
+async def ws_inventory_list(hass: HomeAssistant, connection, msg: dict) -> None:
+    from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+
+    runtime = _runtime(hass)
+    overview = runtime.inventory.overview()
+    overview["netscan_enabled"] = bool(runtime.store.settings.get(CONF_NETSCAN_ENABLED, False))
+    overview["learning_hours"] = thresholds(runtime.store, RULE_NETWORK_DEVICE_NEW)["learning_hours"]
+    connection.send_result(msg["id"], overview)
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_verdict",
+        vol.Required("device_id"): str,
+        vol.Required("verdict"): vol.In(["unacknowledged", "acknowledged", "ignored"]),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_verdict(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: record that a device is recognized, or is to be left out of counts.
+
+    Acknowledging or ignoring a device resolves its open new-device detection, because
+    the verdict is the owner's answer to it.
+    """
+    from homeassistant.util import dt as dt_util
+
+    from .const import DETECTION_RESOLVED
+    from .detections import network_device_detection_id
+
+    runtime = _runtime(hass)
+    at = dt_util.utcnow().isoformat()
+    existing = runtime.inventory.state["devices"].get(msg["device_id"])
+    previous = existing.get("verdict") if existing else None
+    device = runtime.inventory.async_set_verdict(
+        msg["device_id"], msg["verdict"], by_user_id=connection.user.id, at=at
+    )
+    if device is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    resolved_detection = None
+    if msg["verdict"] != "unacknowledged":
+        detection_id = network_device_detection_id(msg["device_id"])
+        detection = runtime.store.data["detections"].get(detection_id)
+        if detection is not None and detection.get("status") != DETECTION_RESOLVED:
+            runtime.store.async_set_detection_status(
+                detection_id, DETECTION_RESOLVED, by_user_id=connection.user.id, at=at
+            )
+            resolved_detection = detection_id
+    runtime.audit.async_log(
+        "inventory_verdict_changed",
+        user_id=connection.user.id,
+        detail={
+            "device_id": msg["device_id"],
+            "old_verdict": previous,
+            "new_verdict": msg["verdict"],
+            "resolved_detection_id": resolved_detection,
+        },
+    )
+    connection.send_result(msg["id"], {"ok": True, "resolved_detection_id": resolved_detection})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_label",
+        vol.Required("device_id"): str,
+        vol.Required("label"): vol.Any(None, vol.All(str, vol.Length(max=64))),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_label(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: set or clear the owner's own name for a device."""
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    device = runtime.inventory.async_set_label(
+        msg["device_id"], msg["label"], at=dt_util.utcnow().isoformat()
+    )
+    if device is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    # The label text stays out of the audit chain: it is the owner's free text.
+    runtime.audit.async_log(
+        "inventory_label_changed",
+        user_id=connection.user.id,
+        detail={"device_id": msg["device_id"], "label_set": device.get("label") is not None},
+    )
+    connection.send_result(msg["id"], {"ok": True, "label": device.get("label")})
 
 
 # Owner-only, same reasoning as netscan/firewall status: forwarded container

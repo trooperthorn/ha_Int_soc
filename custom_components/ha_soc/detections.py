@@ -27,6 +27,7 @@ from .store import HaSocData
 if TYPE_CHECKING:
     # Not imported at runtime so this module stays importable without audit.py/users.py.
     from .audit import AuditLog
+    from .inventory import NetworkInventory
     from .users import UsersManager
 
 _LOGGER = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ RULE_TOKEN_MINTING_ANOMALY = "token_minting_anomaly"
 RULE_DISABLED_USER_ACTIVITY = "disabled_user_activity"
 RULE_PROBE_AUTH_REJECTED = "probe_auth_rejected"
 RULE_EXTERNAL_AUDIT_CHAIN_BREAK = "external_audit_chain_break"
+# Network inventory rules read inventory.py's records, not the audit log; see
+# docs/NETWORK-INVENTORY-DESIGN.md.
+RULE_NETWORK_DEVICE_NEW = "network_device_new"
+RULE_NETWORK_DEVICE_BURST = "network_device_burst"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -87,6 +92,10 @@ THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
     },
     RULE_PRIVILEGE_ESCALATION: {
         "risk_cap_points": {"default": 24, "min": 8, "max": 100},
+    },
+    RULE_NETWORK_DEVICE_NEW: {
+        "learning_hours": {"default": 24, "min": 1, "max": 168},
+        "burst_devices": {"default": 10, "min": 3, "max": 100},
     },
 }
 
@@ -139,6 +148,10 @@ DISABLED_USER_ACTIVITY_CATEGORIES = ("login_ok", "service_call", "token_created"
 DISABLED_USER_ACTIVITY_QUERY_LIMIT = 5000
 
 PROBE_AUTH_REJECTED_LOOKBACK_HOURS = 24
+# A pass runs every few minutes, so a day is ample to raise each new device once; the
+# bound keeps a detection the owner resolved from reopening after evidence retention.
+NETWORK_DEVICE_NEW_LOOKBACK_HOURS = 24
+NETWORK_DEVICE_BURST_LISTED = 10
 PROBE_AUTH_REJECTED_QUERY_LIMIT = 5000
 
 # Oldest trigger timestamps fall off the front; overflow only undercounts recurrences.
@@ -153,6 +166,11 @@ def _hour_bucket(moment: datetime) -> str:
 def _make_detection_id(rule_id: str, subject: str, bucket: str) -> str:
     raw = f"{rule_id}:{subject}:{bucket}"
     return hashlib.sha256(raw.encode()).hexdigest()[:24]
+
+
+def network_device_detection_id(device_id: str) -> str:
+    """The id of the one network_device_new detection a device can have."""
+    return _make_detection_id(RULE_NETWORK_DEVICE_NEW, device_id, "first")
 
 
 def _network_prefix(
@@ -205,11 +223,13 @@ class DetectionEngine:
         *,
         audit: "AuditLog",
         users: "UsersManager",
+        inventory: "NetworkInventory | None" = None,
     ) -> None:
         self.hass = hass
         self.store = store
         self.audit = audit
         self.users = users
+        self.inventory = inventory
 
     async def async_run_pass(self) -> list[dict[str, Any]]:
         now = dt_util.utcnow()
@@ -229,6 +249,7 @@ class DetectionEngine:
             self._rule_disabled_user_activity,
             self._rule_probe_auth_rejected,
             self._rule_external_audit_chain_break,
+            self._rule_network_device_new,
         ):
             try:
                 touched.extend(await rule(now, users, users_by_id))
@@ -1035,4 +1056,75 @@ class DetectionEngine:
                     event_ts=ts,
                 )
             )
+        return results
+
+    async def _rule_network_device_new(self, now, users, users_by_id):
+        """A device recorded outside the learning window that nobody has acknowledged.
+
+        The detail carries the device id only. The inventory is owner-only, while
+        detections follow the panel's access level, so no MAC, address or name is
+        copied into a row an administrator may read.
+        """
+        if self.inventory is None:
+            return []
+        limits = thresholds(self.store, RULE_NETWORK_DEVICE_NEW)
+        since = now - timedelta(hours=NETWORK_DEVICE_NEW_LOOKBACK_HOURS)
+        by_hour: dict[str, list[tuple[datetime, dict[str, Any]]]] = defaultdict(list)
+        for device in self.inventory.state["devices"].values():
+            if device.get("baseline") or device.get("verdict") != "unacknowledged":
+                continue
+            first_seen = dt_util.parse_datetime(device.get("first_seen") or "")
+            if first_seen is None or first_seen < since:
+                continue
+            by_hour[_hour_bucket(first_seen)].append((first_seen, device))
+
+        results = []
+        for bucket, entries in by_hour.items():
+            # Oldest first, with the id as tie-break, so the same devices fall on the
+            # same side of the burst threshold on every pass.
+            entries.sort(key=lambda item: (item[0], item[1]["id"]))
+            individual = entries[: limits["burst_devices"]]
+            overflow = entries[limits["burst_devices"] :]
+            for first_seen, device in individual:
+                results.append(
+                    self._upsert_detection(
+                        rule_id=RULE_NETWORK_DEVICE_NEW,
+                        subject=device["id"],
+                        bucket="first",
+                        severity=SEVERITY_MEDIUM,
+                        title=f"New network device {device['id']}",
+                        user_id=None,
+                        ip=None,
+                        detail={
+                            "device_id": device["id"],
+                            "identity": device.get("identity"),
+                            "mac_kind": device.get("mac_kind"),
+                            "first_seen": device.get("first_seen"),
+                        },
+                        now=now,
+                        event_ts=first_seen,
+                    )
+                )
+            if overflow:
+                total = len(entries)
+                results.append(
+                    self._upsert_detection(
+                        rule_id=RULE_NETWORK_DEVICE_BURST,
+                        subject="burst",
+                        bucket=bucket,
+                        severity=SEVERITY_HIGH,
+                        title=f"{total} new network devices within one hour",
+                        user_id=None,
+                        ip=None,
+                        detail={
+                            "count": total,
+                            "threshold": limits["burst_devices"],
+                            "collapsed_device_ids": [
+                                device["id"] for _ts, device in overflow[:NETWORK_DEVICE_BURST_LISTED]
+                            ],
+                        },
+                        now=now,
+                        event_ts=overflow[-1][0],
+                    )
+                )
         return results

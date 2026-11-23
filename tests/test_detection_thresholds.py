@@ -73,6 +73,11 @@ PLAN_TABLE = {
     "privilege_escalation": {
         "risk_cap_points": (24, 8, 100),
     },
+    # Not from the work plan: the network inventory rule, docs/NETWORK-INVENTORY-DESIGN.md.
+    "network_device_new": {
+        "learning_hours": (24, 1, 168),
+        "burst_devices": (10, 3, 100),
+    },
 }
 
 

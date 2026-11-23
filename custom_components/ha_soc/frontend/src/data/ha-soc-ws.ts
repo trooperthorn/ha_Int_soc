@@ -289,6 +289,40 @@ export interface NetscanStatus {
   result: NetscanResult | null;
 }
 
+// Mirrors inventory.py's NetworkInventory.overview(); see docs/NETWORK-INVENTORY-DESIGN.md.
+export type InventoryVerdict = "unacknowledged" | "acknowledged" | "ignored";
+
+export interface InventoryDevice {
+  id: string;
+  identity: "mac" | "address";
+  macs: string[];
+  mac_kind: "global" | "local" | null;
+  addresses: { ip: string; since: string }[];
+  names: { value: string; source: string; ts: string }[];
+  display_name: { value: string; source: string } | null;
+  label: string | null;
+  vendor: { value: string; source: string } | null;
+  first_seen: string;
+  last_seen: string;
+  verdict: InventoryVerdict;
+  sources: string[];
+  ports: Record<string, { first_seen: string; last_seen: string; service: string | null; confidence: string | null }>;
+  baseline: boolean;
+  ha_device_id: string | null;
+}
+
+export interface InventoryOverview {
+  devices: InventoryDevice[];
+  counts: Record<InventoryVerdict, number>;
+  learning_started_at: string | null;
+  learning_hours: number;
+  last_cycle_at: string | null;
+  cycles: number;
+  cap: number;
+  cap_reached_at: string | null;
+  netscan_enabled: boolean;
+}
+
 // Mirrors peripherals.py's async_peripheral_overview(), built on core's own USB discovery data.
 export interface AssignedIntegration {
   entry_id: string;
@@ -1564,6 +1598,15 @@ export const fetchWatchdogStatus = (hass: HomeAssistant) =>
 
 export const setWatchdog = (hass: HomeAssistant, changes: WatchdogSetPayload) =>
   ws<WatchdogStatus>(hass, { type: "ha_soc/watchdog/set", ...changes });
+
+export const fetchInventory = (hass: HomeAssistant) =>
+  ws<InventoryOverview>(hass, { type: "ha_soc/inventory/list" });
+
+export const setInventoryVerdict = (hass: HomeAssistant, deviceId: string, verdict: InventoryVerdict) =>
+  ws(hass, { type: "ha_soc/inventory/set_verdict", device_id: deviceId, verdict });
+
+export const setInventoryLabel = (hass: HomeAssistant, deviceId: string, label: string | null) =>
+  ws(hass, { type: "ha_soc/inventory/set_label", device_id: deviceId, label });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

@@ -1,0 +1,345 @@
+import { html, nothing } from "lit";
+import { customElement, state } from "lit/decorators.js";
+import { sharedStyles } from "../styles";
+import { HaSocCustomizableView } from "../customizable-view";
+import type { LayoutSection } from "../customize";
+import { SortState, sortRows, sortableTh } from "../sortable";
+import { deviceDetailPath, navigateToHaPath } from "../nav";
+import {
+  InventoryDevice,
+  InventoryOverview,
+  InventoryVerdict,
+  fetchInventory,
+  setInventoryLabel,
+  setInventoryVerdict,
+} from "../data/ha-soc-ws";
+
+const SOURCE_LABELS: Record<string, string> = {
+  probe_arp: "Probe (ARP table)",
+  probe_tcp: "Probe (TCP connect)",
+  ha_registry: "Home Assistant registry",
+};
+
+const NAME_SOURCE_LABELS: Record<string, string> = {
+  label: "your label",
+  ha_registry: "Home Assistant registry",
+};
+
+/** Design and limits: docs/NETWORK-INVENTORY-DESIGN.md. Every command behind this view is owner-only. */
+@customElement("ha-soc-network-devices-view")
+export class HaSocNetworkDevicesView extends HaSocCustomizableView {
+  protected get viewId() {
+    return "network_devices";
+  }
+
+  static styles = sharedStyles;
+
+  @state() private _overview: InventoryOverview | null = null;
+  @state() private _loading = true;
+  @state() private _error: string | null = null;
+  @state() private _busyId: string | null = null;
+  @state() private _filter: "all" | InventoryVerdict = "all";
+  @state() private _sort: SortState | null = null;
+  @state() private _ignoredSort: SortState | null = null;
+  // The device whose label is being edited, and the draft text.
+  @state() private _editingId: string | null = null;
+  @state() private _labelDraft = "";
+
+  private static readonly DEVICE_SORT: Record<string, (d: InventoryDevice) => unknown> = {
+    name: (d) => d.display_name?.value ?? null,
+    vendor: (d) => d.vendor?.value ?? null,
+    address: (d) => d.addresses[0]?.ip ?? null,
+    mac: (d) => d.macs[0] ?? null,
+    first_seen: (d) => d.first_seen,
+    last_seen: (d) => d.last_seen,
+    verdict: (d) => d.verdict,
+  };
+
+  connectedCallback(): void {
+    super.connectedCallback();
+    this._load();
+  }
+
+  private async _load() {
+    this._loading = true;
+    this._error = null;
+    try {
+      this._overview = await fetchInventory(this.hass);
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    } finally {
+      this._loading = false;
+    }
+  }
+
+  private async _setVerdict(device: InventoryDevice, verdict: InventoryVerdict) {
+    this._busyId = device.id;
+    try {
+      await setInventoryVerdict(this.hass, device.id, verdict);
+      await this._load();
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    } finally {
+      this._busyId = null;
+    }
+  }
+
+  private _startLabelEdit(device: InventoryDevice) {
+    this._editingId = device.id;
+    this._labelDraft = device.label ?? "";
+  }
+
+  private async _saveLabel(device: InventoryDevice) {
+    this._busyId = device.id;
+    try {
+      await setInventoryLabel(this.hass, device.id, this._labelDraft.trim() || null);
+      this._editingId = null;
+      await this._load();
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    } finally {
+      this._busyId = null;
+    }
+  }
+
+  private _when(iso: string | null): string {
+    if (!iso) return "unknown";
+    const date = new Date(iso);
+    return Number.isNaN(date.getTime()) ? "unknown" : date.toLocaleString();
+  }
+
+  private _learningEnds(overview: InventoryOverview): Date | null {
+    if (!overview.learning_started_at) return null;
+    const start = new Date(overview.learning_started_at).getTime();
+    if (Number.isNaN(start)) return null;
+    return new Date(start + overview.learning_hours * 3600 * 1000);
+  }
+
+  private _renderName(d: InventoryDevice) {
+    if (this._editingId === d.id) {
+      return html`
+        <input
+          type="text"
+          maxlength="64"
+          aria-label="Label for this device"
+          .value=${this._labelDraft}
+          @input=${(ev: Event) => (this._labelDraft = (ev.target as HTMLInputElement).value)}
+          @keydown=${(ev: KeyboardEvent) => {
+            if (ev.key === "Enter") this._saveLabel(d);
+            if (ev.key === "Escape") this._editingId = null;
+          }}
+        />
+        <button class="ha-btn" ?disabled=${this._busyId === d.id} @click=${() => this._saveLabel(d)}>Save</button>
+        <button class="ha-btn" @click=${() => (this._editingId = null)}>Cancel</button>
+      `;
+    }
+    const name = d.display_name;
+    return html`
+      ${name
+        ? html`${name.value}
+            <div class="muted" style="font-size:11.5px;">from ${NAME_SOURCE_LABELS[name.source] ?? name.source}</div>`
+        : html`<span class="muted">no name known</span>`}
+      ${d.ha_device_id
+        ? html`<div>
+            <button class="ha-btn" style="font-size:11.5px;" @click=${() => navigateToHaPath(deviceDetailPath(d.ha_device_id!))}>
+              Open in Home Assistant
+            </button>
+          </div>`
+        : nothing}
+    `;
+  }
+
+  private _renderIdentity(d: InventoryDevice) {
+    if (d.identity === "address") {
+      return html`<span class="pill medium"><span class="dot"></span>address-keyed, weak identity</span>`;
+    }
+    return html`
+      <span style="font-size:12px;">${d.macs[0] ?? "unknown"}</span>
+      ${d.mac_kind === "local"
+        ? html`<div class="muted" style="font-size:11.5px;">randomized address</div>`
+        : nothing}
+    `;
+  }
+
+  private _renderVerdict(d: InventoryDevice) {
+    const cls = d.verdict === "acknowledged" ? "good" : d.verdict === "ignored" ? "info" : "medium";
+    return html`
+      <span class="pill ${cls}"><span class="dot"></span>${d.verdict}</span>
+      ${d.baseline && d.verdict === "unacknowledged"
+        ? html`<div class="muted" style="font-size:11.5px;">present during learning</div>`
+        : nothing}
+    `;
+  }
+
+  private _renderActions(d: InventoryDevice) {
+    const busy = this._busyId === d.id;
+    return html`
+      ${d.verdict !== "acknowledged"
+        ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._setVerdict(d, "acknowledged")}>
+            Acknowledge
+          </button>`
+        : html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._setVerdict(d, "unacknowledged")}>
+            Withdraw
+          </button>`}
+      ${d.verdict !== "ignored"
+        ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._setVerdict(d, "ignored")}>Ignore</button>`
+        : html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._setVerdict(d, "unacknowledged")}>
+            Restore
+          </button>`}
+      <button class="ha-btn" ?disabled=${busy} @click=${() => this._startLabelEdit(d)}>Label</button>
+    `;
+  }
+
+  private _renderTable(rows: InventoryDevice[], sort: SortState | null, setSort: (n: SortState) => void) {
+    return html`
+      <table>
+        <thead>
+          <tr>
+            ${sortableTh("Device", "name", sort, setSort)}
+            ${sortableTh("Vendor", "vendor", sort, setSort)}
+            ${sortableTh("Address", "address", sort, setSort)}
+            ${sortableTh("MAC", "mac", sort, setSort)}
+            ${sortableTh("First seen", "first_seen", sort, setSort)}
+            ${sortableTh("Last seen", "last_seen", sort, setSort)}
+            <th>Seen by</th>
+            ${sortableTh("Verdict", "verdict", sort, setSort)}
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sortRows(rows, sort, HaSocNetworkDevicesView.DEVICE_SORT).map(
+            (d) => html`
+              <tr class=${d.verdict === "ignored" ? "row-disabled" : ""}>
+                <td>${this._renderName(d)}</td>
+                <td class="muted">${d.vendor?.value ?? (d.mac_kind === "local" ? "not looked up" : "unknown")}</td>
+                <td>
+                  ${d.addresses[0]?.ip ?? "unknown"}
+                  ${d.addresses.length > 1
+                    ? html`<div class="muted" style="font-size:11.5px;">
+                        earlier: ${d.addresses.slice(1).map((a) => a.ip).join(", ")}
+                      </div>`
+                    : nothing}
+                </td>
+                <td>${this._renderIdentity(d)}</td>
+                <td class="muted" style="font-size:12px;">${this._when(d.first_seen)}</td>
+                <td class="muted" style="font-size:12px;">${this._when(d.last_seen)}</td>
+                <td class="muted" style="font-size:12px;">
+                  ${d.sources.map((s) => SOURCE_LABELS[s] ?? s).join(", ") || "unknown"}
+                </td>
+                <td>${this._renderVerdict(d)}</td>
+                <td>${this._renderActions(d)}</td>
+              </tr>
+            `
+          )}
+        </tbody>
+      </table>
+    `;
+  }
+
+  render() {
+    if (this._loading && !this._overview) return html`<div class="empty">Loading network devices…</div>`;
+    if (this._error && !this._overview) {
+      return html`
+        <div class="card" style="border:1px solid var(--error-color,#db4437);">
+          <h3>Could not load Network devices</h3>
+          <p style="font-size:13px;">${this._error}</p>
+          <button class="ha-btn" @click=${() => this._load()}>Retry</button>
+        </div>
+      `;
+    }
+    const overview = this._overview!;
+    const active = overview.devices.filter((d) => d.verdict !== "ignored");
+    const ignored = overview.devices.filter((d) => d.verdict === "ignored");
+    const shown = this._filter === "all" ? active : active.filter((d) => d.verdict === this._filter);
+    const learningEnds = this._learningEnds(overview);
+    const learning = learningEnds !== null && learningEnds.getTime() > Date.now();
+
+    const sections: LayoutSection[] = [
+      {
+        id: "network_devices",
+        title: "Network devices",
+        hideable: false,
+        render: () => html`
+          <div class="card">
+            <h3>Network devices</h3>
+            <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+              One record per device the Probe's network scan has seen, kept across address changes. A device is
+              identified by its MAC address, which a device can set to anything it likes: "acknowledged" means you
+              recognized this MAC once, not that the device is authenticated. A device that appears after the
+              learning window raises a detection until you acknowledge or ignore it.
+            </p>
+            ${this._error
+              ? html`<p style="font-size:13px;color:var(--error-color,#db4437);">${this._error}</p>`
+              : nothing}
+            ${!overview.netscan_enabled
+              ? html`<p style="font-size:13px;">
+                  <span class="pill medium"><span class="dot"></span>not scanning</span>
+                  The network scan is off, so nothing new is being recorded. Turn it on under Settings; it needs the
+                  HA SOC Probe app.
+                </p>`
+              : nothing}
+            ${overview.cycles === 0
+              ? html`<p class="muted" style="font-size:13px;">
+                  No scan cycle has been merged yet. This is "not scanned", not "no devices".
+                </p>`
+              : html`<p class="muted" style="font-size:12.5px;">
+                  ${overview.cycles} scan cycles merged, the last at ${this._when(overview.last_cycle_at)}.
+                  ${learning
+                    ? html`Learning until ${learningEnds!.toLocaleString()}: devices seen until then are recorded
+                        without a detection.`
+                    : nothing}
+                </p>`}
+            ${overview.cap_reached_at
+              ? html`<p style="font-size:13px;">
+                  <span class="pill high"><span class="dot"></span>cap reached</span>
+                  The inventory reached its limit of ${overview.cap} records at
+                  ${this._when(overview.cap_reached_at)}. The oldest records nobody acknowledged or labeled were
+                  removed to make room.
+                </p>`
+              : nothing}
+            <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
+              ${(
+                [
+                  ["all", `All (${active.length})`],
+                  ["unacknowledged", `Unacknowledged (${overview.counts.unacknowledged})`],
+                  ["acknowledged", `Acknowledged (${overview.counts.acknowledged})`],
+                ] as const
+              ).map(
+                ([id, label]) => html`
+                  <button
+                    class="ha-btn ${this._filter === id ? "ha-btn-active" : ""}"
+                    aria-pressed=${this._filter === id ? "true" : "false"}
+                    @click=${() => (this._filter = id)}
+                  >
+                    ${label}
+                  </button>
+                `
+              )}
+              <button class="ha-btn" @click=${() => this._load()}>Refresh</button>
+            </div>
+            ${shown.length
+              ? this._renderTable(shown, this._sort, (n) => (this._sort = n))
+              : html`<div class="empty">No devices in this view.</div>`}
+          </div>
+        `,
+      },
+      {
+        id: "ignored_network_devices",
+        title: "Ignored network devices",
+        render: () =>
+          ignored.length
+            ? html`
+                <div class="card">
+                  <h3>Ignored (${ignored.length})</h3>
+                  <p class="muted" style="margin-top:-8px;font-size:12.5px;">
+                    Ignored devices are still recorded and are left out of the counts. They raise no detection.
+                  </p>
+                  ${this._renderTable(ignored, this._ignoredSort, (n) => (this._ignoredSort = n))}
+                </div>
+              `
+            : nothing,
+      },
+    ];
+    return this._renderSections(sections);
+  }
+}

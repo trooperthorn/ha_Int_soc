@@ -1,8 +1,9 @@
 # Network inventory, presence and network health: design
 
-Status: design only, written 2026-11-22 against `main` at release
-v2026.11.22.2. Nothing in this document is built. It owns the planned network
-inventory surface: what a device record is, how identity survives an address
+Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phase 1 is
+built (see "What phase 1 built" below) and has not run against a live
+Supervisor or a real Probe; phases 2 to 10 are design only. This document owns
+the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
 building it belong in `decisions.md` under a new "Network inventory" heading.
@@ -301,6 +302,43 @@ sortable table (label or best name, vendor, addresses, first seen, last seen,
 sources, verdict), a filter for unacknowledged, and row actions Acknowledge,
 Ignore, Label, Watch. Every action is audited with the device id and the
 acting user.
+
+#### What phase 1 built
+
+Built 2026-11-22: `inventory.py`, the `network_device_new` and
+`network_device_burst` rules in `detections.py`, the merge call in
+`probe.py`, three owner-only commands (`ha_soc/inventory/list`,
+`set_verdict`, `set_label`), the "Network Devices" tab under Assets, and
+`tests/test_inventory.py`. It differs from the text above in these ways, each
+deliberate:
+
+- **UniFi clients are not merged yet.** The only sources are the Probe's
+  cycle and the device registry. A device the controller sees and the Probe
+  does not has no record. This is the largest gap against the design.
+- **Detections carry the device id and nothing else about the device.** The
+  inventory is owner-only, while detection rows follow the panel's access
+  level. A MAC, address or name in a detection would hand the inventory to
+  every administrator once the owner opens the panel to them. The owner reads
+  the device in the Network Devices tab by its id.
+- **The burst rule keeps the first devices of the hour and collapses the
+  rest.** With the threshold at 10, the ten oldest new devices in an hour get
+  their own detection and the eleventh onward share one
+  `network_device_burst` row. The split is by first-seen time with the id as
+  tie-break, so it is the same on every pass.
+- **A detection is raised only for a device first seen in the last 24 hours.**
+  Without that bound, a detection the owner resolved without acknowledging
+  the device would reopen after evidence retention pruned it.
+- **Addresses carry no `network` field.** The Probe does not report which
+  subnet a host was found on. The field arrives with phase 8.
+- **The list command is not audited.** Decision D-14 audits mutations and
+  privileged reads, not panel refreshes. Verdict and label changes are
+  audited; a verdict change flushes immediately.
+- **Not built:** Watch, suggested merge, reset inventory, and the
+  "acknowledge devices Home Assistant already manages" setting. The inventory
+  has no switch of its own: it records whenever the netscan reports.
+
+Not verified: the tab in a running panel (the bundle builds, nothing more),
+a merge of a real Probe cycle, and the size of `ha_soc.inventory` on disk.
 
 ### Phase 2: change detection and the certificate fix
 
