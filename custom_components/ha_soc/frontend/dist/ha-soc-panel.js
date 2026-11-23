@@ -4788,7 +4788,7 @@ ${e.exception}</pre
                     </table>
                   `:j}
             </div>
-          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller",dhcp:"DHCP hostname",tracker:"router tracker",cert:"certificate subject"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setEventSetting(e,t){try{await Ue(this.hass,{[e]:t}),await this._load()}catch(e){this._error=e?.message??String(e)}}_renderEventSettings(e){return V`
+          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller",dhcp:"DHCP hostname",tracker:"router tracker",cert:"certificate subject"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setEventSetting(e,t){try{await Ue(this.hass,{[e]:t}),await this._load()}catch(e){this._error=e?.message??String(e)}}async _export(e){try{const t=await((e,t)=>Se(e,{type:"ha_soc/inventory/export",format:t}))(this.hass,e);Xt(t.content,`ha-soc-network-devices-${Jt()}.${e}`)}catch(e){this._error=e?.message??String(e)}}_renderEventSettings(e){return V`
       <details style="margin:8px 0;font-size:13px;">
         <summary>Automations and notifications</summary>
         <p class="muted" style="font-size:12.5px;">
@@ -4972,6 +4972,22 @@ ${e.exception}</pre
               side:
               ${null===e.network.wan?"not available without a UniFi controller":"public"===e.network.wan.kind?"public address on the gateway":"cgnat"===e.network.wan.kind?"carrier-grade NAT":"behind another router (double NAT)"}.
             </p>
+            <div style="margin:8px 0;">
+              <button
+                class="ha-btn"
+                title="Download every device as a CSV file. The download is recorded in the audit log."
+                @click=${()=>this._export("csv")}
+              >
+                Export CSV
+              </button>
+              <button
+                class="ha-btn"
+                title="Download every device as a JSON file. The download is recorded in the audit log."
+                @click=${()=>this._export("json")}
+              >
+                Export JSON
+              </button>
+            </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
               ${[["all",`All (${t.length})`],["unacknowledged",`Unacknowledged (${e.counts.unacknowledged})`],["acknowledged",`Acknowledged (${e.counts.acknowledged})`]].map(([e,t])=>V`
                   <button

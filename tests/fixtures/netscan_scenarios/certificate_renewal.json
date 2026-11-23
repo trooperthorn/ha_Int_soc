@@ -1,0 +1,104 @@
+{
+  "description": "An acknowledged device renews a certificate close to its expiry, then swaps it for another.",
+  "certs": {
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa": {
+      "subject": "CN=nas.example",
+      "issuer": "CN=Home CA",
+      "expires_in_days": 10
+    },
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb": {
+      "subject": "CN=nas.example",
+      "issuer": "CN=Home CA",
+      "expires_in_days": 400
+    },
+    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc": {
+      "subject": "CN=other.example",
+      "issuer": "CN=Other CA",
+      "expires_in_days": 400
+    }
+  },
+  "steps": [
+    {
+      "minute": 0,
+      "repeat": 4,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [
+            {
+              "port": 443,
+              "tls": {
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+              }
+            }
+          ],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 20,
+      "acknowledge": "00:11:22:33:44:55"
+    },
+    {
+      "minute": 25,
+      "repeat": 2,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [
+            {
+              "port": 443,
+              "tls": {
+                "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+              }
+            }
+          ],
+          "arp_after_sweep": true
+        }
+      ]
+    },
+    {
+      "minute": 35,
+      "repeat": 2,
+      "hosts": [
+        {
+          "ip": "192.0.2.10",
+          "mac": "00:11:22:33:44:55",
+          "open_ports": [
+            {
+              "port": 443,
+              "tls": {
+                "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+              }
+            }
+          ],
+          "arp_after_sweep": true
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "devices": 1,
+    "events": [
+      [
+        "created",
+        null
+      ],
+      [
+        "verdict",
+        null
+      ],
+      [
+        "cert_renewed",
+        false
+      ],
+      [
+        "cert_changed",
+        true
+      ]
+    ]
+  }
+}

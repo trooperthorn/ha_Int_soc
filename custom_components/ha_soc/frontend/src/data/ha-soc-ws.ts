@@ -1699,6 +1699,10 @@ export const setInventoryVerdict = (hass: HomeAssistant, deviceId: string, verdi
 export const setInventoryLabel = (hass: HomeAssistant, deviceId: string, label: string | null) =>
   ws(hass, { type: "ha_soc/inventory/set_label", device_id: deviceId, label });
 
+// Audited as a privileged read on the server.
+export const exportInventory = (hass: HomeAssistant, format: "csv" | "json") =>
+  ws<{ format: string; devices: number; content: string }>(hass, { type: "ha_soc/inventory/export", format });
+
 export const setInventoryWatch = (hass: HomeAssistant, deviceId: string, watched: boolean) =>
   ws(hass, { type: "ha_soc/inventory/set_watch", device_id: deviceId, watched });
 

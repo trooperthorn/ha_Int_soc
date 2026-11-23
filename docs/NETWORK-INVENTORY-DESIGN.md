@@ -3,8 +3,8 @@
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
 to 7 are built, except phase 6's DHCP probe and phase 7's vendor table (see
 the "What phase N built" sections below), and have not run against a live
-Supervisor or a real Probe. Phases 8 and 9 are built as well; phase 10 is
-design only. This document owns
+Supervisor or a real Probe. Phases 8 to 10 are built as well, with
+translations left out. `backlog.md` lists everything still open. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -834,6 +834,30 @@ this branch is merged to `main`, because `source_url` points there.
 - **Carried from the comparison, outside this feature**: an OpenSSF Scorecard
   workflow, and signed Probe images, which `backlog.md` already lists as
   deferred.
+
+#### What phase 10 built
+
+Built 2026-11-23: the owner-only export (`ha_soc/inventory/export`, CSV and
+JSON, audited as a privileged read) with its buttons in the Network Devices
+tab, the counts-only `network_inventory` block in diagnostics, seven
+scenario files under `tests/fixtures/netscan_scenarios/` with a replay test,
+and `tests/test_inventory_export.py`. It differs from the text above in
+these ways:
+
+- **Diagnostics carry counts, not pseudonymized rows.** See `decisions.md`.
+  The added-networks setting is redacted to a presence flag, which the
+  settings block would otherwise have printed in full.
+- **The CSV export defuses spreadsheet formulas** in device-supplied text.
+- **Translations were audited and not started.** The panel has no
+  translatable strings at all; the numbers are in `backlog.md`. The
+  inventory's four sensor names are in `translations/en.json`; its panel
+  text is English in the TypeScript like the rest of the panel.
+- **Seven scenarios**: a device joining, a DHCP renumbering, a rotating
+  phone, a certificate renewal, a Probe outage, a watched device's outage,
+  and a MAC-rotation flood. They replay the pure merge functions; the
+  detection engine and the health checks are covered by the per-phase tests,
+  not by the corpus.
+- **Scorecard and signed images** stay in `backlog.md`.
 
 ## Access control and audit
 

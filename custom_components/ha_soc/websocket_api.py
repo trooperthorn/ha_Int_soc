@@ -351,6 +351,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_inventory_set_verdict,
         ws_inventory_set_label,
         ws_inventory_set_watch,
+        ws_inventory_export,
         ws_syslog_receiver_entries,
         ws_unifi_network_test_connection,
         ws_probe_restart,
@@ -1691,6 +1692,47 @@ async def ws_inventory_set_verdict(hass: HomeAssistant, connection, msg: dict) -
         },
     )
     connection.send_result(msg["id"], {"ok": True, "resolved_detection_id": resolved_detection})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/export",
+        vol.Required("format"): vol.In(["csv", "json"]),
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_export(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: the whole device list as one file. Audited as a privileged read.
+
+    The list command is not audited because the panel calls it on every refresh;
+    an export is the inventory leaving the panel, so it is.
+    """
+    from homeassistant.util import dt as dt_util
+
+    from .inventory import export_csv, export_json
+
+    runtime = _runtime(hass)
+    devices = runtime.inventory.overview()["devices"]
+    runtime.audit.async_log(
+        "privileged_read",
+        user_id=connection.user.id,
+        detail={
+            "target": "network_inventory",
+            "read": "export",
+            "format": msg["format"],
+            "devices": len(devices),
+        },
+    )
+    exported_at = dt_util.utcnow().isoformat()
+    content = (
+        export_csv(devices)
+        if msg["format"] == "csv"
+        else export_json(devices, exported_at=exported_at)
+    )
+    connection.send_result(
+        msg["id"], {"format": msg["format"], "devices": len(devices), "content": content}
+    )
 
 
 @require_owner

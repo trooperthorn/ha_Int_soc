@@ -5,6 +5,7 @@ import { HaSocCustomizableView } from "../customizable-view";
 import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import { deviceDetailPath, navigateToHaPath } from "../nav";
+import { downloadText, utcStamp } from "../data/export-helpers";
 import {
   InventoryChange,
   InventoryDevice,
@@ -13,6 +14,7 @@ import {
   fetchInventory,
   setInventoryLabel,
   setInventoryWatch,
+  exportInventory,
   updateSettings,
   setInventoryVerdict,
 } from "../data/ha-soc-ws";
@@ -87,6 +89,15 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
     try {
       await updateSettings(this.hass, { [key]: value });
       await this._load();
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    }
+  }
+
+  private async _export(format: "csv" | "json") {
+    try {
+      const result = await exportInventory(this.hass, format);
+      downloadText(result.content, `ha-soc-network-devices-${utcStamp()}.${format}`);
     } catch (err: any) {
       this._error = err?.message ?? String(err);
     }
@@ -500,6 +511,22 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                     ? "carrier-grade NAT"
                     : "behind another router (double NAT)"}.
             </p>
+            <div style="margin:8px 0;">
+              <button
+                class="ha-btn"
+                title="Download every device as a CSV file. The download is recorded in the audit log."
+                @click=${() => this._export("csv")}
+              >
+                Export CSV
+              </button>
+              <button
+                class="ha-btn"
+                title="Download every device as a JSON file. The download is recorded in the audit log."
+                @click=${() => this._export("json")}
+              >
+                Export JSON
+              </button>
+            </div>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
               ${(
                 [

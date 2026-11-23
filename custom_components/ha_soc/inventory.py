@@ -13,7 +13,10 @@ registry lookup.
 """
 from __future__ import annotations
 
+import csv
+import io
 import ipaddress
+import json
 import logging
 import re
 import secrets as _secrets
@@ -1172,6 +1175,127 @@ def apply_names(state: dict[str, Any], names: list[dict[str, Any]], now: datetim
         if match and _set_name(device, match.group(1), SOURCE_CERT, now_iso):
             changed = True
     return changed
+
+
+EXPORT_COLUMNS = (
+    "id", "label", "name", "name_source", "verdict", "watched", "identity", "mac", "mac_kind",
+    "vendor", "ip", "network", "roles", "first_seen", "last_seen", "sources", "open_ports",
+)
+# A spreadsheet treats a cell that starts with one of these as a formula.
+_FORMULA_PREFIXES = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_cell(value: Any) -> str:
+    """One CSV cell as text, with a leading quote when a spreadsheet would run it.
+
+    Names and vendors are text a device or a controller supplied, and an export
+    is opened in a spreadsheet, so a name such as "=HYPERLINK(...)" must arrive
+    as text.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    text = str(value)
+    return "'" + text if text.startswith(_FORMULA_PREFIXES) else text
+
+
+def export_rows(devices: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """One flat row per device from NetworkInventory.overview()'s device list."""
+    rows = []
+    for device in devices:
+        name = device.get("display_name") or {}
+        address = device["addresses"][0] if device.get("addresses") else {}
+        open_ports = sorted(
+            int(port) for port, record in (device.get("ports") or {}).items()
+            if record.get("closed_at") is None
+        )
+        rows.append(
+            {
+                "id": device["id"],
+                "label": device.get("label"),
+                "name": name.get("value"),
+                "name_source": name.get("source"),
+                "verdict": device.get("verdict"),
+                "watched": bool(device.get("watched")),
+                "identity": device.get("identity"),
+                "mac": (device.get("macs") or [None])[0],
+                "mac_kind": device.get("mac_kind"),
+                "vendor": (device.get("vendor") or {}).get("value"),
+                "ip": address.get("ip"),
+                "network": address.get("network"),
+                "roles": " ".join(device.get("roles") or []),
+                "first_seen": device.get("first_seen"),
+                "last_seen": device.get("last_seen"),
+                "sources": " ".join(device.get("sources") or []),
+                "open_ports": " ".join(str(port) for port in open_ports),
+            }
+        )
+    rows.sort(key=lambda row: row["id"])
+    return rows
+
+
+def export_csv(devices: list[dict[str, Any]]) -> str:
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, lineterminator="\n")
+    writer.writerow(EXPORT_COLUMNS)
+    for row in export_rows(devices):
+        writer.writerow([_csv_cell(row[column]) for column in EXPORT_COLUMNS])
+    return buffer.getvalue()
+
+
+def export_json(devices: list[dict[str, Any]], *, exported_at: str) -> str:
+    return json.dumps(
+        {"exported_at": exported_at, "devices": export_rows(devices)}, indent=2, sort_keys=True
+    )
+
+
+def diagnostics_summary(state: dict[str, Any]) -> dict[str, Any]:
+    """What a diagnostics download may say about the inventory: counts and nothing else.
+
+    No device row, MAC, address, name, label, fingerprint or network leaves here,
+    so there is nothing to mask and nothing a masking mistake could leak.
+    """
+    devices = list(state["devices"].values())
+    meta = state["meta"]
+
+    def _tally(values: Any) -> dict[str, int]:
+        tally: dict[str, int] = {}
+        for value in values:
+            tally[str(value)] = tally.get(str(value), 0) + 1
+        return dict(sorted(tally.items()))
+
+    return {
+        "devices": len(devices),
+        "by_verdict": _tally(d.get("verdict") for d in devices),
+        "by_identity": _tally(d.get("identity") for d in devices),
+        "by_mac_kind": _tally(d.get("mac_kind") for d in devices),
+        "by_source": _tally(source for d in devices for source in d.get("sources") or []),
+        "by_name_source": _tally(name["source"] for d in devices for name in d.get("names") or []),
+        "labeled": sum(1 for d in devices if d.get("label")),
+        "watched": sum(1 for d in devices if d.get("watched")),
+        "down": sum(1 for d in devices if d.get("down_since")),
+        "with_presence": sum(1 for d in devices if d.get("presence")),
+        "open_ports": sum(
+            1 for d in devices for record in (d.get("ports") or {}).values()
+            if record.get("closed_at") is None
+        ),
+        "certificates": len(state.get("certs") or {}),
+        "events": len(state.get("events") or []),
+        "events_by_kind": _tally(e.get("kind") for e in state.get("events") or []),
+        "pending_hosts": len(state.get("pending") or {}),
+        "cycles": meta.get("cycles"),
+        "learning_started": meta.get("learning_started_at") is not None,
+        "last_cycle_at": meta.get("last_cycle_at"),
+        "cap_reached": meta.get("cap_reached_at") is not None,
+        "gateway_known": bool(meta.get("gateway_ip")),
+        "gateway_device_known": bool(meta.get("gateway_device_id")),
+        "dns_servers": len(meta.get("dns_servers") or []),
+        "roles_source": meta.get("roles_source"),
+        "wan_kind": (meta.get("wan") or {}).get("kind"),
+        "tracked_addresses": len(meta.get("address_holders") or {}),
+        "scan_ports": len(meta.get("scan_ports") or {}),
+    }
 
 
 def best_name(device: dict[str, Any]) -> dict[str, str] | None:
