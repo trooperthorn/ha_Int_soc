@@ -4742,7 +4742,9 @@ ${e.exception}</pre
       `;const t=e.display_name;return V`
       ${t?V`${t.value}
             <div class="muted" style="font-size:11.5px;">from ${hs[t.source]??t.source}</div>`:V`<span class="muted">no name known</span>`}
-      ${e.is_gateway?V`<div class="muted" style="font-size:11.5px;">gateway (default route)</div>`:j}
+      ${e.roles.length?V`<div class="muted" style="font-size:11.5px;">
+            ${e.roles.map(e=>"gateway"===e?"gateway (default route)":"DNS server").join(", ")}
+          </div>`:j}
       ${e.ha_device_id?V`<div>
             <button class="ha-btn" style="font-size:11.5px;" @click=${()=>fe(ve(e.ha_device_id))}>
               Open in Home Assistant
@@ -4859,6 +4861,13 @@ ${e.exception}</pre
                   ${this._when(e.cap_reached_at)}. The oldest records nobody acknowledged or labeled were
                   removed to make room.
                 </p>`:j}
+            <p class="muted" style="font-size:12.5px;">
+              Gateway: ${e.network.gateway_ip??"not known"}${e.network.roles_source?` (from the ${"probe"===e.network.roles_source?"Probe's route table":"Supervisor's network settings"})`:""}.
+              DNS servers this host uses:
+              ${e.network.dns_servers.length?e.network.dns_servers.join(", "):"not known"}. Internet
+              side:
+              ${null===e.network.wan?"not available without a UniFi controller":"public"===e.network.wan.kind?"public address on the gateway":"cgnat"===e.network.wan.kind?"carrier-grade NAT":"behind another router (double NAT)"}.
+            </p>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
               ${[["all",`All (${t.length})`],["unacknowledged",`Unacknowledged (${e.counts.unacknowledged})`],["acknowledged",`Acknowledged (${e.counts.acknowledged})`]].map(([e,t])=>V`
                   <button

@@ -1,8 +1,9 @@
 # Network inventory, presence and network health: design
 
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
-to 5 are built (see the "What phase N built" sections below) and have not run
-against a live Supervisor or a real Probe; phases 6 to 10 are design only. This document owns
+to 6 are built, except phase 6's DHCP probe (see the "What phase N built"
+sections below), and have not run against a live Supervisor or a real Probe;
+phases 7 to 10 are design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -634,6 +635,32 @@ after a week of real data.
   off by default with its own setting, because it is the one place this design
   transmits something other than a TCP connection. A responder that is not in
   the owner-accepted list opens `network_rogue_dhcp`.
+
+#### What phase 6 built
+
+Built 2026-11-23: `host_network_roles` and `classify_wan_address` in
+`inventory.py`, a "gateway" or "DNS server" tag per device and a network line
+at the top of the Network Devices tab, the informational `network_nat`
+finding, and `tests/test_inventory_roles.py`. It differs from the text above
+in these ways:
+
+- **The DHCPDISCOVER probe and `network_rogue_dhcp` are not built.** Open
+  decision 3 is the owner's to make first.
+- **Gateway:** read by the Probe since phase 5. The Supervisor's configured
+  gateway is used when the Probe sends none, and the tab says which source
+  it came from.
+- **DNS servers come from the Supervisor, not UniFi.** The verified UniFi
+  contract has no such fields. `protocol.md`, "Supervisor network
+  information", records the call and its shape, which resolves the
+  unverified note in the text above.
+- **No DHCP server role.** No source reports one.
+- **Double NAT and CGNAT** are as designed: from the controller's WAN
+  address, kind only, "not available" without a controller.
+
+Not verified: `get_network_info` on a real Supervisor (the tests feed
+`host_network_roles` the documented response), and whether the controller's
+gateway object carries a WAN address on the owner's firmware; `unifi.py`
+`_derive_wan` already treats that field as best-effort.
 
 ### Phase 7: names and vendors
 

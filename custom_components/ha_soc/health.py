@@ -624,6 +624,7 @@ class IntegrationHealth:
             self._check_network_cleartext_service,
             self._check_network_cert_expiry,
             self._check_network_health,
+            self._check_network_nat,
             self._check_audit_ban_logger,
             self._check_storage_file_modes,
             self._check_config_mapping_addons,
@@ -1450,6 +1451,46 @@ class IntegrationHealth:
             )))
         results.extend(self._async_finalize_check(CHECK_NETWORK_SLOWER_GATEWAY, items))
         return results
+
+    async def _check_network_nat(self) -> list[dict]:
+        """check="network_nat": the gateway's WAN address is itself behind NAT.
+
+        Informational: it explains why port forwarding and inbound remote access do
+        not work, and is not a fault on this network. Known only when a UniFi
+        controller reports the gateway's WAN address; without one nothing is said,
+        which is "not available", not "no". No outside service is asked.
+        """
+        check = "network_nat"
+        wan = (self.inventory.state["meta"].get("wan") or {}) if self.inventory is not None else {}
+        from .inventory import WAN_CGNAT, WAN_PRIVATE
+
+        if wan.get("kind") == WAN_PRIVATE:
+            title = "The gateway is behind another router (double NAT)"
+            why = (
+                "The gateway's WAN address is a private one, so a second router in front of "
+                "it also translates addresses."
+            )
+        elif wan.get("kind") == WAN_CGNAT:
+            title = "The internet provider uses carrier-grade NAT"
+            why = (
+                "The gateway's WAN address is in 100.64.0.0/10, the range providers use when "
+                "many customers share one public address."
+            )
+        else:
+            return self._async_finalize_check(check, [])
+        finding = _new_finding(
+            f"misconfig:{check}", check, SEVERITY_INFO,
+            title=title,
+            summary=(
+                f"{why} Port forwarding on the gateway alone cannot make a service reachable "
+                "from the internet, and inbound remote access needs a relay or a tunnel. "
+                "This is read from the UniFi controller; the address itself is not stored."
+            ),
+            detail={"kind": wan["kind"], "observed_at": wan.get("at")},
+        )
+        return self._async_finalize_check(check, [(finding, GENERIC_ISSUE_TRANSLATION_KEY, {
+            "title": finding["title"], "summary": finding["summary"],
+        })])
 
     async def _check_audit_ban_logger(self) -> list[dict]:
         """check="audit_ban_logger_silenced" - LOW. The value read is a logging level integer, nothing else."""

@@ -179,7 +179,11 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
         ? html`${name.value}
             <div class="muted" style="font-size:11.5px;">from ${NAME_SOURCE_LABELS[name.source] ?? name.source}</div>`
         : html`<span class="muted">no name known</span>`}
-      ${d.is_gateway ? html`<div class="muted" style="font-size:11.5px;">gateway (default route)</div>` : nothing}
+      ${d.roles.length
+        ? html`<div class="muted" style="font-size:11.5px;">
+            ${d.roles.map((r) => (r === "gateway" ? "gateway (default route)" : "DNS server")).join(", ")}
+          </div>`
+        : nothing}
       ${d.ha_device_id
         ? html`<div>
             <button class="ha-btn" style="font-size:11.5px;" @click=${() => navigateToHaPath(deviceDetailPath(d.ha_device_id!))}>
@@ -422,6 +426,21 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                   removed to make room.
                 </p>`
               : nothing}
+            <p class="muted" style="font-size:12.5px;">
+              Gateway: ${overview.network.gateway_ip ?? "not known"}${overview.network.roles_source
+                ? ` (from the ${overview.network.roles_source === "probe" ? "Probe's route table" : "Supervisor's network settings"})`
+                : ""}.
+              DNS servers this host uses:
+              ${overview.network.dns_servers.length ? overview.network.dns_servers.join(", ") : "not known"}. Internet
+              side:
+              ${overview.network.wan === null
+                ? "not available without a UniFi controller"
+                : overview.network.wan.kind === "public"
+                  ? "public address on the gateway"
+                  : overview.network.wan.kind === "cgnat"
+                    ? "carrier-grade NAT"
+                    : "behind another router (double NAT)"}.
+            </p>
             <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0;">
               ${(
                 [

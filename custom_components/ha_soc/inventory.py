@@ -113,6 +113,72 @@ GATEWAY_RECENT = timedelta(minutes=15)
 GATEWAY_BASELINE = timedelta(hours=6)
 GATEWAY_BASELINE_MIN_SAMPLES = 12
 MAX_RTT_SAMPLES = 96
+
+# Network roles (phase 6).
+ROLE_GATEWAY = "gateway"
+ROLE_DNS = "dns"
+MAX_DNS_SERVERS = 8
+WAN_PUBLIC = "public"
+WAN_PRIVATE = "private"
+WAN_CGNAT = "cgnat"
+_RFC1918 = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+_CGNAT = ipaddress.ip_network("100.64.0.0/10")
+
+
+def classify_wan_address(value: Any) -> str | None:
+    """What kind of address the gateway's WAN side holds, or None when it cannot be read.
+
+    "private" (RFC 1918) means another router does NAT in front of this one.
+    "cgnat" (100.64.0.0/10, RFC 6598) means the provider does. Anything else that
+    is a valid IPv4 address is "public"; an IPv6 WAN address says nothing about
+    IPv4 NAT and reads None.
+    """
+    try:
+        address = ipaddress.ip_address(str(value))
+    except ValueError:
+        return None
+    if address.version != 4 or address.is_unspecified or address.is_loopback:
+        return None
+    if address in _CGNAT:
+        return WAN_CGNAT
+    if any(address in network for network in _RFC1918):
+        return WAN_PRIVATE
+    return WAN_PUBLIC
+
+
+def host_network_roles(network_info: Any) -> dict[str, Any]:
+    """The gateway and DNS servers the Home Assistant host is configured with.
+
+    ``network_info`` is the Supervisor's network information as a dict
+    (docs/protocol.md, "Supervisor network information"). The primary interface
+    wins; without one, the first connected interface with IPv4 settings does.
+    Anything missing or malformed reads as not known. Never raises.
+    """
+    roles: dict[str, Any] = {"gateway": None, "dns": []}
+    interfaces = network_info.get("interfaces") if isinstance(network_info, dict) else None
+    if not isinstance(interfaces, list):
+        return roles
+    usable = [
+        i for i in interfaces
+        if isinstance(i, dict) and isinstance(i.get("ipv4"), dict) and i.get("connected")
+    ]
+    usable.sort(key=lambda i: not i.get("primary"))
+    for interface in usable[:1]:
+        ipv4 = interface["ipv4"]
+        for candidate in ipv4.get("nameservers") or []:
+            try:
+                address = str(ipaddress.IPv4Address(str(candidate)))
+            except ValueError:
+                continue
+            if address not in roles["dns"] and len(roles["dns"]) < MAX_DNS_SERVERS:
+                roles["dns"].append(address)
+        try:
+            roles["gateway"] = str(ipaddress.IPv4Address(str(ipv4.get("gateway"))))
+        except ValueError:
+            pass
+    return roles
 DEFAULT_DOWN_CYCLES = 3
 # Two sightings this close together are one stay: one missed cycle does not split it.
 PRESENCE_JOIN = timedelta(minutes=11)
@@ -161,6 +227,11 @@ def empty_state() -> dict[str, Any]:
             # The Probe host's default next hop, and the device last seen at it.
             "gateway_ip": None,
             "gateway_device_id": None,
+            # The host's configured DNS servers, and where they and the gateway came from.
+            "dns_servers": [],
+            "roles_source": None,
+            # The kind of address on the gateway's WAN side, never the address itself.
+            "wan": None,
             # ip -> {"device_id": holder, "flips": [times the holder changed]}.
             "address_holders": {},
             # The last DROP_CYCLES_KEPT judged cycles: {"at", "dropped", "of"}.
@@ -1109,6 +1180,16 @@ class NetworkInventory:
         duplicate_flips: int = DEFAULT_DUPLICATE_FLIPS,
         gateway_ip: str | None = None,
     ) -> MergeOutcome:
+        host_roles = self._host_roles()
+        meta = self.state["meta"]
+        if host_roles is not None:
+            meta["dns_servers"] = host_roles["dns"]
+        if gateway_ip:
+            meta["roles_source"] = "probe"
+        elif host_roles is not None and host_roles["gateway"]:
+            # The Probe's own read of the route table wins; this covers a Probe too old to send it.
+            gateway_ip = host_roles["gateway"]
+            meta["roles_source"] = "supervisor"
         outcome = merge_cycle(
             self.state,
             hosts,
@@ -1144,6 +1225,43 @@ class NetworkInventory:
         if outcome.changed:
             self._schedule_save()
         return outcome
+
+    def _host_roles(self) -> dict[str, Any] | None:
+        """Gateway and DNS servers from the Supervisor's cached network information.
+
+        None when there is no Supervisor or it has not reported yet. No I/O: core's
+        hassio integration keeps the data and this only reads it.
+        """
+        if "hassio" not in self.hass.config.components:
+            return None
+        try:
+            from homeassistant.components.hassio import get_network_info
+
+            return host_network_roles(get_network_info(self.hass))
+        except Exception:  # noqa: BLE001 - not ready, or an older core without the helper
+            return None
+
+    @callback
+    def async_note_wan_address(self, address: Any) -> None:
+        """Record what kind of address the UniFi gateway's WAN side holds."""
+        kind = classify_wan_address(address)
+        if kind is None:
+            return
+        previous = (self.state["meta"].get("wan") or {}).get("kind")
+        self.state["meta"]["wan"] = {"kind": kind, "at": dt_util.utcnow().isoformat()}
+        self._dirty = True
+        if previous != kind:
+            self._schedule_save()
+
+    def _roles(self, device: dict[str, Any]) -> list[str]:
+        meta = self.state["meta"]
+        roles = []
+        if device["id"] == meta.get("gateway_device_id"):
+            roles.append(ROLE_GATEWAY)
+        current = device["addresses"][0]["ip"] if device.get("addresses") else None
+        if current is not None and current in (meta.get("dns_servers") or []):
+            roles.append(ROLE_DNS)
+        return roles
 
     def known_cert_fingerprints(self) -> list[str]:
         """The fingerprints the Probe need not send DER for, most recently seen first."""
@@ -1246,7 +1364,7 @@ class NetworkInventory:
                 {
                     **device,
                     "display_name": best_name(device),
-                    "is_gateway": device["id"] == self.state["meta"].get("gateway_device_id"),
+                    "roles": self._roles(device),
                     "recent_changes": recent.get(device["id"], []),
                     # The last day only; the file keeps PRESENCE_RETENTION_DAYS.
                     "presence": [
@@ -1260,6 +1378,12 @@ class NetworkInventory:
         return {
             "devices": devices,
             "certs": referenced,
+            "network": {
+                "gateway_ip": meta.get("gateway_ip"),
+                "dns_servers": list(meta.get("dns_servers") or []),
+                "roles_source": meta.get("roles_source"),
+                "wan": meta.get("wan"),
+            },
             "counts": counts,
             "learning_started_at": meta.get("learning_started_at"),
             "last_cycle_at": meta.get("last_cycle_at"),

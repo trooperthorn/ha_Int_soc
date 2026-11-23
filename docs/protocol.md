@@ -46,6 +46,12 @@ The Supervisor exposes a live `/stats` per container. `_STAT_FIELDS` are aiohasu
 - The `ha` CLI wraps every `--raw-json` payload in `{"result": ..., "data": {...}}`; `.data` must be unwrapped first or every field prints null (seen on Supervisor 2026.08.0). The add-on info keys `ha_soc_verify_supervisor.sh` extracts (`name, version, state, rating, protected, host_network, host_pid, host_uts, host_dbus, privileged, docker_api, full_access, apparmor, auth_api, homeassistant_api, hassio_api, hassio_role, ingress, network, signed, repository, auto_update, watchdog, boot, ip_address`) are what `get_addons_info()` caches.
 - `PROBE_ADDON_NAME` is matched exactly against `get_addons_info()`'s per-addon `name` field, since slugs are repository-derived.
 
+### Supervisor network information
+
+- Read with `homeassistant.components.hassio.get_network_info(hass)`, which returns core's cached copy of the Supervisor's `GET /network/info` as a dict and raises `HassioNotReadyError` before the first fetch. Present in core 2026.11.0 (`hassio/coordinator.py`, exported from `hassio/__init__.py`); not checked in older cores, so the call is wrapped and a failure reads as "not known".
+- Shape used (`aiohasupervisor` 0.6.0 `models/network.py`, and the Supervisor API documentation): `interfaces[]` with `primary`, `connected` and `ipv4`; `ipv4.gateway` is one address or null and `ipv4.nameservers` a list. `inventory.py` `host_network_roles` takes the primary connected interface, or the first connected one with IPv4 settings.
+- These are the gateway and DNS servers the Home Assistant host is configured to use. The Supervisor does not report a DHCP server, and nothing here says which servers other devices on the network use.
+
 ### Core auth, lovelace, and config facts
 
 - `trusted_users` maps a network to a list of user-id hex strings or `{"group": group_id}` dicts (verified against core 2026.2.3's trusted_networks provider). `.storage/backup` carries `config.create_backup.password` and `config.agents[<id>].protected` (verified against core 2026.2.3 components/backup/config.py and store.py).

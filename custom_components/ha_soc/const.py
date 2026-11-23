@@ -29,6 +29,8 @@ SIGNAL_UPDATE = f"{DOMAIN}_update"
 # one, so the inventory can use the controller as a second source without a
 # fetch of its own.
 SIGNAL_UNIFI_CLIENTS = f"{DOMAIN}_unifi_clients"
+# Sent with the gateway's WAN address when a UniFi snapshot reports one.
+SIGNAL_UNIFI_WAN = f"{DOMAIN}_unifi_wan"
 
 # Custom bus event fired for user-built automations (ha_soc_alert).
 EVENT_ALERT = f"{DOMAIN}_alert"

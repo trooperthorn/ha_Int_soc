@@ -19,7 +19,13 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.loader import async_get_integration
 
 from .audit import AuditLog
-from .const import DOMAIN, PLATFORMS, SIGNAL_UNIFI_CLIENTS, SIGNAL_UPDATE
+from .const import (
+    DOMAIN,
+    PLATFORMS,
+    SIGNAL_UNIFI_CLIENTS,
+    SIGNAL_UNIFI_WAN,
+    SIGNAL_UPDATE,
+)
 from .crash_forensics import CrashForensics
 from .detections import DetectionEngine
 from .inventory import NetworkInventory
@@ -231,6 +237,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
 
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_UNIFI_CLIENTS, _async_unifi_clients)
+    )
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_UNIFI_WAN, inventory.async_note_wan_address)
     )
     detections = DetectionEngine(hass, store, audit=audit, users=users, inventory=inventory)
     watchdog = ResourceWatchdog(hass, store, audit)

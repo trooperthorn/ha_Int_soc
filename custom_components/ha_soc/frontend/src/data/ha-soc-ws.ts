@@ -310,8 +310,8 @@ export interface InventoryDevice {
   baseline: boolean;
   ha_device_id: string | null;
   recent_changes: InventoryChange[];
-  // The Probe host's default next hop.
-  is_gateway: boolean;
+  // "gateway" is the host's default next hop, "dns" a DNS server the host is configured with.
+  roles: ("gateway" | "dns")[];
   watched: boolean;
   // Presence is judged only on cycles from a Probe that reports it; absent until then.
   presence: { from: string; to: string }[];
@@ -368,6 +368,12 @@ export interface InventoryCert {
 export interface InventoryOverview {
   devices: InventoryDevice[];
   certs: Record<string, InventoryCert>;
+  network: {
+    gateway_ip: string | null;
+    dns_servers: string[];
+    roles_source: "probe" | "supervisor" | null;
+    wan: { kind: "public" | "private" | "cgnat"; at: string } | null;
+  };
   counts: Record<InventoryVerdict, number>;
   learning_started_at: string | null;
   learning_hours: number;

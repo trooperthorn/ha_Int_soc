@@ -28,6 +28,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from . import unifi_core, unifi_wifi
 from .const import (
     SIGNAL_UNIFI_CLIENTS,
+    SIGNAL_UNIFI_WAN,
     CONF_UNIFI_NETWORK_API_KEY,
     CONF_UNIFI_NETWORK_HOST,
     CONF_UNIFI_NETWORK_VERIFY_SSL,
@@ -1742,6 +1743,8 @@ async def async_network_overview(
         )
     if result["clients"]:
         async_dispatcher_send(hass, SIGNAL_UNIFI_CLIENTS, result["clients"])
+    if result["wan"].get("ip"):
+        async_dispatcher_send(hass, SIGNAL_UNIFI_WAN, result["wan"]["ip"])
     return result
 
 
