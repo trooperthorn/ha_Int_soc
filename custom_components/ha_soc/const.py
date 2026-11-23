@@ -135,6 +135,14 @@ CONF_NETSCAN_PORT_LIST = "netscan_port_list"
 DEFAULT_NETSCAN_PORT_LIST: list[int] = [22, 23, 80, 443, 445, 3389, 8080, 8443]
 CONF_NETSCAN_MAX_CONCURRENCY = "netscan_max_concurrency"
 DEFAULT_NETSCAN_MAX_CONCURRENCY = 32
+# Bus events for automations, off by default (docs/NETWORK-INVENTORY-DESIGN.md, phase 9).
+# The second switch adds the MAC and address to the payload; any automation can
+# read a bus event, so the default payload names the device by id and label only.
+CONF_NETWORK_EVENTS_ENABLED = "network_events_enabled"
+CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES = "network_events_include_addresses"
+EVENT_NETWORK_DEVICE_NEW = "ha_soc_network_device_new"
+EVENT_NETWORK_DEVICE_DOWN = "ha_soc_network_device_down"
+EVENT_NETWORK_DEVICE_BACK = "ha_soc_network_device_back"
 # Further private IPv4 networks the Probe sweeps besides its own subnets.
 CONF_NETSCAN_EXTRA_NETWORKS = "netscan_extra_networks"
 NETSCAN_MAX_EXTRA_NETWORKS = 8

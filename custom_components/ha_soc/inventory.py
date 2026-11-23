@@ -26,12 +26,24 @@ from typing import Any
 import homeassistant.util.dt as dt_util
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 
-from .const import DOMAIN
+from .const import (
+    CONF_NETWORK_EVENTS_ENABLED,
+    CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES,
+    DOMAIN,
+    EVENT_NETWORK_DEVICE_BACK,
+    EVENT_NETWORK_DEVICE_DOWN,
+    EVENT_NETWORK_DEVICE_NEW,
+    SIGNAL_UPDATE,
+)
 from .netscan import NETSCAN_MAX_DER_PER_RESULT, parse_certificates
 from .store import HaSocStore
 
 _LOGGER = logging.getLogger(__name__)
+
+# Passed to _after_change when no merge ran, so no bus event is due.
+_NO_EVENTS: Any = object()
 
 INVENTORY_STORAGE_KEY = f"{DOMAIN}.inventory"
 INVENTORY_STORAGE_VERSION = 1
@@ -1191,6 +1203,8 @@ class NetworkInventory:
         # The owner's current try-before-add sweep. In memory only: its hosts are
         # not inventory until the network is added and a regular cycle reports them.
         self.trial: dict[str, Any] | None = None
+        # Set by __init__.py: returns the settings dict that holds the event switches.
+        self.settings_provider: Callable[[], dict[str, Any]] | None = None
 
     async def async_load(self) -> None:
         stored = await self._store.async_load()
@@ -1246,6 +1260,7 @@ class NetworkInventory:
         duplicate_flips: int = DEFAULT_DUPLICATE_FLIPS,
         gateway_ip: str | None = None,
     ) -> MergeOutcome:
+        marker = self._last_event()
         host_roles = self._host_roles()
         meta = self.state["meta"]
         if host_roles is not None:
@@ -1276,6 +1291,7 @@ class NetworkInventory:
         self._dirty = True
         if outcome.changed:
             self._schedule_save()
+        self._after_change(marker)
         return outcome
 
     @callback
@@ -1286,12 +1302,14 @@ class NetworkInventory:
         learning_hours: int = DEFAULT_LEARNING_HOURS,
         now: datetime | None = None,
     ) -> MergeOutcome:
+        marker = self._last_event()
         outcome = merge_unifi_clients(
             self.state, clients, now or dt_util.utcnow(), learning_hours=learning_hours
         )
         self._dirty = True
         if outcome.changed:
             self._schedule_save()
+        self._after_change(marker)
         return outcome
 
     @callback
@@ -1375,6 +1393,61 @@ class NetworkInventory:
                     }
                 )
         return names
+
+    def counts(self) -> dict[str, int]:
+        """The four numbers the sensors show. Ignored devices are in none of them."""
+        devices = [d for d in self.state["devices"].values() if d.get("verdict") != VERDICT_IGNORED]
+        return {
+            "known": len(devices),
+            "unacknowledged": sum(1 for d in devices if d.get("verdict") == VERDICT_UNACKNOWLEDGED),
+            "watched": sum(1 for d in devices if d.get("watched")),
+            "offline": sum(1 for d in devices if d.get("watched") and d.get("down_since")),
+        }
+
+    def _last_event(self) -> Any:
+        events = self.state["events"]
+        return events[-1] if events else None
+
+    @callback
+    def _after_change(self, marker: Any = _NO_EVENTS) -> None:
+        """Tell the sensors, and fire bus events for what a merge appended.
+
+        ``marker`` is the last event from before the merge (None when there was
+        none), so the events after it are the new ones. Without a marker only the
+        sensors are told.
+        """
+        async_dispatcher_send(self.hass, f"{SIGNAL_UPDATE}_inventory")
+        if marker is _NO_EVENTS:
+            return
+        settings = self.settings_provider() if self.settings_provider is not None else {}
+        if not settings.get(CONF_NETWORK_EVENTS_ENABLED):
+            return
+        with_addresses = bool(settings.get(CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES))
+        appended: list[dict[str, Any]] = []
+        for event in reversed(self.state["events"]):
+            if event is marker:
+                break
+            appended.append(event)
+        for event in reversed(appended):
+            kind = event.get("kind")
+            if kind == "created" and not event.get("baseline"):
+                event_type = EVENT_NETWORK_DEVICE_NEW
+            elif kind == EVENT_DEVICE_DOWN and event.get("alert"):
+                event_type = EVENT_NETWORK_DEVICE_DOWN
+            elif kind == EVENT_DEVICE_BACK and event.get("alert"):
+                event_type = EVENT_NETWORK_DEVICE_BACK
+            else:
+                continue
+            device = self.state["devices"].get(event.get("device_id") or "")
+            if device is None:
+                continue
+            payload: dict[str, Any] = {"device_id": device["id"], "label": device.get("label")}
+            if event_type == EVENT_NETWORK_DEVICE_BACK:
+                payload["minutes_away"] = event.get("minutes_away")
+            if with_addresses:
+                payload["mac"] = (device.get("macs") or [None])[0]
+                payload["ip"] = device["addresses"][0]["ip"] if device.get("addresses") else None
+            self.hass.bus.async_fire(event_type, payload)
 
     def _host_roles(self) -> dict[str, Any] | None:
         """Gateway and DNS servers from the Supervisor's cached network information.
@@ -1556,6 +1629,7 @@ class NetworkInventory:
         device["verdict_at"] = at
         _append_event(self.state, at, device_id, "verdict", previous=previous, verdict=verdict)
         self._schedule_save()
+        self._after_change()
         return device
 
     @callback
@@ -1569,6 +1643,7 @@ class NetworkInventory:
             device.pop("down_since", None)
         _append_event(self.state, at, device_id, "watch", watched=bool(watched))
         self._schedule_save()
+        self._after_change()
         return device
 
     @callback

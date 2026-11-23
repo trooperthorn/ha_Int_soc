@@ -4788,7 +4788,35 @@ ${e.exception}</pre
                     </table>
                   `:j}
             </div>
-          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller",dhcp:"DHCP hostname",tracker:"router tracker",cert:"certificate subject"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setVerdict(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_verdict",device_id:t,verdict:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}async _setWatch(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_watch",device_id:t,watched:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}_renderPresence(e){const t=e.presence[e.presence.length-1],s=void 0!==e.missed_cycles;return V`
+          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller",dhcp:"DHCP hostname",tracker:"router tracker",cert:"certificate subject"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setEventSetting(e,t){try{await Ue(this.hass,{[e]:t}),await this._load()}catch(e){this._error=e?.message??String(e)}}_renderEventSettings(e){return V`
+      <details style="margin:8px 0;font-size:13px;">
+        <summary>Automations and notifications</summary>
+        <p class="muted" style="font-size:12.5px;">
+          HA SOC can fire a Home Assistant event when a new device is recorded and when a watched device stops
+          answering or answers again (ha_soc_network_device_new, ha_soc_network_device_down,
+          ha_soc_network_device_back). Any automation on this system can read an event, so by default it carries
+          only the inventory id and your label. Two blueprints that send these to a phone are in the repository
+          under blueprints/automation/ha_soc.
+        </p>
+        <label style="display:block;">
+          <input
+            type="checkbox"
+            .checked=${e.events.enabled}
+            @change=${e=>this._setEventSetting("network_events_enabled",e.target.checked)}
+          />
+          Fire events for automations
+        </label>
+        <label style="display:block;">
+          <input
+            type="checkbox"
+            .checked=${e.events.include_addresses}
+            ?disabled=${!e.events.enabled}
+            @change=${e=>this._setEventSetting("network_events_include_addresses",e.target.checked)}
+          />
+          Include the MAC and IP address in each event
+        </label>
+      </details>
+    `}async _setVerdict(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_verdict",device_id:t,verdict:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}async _setWatch(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_watch",device_id:t,watched:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}_renderPresence(e){const t=e.presence[e.presence.length-1],s=void 0!==e.missed_cycles;return V`
       <div class="muted" style="font-size:12px;">${this._when(e.last_seen)}</div>
       ${s?e.down_since?V`<span class="pill medium"><span class="dot"></span>not answering since ${this._when(e.down_since)}</span>`:0===e.missed_cycles?V`<span class="pill good"><span class="dot"></span>answering</span>`:V`<div class="muted" style="font-size:11.5px;">
                 no answer for ${e.missed_cycles} scan(s)${t?`, last answered ${this._when(t.to)}`:""}
@@ -4936,6 +4964,7 @@ ${e.exception}</pre
                   ${this._when(e.cap_reached_at)}. The oldest records nobody acknowledged or labeled were
                   removed to make room.
                 </p>`:j}
+            ${this._renderEventSettings(e)}
             <p class="muted" style="font-size:12.5px;">
               Gateway: ${e.network.gateway_ip??"not known"}${e.network.roles_source?` (from the ${"probe"===e.network.roles_source?"Probe's route table":"Supervisor's network settings"})`:""}.
               DNS servers this host uses:

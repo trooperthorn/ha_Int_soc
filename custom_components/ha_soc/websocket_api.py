@@ -36,6 +36,8 @@ from .const import (
     CONF_NETSCAN_EXTRA_NETWORKS,
     CONF_NETSCAN_MAX_CONCURRENCY,
     CONF_NETSCAN_PORT_LIST,
+    CONF_NETWORK_EVENTS_ENABLED,
+    CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES,
     CONF_NVD_API_KEY,
     CONF_PIHOLE_API_KEY,
     CONF_PIHOLE_HOST,
@@ -1630,6 +1632,12 @@ async def ws_inventory_list(hass: HomeAssistant, connection, msg: dict) -> None:
     overview = runtime.inventory.overview()
     overview["netscan_enabled"] = bool(runtime.store.settings.get(CONF_NETSCAN_ENABLED, False))
     overview["learning_hours"] = thresholds(runtime.store, RULE_NETWORK_DEVICE_NEW)["learning_hours"]
+    overview["events"] = {
+        "enabled": bool(runtime.store.settings.get(CONF_NETWORK_EVENTS_ENABLED, False)),
+        "include_addresses": bool(
+            runtime.store.settings.get(CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES, False)
+        ),
+    }
     connection.send_result(msg["id"], overview)
 
 
@@ -2485,6 +2493,9 @@ async def ws_settings_get(hass: HomeAssistant, connection, msg: dict) -> None:
         vol.Optional(CONF_SNMP_PRIV_PASSPHRASE): vol.Any(None, validate_snmp_passphrase),
         # Netscan carries no credentials, so all three fields are plain settings.
         vol.Optional(CONF_NETSCAN_ENABLED): bool,
+        # Bus events about network devices; both default off.
+        vol.Optional(CONF_NETWORK_EVENTS_ENABLED): bool,
+        vol.Optional(CONF_NETWORK_EVENTS_INCLUDE_ADDRESSES): bool,
         vol.Optional(CONF_NETSCAN_PORT_LIST): validate_netscan_port_list,
         vol.Optional(CONF_NETSCAN_MAX_CONCURRENCY): validate_netscan_max_concurrency,
     }

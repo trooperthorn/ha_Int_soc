@@ -164,6 +164,25 @@ client list into one record per device. What it does and does not establish:
 - **Sources are trusted equally.** A compromised Probe or controller can add
   or withhold devices. Each record lists which source reported it.
 
+### Network events and sensors
+
+The inventory is owner-only, but an event on the bus and an entity state are
+not: any automation, any user who can open Developer Tools, and any
+integration in the same process can read them. What HA SOC puts there is
+therefore chosen for that audience.
+
+- **Sensors** carry four counts and no attributes (decision D-19).
+- **Events are off by default.** When on, an event names the device by its
+  inventory id and by the owner's label, if one is set. The id means nothing
+  without the inventory. The label is text the owner wrote, so the owner
+  decides what it gives away.
+- **MAC and IP address are in the event only with a second switch**, which
+  the owner turns on knowingly; the panel says who can read an event.
+- Subscribing to these event types over the WebSocket API needs an admin
+  connection, because they are not in Core's allowlist
+  (`websocket_api/commands.py`, `handle_subscribe_events`). An automation
+  trigger has no such check, which is why the default payload is minimal.
+
 ### Routed networks
 
 The owner can have the Probe sweep up to 8 further private networks. This

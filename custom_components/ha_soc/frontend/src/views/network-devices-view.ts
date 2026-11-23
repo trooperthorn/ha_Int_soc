@@ -13,6 +13,7 @@ import {
   fetchInventory,
   setInventoryLabel,
   setInventoryWatch,
+  updateSettings,
   setInventoryVerdict,
 } from "../data/ha-soc-ws";
 
@@ -77,6 +78,52 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
     } finally {
       this._loading = false;
     }
+  }
+
+  private async _setEventSetting(
+    key: "network_events_enabled" | "network_events_include_addresses",
+    value: boolean
+  ) {
+    try {
+      await updateSettings(this.hass, { [key]: value });
+      await this._load();
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    }
+  }
+
+  private _renderEventSettings(overview: InventoryOverview) {
+    return html`
+      <details style="margin:8px 0;font-size:13px;">
+        <summary>Automations and notifications</summary>
+        <p class="muted" style="font-size:12.5px;">
+          HA SOC can fire a Home Assistant event when a new device is recorded and when a watched device stops
+          answering or answers again (ha_soc_network_device_new, ha_soc_network_device_down,
+          ha_soc_network_device_back). Any automation on this system can read an event, so by default it carries
+          only the inventory id and your label. Two blueprints that send these to a phone are in the repository
+          under blueprints/automation/ha_soc.
+        </p>
+        <label style="display:block;">
+          <input
+            type="checkbox"
+            .checked=${overview.events.enabled}
+            @change=${(e: Event) =>
+              this._setEventSetting("network_events_enabled", (e.target as HTMLInputElement).checked)}
+          />
+          Fire events for automations
+        </label>
+        <label style="display:block;">
+          <input
+            type="checkbox"
+            .checked=${overview.events.include_addresses}
+            ?disabled=${!overview.events.enabled}
+            @change=${(e: Event) =>
+              this._setEventSetting("network_events_include_addresses", (e.target as HTMLInputElement).checked)}
+          />
+          Include the MAC and IP address in each event
+        </label>
+      </details>
+    `;
   }
 
   private async _setVerdict(device: InventoryDevice, verdict: InventoryVerdict) {
@@ -437,6 +484,7 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                   removed to make room.
                 </p>`
               : nothing}
+            ${this._renderEventSettings(overview)}
             <p class="muted" style="font-size:12.5px;">
               Gateway: ${overview.network.gateway_ip ?? "not known"}${overview.network.roles_source
                 ? ` (from the ${overview.network.roles_source === "probe" ? "Probe's route table" : "Supervisor's network settings"})`

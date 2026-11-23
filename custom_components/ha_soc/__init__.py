@@ -220,6 +220,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: HaSocConfigEntry) -> boo
     inventory = NetworkInventory(hass)
     await inventory.async_load()
     health.inventory = inventory
+    inventory.settings_provider = lambda: store.settings
     entry.async_on_unload(inventory.async_flush)
 
     @callback

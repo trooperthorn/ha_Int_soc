@@ -382,6 +382,7 @@ export interface InventoryCert {
 export interface InventoryOverview {
   devices: InventoryDevice[];
   certs: Record<string, InventoryCert>;
+  events: { enabled: boolean; include_addresses: boolean };
   network: {
     gateway_ip: string | null;
     dns_servers: string[];
@@ -549,6 +550,9 @@ export interface HaSocSettings {
   snmp_enabled: boolean;
   // Owner-only; the Scanner tab's Network Scan card sets it.
   netscan_enabled?: boolean;
+  // Bus events about network devices, set in the Network Devices tab. Both default off.
+  network_events_enabled?: boolean;
+  network_events_include_addresses?: boolean;
   snmp_listen_address: string | null;
   snmp_port: number;
   snmp_username: string | null;

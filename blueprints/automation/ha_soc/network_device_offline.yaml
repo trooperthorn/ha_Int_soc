@@ -1,0 +1,49 @@
+blueprint:
+  name: HA SOC watched network device offline
+  description: >-
+    Send a notification when a network device you watch in HA SOC stops
+    answering, and another when it answers again. Needs "Fire events for
+    automations" turned on in the HA SOC panel, under Assets, Network Devices,
+    and the device set to Watch there.
+  domain: automation
+  source_url: https://github.com/trooperthorn/ha_Int_soc/blob/main/blueprints/automation/ha_soc/network_device_offline.yaml
+  author: HA SOC
+  input:
+    notify_device:
+      name: Device to notify
+      description: Device needs to run the official Home Assistant app to receive notifications.
+      selector:
+        device:
+          filter:
+            integration: mobile_app
+    notify_when_back:
+      name: Also notify when it is back
+      default: true
+      selector:
+        boolean:
+
+triggers:
+  - trigger: event
+    event_type: ha_soc_network_device_down
+    id: down
+  - trigger: event
+    event_type: ha_soc_network_device_back
+    id: back
+
+variables:
+  notify_when_back: !input notify_when_back
+  device_name: "{{ trigger.event.data.label or trigger.event.data.device_id }}"
+
+conditions:
+  condition: template
+  value_template: "{{ trigger.id == 'down' or notify_when_back }}"
+
+actions:
+  - alias: "Notify that a watched device went away or came back"
+    domain: mobile_app
+    type: notify
+    device_id: !input notify_device
+    message: >-
+      {% if trigger.id == 'down' %}{{ device_name }} stopped answering on the
+      network.{% else %}{{ device_name }} is answering again after
+      {{ trigger.event.data.minutes_away }} minutes.{% endif %}

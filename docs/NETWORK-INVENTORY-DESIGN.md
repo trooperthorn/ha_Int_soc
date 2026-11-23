@@ -3,7 +3,7 @@
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
 to 7 are built, except phase 6's DHCP probe and phase 7's vendor table (see
 the "What phase N built" sections below), and have not run against a live
-Supervisor or a real Probe. Phase 8 is built as well; phases 9 and 10 are
+Supervisor or a real Probe. Phases 8 and 9 are built as well; phase 10 is
 design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
@@ -787,6 +787,27 @@ panel.
   already knows.
 - **Repairs**: health findings from phases 3 and 5 mirror through the existing
   path in `health.py`.
+
+#### What phase 9 built
+
+Built 2026-11-23: three bus events behind two switches, four count sensors,
+two blueprints under `blueprints/automation/ha_soc/`, the switches in the
+Network Devices tab, and `tests/test_inventory_surface.py`. Repairs needed
+nothing new: the findings from phases 3, 5 and 6 already go through
+`health.py`. It differs from the text above in these ways:
+
+- **Four sensors, as listed**, where "offline" means watched devices that are
+  down.
+- **The new-device event also fires for a device the UniFi controller
+  reports**, since that raises the detection too.
+- **The blueprints notify one phone through the Home Assistant app.** They
+  take no free-form action.
+- **The switches are in the Network Devices tab**, not in Settings.
+
+Not verified: the blueprints in a running Home Assistant. The tests parse
+them and check the event names against the integration's constants, which
+does not prove the automation runs. Importing them by URL works only once
+this branch is merged to `main`, because `source_url` points there.
 
 ### Phase 10: export, redaction, translations, tests
 
