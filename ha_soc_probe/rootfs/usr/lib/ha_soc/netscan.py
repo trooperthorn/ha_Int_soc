@@ -57,7 +57,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from oui_prefixes import vendor_for_mac
 
-SCANNER_VERSION = "netscan/1.3"
+SCANNER_VERSION = "netscan/1.4"
 
 # Bounds independent of whatever the owner configures, so a misconfigured or
 # hostile poll response cannot turn this into an unbounded sweep.
@@ -83,6 +83,17 @@ MAX_KNOWN_CERTS = 512
 ARP_SETTLE_SECONDS = 9
 ACCEPT_PRESENCE = "presence"
 ACCEPT_GATEWAY = "gateway"
+# Further networks the owner asked to have swept (docs/protocol.md "Netscan
+# routed networks"). These bounds are enforced here as well as in the
+# integration, so a bad poll response cannot widen the sweep.
+MAX_EXTRA_NETWORKS = 8
+EXTRA_NETWORK_PREFIX_MIN = 22
+EXTRA_NETWORK_PREFIX_MAX = 30
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+# The Supervisor's internal Docker network, from the Supervisor API documentation.
+_SUPERVISOR_NETWORK = ipaddress.ip_network("172.30.32.0/23")
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 # Ports where a TLS handshake is attempted after (or instead of) a plaintext
@@ -270,6 +281,69 @@ def _local_ipv4_networks() -> list[ipaddress.IPv4Network]:
     return networks
 
 
+def _container_networks() -> list[ipaddress.IPv4Network]:
+    """The subnets of this host's container bridges, which are never swept."""
+    networks: list[ipaddress.IPv4Network] = [_SUPERVISOR_NETWORK]
+    try:
+        ifnames = os.listdir("/sys/class/net")
+    except OSError:
+        return networks
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for ifname in ifnames:
+            if not ifname.startswith(("docker", "hassio", "br-", "veth")):
+                continue
+            addr = _ioctl_ifaddr(sock, ifname, 0x8915)
+            netmask = _ioctl_ifaddr(sock, ifname, 0x891B)
+            if not addr or not netmask:
+                continue
+            try:
+                networks.append(ipaddress.ip_network(f"{addr}/{netmask}", strict=False))
+            except ValueError:
+                continue
+    return networks
+
+
+def _refusal_reason(
+    raw: object, container_networks: list[ipaddress.IPv4Network]
+) -> tuple[ipaddress.IPv4Network | None, str | None]:
+    """(network, None) when the network may be swept, else (None, why not).
+
+    Allowed: an IPv4 network from /22 to /30 that lies inside the RFC 1918
+    private ranges and does not overlap a container bridge. That rules out
+    loopback, link-local, multicast and every public range by construction.
+    """
+    try:
+        network = ipaddress.ip_network(str(raw), strict=False)
+    except ValueError:
+        return None, "not a network"
+    if network.version != 4:
+        return None, "not IPv4"
+    if not EXTRA_NETWORK_PREFIX_MIN <= network.prefixlen <= EXTRA_NETWORK_PREFIX_MAX:
+        return None, "prefix outside /22 to /30"
+    if not any(network.subnet_of(private) for private in _PRIVATE_NETWORKS):
+        return None, "not a private network"
+    if any(network.overlaps(container) for container in container_networks):
+        return None, "overlaps a container network"
+    return network, None
+
+
+def _parse_extra_networks(raw: str | None) -> list[ipaddress.IPv4Network]:
+    """The owner's further networks that pass _refusal_reason, at most MAX_EXTRA_NETWORKS."""
+    try:
+        parsed = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    containers = _container_networks()
+    networks: list[ipaddress.IPv4Network] = []
+    for item in parsed[:MAX_EXTRA_NETWORKS]:
+        network, _reason = _refusal_reason(item, containers)
+        if network is not None and network not in networks:
+            networks.append(network)
+    return networks
+
+
 def _sweep_targets(networks: list[ipaddress.IPv4Network], arp_ips: set[str]) -> list[str]:
     """The bounded address list to sweep: every host in each local subnet
     (skipped if a network is implausibly large for a bounded sweep) unioned
@@ -430,15 +504,26 @@ async def _run_cycle(
     max_concurrency: int,
     known_certs: set[str] | None = None,
     presence: bool = False,
+    extra_networks: list[ipaddress.IPv4Network] | None = None,
+    only_extra: bool = False,
 ) -> list[dict[str, object]]:
     """One sweep. With ``presence`` each host also reports whether it answered
     (``responded``: a completed or refused connection), whether the kernel held
     a resolved ARP entry for it after the sweep (``arp_after_sweep``), and the
     fastest TCP connect or refusal time (``rtt_ms``). Without it the result has
-    the shape older integrations accept."""
-    arp_table = _read_arp_table()
-    networks = _local_ipv4_networks()
-    targets = _sweep_targets(networks, set(arp_table))
+    the shape older integrations accept.
+
+    ``extra_networks`` are swept as well as the local ones and each host found
+    in one carries ``network``. ``only_extra`` sweeps them alone, with no ARP
+    read at all: that is the trial of one network before the owner adds it."""
+    extra_networks = extra_networks or []
+    if only_extra:
+        arp_table: dict[str, str] = {}
+        targets = _sweep_targets(extra_networks, set())
+    else:
+        arp_table = _read_arp_table()
+        networks = _local_ipv4_networks()
+        targets = _sweep_targets(networks + extra_networks, set(arp_table))
 
     semaphore = asyncio.Semaphore(max_concurrency)
     tasks = {
@@ -470,7 +555,7 @@ async def _run_cycle(
     for ip in arp_table:
         hosts.setdefault(ip, {"ip": ip, "open_ports": []})
 
-    if presence:
+    if presence and not only_extra:
         await asyncio.sleep(ARP_SETTLE_SECONDS)
         for ip, mac in _read_arp_complete().items():
             host = hosts.setdefault(ip, {"ip": ip, "open_ports": []})
@@ -480,6 +565,11 @@ async def _run_cycle(
             arp_table.setdefault(ip, mac)
 
     for ip, host in hosts.items():
+        address = ipaddress.ip_address(ip)
+        for network in extra_networks:
+            if address in network:
+                host["network"] = str(network)
+                break
         mac = arp_table.get(ip)
         if mac:
             host["mac"] = mac
@@ -500,10 +590,12 @@ def _post_result(
     tls_der: bool = False,
     presence: bool = False,
     gateway: str | None = None,
+    networks_swept: list[str] | None = None,
 ) -> int:
     payload = json.dumps(
         {
             **({"netscan_gateway": gateway} if gateway else {}),
+            **({"netscan_networks": networks_swept} if networks_swept is not None else {}),
             "netscan_result": hosts,
             "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der, "presence": presence},
             "scanner_version": SCANNER_VERSION,
@@ -541,6 +633,28 @@ def _parse_port_list(raw: str) -> list[int]:
             if 1 <= port <= 65535 and port not in ports:
                 ports.append(port)
     return ports[:MAX_PORT_LIST_ENTRIES]
+
+
+def _post_trial(
+    ingest_url: str, supervisor_token: str, probe_secret: str, trial: dict[str, object]
+) -> int:
+    payload = json.dumps(
+        {"netscan_trial": trial, "scanner_version": SCANNER_VERSION, "probe_secret": probe_secret}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        ingest_url,
+        data=payload,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {supervisor_token}",
+            "Content-Type": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return response.status
+    except urllib.error.URLError:
+        return 0
 
 
 def _parse_known_certs(raw: str | None) -> set[str] | None:
@@ -583,6 +697,13 @@ def main() -> int:
         help="JSON list of certificate SHA-256 fingerprints the integration already holds",
     )
     parser.add_argument(
+        "--extra-networks",
+        default=None,
+        help="JSON list of further private IPv4 networks (/22 to /30) to sweep",
+    )
+    parser.add_argument("--trial-id", default=None, help="Sweep --trial-network once and report it")
+    parser.add_argument("--trial-network", default=None)
+    parser.add_argument(
         "--accepts",
         default=None,
         help="JSON list of optional report fields the integration accepts",
@@ -601,10 +722,33 @@ def main() -> int:
         print("netscan: missing SUPERVISOR_TOKEN or PROBE_SECRET; refusing to run", file=sys.stderr)
         return 1
 
+    if args.trial_id:
+        # One network, swept once, reported apart from the regular result so
+        # nothing about it reaches the inventory before the owner adds it.
+        network, reason = _refusal_reason(args.trial_network, _container_networks())
+        trial: dict[str, object] = {"id": args.trial_id, "network": str(args.trial_network)[:18]}
+        if network is None:
+            trial.update(refused=reason, hosts=[])
+        else:
+            trial["network"] = str(network)
+            found = asyncio.run(
+                _run_cycle(port_list, max_concurrency, set(), True, [network], only_extra=True)
+            )
+            trial.update(refused=None, hosts=found)
+        print(json.dumps({"trial": trial["network"], "count": len(trial["hosts"])}))  # type: ignore[arg-type]
+        status = _post_trial(args.ingest_url, supervisor_token, probe_secret, trial)
+        if status not in (200, 201):
+            print(f"netscan: trial POST returned status {status}", file=sys.stderr)
+            return 1
+        return 0
+
     known_certs = _parse_known_certs(args.known_certs)
     accepts = _parse_accepts(args.accepts)
     presence = ACCEPT_PRESENCE in accepts
-    hosts = asyncio.run(_run_cycle(port_list, max_concurrency, known_certs, presence))
+    extra_networks = _parse_extra_networks(args.extra_networks)
+    hosts = asyncio.run(
+        _run_cycle(port_list, max_concurrency, known_certs, presence, extra_networks)
+    )
     # The count only: the result now carries certificate bytes, and the host
     # list is a LAN map that does not belong in the app log.
     print(json.dumps({"count": len(hosts)}))
@@ -617,6 +761,9 @@ def main() -> int:
         tls_der=known_certs is not None,
         presence=presence,
         gateway=_default_gateway() if ACCEPT_GATEWAY in accepts else None,
+        # Sent only when the integration asked for further networks, which only a
+        # build that accepts this key does.
+        networks_swept=[str(n) for n in extra_networks] if args.extra_networks else None,
     )
     if status not in (200, 201):
         print(f"netscan: ingest POST returned status {status}", file=sys.stderr)

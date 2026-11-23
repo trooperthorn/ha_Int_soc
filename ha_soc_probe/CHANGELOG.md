@@ -10,6 +10,11 @@
   certificate and 262,144 bytes per cycle). The integration does the
   parsing. An integration older than this change does not ask for
   certificates and gets the previous report shape.
+- The netscan can sweep up to 8 further private networks the owner adds in
+  the panel (each /22 to /30), and can sweep one candidate network once as
+  a trial before it is added. The Probe refuses anything that is not a
+  private IPv4 network or that overlaps a container network of the host,
+  whatever it is asked.
 - The netscan reports the host's default IPv4 gateway, read from
   `/proc/net/route`, to an integration that asks for it.
 - The netscan reports whether each host answered. A refused TCP connection

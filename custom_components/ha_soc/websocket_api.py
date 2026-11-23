@@ -33,6 +33,7 @@ from .const import (
     CONF_MFA_GRACE_PERIOD_DAYS,
     CONF_MFA_POLICY,
     CONF_NETSCAN_ENABLED,
+    CONF_NETSCAN_EXTRA_NETWORKS,
     CONF_NETSCAN_MAX_CONCURRENCY,
     CONF_NETSCAN_PORT_LIST,
     CONF_NVD_API_KEY,
@@ -341,6 +342,9 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_firewall_status,
         ws_netscan_status,
         ws_netscan_rescan,
+        ws_netscan_network_try,
+        ws_netscan_network_add,
+        ws_netscan_network_remove,
         ws_inventory_list,
         ws_inventory_set_verdict,
         ws_inventory_set_label,
@@ -1476,8 +1480,120 @@ async def ws_netscan_status(hass: HomeAssistant, connection, msg: dict) -> None:
             "port_list": runtime.store.settings.get(CONF_NETSCAN_PORT_LIST),
             "max_concurrency": runtime.store.settings.get(CONF_NETSCAN_MAX_CONCURRENCY),
             "result": runtime.store.data.get("netscan_result"),
+            "extra_networks": _extra_networks_status(runtime),
+            "trial": runtime.inventory.trial,
         },
     )
+
+
+def _extra_networks_status(runtime) -> list[dict[str, Any]]:
+    """Each owner-added network with whether the last cycle swept it and what it found.
+
+    ``swept`` is None when the Probe does not say which networks it swept, which is
+    "not known", and False when it listed others but not this one.
+    """
+    result = runtime.store.data.get("netscan_result") or {}
+    swept = result.get("networks_swept")
+    hosts = result.get("hosts") or []
+    return [
+        {
+            "network": network,
+            "swept": None if swept is None else network in swept,
+            "hosts": sum(1 for host in hosts if host.get("network") == network),
+        }
+        for network in runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or []
+    ]
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_try", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_try(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: have the Probe sweep one candidate network once, saving nothing.
+
+    The result is held in memory and shown to the owner; it reaches neither the
+    stored scan result nor the inventory. Adding the network is a separate command
+    that requires this trial to have completed.
+    """
+    from .netscan import validate_extra_network
+
+    runtime = _runtime(hass)
+    try:
+        network = validate_extra_network(msg["network"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_network", str(err))
+        return
+    trial = runtime.inventory.async_request_trial(network)
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_trial", "network": network},
+    )
+    connection.send_result(msg["id"], {"ok": True, "trial": trial})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_add", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_add(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: add a network to the regular sweep, after its trial."""
+    from .const import NETSCAN_MAX_EXTRA_NETWORKS
+    from .netscan import validate_extra_network
+
+    runtime = _runtime(hass)
+    try:
+        network = validate_extra_network(msg["network"])
+    except vol.Invalid as err:
+        connection.send_error(msg["id"], "invalid_network", str(err))
+        return
+    current = list(runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or [])
+    if network in current:
+        connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
+        return
+    if not runtime.inventory.trial_passed(network):
+        connection.send_error(
+            msg["id"], "trial_required", "Try the network first; it is added only after a completed trial"
+        )
+        return
+    if len(current) >= NETSCAN_MAX_EXTRA_NETWORKS:
+        connection.send_error(
+            msg["id"], "too_many", f"At most {NETSCAN_MAX_EXTRA_NETWORKS} extra networks can be scanned"
+        )
+        return
+    current.append(network)
+    runtime.store.async_update_settings(**{CONF_NETSCAN_EXTRA_NETWORKS: current})
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_added", "network": network},
+    )
+    connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {vol.Required("type"): "ha_soc/netscan/network_remove", vol.Required("network"): str}
+)
+@websocket_api.async_response
+async def ws_netscan_network_remove(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: stop sweeping a network. Devices already recorded there are kept."""
+    runtime = _runtime(hass)
+    current = list(runtime.store.settings.get(CONF_NETSCAN_EXTRA_NETWORKS) or [])
+    if msg["network"] not in current:
+        connection.send_error(msg["id"], "not_found", "That network is not being scanned")
+        return
+    current.remove(msg["network"])
+    runtime.store.async_update_settings(**{CONF_NETSCAN_EXTRA_NETWORKS: current})
+    runtime.audit.async_log(
+        "user_updated",
+        user_id=connection.user.id,
+        detail={"action": "netscan_network_removed", "network": msg["network"]},
+    )
+    connection.send_result(msg["id"], {"ok": True, "extra_networks": current})
 
 
 @require_owner

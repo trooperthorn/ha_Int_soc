@@ -138,6 +138,7 @@ class SettingsData(TypedDict):
     netscan_enabled: bool
     netscan_port_list: list[int]
     netscan_max_concurrency: int
+    netscan_extra_networks: list[str]
     # See crash_forensics.py's module docstring for why this is a heartbeat
     # file rather than a Supervisor-reported flag.
     crash_forensics_enabled: bool
@@ -264,6 +265,7 @@ def default_store_data() -> StoreData:
             netscan_enabled=DEFAULT_NETSCAN_ENABLED,
             netscan_port_list=list(DEFAULT_NETSCAN_PORT_LIST),
             netscan_max_concurrency=DEFAULT_NETSCAN_MAX_CONCURRENCY,
+            netscan_extra_networks=[],
             crash_forensics_enabled=DEFAULT_CRASH_FORENSICS_ENABLED,
             heartbeat_interval_seconds=DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
         ),

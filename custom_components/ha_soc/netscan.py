@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import re
 from typing import Any
@@ -25,12 +26,16 @@ import voluptuous as vol
 
 from .const import (
     CONF_NETSCAN_ENABLED,
+    CONF_NETSCAN_EXTRA_NETWORKS,
     CONF_NETSCAN_MAX_CONCURRENCY,
     CONF_NETSCAN_PORT_LIST,
     DEFAULT_NETSCAN_MAX_CONCURRENCY,
     DEFAULT_NETSCAN_PORT_LIST,
     NETSCAN_MAX_CONCURRENCY_MAX,
+    NETSCAN_EXTRA_PREFIX_MAX,
+    NETSCAN_EXTRA_PREFIX_MIN,
     NETSCAN_MAX_CONCURRENCY_MIN,
+    NETSCAN_MAX_EXTRA_NETWORKS,
     NETSCAN_MAX_PORT_LIST_ENTRIES,
     NETSCAN_PORT_MAX,
     NETSCAN_PORT_MIN,
@@ -72,6 +77,53 @@ def validate_port_list(value: Any) -> list[int]:
     if not ports:
         raise vol.Invalid("netscan port list must not be empty")
     return ports
+
+
+_PRIVATE_NETWORKS = tuple(
+    ipaddress.ip_network(net) for net in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+# The Supervisor's internal Docker network (Supervisor API documentation, /network/info).
+_SUPERVISOR_NETWORK = ipaddress.ip_network("172.30.32.0/23")
+
+
+def validate_extra_network(value: Any) -> str:
+    """One further network to sweep, normalized to its CIDR form.
+
+    An IPv4 network from /22 to /30 inside the RFC 1918 ranges that does not
+    overlap the Supervisor's Docker network. The Probe applies the same rule and
+    also refuses the host's other container bridges, which only it can see.
+    """
+    try:
+        network = ipaddress.ip_network(str(value).strip(), strict=False)
+    except ValueError as err:
+        raise vol.Invalid("not an IPv4 network in CIDR form, for example 192.168.20.0/24") from err
+    if network.version != 4:
+        raise vol.Invalid("only IPv4 networks can be scanned")
+    if not NETSCAN_EXTRA_PREFIX_MIN <= network.prefixlen <= NETSCAN_EXTRA_PREFIX_MAX:
+        raise vol.Invalid(
+            f"the network must be between /{NETSCAN_EXTRA_PREFIX_MIN} and /{NETSCAN_EXTRA_PREFIX_MAX}"
+        )
+    if not any(network.subnet_of(private) for private in _PRIVATE_NETWORKS):
+        raise vol.Invalid("only private networks (10/8, 172.16/12, 192.168/16) can be scanned")
+    if network.overlaps(_SUPERVISOR_NETWORK):
+        raise vol.Invalid("that range is the Supervisor's internal container network")
+    return str(network)
+
+
+def validate_extra_networks(value: Any) -> list[str]:
+    """The stored list: de-duplicated, each entry valid, at most NETSCAN_MAX_EXTRA_NETWORKS."""
+    if value is None:
+        return []
+    if not isinstance(value, (list, tuple)):
+        raise vol.Invalid("extra networks must be a list")
+    networks: list[str] = []
+    for item in value:
+        network = validate_extra_network(item)
+        if network not in networks:
+            networks.append(network)
+    if len(networks) > NETSCAN_MAX_EXTRA_NETWORKS:
+        raise vol.Invalid(f"at most {NETSCAN_MAX_EXTRA_NETWORKS} extra networks can be scanned")
+    return networks
 
 
 def validate_max_concurrency(value: Any) -> int:
@@ -135,9 +187,21 @@ NETSCAN_HOST_SCHEMA = vol.Schema(
         vol.Optional("vendor"): vol.Any(None, vol.All(str, vol.Length(max=64))),
         vol.Optional("open_ports"): vol.Any(None, [NETSCAN_OPEN_PORT_SCHEMA]),
         # Presence signals, sent only by a Probe that was offered them.
+        # The owner-added network the host was found in; absent on the Probe's own subnets.
+        vol.Optional("network"): vol.All(str, vol.Length(max=18)),
         vol.Optional("responded"): bool,
         vol.Optional("arp_after_sweep"): bool,
         vol.Optional("rtt_ms"): vol.All(vol.Coerce(float), vol.Range(min=0, max=60000)),
+    }
+)
+
+# The Probe's answer to a trial sweep of one network (ha_soc/netscan/network_try).
+NETSCAN_TRIAL_SCHEMA = vol.Schema(
+    {
+        vol.Required("id"): vol.All(str, vol.Length(min=1, max=64)),
+        vol.Required("network"): vol.All(str, vol.Length(max=18)),
+        vol.Optional("refused"): vol.Any(None, vol.All(str, vol.Length(max=64))),
+        vol.Optional("hosts"): vol.All([NETSCAN_HOST_SCHEMA], vol.Length(max=1024)),
     }
 )
 
@@ -256,11 +320,18 @@ async def async_config_for_probe(settings: dict[str, Any]) -> dict[str, Any]:
     max_concurrency = validate_max_concurrency(
         settings.get(CONF_NETSCAN_MAX_CONCURRENCY, DEFAULT_NETSCAN_MAX_CONCURRENCY)
     )
-    material = {
+    material: dict[str, Any] = {
         "enabled": enabled,
         "port_list": port_list,
         "max_concurrency": max_concurrency,
     }
+    try:
+        extra_networks = validate_extra_networks(settings.get(CONF_NETSCAN_EXTRA_NETWORKS))
+    except vol.Invalid:
+        extra_networks = []
+    if extra_networks:
+        # Added only when set, so the generation of an install without any is unchanged.
+        material["extra_networks"] = extra_networks
     generation = hashlib.sha256(
         json.dumps(material, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

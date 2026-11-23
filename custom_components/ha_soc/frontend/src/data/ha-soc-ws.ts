@@ -287,6 +287,20 @@ export interface NetscanStatus {
   port_list: number[] | null;
   max_concurrency: number | null;
   result: NetscanResult | null;
+  // Owner-added networks. swept is null when the Probe does not report which networks it swept.
+  extra_networks: { network: string; swept: boolean | null; hosts: number }[];
+  trial: NetscanTrial | null;
+}
+
+// A try-before-add sweep of one network. hosts is null until the Probe answers.
+export interface NetscanTrial {
+  id: string;
+  network: string;
+  requested_at: string;
+  completed_at: string | null;
+  refused: string | null;
+  host_count?: number;
+  hosts: { ip: string; open_ports: number[] }[] | null;
 }
 
 // Mirrors inventory.py's NetworkInventory.overview(); see docs/NETWORK-INVENTORY-DESIGN.md.
@@ -533,6 +547,8 @@ export interface HaSocSettings {
   technitium_verify_ssl: boolean;
   // Optional Probe-hosted SNMPv3 AuthPriv listener; passphrases are masked and never returned.
   snmp_enabled: boolean;
+  // Owner-only; the Scanner tab's Network Scan card sets it.
+  netscan_enabled?: boolean;
   snmp_listen_address: string | null;
   snmp_port: number;
   snmp_username: string | null;
@@ -1581,6 +1597,16 @@ export const fetchNetscanStatus = (hass: HomeAssistant) =>
 // Asks the Probe to run an out-of-cycle scan on its next poll; see docs/security.md "Netscan capability".
 export const requestNetscanRescan = (hass: HomeAssistant) =>
   ws<{ ok: boolean; requested_at: string }>(hass, { type: "ha_soc/netscan/rescan" });
+
+export const tryNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; trial: NetscanTrial }>(hass, { type: "ha_soc/netscan/network_try", network });
+
+// Refused by the server unless the latest trial swept this network.
+export const addNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; extra_networks: string[] }>(hass, { type: "ha_soc/netscan/network_add", network });
+
+export const removeNetscanNetwork = (hass: HomeAssistant, network: string) =>
+  ws<{ ok: boolean; extra_networks: string[] }>(hass, { type: "ha_soc/netscan/network_remove", network });
 
 // Owner-only, paginated: forwarded container logs (logspout-compatible syslog receiver).
 // Most recent first; `limit` defaults server-side to 200, capped at 500.

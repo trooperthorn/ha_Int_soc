@@ -3,7 +3,8 @@
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
 to 7 are built, except phase 6's DHCP probe and phase 7's vendor table (see
 the "What phase N built" sections below), and have not run against a live
-Supervisor or a real Probe; phases 8 to 10 are design only. This document owns
+Supervisor or a real Probe. Phase 8 is built as well; phases 9 and 10 are
+design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -737,6 +738,35 @@ networks, each from /22 to /30, in Settings.
   without a controller, is deferred: the Probe hosts an SNMP agent, not a
   client, and a stored community string is a new secret to design for.
 - A network that is paused, removed, or unreachable reads "not scanned".
+
+#### What phase 8 built
+
+Built 2026-11-23: the `netscan_extra_networks` setting and its validation,
+three owner-only commands (`ha_soc/netscan/network_try`, `network_add`,
+`network_remove`), the Probe's sweep of further networks with its own
+refusal rule, the trial sweep, an "Other networks" block in the Scanner
+tab's Network Scan card, and `tests/test_netscan_networks.py`. The wire
+format is in `protocol.md`, "Netscan routed networks". It differs from the
+text above in these ways:
+
+- **Only RFC 1918 networks are allowed**, which is narrower than the
+  refusal list above and needs no list.
+- **Try-before-add is enforced by the server.** `network_add` fails until a
+  trial of that exact network has completed and was not refused.
+- **The controls are in the Scanner tab**, in the Network Scan card, not in
+  Settings: that card is where the scan's result is, and the Settings tab
+  has no netscan section at all. The card also gained the on and off button
+  the scan never had.
+- **There is no pause.** A network is scanned or removed. "Not scanned" is
+  shown when the Probe did not list the network among those it swept.
+- **Removing a network keeps its devices.** They age out by retention.
+- **The address carries its network**, the `network` field phase 1 left
+  out, for hosts on added networks only.
+
+Not verified: the run script's trial branch and its `--extra-networks`
+argument (syntax-checked, never executed, because the test machine has no
+`jq`), a sweep of a real routed network, and the new card in a running
+panel.
 
 ### Phase 9: Home Assistant surface
 

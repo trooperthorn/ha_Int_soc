@@ -47,6 +47,7 @@ from .firewall import (
 from .netscan import (
     NETSCAN_HOST_SCHEMA,
     NETSCAN_MAX_HOSTS_PER_RESULT,
+    NETSCAN_TRIAL_SCHEMA,
     strip_der,
     validate_port_list,
 )
@@ -132,6 +133,11 @@ INGEST_SERVICE_SCHEMA = vol.Schema(
         vol.Optional("netscan_capabilities"): vol.Any(None, {str: bool}),
         # The Probe host's default IPv4 next hop; checked as an address by the inventory.
         vol.Optional("netscan_gateway"): vol.Any(None, vol.All(str, vol.Length(max=45))),
+        # The owner-added networks the Probe swept this cycle, and a trial sweep's answer.
+        vol.Optional("netscan_networks"): vol.Any(
+            None, vol.All([vol.All(str, vol.Length(max=18))], vol.Length(max=8))
+        ),
+        vol.Optional("netscan_trial"): vol.Any(None, NETSCAN_TRIAL_SCHEMA),
         # One cycle's worth of discovered hosts; bounded so an ingest call cannot write
         # an unbounded amount of scan data.
         vol.Optional("netscan_result"): vol.Any(
@@ -418,6 +424,11 @@ def async_register_probe_service(
             status = dict(call.data["snmp_status"])
             status["reported_at"] = dt_util.utcnow().isoformat()
             store.async_set_snmp_status(status)
+        if call.data.get("netscan_trial") is not None and inventory is not None:
+            # Kept in memory for the owner to look at; never stored and never merged.
+            inventory.async_trial_result(
+                {**call.data["netscan_trial"], "hosts": strip_der(call.data["netscan_trial"].get("hosts") or [])}
+            )
         if call.data.get("netscan_result") is not None:
             # Certificate DER is parsed and dropped before anything is stored.
             hosts = strip_der(call.data["netscan_result"])
@@ -434,6 +445,8 @@ def async_register_probe_service(
                     ),
                     "scanner_version": call.data.get("scanner_version"),
                     "reported_at": dt_util.utcnow().isoformat(),
+                    # None from a Probe that does not sweep further networks.
+                    "networks_swept": call.data.get("netscan_networks"),
                 }
             )
             if inventory is not None:
@@ -505,6 +518,9 @@ def async_register_probe_service(
             inventory.known_cert_fingerprints() if inventory is not None else []
         )
         config["accepts"] = list(NETSCAN_ACCEPTS)
+        trial = inventory.pending_trial() if inventory is not None else None
+        if trial is not None:
+            config["trial"] = trial
         return config
 
     async def _handle_poll_syslog_receiver(call: ServiceCall) -> dict:

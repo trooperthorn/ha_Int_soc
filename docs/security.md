@@ -164,6 +164,28 @@ client list into one record per device. What it does and does not establish:
 - **Sources are trusted equally.** A compromised Probe or controller can add
   or withhold devices. Each record lists which source reported it.
 
+### Routed networks
+
+The owner can have the Probe sweep up to 8 further private networks. This
+widens what the scan touches, so it is bounded in three places:
+
+- **Enforced in the Probe:** only RFC 1918 networks from /22 to /30, never a
+  container network of the host, at most 8, under the existing 4,096 host cap.
+  A poll response that asks for anything else is ignored for that entry.
+- **Enforced in the integration:** the same address rule, owner-only commands,
+  and no way to add a network that has not first been swept once as a trial.
+  The trial's hosts are shown to the owner and are neither stored nor
+  recorded as devices.
+- **Audited:** each trial, addition and removal, with the network.
+- **Weak identity:** a host behind a router has no MAC here, so its record is
+  keyed by address and labelled "address-keyed, weak identity". Whatever
+  holds the address is that record. A watched or acknowledged address-keyed
+  device says less than a MAC-keyed one.
+- **What it sends there:** TCP connection attempts to each address on the
+  configured ports every cycle, from the Home Assistant host's address. A
+  firewall or intrusion detection system on the far network may log or block
+  this as a port scan.
+
 OS fingerprinting and UDP scanning are explicitly out of scope, both for the
 same underlying reason. Real OS fingerprinting (TCP/IP stack quirks, TTL and
 window-size heuristics) needs a raw socket to see packet-level detail this

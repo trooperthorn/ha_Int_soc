@@ -124,6 +124,9 @@ MAX_RTT_SAMPLES = 96
 ROLE_GATEWAY = "gateway"
 ROLE_DNS = "dns"
 MAX_DNS_SERVERS = 8
+# A trial sweep the Probe has not answered after this long is no longer offered to it.
+TRIAL_PENDING = timedelta(minutes=10)
+MAX_TRIAL_HOSTS = 256
 WAN_PUBLIC = "public"
 WAN_PRIVATE = "private"
 WAN_CGNAT = "cgnat"
@@ -605,6 +608,11 @@ def merge_cycle(
             seen_now["rtt_ms"] = float(rtt)
         if _set_address(state, device, ip, now_iso, secondary=not first_host):
             outcome.changed = True
+        if host.get("network"):
+            for address in device["addresses"]:
+                if address["ip"] == ip and address.get("network") != host["network"]:
+                    address["network"] = host["network"]
+                    outcome.changed = True
         for source, present in ((SOURCE_PROBE_ARP, bool(mac)), (SOURCE_PROBE_TCP, bool(open_ports))):
             if present and source not in device["sources"]:
                 device["sources"].append(source)
@@ -1180,6 +1188,9 @@ class NetworkInventory:
         )
         self.state: dict[str, Any] = empty_state()
         self._dirty = False
+        # The owner's current try-before-add sweep. In memory only: its hosts are
+        # not inventory until the network is added and a regular cycle reports them.
+        self.trial: dict[str, Any] | None = None
 
     async def async_load(self) -> None:
         stored = await self._store.async_load()
@@ -1282,6 +1293,58 @@ class NetworkInventory:
         if outcome.changed:
             self._schedule_save()
         return outcome
+
+    @callback
+    def async_request_trial(self, network: str) -> dict[str, Any]:
+        """Ask the Probe for one sweep of ``network``. Replaces any earlier trial."""
+        self.trial = {
+            "id": _secrets.token_hex(8),
+            "network": network,
+            "requested_at": dt_util.utcnow().isoformat(),
+            "completed_at": None,
+            "refused": None,
+            "hosts": None,
+        }
+        return self.trial
+
+    def pending_trial(self) -> dict[str, str] | None:
+        """What the netscan poll response offers the Probe, or None."""
+        trial = self.trial
+        if trial is None or trial["completed_at"] is not None:
+            return None
+        requested = _parse(trial["requested_at"])
+        if requested is None or dt_util.utcnow() - requested > TRIAL_PENDING:
+            return None
+        return {"id": trial["id"], "network": trial["network"]}
+
+    @callback
+    def async_trial_result(self, report: dict[str, Any]) -> bool:
+        """Record the Probe's answer. False when it is not for the current trial."""
+        trial = self.trial
+        if trial is None or report.get("id") != trial["id"] or trial["completed_at"] is not None:
+            return False
+        trial["completed_at"] = dt_util.utcnow().isoformat()
+        trial["refused"] = report.get("refused")
+        hosts = report.get("hosts") or []
+        trial["host_count"] = len(hosts)
+        trial["hosts"] = [
+            {
+                "ip": host.get("ip"),
+                "open_ports": [p.get("port") for p in host.get("open_ports") or []],
+            }
+            for host in hosts[:MAX_TRIAL_HOSTS]
+        ]
+        return True
+
+    def trial_passed(self, network: str) -> bool:
+        """True when the current trial swept exactly this network and was not refused."""
+        trial = self.trial
+        return bool(
+            trial
+            and trial["network"] == network
+            and trial["completed_at"] is not None
+            and not trial["refused"]
+        )
 
     def _passive_names(self) -> list[dict[str, Any]]:
         """Names Home Assistant already holds: DHCP hostnames and router trackers.
