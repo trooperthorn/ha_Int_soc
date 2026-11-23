@@ -239,9 +239,16 @@ POLL_SYSLOG_RECEIVER_SERVICE_SCHEMA = vol.Schema(
 async def _async_supervisor_user_id(hass: HomeAssistant) -> str | None:
     """Resolve the Supervisor system user's id, or None when there is none."""
     try:
-        from homeassistant.components.hassio.const import DATA_HASSIO_SUPERVISOR_USER
+        # Core 2026.10 moved the key from hassio.const (DATA_HASSIO_SUPERVISOR_USER)
+        # to http.const; the older location is kept for the 2026.9 floor in hacs.json.
+        try:
+            from homeassistant.components.http.const import DATA_SUPERVISOR_USER
+        except ImportError:
+            from homeassistant.components.hassio.const import (
+                DATA_HASSIO_SUPERVISOR_USER as DATA_SUPERVISOR_USER,
+            )
 
-        supervisor_user = hass.data.get(DATA_HASSIO_SUPERVISOR_USER)
+        supervisor_user = hass.data.get(DATA_SUPERVISOR_USER)
         if supervisor_user is not None and supervisor_user.id:
             return supervisor_user.id
     except ImportError:
