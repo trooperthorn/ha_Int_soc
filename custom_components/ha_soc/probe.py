@@ -18,6 +18,8 @@ from homeassistant.helpers.hassio import is_hassio
 
 from .const import (
     CONF_NETSCAN_PORT_LIST,
+    NETSCAN_ACCEPTS,
+    NETSCAN_CAPABILITY_PRESENCE,
     DOMAIN,
     FIREWALL_CAPABILITIES,
     FIREWALL_REPORT_REASON_MAX,
@@ -433,13 +435,23 @@ def async_register_probe_service(
                 }
             )
             if inventory is not None:
-                from .detections import RULE_NETWORK_DEVICE_NEW, thresholds
+                from .detections import (
+                    RULE_NETWORK_DEVICE_DOWN,
+                    RULE_NETWORK_DEVICE_NEW,
+                    thresholds,
+                )
+
+                capabilities = _known_netscan_capabilities(
+                    call.data.get("netscan_capabilities")
+                )
 
                 try:
                     inventory.async_merge_cycle(
                         hosts,
                         learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
                         port_list=validate_port_list(store.settings.get(CONF_NETSCAN_PORT_LIST)),
+                        presence=bool((capabilities or {}).get(NETSCAN_CAPABILITY_PRESENCE)),
+                        down_cycles=thresholds(store, RULE_NETWORK_DEVICE_DOWN)["down_cycles"],
                     )
                 except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
                     _LOGGER.exception("HA SOC could not merge the netscan cycle into the inventory")
@@ -487,6 +499,7 @@ def async_register_probe_service(
         config["known_cert_sha256"] = (
             inventory.known_cert_fingerprints() if inventory is not None else []
         )
+        config["accepts"] = list(NETSCAN_ACCEPTS)
         return config
 
     async def _handle_poll_syslog_receiver(call: ServiceCall) -> dict:

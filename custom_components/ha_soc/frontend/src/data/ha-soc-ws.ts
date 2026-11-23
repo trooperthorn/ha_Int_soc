@@ -273,7 +273,7 @@ export interface NetscanHost {
 }
 
 // Mirrors probe.py's INGEST_SERVICE_SCHEMA netscan_capabilities allowlist (const.py's NETSCAN_CAPABILITIES).
-export type NetscanCapability = "tcp_connect" | "tls_der";
+export type NetscanCapability = "tcp_connect" | "tls_der" | "presence";
 
 export interface NetscanResult {
   hosts: NetscanHost[];
@@ -310,6 +310,13 @@ export interface InventoryDevice {
   baseline: boolean;
   ha_device_id: string | null;
   recent_changes: InventoryChange[];
+  watched: boolean;
+  // Presence is judged only on cycles from a Probe that reports it; absent until then.
+  presence: { from: string; to: string }[];
+  missed_cycles?: number;
+  down_since?: string;
+  // A TCP connect or refusal time, not an ICMP round trip.
+  rtt_ms?: number;
   // Present once the UniFi controller has listed the device.
   unifi?: { vlan: number | string | null; ssid: string | null; wired: boolean };
 }
@@ -328,7 +335,15 @@ export interface InventoryPort {
 export interface InventoryChange {
   ts: string;
   device_id: string;
-  kind: "port_opened" | "port_closed" | "cert_changed" | "cert_renewed" | "identity_shift";
+  kind:
+    | "port_opened"
+    | "port_closed"
+    | "cert_changed"
+    | "cert_renewed"
+    | "identity_shift"
+    | "device_down"
+    | "device_back";
+  minutes_away?: number | null;
   alert?: boolean;
   port?: number;
   previous?: string;
@@ -1644,6 +1659,9 @@ export const setInventoryVerdict = (hass: HomeAssistant, deviceId: string, verdi
 
 export const setInventoryLabel = (hass: HomeAssistant, deviceId: string, label: string | null) =>
   ws(hass, { type: "ha_soc/inventory/set_label", device_id: deviceId, label });
+
+export const setInventoryWatch = (hass: HomeAssistant, deviceId: string, watched: boolean) =>
+  ws(hass, { type: "ha_soc/inventory/set_watch", device_id: deviceId, watched });
 
 export const fetchPeripherals = (hass: HomeAssistant) =>
   ws<PeripheralOverview>(hass, { type: "ha_soc/peripherals/list" });

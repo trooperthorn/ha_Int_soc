@@ -1,8 +1,8 @@
 # Network inventory, presence and network health: design
 
 Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
-to 3 are built (see the "What phase N built" sections below) and have not run
-against a live Supervisor or a real Probe; phases 4 to 10 are design only. This document owns
+to 4 are built (see the "What phase N built" sections below) and have not run
+against a live Supervisor or a real Probe; phases 5 to 10 are design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -517,6 +517,43 @@ Alerts are opt-in per device through the Watch action:
 - A Probe that stops reporting is not a network of devices going down. When
   `probe_addon_not_reporting` is open, presence evaluation pauses and no down
   is raised.
+
+#### What phase 4 built
+
+Built 2026-11-23: the three Probe changes (refused connection as an answer,
+second ARP read, `rtt_ms`), presence segments and the down and back events in
+`inventory.py`, the `network_device_down` detection and its `down_cycles`
+threshold, the owner-only `ha_soc/inventory/set_watch` command, the Watch
+button and a presence line in the Network Devices tab, and
+`tests/test_inventory_presence.py`. The wire format is in `protocol.md`,
+"Netscan presence". It differs from the text above in these ways:
+
+- **The second ARP read waits 9 seconds.** Without a wait, an address the
+  sweep touched in its last seconds still shows its old entry. The wait is
+  derived from Linux's default neighbour timers and was not checked on HAOS.
+  The design's test, a device unplugged mid-run on the owner's network, is
+  still the way to settle it.
+- **UniFi is not a presence signal.** The controller's client list arrives
+  every six hours, so it cannot place a device in a cycle. A device only the
+  controller reports reads "presence unknown" and cannot be reported down.
+- **The pause during a Probe outage needs no check of its own.** Presence is
+  judged when a cycle arrives, so a Probe that stops reporting judges
+  nothing. A cycle that arrives with no presence signal from any device is
+  also skipped, which covers the Probe's host losing its network.
+- **Back closes the down detection** instead of raising a second one.
+- **Presence is judged for every probed device, alerts only for watched
+  ones.** The tab shows "answering", "no answer for N scans" or "not
+  answering since" for all of them.
+- **The tab sends the last 24 hours of segments**, not 30 days, and shows a
+  status line, not the 12-hour strip the Vedetta comparison describes. The
+  file keeps 30 days, at most 512 segments per device.
+- **Only the last `rtt_ms` is kept.** Phase 5's gateway rule needs a history,
+  which it will have to add for the gateway alone.
+- **Retention is fixed at 30 days**, not tunable from 7 to 90.
+
+Not verified: any of this against a real network. In particular the ARP
+flag behaviour after the wait, the size of `ha_soc.inventory` with 30 days
+of segments, and the Watch button in a running panel.
 
 ### Phase 5: network health rules
 

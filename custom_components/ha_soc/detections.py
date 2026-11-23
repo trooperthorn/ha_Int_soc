@@ -18,8 +18,10 @@ from homeassistant.core import HomeAssistant
 
 from .const import (
     DETECTION_OPEN,
+    DETECTION_RESOLVED,
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
+    SEVERITY_LOW,
     SEVERITY_MEDIUM,
 )
 from .store import HaSocData
@@ -50,6 +52,7 @@ RULE_NETWORK_DEVICE_BURST = "network_device_burst"
 RULE_NETWORK_PORT_OPENED = "network_port_opened"
 RULE_NETWORK_CERT_CHANGED = "network_cert_changed"
 RULE_NETWORK_IDENTITY_SHIFT = "network_identity_shift"
+RULE_NETWORK_DEVICE_DOWN = "network_device_down"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -99,6 +102,10 @@ THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
     RULE_NETWORK_DEVICE_NEW: {
         "learning_hours": {"default": 24, "min": 1, "max": 168},
         "burst_devices": {"default": 10, "min": 3, "max": 100},
+    },
+    # Consecutive netscan cycles without an answer before a watched device is down.
+    RULE_NETWORK_DEVICE_DOWN: {
+        "down_cycles": {"default": 3, "min": 2, "max": 24},
     },
 }
 
@@ -1149,6 +1156,8 @@ class DetectionEngine:
             return []
         from .inventory import (
             EVENT_CERT_CHANGED,
+            EVENT_DEVICE_BACK,
+            EVENT_DEVICE_DOWN,
             EVENT_IDENTITY_SHIFT,
             EVENT_PORT_OPENED,
             VERDICT_ACKNOWLEDGED,
@@ -1158,6 +1167,7 @@ class DetectionEngine:
             EVENT_PORT_OPENED: (RULE_NETWORK_PORT_OPENED, SEVERITY_MEDIUM, "New open port on network device"),
             EVENT_CERT_CHANGED: (RULE_NETWORK_CERT_CHANGED, SEVERITY_MEDIUM, "Certificate changed on network device"),
             EVENT_IDENTITY_SHIFT: (RULE_NETWORK_IDENTITY_SHIFT, SEVERITY_HIGH, "Identity shift on network device"),
+            EVENT_DEVICE_DOWN: (RULE_NETWORK_DEVICE_DOWN, SEVERITY_LOW, "Watched network device stopped answering"),
         }
         since = now - timedelta(hours=NETWORK_CHANGE_LOOKBACK_HOURS)
         devices = self.inventory.state["devices"]
@@ -1170,8 +1180,14 @@ class DetectionEngine:
             if event_ts is None or event_ts < since:
                 continue
             device = devices.get(event.get("device_id"))
-            # Withdrawing the acknowledgement puts the device back under network_device_new.
-            if device is None or device.get("verdict") != VERDICT_ACKNOWLEDGED:
+            if device is None:
+                continue
+            if event["kind"] == EVENT_DEVICE_DOWN:
+                # Watching is its own opt-in and does not depend on the verdict.
+                if not device.get("watched"):
+                    continue
+            elif device.get("verdict") != VERDICT_ACKNOWLEDGED:
+                # Withdrawing the acknowledgement puts the device back under network_device_new.
                 continue
             rule_id, severity, title = spec
             detail: dict[str, Any] = {"device_id": device["id"], "changed_at": event["ts"]}
@@ -1192,5 +1208,24 @@ class DetectionEngine:
                     now=now,
                     event_ts=event_ts,
                 )
+            )
+
+        # A watched device that answers again closes its own down detection.
+        for event in self.inventory.state["events"]:
+            if event.get("kind") != EVENT_DEVICE_BACK or not event.get("down_since"):
+                continue
+            detection_id = _make_detection_id(
+                RULE_NETWORK_DEVICE_DOWN, event.get("device_id") or "", f"{event['down_since']}:"
+            )
+            detection = self.store.data["detections"].get(detection_id)
+            if detection is None or detection.get("status") == DETECTION_RESOLVED:
+                continue
+            detection["detail"] = {
+                **detection.get("detail", {}),
+                "back_at": event["ts"],
+                "minutes_away": event.get("minutes_away"),
+            }
+            self.store.async_set_detection_status(
+                detection_id, DETECTION_RESOLVED, by_user_id=None, at=event["ts"]
             )
         return results

@@ -50,13 +50,14 @@ import socket
 import ssl
 import struct
 import sys
+import time
 import urllib.error
 import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from oui_prefixes import vendor_for_mac
 
-SCANNER_VERSION = "netscan/1.1"
+SCANNER_VERSION = "netscan/1.2"
 
 # Bounds independent of whatever the owner configures, so a misconfigured or
 # hostile poll response cannot turn this into an unbounded sweep.
@@ -73,6 +74,14 @@ BANNER_MAX_BYTES = 256
 MAX_DER_BYTES = 8192
 MAX_DER_BYTES_PER_CYCLE = 262144
 MAX_KNOWN_CERTS = 512
+# How long to wait after the sweep before reading the ARP table a second time.
+# The sweep's own connection attempts make the kernel resolve every on-link
+# target; an address that does not answer is marked failed once the kernel's
+# neighbour probes run out, which with Linux's default timers (5 s delay, then
+# 3 probes 1 s apart) takes about 8 seconds. See docs/protocol.md "Netscan
+# presence" for what is and is not verified about this.
+ARP_SETTLE_SECONDS = 9
+ACCEPT_PRESENCE = "presence"
 _SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 # Ports where a TLS handshake is attempted after (or instead of) a plaintext
@@ -154,6 +163,36 @@ def _read_arp_table() -> dict[str, str]:
         try:
             ipaddress.ip_address(ip)
         except ValueError:
+            continue
+        table[ip] = mac.lower()
+    return table
+
+
+def _read_arp_complete() -> dict[str, str]:
+    """IP -> MAC for the ARP entries the kernel currently marks complete.
+
+    Column 3 of /proc/net/arp is the flags word; bit 0x2 (ATF_COM) is set while
+    the kernel holds a resolved hardware address for the entry. Read after the
+    sweep and the settle wait, a complete entry means the host answered ARP
+    during this cycle. Never raises.
+    """
+    table: dict[str, str] = {}
+    try:
+        with open("/proc/net/arp", encoding="ascii", errors="replace") as handle:
+            lines = handle.readlines()
+    except OSError:
+        return table
+    for line in lines[1:]:
+        parts = line.split()
+        if len(parts) < 4:
+            continue
+        ip, flags, mac = parts[0], parts[2], parts[3]
+        try:
+            complete = bool(int(flags, 16) & 0x2)
+            ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if not complete or mac in ("00:00:00:00:00:00", "<incomplete>"):
             continue
         table[ip] = mac.lower()
     return table
@@ -314,12 +353,17 @@ async def _probe_one(
     ip: str, port: int, semaphore: asyncio.Semaphore
 ) -> dict[str, object] | None:
     async with semaphore:
+        started = time.monotonic()
         try:
             reader, writer = await asyncio.wait_for(
                 asyncio.open_connection(ip, port), timeout=CONNECT_TIMEOUT_SECONDS
             )
+        except ConnectionRefusedError:
+            # A refusal is an answer: the host is there, the port is shut.
+            return {"_refused": True, "_rtt_ms": (time.monotonic() - started) * 1000}
         except (asyncio.TimeoutError, OSError):
             return None
+        rtt_ms = (time.monotonic() - started) * 1000
         banner = ""
         try:
             banner = await _read_banner(reader)
@@ -335,7 +379,7 @@ async def _probe_one(
         async with semaphore:
             tls_info = await _read_tls_cert(ip, port)
 
-    entry: dict[str, object] = {"port": port}
+    entry: dict[str, object] = {"port": port, "_rtt_ms": rtt_ms}
     if banner:
         entry["banner"] = banner.strip()
     service_guess, confidence = _guess_service(banner)
@@ -352,8 +396,16 @@ async def _probe_one(
 
 
 async def _run_cycle(
-    port_list: list[int], max_concurrency: int, known_certs: set[str] | None = None
+    port_list: list[int],
+    max_concurrency: int,
+    known_certs: set[str] | None = None,
+    presence: bool = False,
 ) -> list[dict[str, object]]:
+    """One sweep. With ``presence`` each host also reports whether it answered
+    (``responded``: a completed or refused connection), whether the kernel held
+    a resolved ARP entry for it after the sweep (``arp_after_sweep``), and the
+    fastest TCP connect or refusal time (``rtt_ms``). Without it the result has
+    the shape older integrations accept."""
     arp_table = _read_arp_table()
     networks = _local_ipv4_networks()
     targets = _sweep_targets(networks, set(arp_table))
@@ -370,14 +422,32 @@ async def _run_cycle(
     for (ip, _port), entry in zip(tasks.keys(), results):
         if entry is None:
             continue
+        rtt_ms = entry.pop("_rtt_ms", None)
+        refused = entry.pop("_refused", False)
+        if refused and not presence:
+            continue
         host = hosts.setdefault(ip, {"ip": ip, "open_ports": []})
-        host["open_ports"].append(entry)  # type: ignore[union-attr]
+        if not refused:
+            host["open_ports"].append(entry)  # type: ignore[union-attr]
+        if presence:
+            host["responded"] = True
+            if isinstance(rtt_ms, float) and rtt_ms < float(host.get("rtt_ms", 1e9)):  # type: ignore[arg-type]
+                host["rtt_ms"] = round(rtt_ms, 1)
 
     # Include ARP-known hosts with no open port in the configured list too,
     # so the panel can show "seen on the network, nothing scanned open"
     # rather than silently dropping them.
     for ip in arp_table:
         hosts.setdefault(ip, {"ip": ip, "open_ports": []})
+
+    if presence:
+        await asyncio.sleep(ARP_SETTLE_SECONDS)
+        for ip, mac in _read_arp_complete().items():
+            host = hosts.setdefault(ip, {"ip": ip, "open_ports": []})
+            host["arp_after_sweep"] = True
+            # The first read ran before the sweep, so a host that only now
+            # resolved gets its MAC in this cycle instead of the next.
+            arp_table.setdefault(ip, mac)
 
     for ip, host in hosts.items():
         mac = arp_table.get(ip)
@@ -398,11 +468,12 @@ def _post_result(
     probe_secret: str,
     hosts: list[dict[str, object]],
     tls_der: bool = False,
+    presence: bool = False,
 ) -> int:
     payload = json.dumps(
         {
             "netscan_result": hosts,
-            "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der},
+            "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der, "presence": presence},
             "scanner_version": SCANNER_VERSION,
             "probe_secret": probe_secret,
         }
@@ -459,6 +530,16 @@ def _parse_known_certs(raw: str | None) -> set[str] | None:
     }
 
 
+def _parse_accepts(raw: str | None) -> set[str]:
+    """The optional report fields the integration said it accepts. Anything
+    malformed is treated as nothing, so the report keeps the old shape."""
+    try:
+        parsed = json.loads(raw) if raw else []
+    except json.JSONDecodeError:
+        return set()
+    return {item for item in parsed if isinstance(item, str)} if isinstance(parsed, list) else set()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="HA SOC Probe netscan cycle")
     parser.add_argument("--ports", required=True, help="JSON list of TCP ports to sweep")
@@ -468,6 +549,11 @@ def main() -> int:
         "--known-certs",
         default=None,
         help="JSON list of certificate SHA-256 fingerprints the integration already holds",
+    )
+    parser.add_argument(
+        "--accepts",
+        default=None,
+        help="JSON list of optional report fields the integration accepts",
     )
     args = parser.parse_args()
 
@@ -484,13 +570,19 @@ def main() -> int:
         return 1
 
     known_certs = _parse_known_certs(args.known_certs)
-    hosts = asyncio.run(_run_cycle(port_list, max_concurrency, known_certs))
+    presence = ACCEPT_PRESENCE in _parse_accepts(args.accepts)
+    hosts = asyncio.run(_run_cycle(port_list, max_concurrency, known_certs, presence))
     # The count only: the result now carries certificate bytes, and the host
     # list is a LAN map that does not belong in the app log.
     print(json.dumps({"count": len(hosts)}))
 
     status = _post_result(
-        args.ingest_url, supervisor_token, probe_secret, hosts, tls_der=known_certs is not None
+        args.ingest_url,
+        supervisor_token,
+        probe_secret,
+        hosts,
+        tls_der=known_certs is not None,
+        presence=presence,
     )
     if status not in (200, 201):
         print(f"netscan: ingest POST returned status {status}", file=sys.stderr)

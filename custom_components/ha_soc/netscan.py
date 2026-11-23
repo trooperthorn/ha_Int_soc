@@ -134,6 +134,10 @@ NETSCAN_HOST_SCHEMA = vol.Schema(
         vol.Optional("mac"): vol.Any(None, validate_mac),
         vol.Optional("vendor"): vol.Any(None, vol.All(str, vol.Length(max=64))),
         vol.Optional("open_ports"): vol.Any(None, [NETSCAN_OPEN_PORT_SCHEMA]),
+        # Presence signals, sent only by a Probe that was offered them.
+        vol.Optional("responded"): bool,
+        vol.Optional("arp_after_sweep"): bool,
+        vol.Optional("rtt_ms"): vol.All(vol.Coerce(float), vol.Range(min=0, max=60000)),
     }
 )
 

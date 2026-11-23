@@ -4719,7 +4719,16 @@ ${e.exception}</pre
                     </table>
                   `:j}
             </div>
-          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setVerdict(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_verdict",device_id:t,verdict:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}_startLabelEdit(e){this._editingId=e.id,this._labelDraft=e.label??""}async _saveLabel(e){this._busyId=e.id;try{await(t=this.hass,s=e.id,i=this._labelDraft.trim()||null,Se(t,{type:"ha_soc/inventory/set_label",device_id:s,label:i})),this._editingId=null,await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}var t,s,i}_when(e){if(!e)return"unknown";const t=new Date(e);return Number.isNaN(t.getTime())?"unknown":t.toLocaleString()}_learningEnds(e){if(!e.learning_started_at)return null;const t=new Date(e.learning_started_at).getTime();return Number.isNaN(t)?null:new Date(t+3600*e.learning_hours*1e3)}_renderName(e){if(this._editingId===e.id)return V`
+          `:j}];return this._renderSections(i)}};var as;os.styles=Ye,os.DEVICE_SORT={name:e=>e.raw_name,tty:e=>e.tty_path,by_id:e=>e.by_id_path,vidpid:e=>`${e.vid}:${e.pid}`,serial:e=>e.serial_number,integration:e=>e.assigned_integration?.title??null},e([pe()],os.prototype,"_overview",void 0),e([pe()],os.prototype,"_loading",void 0),e([pe()],os.prototype,"_error",void 0),e([pe()],os.prototype,"_busyKey",void 0),e([pe()],os.prototype,"_showIgnored",void 0),e([pe()],os.prototype,"_sort",void 0),e([pe()],os.prototype,"_ignoredSort",void 0),os=ns=e([he("ha-soc-peripherals-view")],os);const ls={probe_arp:"Probe (ARP table)",probe_tcp:"Probe (TCP connect)",ha_registry:"Home Assistant registry",unifi:"UniFi controller"},hs={label:"your label",ha_registry:"Home Assistant registry",unifi:"UniFi controller"};let cs=as=class extends Ze{constructor(){super(...arguments),this._overview=null,this._loading=!0,this._error=null,this._busyId=null,this._filter="all",this._sort=null,this._ignoredSort=null,this._editingId=null,this._labelDraft=""}get viewId(){return"network_devices"}connectedCallback(){super.connectedCallback(),this._load()}async _load(){this._loading=!0,this._error=null;try{this._overview=await(e=this.hass,Se(e,{type:"ha_soc/inventory/list"}))}catch(e){this._error=e?.message??String(e)}finally{this._loading=!1}var e}async _setVerdict(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_verdict",device_id:t,verdict:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}async _setWatch(e,t){this._busyId=e.id;try{await((e,t,s)=>Se(e,{type:"ha_soc/inventory/set_watch",device_id:t,watched:s}))(this.hass,e.id,t),await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}}_renderPresence(e){const t=e.presence[e.presence.length-1],s=void 0!==e.missed_cycles;return V`
+      <div class="muted" style="font-size:12px;">${this._when(e.last_seen)}</div>
+      ${s?e.down_since?V`<span class="pill medium"><span class="dot"></span>not answering since ${this._when(e.down_since)}</span>`:0===e.missed_cycles?V`<span class="pill good"><span class="dot"></span>answering</span>`:V`<div class="muted" style="font-size:11.5px;">
+                no answer for ${e.missed_cycles} scan(s)${t?`, last answered ${this._when(t.to)}`:""}
+              </div>`:V`<div class="muted" style="font-size:11.5px;">presence unknown</div>`}
+      ${void 0!==e.rtt_ms?V`<div class="muted" style="font-size:11.5px;" title="Time for a TCP connection to be accepted or refused. Not a ping.">
+            TCP connect ${e.rtt_ms} ms
+          </div>`:j}
+      ${e.watched?V`<div style="font-size:11.5px;">watched</div>`:j}
+    `}_startLabelEdit(e){this._editingId=e.id,this._labelDraft=e.label??""}async _saveLabel(e){this._busyId=e.id;try{await(t=this.hass,s=e.id,i=this._labelDraft.trim()||null,Se(t,{type:"ha_soc/inventory/set_label",device_id:s,label:i})),this._editingId=null,await this._load()}catch(e){this._error=e?.message??String(e)}finally{this._busyId=null}var t,s,i}_when(e){if(!e)return"unknown";const t=new Date(e);return Number.isNaN(t.getTime())?"unknown":t.toLocaleString()}_learningEnds(e){if(!e.learning_started_at)return null;const t=new Date(e.learning_started_at).getTime();return Number.isNaN(t)?null:new Date(t+3600*e.learning_hours*1e3)}_renderName(e){if(this._editingId===e.id)return V`
         <input
           type="text"
           maxlength="64"
@@ -4741,7 +4750,7 @@ ${e.exception}</pre
     `}_renderIdentity(e){return"address"===e.identity?V`<span class="pill medium"><span class="dot"></span>address-keyed, weak identity</span>`:V`
       <span style="font-size:12px;">${e.macs[0]??"unknown"}</span>
       ${"local"===e.mac_kind?V`<div class="muted" style="font-size:11.5px;">randomized address</div>`:j}
-    `}_changeText(e){switch(e.kind){case"port_opened":return`Port ${e.port} opened`;case"port_closed":return`Port ${e.port} closed`;case"cert_changed":return`Certificate on port ${e.port} changed`;case"cert_renewed":return`Certificate on port ${e.port} renewed`;case"identity_shift":return(e.reasons??[]).includes("two_addresses")?"Answered at two addresses at once":"Ports and certificate changed together"}}_renderPorts(e){const t=this._overview?.certs??{},s=Object.entries(e.ports).filter(([,e])=>!e.closed_at).sort(([e],[t])=>Number(e)-Number(t));return V`
+    `}_changeText(e){switch(e.kind){case"port_opened":return`Port ${e.port} opened`;case"port_closed":return`Port ${e.port} closed`;case"cert_changed":return`Certificate on port ${e.port} changed`;case"cert_renewed":return`Certificate on port ${e.port} renewed`;case"device_down":return"Stopped answering";case"device_back":return null!=e.minutes_away?`Answering again after ${e.minutes_away} min`:"Answering again";case"identity_shift":return(e.reasons??[]).includes("two_addresses")?"Answered at two addresses at once":"Ports and certificate changed together"}}_renderPorts(e){const t=this._overview?.certs??{},s=Object.entries(e.ports).filter(([,e])=>!e.closed_at).sort(([e],[t])=>Number(e)-Number(t));return V`
       ${0===s.length?V`<span class="muted">none open</span>`:s.map(([e,s])=>{const i=s.cert_sha256?t[s.cert_sha256]:void 0,r=i?[i.unreadable?"certificate could not be read":null,i.subject&&`subject: ${i.subject}`,i.issuer&&`issuer: ${i.issuer}`,i.not_after&&`expires: ${this._when(i.not_after)}`,`sha256: ${i.sha256}`].filter(Boolean).join("\n"):s.cert_sha256?`sha256: ${s.cert_sha256}`:"";return V`<span class="pill info" title=${r} style="margin:0 4px 2px 0;"
               >${e}${s.service?` ${s.service}`:""}${s.cert_sha256?" (cert)":""}</span
             >`})}
@@ -4763,6 +4772,14 @@ ${e.exception}</pre
             Restore
           </button>`}
       <button class="ha-btn" ?disabled=${t} @click=${()=>this._startLabelEdit(e)}>Label</button>
+      ${e.watched?V`<button class="ha-btn" ?disabled=${t} @click=${()=>this._setWatch(e,!1)}>Unwatch</button>`:"local"===e.mac_kind?j:V`<button
+              class="ha-btn"
+              ?disabled=${t}
+              title="Raise a detection when this device stops answering, and close it when it answers again"
+              @click=${()=>this._setWatch(e,!0)}
+            >
+              Watch
+            </button>`}
     `}_renderTable(e,t,s){return V`
       <table>
         <thead>
@@ -4792,7 +4809,7 @@ ${e.exception}</pre
                 </td>
                 <td>${this._renderIdentity(e)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(e.first_seen)}</td>
-                <td class="muted" style="font-size:12px;">${this._when(e.last_seen)}</td>
+                <td>${this._renderPresence(e)}</td>
                 <td>${this._renderPorts(e)}</td>
                 <td class="muted" style="font-size:12px;">
                   ${e.sources.map(e=>ls[e]??e).join(", ")||"unknown"}

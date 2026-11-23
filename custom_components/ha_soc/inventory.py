@@ -92,6 +92,15 @@ CHANGE_EVENT_KINDS = (
     EVENT_CERT_RENEWED,
     EVENT_IDENTITY_SHIFT,
 )
+EVENT_DEVICE_DOWN = "device_down"
+EVENT_DEVICE_BACK = "device_back"
+PRESENCE_EVENT_KINDS = (EVENT_DEVICE_DOWN, EVENT_DEVICE_BACK)
+DEFAULT_DOWN_CYCLES = 3
+# Two sightings this close together are one stay: one missed cycle does not split it.
+PRESENCE_JOIN = timedelta(minutes=11)
+PRESENCE_RETENTION_DAYS = 30
+MAX_PRESENCE_SEGMENTS = 512
+PRESENCE_OVERVIEW_HOURS = 24
 SHIFT_TWO_ADDRESSES = "two_addresses"
 SHIFT_PORTS_AND_CERTIFICATE = "ports_and_certificate"
 RECENT_CHANGE_DAYS = 7
@@ -340,6 +349,8 @@ def merge_cycle(
     registry: Callable[[str], dict[str, str] | None] | None = None,
     new_id: Callable[[], str] = _new_device_id,
     port_list: list[int] | None = None,
+    presence: bool = False,
+    down_cycles: int = DEFAULT_DOWN_CYCLES,
 ) -> MergeOutcome:
     """Fold one netscan cycle into the inventory state, in place.
 
@@ -347,6 +358,12 @@ def merge_cycle(
     NETSCAN_HOST_SCHEMA. ``registry`` maps a MAC to the Home Assistant device
     that carries it (``{"name", "device_id"}``) or None. ``port_list`` is the
     scan list the owner configured; without it every port counts as long scanned.
+
+    ``presence`` says the cycle carries the Probe's presence signals. Only then is
+    presence judged: a cycle from a Probe that cannot say who answered proves
+    nothing about who is gone. A watched device with ``down_cycles`` consecutive
+    judged cycles without an answer gets a ``device_down`` event, and a
+    ``device_back`` event on its first answer after that.
 
     Change events carry ``alert: True`` only when the device was acknowledged at
     that moment, so acknowledging a device later does not raise its past changes.
@@ -375,7 +392,7 @@ def merge_cycle(
         return scanned is None or scan_ports.get(str(port), 0) > PORT_QUIET_CYCLES
 
     # device id -> the addresses and change events this cycle produced for it.
-    observed: dict[str, dict[str, list[Any]]] = {}
+    observed: dict[str, dict[str, Any]] = {}
 
     by_mac: dict[str, str] = {}
     by_address: dict[str, str] = {}
@@ -473,8 +490,15 @@ def merge_cycle(
         first_host = device["id"] not in observed
         if first_host:
             device["seen_cycles"] = int(device.get("seen_cycles") or 0) + 1
-        seen_now = observed.setdefault(device["id"], {"ips": [], "changes": []})
+        seen_now = observed.setdefault(
+            device["id"], {"ips": [], "changes": [], "present": False, "rtt_ms": None}
+        )
         seen_now["ips"].append(ip)
+        if host.get("arp_after_sweep") or host.get("responded") or open_ports:
+            seen_now["present"] = True
+        rtt = host.get("rtt_ms")
+        if isinstance(rtt, (int, float)) and (seen_now["rtt_ms"] is None or rtt < seen_now["rtt_ms"]):
+            seen_now["rtt_ms"] = float(rtt)
         if _set_address(state, device, ip, now_iso, secondary=not first_host):
             outcome.changed = True
         for source, present in ((SOURCE_PROBE_ARP, bool(mac)), (SOURCE_PROBE_TCP, bool(open_ports))):
@@ -540,6 +564,9 @@ def merge_cycle(
         if changes or reasons:
             outcome.changed = True
 
+    if presence and _judge_presence(state, observed, now, now_iso, down_cycles):
+        outcome.changed = True
+
     # "Consecutive" means exactly that: an address that skipped this cycle starts over.
     for ip in [ip for ip in pending if ip not in seen_without_mac]:
         del pending[ip]
@@ -557,6 +584,70 @@ def merge_cycle(
     if outcome.created:
         outcome.changed = True
     return outcome
+
+
+def _judge_presence(
+    state: dict[str, Any],
+    observed: dict[str, dict[str, Any]],
+    now: datetime,
+    now_iso: str,
+    down_cycles: int,
+) -> bool:
+    """Update presence for every device the Probe can see. Returns True on a real change.
+
+    A cycle in which nothing at all answered is not judged: that is the Probe's
+    host losing its network, not every device leaving at once. Devices only the
+    controller reports are not judged either, because the Probe has no signal
+    for them.
+    """
+    present_ids = {device_id for device_id, seen in observed.items() if seen["present"]}
+    if not present_ids:
+        state["meta"]["presence_skipped_at"] = now_iso
+        return False
+    changed = False
+    cutoff = (now - timedelta(days=PRESENCE_RETENTION_DAYS)).isoformat()
+    for device in state["devices"].values():
+        if not any(s in device.get("sources", []) for s in (SOURCE_PROBE_ARP, SOURCE_PROBE_TCP)):
+            continue
+        if device["id"] in present_ids:
+            segments = device.setdefault("presence", [])
+            last_end = _parse(segments[-1]["to"]) if segments else None
+            if last_end is not None and now - last_end <= PRESENCE_JOIN:
+                segments[-1]["to"] = now_iso
+            else:
+                segments.append({"from": now_iso, "to": now_iso})
+                changed = True
+            while segments and (segments[0]["to"] < cutoff or len(segments) > MAX_PRESENCE_SEGMENTS):
+                del segments[0]
+            device["missed_cycles"] = 0
+            rtt = observed[device["id"]]["rtt_ms"]
+            if rtt is not None:
+                device["rtt_ms"] = rtt
+            down_since = device.pop("down_since", None)
+            if down_since:
+                started = _parse(down_since)
+                minutes = int((now - started).total_seconds() // 60) if started else None
+                _append_event(
+                    state,
+                    now_iso,
+                    device["id"],
+                    EVENT_DEVICE_BACK,
+                    alert=bool(device.get("watched")),
+                    down_since=down_since,
+                    minutes_away=minutes,
+                )
+                changed = True
+        else:
+            device["missed_cycles"] = int(device.get("missed_cycles") or 0) + 1
+            if (
+                device.get("watched")
+                and not device.get("down_since")
+                and device["missed_cycles"] >= down_cycles
+            ):
+                device["down_since"] = now_iso
+                _append_event(state, now_iso, device["id"], EVENT_DEVICE_DOWN, alert=True)
+                changed = True
+    return changed
 
 
 def merge_unifi_clients(
@@ -836,6 +927,8 @@ class NetworkInventory:
         learning_hours: int = DEFAULT_LEARNING_HOURS,
         now: datetime | None = None,
         port_list: list[int] | None = None,
+        presence: bool = False,
+        down_cycles: int = DEFAULT_DOWN_CYCLES,
     ) -> MergeOutcome:
         outcome = merge_cycle(
             self.state,
@@ -844,6 +937,8 @@ class NetworkInventory:
             learning_hours=learning_hours,
             registry=self._registry_lookup,
             port_list=port_list,
+            presence=presence,
+            down_cycles=down_cycles,
         )
         # last_seen, the cycle counter and last_cycle_at change every cycle. They are
         # written on stop and with the next real change, not once per cycle, so after
@@ -942,7 +1037,8 @@ class NetworkInventory:
         cutoff = (dt_util.utcnow() - timedelta(days=RECENT_CHANGE_DAYS)).isoformat()
         recent: dict[str, list[dict[str, Any]]] = {}
         for event in reversed(self.state["events"]):
-            if event.get("kind") not in CHANGE_EVENT_KINDS or (event.get("ts") or "") < cutoff:
+            kinds = CHANGE_EVENT_KINDS + PRESENCE_EVENT_KINDS
+            if event.get("kind") not in kinds or (event.get("ts") or "") < cutoff:
                 continue
             bucket = recent.setdefault(event["device_id"], [])
             if len(bucket) < RECENT_CHANGES_PER_DEVICE:
@@ -954,6 +1050,9 @@ class NetworkInventory:
         devices = []
         counts = {verdict: 0 for verdict in VERDICTS}
         recent = self._recent_changes()
+        presence_cutoff = (
+            dt_util.utcnow() - timedelta(hours=PRESENCE_OVERVIEW_HOURS)
+        ).isoformat()
         certs = self.state["certs"]
         referenced: dict[str, Any] = {}
         for device in self.state["devices"].values():
@@ -967,6 +1066,12 @@ class NetworkInventory:
                     **device,
                     "display_name": best_name(device),
                     "recent_changes": recent.get(device["id"], []),
+                    # The last day only; the file keeps PRESENCE_RETENTION_DAYS.
+                    "presence": [
+                        segment
+                        for segment in device.get("presence", [])
+                        if segment["to"] >= presence_cutoff
+                    ],
                 }
             )
         meta = self.state["meta"]
@@ -994,6 +1099,19 @@ class NetworkInventory:
         device["verdict_by"] = by_user_id
         device["verdict_at"] = at
         _append_event(self.state, at, device_id, "verdict", previous=previous, verdict=verdict)
+        self._schedule_save()
+        return device
+
+    @callback
+    def async_set_watch(self, device_id: str, watched: bool, *, at: str) -> dict[str, Any] | None:
+        """Turn gone-and-back alerts for a device on or off. None when it does not exist."""
+        device = self.state["devices"].get(device_id)
+        if device is None:
+            return None
+        device["watched"] = bool(watched)
+        if not watched:
+            device.pop("down_since", None)
+        _append_event(self.state, at, device_id, "watch", watched=bool(watched))
         self._schedule_save()
         return device
 

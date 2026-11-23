@@ -332,7 +332,16 @@ NETSCAN_CAPABILITY_TCP_CONNECT = "tcp_connect"
 # Probe that was offered a known-fingerprint list does (docs/protocol.md,
 # "Netscan certificate delivery").
 NETSCAN_CAPABILITY_TLS_DER = "tls_der"
-NETSCAN_CAPABILITIES = [NETSCAN_CAPABILITY_TCP_CONNECT, NETSCAN_CAPABILITY_TLS_DER]
+# True when the cycle carries responded, arp_after_sweep and rtt_ms per host
+# (docs/protocol.md, "Netscan presence"). Presence is only judged on such cycles.
+NETSCAN_CAPABILITY_PRESENCE = "presence"
+NETSCAN_CAPABILITIES = [
+    NETSCAN_CAPABILITY_TCP_CONNECT,
+    NETSCAN_CAPABILITY_TLS_DER,
+    NETSCAN_CAPABILITY_PRESENCE,
+]
+# Optional report fields offered to the Probe in the netscan poll response.
+NETSCAN_ACCEPTS = [NETSCAN_CAPABILITY_PRESENCE]
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
 # "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.

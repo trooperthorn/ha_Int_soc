@@ -344,6 +344,7 @@ def async_register_websocket_api(hass: HomeAssistant) -> None:
         ws_inventory_list,
         ws_inventory_set_verdict,
         ws_inventory_set_label,
+        ws_inventory_set_watch,
         ws_syslog_receiver_entries,
         ws_unifi_network_test_connection,
         ws_probe_restart,
@@ -1566,6 +1567,43 @@ async def ws_inventory_set_verdict(hass: HomeAssistant, connection, msg: dict) -
         },
     )
     connection.send_result(msg["id"], {"ok": True, "resolved_detection_id": resolved_detection})
+
+
+@require_owner
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): "ha_soc/inventory/set_watch",
+        vol.Required("device_id"): str,
+        vol.Required("watched"): bool,
+    }
+)
+@websocket_api.async_response
+async def ws_inventory_set_watch(hass: HomeAssistant, connection, msg: dict) -> None:
+    """Owner-only: turn gone-and-back alerts for one device on or off.
+
+    A device with a randomized MAC cannot be watched: a phone leaving the house is
+    not an outage, and its record does not follow it to its next address.
+    """
+    from homeassistant.util import dt as dt_util
+
+    runtime = _runtime(hass)
+    existing = runtime.inventory.state["devices"].get(msg["device_id"])
+    if existing is None:
+        connection.send_error(msg["id"], "not_found", "Device not found")
+        return
+    if msg["watched"] and existing.get("mac_kind") == "local":
+        connection.send_error(
+            msg["id"], "not_supported", "A device with a randomized MAC address cannot be watched"
+        )
+        return
+    at = dt_util.utcnow().isoformat()
+    runtime.inventory.async_set_watch(msg["device_id"], msg["watched"], at=at)
+    runtime.audit.async_log(
+        "inventory_watch_changed",
+        user_id=connection.user.id,
+        detail={"device_id": msg["device_id"], "watched": msg["watched"]},
+    )
+    connection.send_result(msg["id"], {"ok": True})
 
 
 @require_owner

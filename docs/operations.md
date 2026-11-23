@@ -82,6 +82,7 @@ TLS verification. `unifi_network_verify_ssl`, `unifi_protect_verify_ssl`, `pihol
 | `privilege_escalation` | `risk_cap_points` | 24 | 8 to 100 |
 | `network_device_new` | `learning_hours` | 24 | 1 to 168 |
 | `network_device_new` | `burst_devices` | 10 | 3 to 100 |
+| `network_device_down` | `down_cycles` | 3 | 2 to 24 |
 
 Per-rule `learning_days` replaced the old hard-coded 14-day maturity constant (work items 3.0 and 3.5). Lookbacks and query limits are not tunable.
 

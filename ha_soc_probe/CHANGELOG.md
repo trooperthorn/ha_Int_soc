@@ -10,6 +10,12 @@
   certificate and 262,144 bytes per cycle). The integration does the
   parsing. An integration older than this change does not ask for
   certificates and gets the previous report shape.
+- The netscan reports whether each host answered. A refused TCP connection
+  now counts as an answer, the ARP table is read a second time 9 seconds
+  after the sweep to see which addresses resolved during it, and the
+  fastest TCP connect or refusal time per host is reported. A cycle takes
+  9 seconds longer. An integration older than this change gets the
+  previous report shape. No new privilege is used.
 - The netscan cycle writes the number of hosts found to the app log instead
   of the full host list.
 - Fixed the AppArmor profile denying snmpd's reads of the per-interface

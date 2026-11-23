@@ -78,6 +78,7 @@ PLAN_TABLE = {
         "learning_hours": (24, 1, 168),
         "burst_devices": (10, 3, 100),
     },
+    "network_device_down": {"down_cycles": (3, 2, 24)},
 }
 
 

@@ -154,6 +154,16 @@ Network reports MACs as `aa:bb:cc:dd:ee:ff` and Protect uppercase without separa
 - The stored result (`ha_soc/netscan/status`) never contains `der`. Each TLS entry with a held fingerprint is `{sha256, subject, issuer, not_after, self_signed}`: subject and issuer as RFC 4514 strings cut to 256 characters, `not_after` as an ISO 8601 UTC time, `self_signed` true when subject equals issuer (the signature is not checked).
 - The Probe keeps no state for this. A reinstalled integration holds no fingerprints, sends an empty list, and receives every certificate again.
 
+### Netscan presence
+
+- Poll: the `poll_netscan_config` response carries `accepts`, a list of optional report fields this integration's schema takes. It is `["presence"]` since 2026-11-23 and absent from older integrations. The run script passes it to the scanner as `--accepts`; an absent or malformed list means none.
+- With `presence` accepted, each host may carry `responded` (true when any swept port completed or refused a TCP connection), `arp_after_sweep` (true when `/proc/net/arp` holds a complete entry for the address after the sweep) and `rtt_ms` (the fastest connect or refusal time over the swept ports, one decimal). A host that only refused connections, or only shows in the post-sweep ARP table, is listed with an empty `open_ports`. `netscan_capabilities.presence` is true on such a report and `scanner_version` is `netscan/1.2`.
+- Without it the report has the earlier shape: no presence keys, and a host that only refused connections is not listed.
+- `/proc/net/arp` columns: IP address, HW type, Flags, HW address, Mask, Device. Flags bit `0x2` (ATF_COM) marks an entry with a resolved hardware address. The scanner reads the table once before the sweep (as before, for the address list and MACs) and once 9 seconds after it, and takes a MAC from the second read when the first had none.
+- The 9 second wait rests on Linux's default neighbour timers: an entry that was stale when the sweep touched it waits 5 seconds (`delay_first_probe_time`), then gets 3 unicast probes 1 second apart, and is marked failed, which clears the complete flag. UNVERIFIED: these timer values were written from memory of the kernel's neighbour defaults, not looked up in this session and not read on a HAOS host (`/proc/sys/net/ipv4/neigh/<if>/delay_first_probe_time`, `retrans_time_ms` and `ucast_solicit` show them). If a host sets them longer, a device that has left reads as present for one more cycle.
+- `rtt_ms` is a TCP round trip measured in the Probe's event loop under a concurrency limit. It includes scheduling delay and is not comparable with an ICMP ping.
+- Bounds on the integration: `responded` and `arp_after_sweep` are booleans, `rtt_ms` is 0 to 60,000.
+
 ## Terminal app
 
 - `ha_soc.pair_terminal` takes `{secret (32 to 256 characters), version?}` and answers `{accepted, pinned, rejected?}`. Accepted only from the Supervisor user's context; the first secret is pinned under the secret store's `terminal_secret` key; a later call with the same secret answers `pinned: false`, a different one is refused with `secret_mismatch` and audited as `terminal_pairing_rejected`.

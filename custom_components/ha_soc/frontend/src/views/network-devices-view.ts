@@ -12,6 +12,7 @@ import {
   InventoryVerdict,
   fetchInventory,
   setInventoryLabel,
+  setInventoryWatch,
   setInventoryVerdict,
 } from "../data/ha-soc-ws";
 
@@ -85,6 +86,42 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
     } finally {
       this._busyId = null;
     }
+  }
+
+  private async _setWatch(device: InventoryDevice, watched: boolean) {
+    this._busyId = device.id;
+    try {
+      await setInventoryWatch(this.hass, device.id, watched);
+      await this._load();
+    } catch (err: any) {
+      this._error = err?.message ?? String(err);
+    } finally {
+      this._busyId = null;
+    }
+  }
+
+  /** Presence is only known for devices the Probe sees, on cycles from a Probe that reports it. */
+  private _renderPresence(d: InventoryDevice) {
+    const last = d.presence[d.presence.length - 1];
+    const judged = d.missed_cycles !== undefined;
+    return html`
+      <div class="muted" style="font-size:12px;">${this._when(d.last_seen)}</div>
+      ${!judged
+        ? html`<div class="muted" style="font-size:11.5px;">presence unknown</div>`
+        : d.down_since
+          ? html`<span class="pill medium"><span class="dot"></span>not answering since ${this._when(d.down_since)}</span>`
+          : d.missed_cycles === 0
+            ? html`<span class="pill good"><span class="dot"></span>answering</span>`
+            : html`<div class="muted" style="font-size:11.5px;">
+                no answer for ${d.missed_cycles} scan(s)${last ? `, last answered ${this._when(last.to)}` : ""}
+              </div>`}
+      ${d.rtt_ms !== undefined
+        ? html`<div class="muted" style="font-size:11.5px;" title="Time for a TCP connection to be accepted or refused. Not a ping.">
+            TCP connect ${d.rtt_ms} ms
+          </div>`
+        : nothing}
+      ${d.watched ? html`<div style="font-size:11.5px;">watched</div>` : nothing}
+    `;
   }
 
   private _startLabelEdit(device: InventoryDevice) {
@@ -174,6 +211,10 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
         return `Certificate on port ${change.port} changed`;
       case "cert_renewed":
         return `Certificate on port ${change.port} renewed`;
+      case "device_down":
+        return "Stopped answering";
+      case "device_back":
+        return change.minutes_away != null ? `Answering again after ${change.minutes_away} min` : "Answering again";
       case "identity_shift":
         return (change.reasons ?? []).includes("two_addresses")
           ? "Answered at two addresses at once"
@@ -244,6 +285,18 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
             Restore
           </button>`}
       <button class="ha-btn" ?disabled=${busy} @click=${() => this._startLabelEdit(d)}>Label</button>
+      ${d.watched
+        ? html`<button class="ha-btn" ?disabled=${busy} @click=${() => this._setWatch(d, false)}>Unwatch</button>`
+        : d.mac_kind === "local"
+          ? nothing
+          : html`<button
+              class="ha-btn"
+              ?disabled=${busy}
+              title="Raise a detection when this device stops answering, and close it when it answers again"
+              @click=${() => this._setWatch(d, true)}
+            >
+              Watch
+            </button>`}
     `;
   }
 
@@ -280,7 +333,7 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                 </td>
                 <td>${this._renderIdentity(d)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(d.first_seen)}</td>
-                <td class="muted" style="font-size:12px;">${this._when(d.last_seen)}</td>
+                <td>${this._renderPresence(d)}</td>
                 <td>${this._renderPorts(d)}</td>
                 <td class="muted" style="font-size:12px;">
                   ${d.sources.map((s) => SOURCE_LABELS[s] ?? s).join(", ") || "unknown"}

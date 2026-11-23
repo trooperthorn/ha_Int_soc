@@ -85,11 +85,15 @@ while true; do
                 known_certs=$(printf '%s' "${response}" | jq -c '.service_response.known_cert_sha256 // []' 2>/dev/null || echo "[]")
                 cert_args=(--known-certs "${known_certs}")
             fi
+            # Optional report fields this integration accepts; absent from an older
+            # one, which then gets the report shape it knows.
+            accepts=$(printf '%s' "${response}" | jq -c '.service_response.accepts // []' 2>/dev/null || echo "[]")
             if ! SUPERVISOR_TOKEN="${SUPERVISOR_TOKEN}" PROBE_SECRET="${PROBE_SECRET}" \
                 python3 /usr/lib/ha_soc/netscan.py \
                     --ports "${port_list}" \
                     --max-concurrency "${max_concurrency}" \
                     --ingest-url "${INGEST_URL}" \
+                    --accepts "${accepts}" \
                     ${cert_args[@]+"${cert_args[@]}"}
             then
                 bashio::log.warning "Netscan: scan cycle exited non-zero; will retry next cycle."
