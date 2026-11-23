@@ -1,8 +1,9 @@
 # Network inventory, presence and network health: design
 
-Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phase 1 is
-built (see "What phase 1 built" below) and has not run against a live
-Supervisor or a real Probe; phases 2 to 10 are design only. This document owns
+Status: written 2026-11-22 against `main` at release v2026.11.22.2. Phases 1
+and 2 are built (see "What phase 1 built" and "What phase 2 built" below) and
+have not run against a live Supervisor or a real Probe; phases 3 to 10 are
+design only. This document owns
 the network inventory surface: what a device record is, how identity survives an address
 change, which changes raise a detection, what the network health rules look
 for, and what the feature can never claim. Dated decisions taken while
@@ -55,6 +56,12 @@ table settles it: if any row shows a certificate subject, this section is
 wrong.
 
 Phases 2 and 3 depend on certificate data, so the fix is part of phase 2.
+
+Fixed 2026-11-23 in phase 2: the Probe now calls
+`getpeercert(binary_form=True)`. `tests/test_inventory_changes.py` runs the
+Probe's own `_read_tls_cert` against a TLS server on loopback and checks the
+fingerprint, so the handshake is exercised. Still not verified: a scan from
+the built Probe image on the owner's install.
 
 ## Goals and non-goals
 
@@ -373,6 +380,58 @@ an open detection):
   see "Threat model additions".
 
 A port that closes is written to the change ring and raises nothing.
+
+#### What phase 2 built
+
+Built 2026-11-23: the certificate fix in the Probe's `netscan.py` and its run
+script, `parse_certificate` and the schema keys in the integration's
+`netscan.py`, certificate storage and change events in `inventory.py`, one
+rule method for the three detections in `detections.py`, the ports,
+certificates and recent changes in the Network Devices tab, and
+`tests/test_inventory_changes.py`. The wire format is in `protocol.md`,
+"Netscan certificate delivery". It differs from the text above in these ways:
+
+- **No cache file on the Probe.** The integration lists the fingerprints it
+  holds in the poll response and the Probe sends DER for the rest. A
+  reinstall needs no invalidation rule. See `decisions.md`.
+- **The capability is negotiated the other way round as well.** The Probe
+  sends the new keys only to an integration that offers the list, because an
+  older integration rejects them and would lose the whole report.
+- **"Previous 3 cycles" is one constant used four ways.** A port is closed
+  after more than 3 of the device's cycles shut; a port is newly opened when
+  it appears for the first time or after being closed; a device's first 3
+  cycles and a port's first 3 cycles in the scan list report nothing. A
+  record stored by phase 1 has no cycle counters and so settles for 3 cycles
+  after the update before it can alert.
+- **A renewal is judged on parsed fields.** Same subject and issuer, both
+  certificates readable, and the old one within 30 days of expiry or past it.
+  A device can therefore pass a swapped certificate as a renewal by copying
+  the subject and issuer of a certificate that is about to expire; the
+  renewal is still in the change list in the panel.
+- **An identity shift replaces the changes that make it up.** When ports and
+  a certificate change in one cycle, or one MAC answers at two addresses,
+  one `network_identity_shift` is raised and the separate port and
+  certificate events are recorded without their own detection.
+- **Two addresses are reported once per new address.** A device that always
+  answers at two addresses (a second address on one interface, or a router
+  answering ARP for other hosts) is learned during its first 3 cycles and
+  raises nothing. Later, only an address not seen alongside the others
+  before raises a shift. A router that answers ARP for many changing
+  addresses will still be noisy; that is not handled.
+- **The detections carry the device id, the time and the shift reason only**,
+  for the reason given under phase 1.
+- **`self_signed` means subject equals issuer.** The signature is not
+  verified.
+- **The stored netscan result changed shape.** TLS entries now carry
+  `sha256`, and `not_after` is an ISO 8601 time where the old code would have
+  sent OpenSSL's text form (it never did, because of the defect). The Scanner
+  tab shows the string as given.
+- **The Probe no longer prints the host list to its log**, only the count.
+
+Not verified: a cycle from the built Probe image, the run script's `jq`
+branch against a real poll response (the script was not executed), the new
+table column in a running panel, and how many certificates a real network
+presents against the 512 and 1,024 bounds.
 
 ### Phase 3: exposure findings from data already collected
 

@@ -143,6 +143,17 @@ Network reports MACs as `aa:bb:cc:dd:ee:ff` and Protect uppercase without separa
 - Docker Engine API over `/var/run/docker.sock`: `POST http://localhost/containers/addon_<slug>/update` with `Memory`, `MemorySwap`, `NanoCpus` (memory bytes = memory_mb x 1048576, NanoCpus = cpus x 1e9). `0` means unlimited (the reset body also sends `CpuShares: 0`). `MemorySwap` must equal `Memory` or Docker rejects the update, and a cap the container can dodge by swapping is not a cap. HTTP 200 is applied, 404 container not found, curl `000` socket unreachable.
 - s6 behavior relied on: every service starts as root; SIGTERM on every stop, restart, and update; the finish script receives the exit code as `$1`; a non-zero exit is restarted once finish returns.
 
+### Netscan certificate delivery
+
+- Poll: `POST .../services/ha_soc/poll_netscan_config?return_response` returns `{enabled, port_list, max_concurrency, generation, rescan_requested_at, known_cert_sha256}`. `known_cert_sha256` is a list of at most 512 lowercase hex SHA-256 fingerprints, the certificates the integration has already parsed, most recently seen first. It is not part of `generation`.
+- The key's presence is the negotiation. An integration from before 2026-11-23 does not send it, and its result schema rejects unknown TLS keys, so the run script passes `--known-certs` only when the key is present. Without the flag the Probe reports every TLS entry in the old shape, `{subject: null, issuer: null, not_after: null, self_signed: null}`.
+- With the flag, a TLS entry is `{sha256}` or `{sha256, der}`. `sha256` is the fingerprint of the leaf certificate's DER. `der` is that DER in base64, sent the first time in a cycle a fingerprint appears that is not in the known list. A handshake that yields no certificate is reported as `{}`.
+- Bounds on the Probe: a certificate over 8,192 bytes is reported by fingerprint only, and one cycle carries at most 262,144 bytes of DER. A certificate left out for the cycle bound is sent in a later cycle, because it stays unknown.
+- Bounds on the integration: `der` is at most 10,924 base64 characters, `sha256` must match `^[0-9a-f]{64}$`, and at most 256 certificates are parsed per cycle. The fingerprint stored is computed from the bytes received; DER whose hash differs from the `sha256` beside it is dropped.
+- `netscan_capabilities.tls_der` is true on a report made with the flag. `scanner_version` is `netscan/1.1`.
+- The stored result (`ha_soc/netscan/status`) never contains `der`. Each TLS entry with a held fingerprint is `{sha256, subject, issuer, not_after, self_signed}`: subject and issuer as RFC 4514 strings cut to 256 characters, `not_after` as an ISO 8601 UTC time, `self_signed` true when subject equals issuer (the signature is not checked).
+- The Probe keeps no state for this. A reinstalled integration holds no fingerprints, sends an empty list, and receives every certificate again.
+
 ## Terminal app
 
 - `ha_soc.pair_terminal` takes `{secret (32 to 256 characters), version?}` and answers `{accepted, pinned, rejected?}`. Accepted only from the Supervisor user's context; the first secret is pinned under the secret store's `terminal_secret` key; a later call with the same secret answers `pinned: false`, a different one is refused with `secret_mismatch` and audited as `terminal_pairing_rejected`.

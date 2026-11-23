@@ -6,6 +6,7 @@ import type { LayoutSection } from "../customize";
 import { SortState, sortRows, sortableTh } from "../sortable";
 import { deviceDetailPath, navigateToHaPath } from "../nav";
 import {
+  InventoryChange,
   InventoryDevice,
   InventoryOverview,
   InventoryVerdict,
@@ -161,6 +162,60 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
     `;
   }
 
+  private _changeText(change: InventoryChange): string {
+    switch (change.kind) {
+      case "port_opened":
+        return `Port ${change.port} opened`;
+      case "port_closed":
+        return `Port ${change.port} closed`;
+      case "cert_changed":
+        return `Certificate on port ${change.port} changed`;
+      case "cert_renewed":
+        return `Certificate on port ${change.port} renewed`;
+      case "identity_shift":
+        return (change.reasons ?? []).includes("two_addresses")
+          ? "Answered at two addresses at once"
+          : "Ports and certificate changed together";
+    }
+  }
+
+  private _renderPorts(d: InventoryDevice) {
+    const certs = this._overview?.certs ?? {};
+    const open = Object.entries(d.ports)
+      .filter(([, record]) => !record.closed_at)
+      .sort(([a], [b]) => Number(a) - Number(b));
+    return html`
+      ${open.length === 0
+        ? html`<span class="muted">none open</span>`
+        : open.map(([port, record]) => {
+            const cert = record.cert_sha256 ? certs[record.cert_sha256] : undefined;
+            const title = cert
+              ? [
+                  cert.unreadable ? "certificate could not be read" : null,
+                  cert.subject && `subject: ${cert.subject}`,
+                  cert.issuer && `issuer: ${cert.issuer}`,
+                  cert.not_after && `expires: ${this._when(cert.not_after)}`,
+                  `sha256: ${cert.sha256}`,
+                ]
+                  .filter(Boolean)
+                  .join("\n")
+              : record.cert_sha256
+                ? `sha256: ${record.cert_sha256}`
+                : "";
+            return html`<span class="pill info" title=${title} style="margin:0 4px 2px 0;"
+              >${port}${record.service ? ` ${record.service}` : ""}${record.cert_sha256 ? " (cert)" : ""}</span
+            >`;
+          })}
+      ${d.recent_changes.map(
+        (change) => html`
+          <div style="font-size:11.5px;" class=${change.alert ? "" : "muted"}>
+            ${this._changeText(change)}, ${this._when(change.ts)}${change.alert ? " (detection raised)" : ""}
+          </div>
+        `
+      )}
+    `;
+  }
+
   private _renderVerdict(d: InventoryDevice) {
     const cls = d.verdict === "acknowledged" ? "good" : d.verdict === "ignored" ? "info" : "medium";
     return html`
@@ -201,6 +256,7 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
             ${sortableTh("MAC", "mac", sort, setSort)}
             ${sortableTh("First seen", "first_seen", sort, setSort)}
             ${sortableTh("Last seen", "last_seen", sort, setSort)}
+            <th>Open ports and recent changes</th>
             <th>Seen by</th>
             ${sortableTh("Verdict", "verdict", sort, setSort)}
             <th></th>
@@ -216,13 +272,14 @@ export class HaSocNetworkDevicesView extends HaSocCustomizableView {
                   ${d.addresses[0]?.ip ?? "unknown"}
                   ${d.addresses.length > 1
                     ? html`<div class="muted" style="font-size:11.5px;">
-                        earlier: ${d.addresses.slice(1).map((a) => a.ip).join(", ")}
+                        also seen at: ${d.addresses.slice(1).map((a) => a.ip).join(", ")}
                       </div>`
                     : nothing}
                 </td>
                 <td>${this._renderIdentity(d)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(d.first_seen)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(d.last_seen)}</td>
+                <td>${this._renderPorts(d)}</td>
                 <td class="muted" style="font-size:12px;">
                   ${d.sources.map((s) => SOURCE_LABELS[s] ?? s).join(", ") || "unknown"}
                 </td>

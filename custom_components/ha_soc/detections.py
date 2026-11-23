@@ -47,6 +47,9 @@ RULE_EXTERNAL_AUDIT_CHAIN_BREAK = "external_audit_chain_break"
 # docs/NETWORK-INVENTORY-DESIGN.md.
 RULE_NETWORK_DEVICE_NEW = "network_device_new"
 RULE_NETWORK_DEVICE_BURST = "network_device_burst"
+RULE_NETWORK_PORT_OPENED = "network_port_opened"
+RULE_NETWORK_CERT_CHANGED = "network_cert_changed"
+RULE_NETWORK_IDENTITY_SHIFT = "network_identity_shift"
 
 # websocket_api.py derives its validation schema and the Settings ranges from this table.
 THRESHOLD_SPECS: dict[str, dict[str, dict[str, Any]]] = {
@@ -152,6 +155,9 @@ PROBE_AUTH_REJECTED_LOOKBACK_HOURS = 24
 # bound keeps a detection the owner resolved from reopening after evidence retention.
 NETWORK_DEVICE_NEW_LOOKBACK_HOURS = 24
 NETWORK_DEVICE_BURST_LISTED = 10
+# Change events older than this raise nothing, for the same reason as the
+# new-device lookback: a resolved detection must not reopen after pruning.
+NETWORK_CHANGE_LOOKBACK_HOURS = 24
 PROBE_AUTH_REJECTED_QUERY_LIMIT = 5000
 
 # Oldest trigger timestamps fall off the front; overflow only undercounts recurrences.
@@ -250,6 +256,7 @@ class DetectionEngine:
             self._rule_probe_auth_rejected,
             self._rule_external_audit_chain_break,
             self._rule_network_device_new,
+            self._rule_network_changes,
         ):
             try:
                 touched.extend(await rule(now, users, users_by_id))
@@ -1127,4 +1134,63 @@ class DetectionEngine:
                         event_ts=overflow[-1][0],
                     )
                 )
+        return results
+
+    async def _rule_network_changes(self, now, users, users_by_id):
+        """A change on an acknowledged device: a port opened, a certificate changed,
+        or both at once or two addresses at once (an identity shift).
+
+        The inventory decides what changed and marks the events worth raising; this
+        rule turns each marked event into one detection. As with new devices, the
+        detail names the device by id only. The port and the certificates are in the
+        owner-only device list.
+        """
+        if self.inventory is None:
+            return []
+        from .inventory import (
+            EVENT_CERT_CHANGED,
+            EVENT_IDENTITY_SHIFT,
+            EVENT_PORT_OPENED,
+            VERDICT_ACKNOWLEDGED,
+        )
+
+        specs = {
+            EVENT_PORT_OPENED: (RULE_NETWORK_PORT_OPENED, SEVERITY_MEDIUM, "New open port on network device"),
+            EVENT_CERT_CHANGED: (RULE_NETWORK_CERT_CHANGED, SEVERITY_MEDIUM, "Certificate changed on network device"),
+            EVENT_IDENTITY_SHIFT: (RULE_NETWORK_IDENTITY_SHIFT, SEVERITY_HIGH, "Identity shift on network device"),
+        }
+        since = now - timedelta(hours=NETWORK_CHANGE_LOOKBACK_HOURS)
+        devices = self.inventory.state["devices"]
+        results = []
+        for event in self.inventory.state["events"]:
+            spec = specs.get(event.get("kind"))
+            if spec is None or not event.get("alert"):
+                continue
+            event_ts = dt_util.parse_datetime(event.get("ts") or "")
+            if event_ts is None or event_ts < since:
+                continue
+            device = devices.get(event.get("device_id"))
+            # Withdrawing the acknowledgement puts the device back under network_device_new.
+            if device is None or device.get("verdict") != VERDICT_ACKNOWLEDGED:
+                continue
+            rule_id, severity, title = spec
+            detail: dict[str, Any] = {"device_id": device["id"], "changed_at": event["ts"]}
+            if event.get("reasons"):
+                detail["reasons"] = list(event["reasons"])
+            results.append(
+                self._upsert_detection(
+                    rule_id=rule_id,
+                    subject=device["id"],
+                    # The port keeps two ports opening in one cycle apart. It is hashed
+                    # into the detection id and is not stored in the row.
+                    bucket=f"{event['ts']}:{event.get('port', '')}",
+                    severity=severity,
+                    title=f"{title} {device['id']}",
+                    user_id=None,
+                    ip=None,
+                    detail=detail,
+                    now=now,
+                    event_ts=event_ts,
+                )
+            )
         return results

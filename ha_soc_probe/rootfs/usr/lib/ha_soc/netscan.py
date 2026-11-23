@@ -17,7 +17,10 @@ What one cycle does:
      TLS-typical ports, one additional TLS handshake to read the peer
      certificate (verification disabled on purpose: a self-signed cert on
      a LAN device is the expected case, and the point is to read what is
-     presented, not to validate a chain).
+     presented, not to validate a chain). The certificate is reported as
+     its SHA-256 fingerprint, plus the DER bytes when the integration does
+     not hold that fingerprint yet; the integration parses it. See
+     docs/protocol.md "Netscan certificate delivery".
   4. Matches whatever text was read against a small curated regex table
      (SERVICE_SIGNATURES) for a best-effort service guess.
   5. Looks up a best-effort vendor label for each discovered MAC against
@@ -36,7 +39,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import base64
 import fcntl
+import hashlib
 import ipaddress
 import json
 import os
@@ -51,7 +56,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from oui_prefixes import vendor_for_mac
 
-SCANNER_VERSION = "netscan/1.0"
+SCANNER_VERSION = "netscan/1.1"
 
 # Bounds independent of whatever the owner configures, so a misconfigured or
 # hostile poll response cannot turn this into an unbounded sweep.
@@ -63,6 +68,12 @@ CONNECT_TIMEOUT_SECONDS = 0.75
 BANNER_READ_TIMEOUT_SECONDS = 0.75
 TLS_HANDSHAKE_TIMEOUT_SECONDS = 1.5
 BANNER_MAX_BYTES = 256
+# One certificate larger than this is reported by fingerprint only, and one
+# cycle never carries more DER than the second bound, whatever the LAN presents.
+MAX_DER_BYTES = 8192
+MAX_DER_BYTES_PER_CYCLE = 262144
+MAX_KNOWN_CERTS = 512
+_SHA256_HEX = re.compile(r"^[0-9a-f]{64}$")
 
 # Ports where a TLS handshake is attempted after (or instead of) a plaintext
 # banner read; anything not in this set is never wrapped in TLS.
@@ -226,7 +237,16 @@ async def _read_banner(reader: asyncio.StreamReader) -> str:
 async def _read_tls_cert(ip: str, port: int) -> dict[str, object] | None:
     """One additional TLS handshake, verification disabled on purpose: a
     self-signed certificate is the expected shape on a LAN, and the point
-    is to read whatever is presented, not to validate a chain."""
+    is to read whatever is presented, not to validate a chain.
+
+    Returns None when there was no TLS handshake, an empty dict when the
+    handshake succeeded without a leaf certificate, and otherwise the
+    fingerprint plus the raw DER under "_der" (removed again by
+    _attach_certificates before anything is reported).
+
+    With verify_mode CERT_NONE the dict form of getpeercert() is always
+    empty, so only binary_form=True yields the certificate.
+    """
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -238,30 +258,56 @@ async def _read_tls_cert(ip: str, port: int) -> dict[str, object] | None:
         return None
     try:
         ssl_object = writer.get_extra_info("ssl_object")
-        cert = ssl_object.getpeercert() if ssl_object is not None else None
+        der = ssl_object.getpeercert(binary_form=True) if ssl_object is not None else None
     finally:
         writer.close()
         try:
             await writer.wait_closed()
-        except OSError:
+        except (OSError, ssl.SSLError):
             pass
-    if not cert:
-        # A handshake with no leaf certificate available (anonymous cipher,
-        # or getpeercert() unsupported for this connection) still proves TLS.
-        return {"subject": None, "issuer": None, "not_after": None, "self_signed": None}
-    subject = ", ".join(
-        f"{k}={v}" for pair in cert.get("subject", ()) for k, v in pair
-    ) or None
-    issuer = ", ".join(
-        f"{k}={v}" for pair in cert.get("issuer", ()) for k, v in pair
-    ) or None
-    self_signed = bool(subject and issuer and subject == issuer)
-    return {
-        "subject": subject,
-        "issuer": issuer,
-        "not_after": cert.get("notAfter"),
-        "self_signed": self_signed,
-    }
+    if not der:
+        return {}
+    return {"sha256": hashlib.sha256(der).hexdigest(), "_der": der}
+
+
+def _attach_certificates(
+    hosts: list[dict[str, object]], known: set[str] | None
+) -> None:
+    """Decide, in place, what each TLS entry reports.
+
+    ``known`` is the set of fingerprints the integration already holds, or
+    None when the integration did not send one. None means an integration
+    build from before certificate delivery, whose schema rejects the new
+    keys, so every TLS entry is reported in the old shape.
+
+    Otherwise each entry carries "sha256", and "der" (base64) the first time
+    a fingerprint the integration does not hold appears in this cycle, while
+    the per-certificate and per-cycle size bounds allow.
+    """
+    budget = MAX_DER_BYTES_PER_CYCLE
+    sent: set[str] = set()
+    for host in hosts:
+        for entry in host.get("open_ports") or []:  # type: ignore[union-attr]
+            tls = entry.get("tls")
+            if not isinstance(tls, dict):
+                continue
+            der = tls.pop("_der", None)
+            fingerprint = tls.get("sha256")
+            if known is None:
+                entry["tls"] = {
+                    "subject": None,
+                    "issuer": None,
+                    "not_after": None,
+                    "self_signed": None,
+                }
+                continue
+            if not der or fingerprint in known or fingerprint in sent:
+                continue
+            if len(der) > MAX_DER_BYTES or len(der) > budget:
+                continue
+            budget -= len(der)
+            sent.add(fingerprint)
+            tls["der"] = base64.b64encode(der).decode("ascii")
 
 
 async def _probe_one(
@@ -305,7 +351,9 @@ async def _probe_one(
     return entry
 
 
-async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[str, object]]:
+async def _run_cycle(
+    port_list: list[int], max_concurrency: int, known_certs: set[str] | None = None
+) -> list[dict[str, object]]:
     arp_table = _read_arp_table()
     networks = _local_ipv4_networks()
     targets = _sweep_targets(networks, set(arp_table))
@@ -339,16 +387,22 @@ async def _run_cycle(port_list: list[int], max_concurrency: int) -> list[dict[st
             if vendor:
                 host["vendor"] = vendor
 
-    return sorted(hosts.values(), key=lambda h: tuple(int(x) for x in str(h["ip"]).split(".")))
+    ordered = sorted(hosts.values(), key=lambda h: tuple(int(x) for x in str(h["ip"]).split(".")))
+    _attach_certificates(ordered, known_certs)
+    return ordered
 
 
 def _post_result(
-    ingest_url: str, supervisor_token: str, probe_secret: str, hosts: list[dict[str, object]]
+    ingest_url: str,
+    supervisor_token: str,
+    probe_secret: str,
+    hosts: list[dict[str, object]],
+    tls_der: bool = False,
 ) -> int:
     payload = json.dumps(
         {
             "netscan_result": hosts,
-            "netscan_capabilities": {"tcp_connect": True},
+            "netscan_capabilities": {"tcp_connect": True, "tls_der": tls_der},
             "scanner_version": SCANNER_VERSION,
             "probe_secret": probe_secret,
         }
@@ -386,11 +440,35 @@ def _parse_port_list(raw: str) -> list[int]:
     return ports[:MAX_PORT_LIST_ENTRIES]
 
 
+def _parse_known_certs(raw: str | None) -> set[str] | None:
+    """The fingerprints the integration already holds, or None when it sent
+    no list at all (see _attach_certificates). A malformed list is treated
+    as empty rather than absent: the integration did ask for certificates."""
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError:
+        return set()
+    if not isinstance(parsed, list):
+        return set()
+    return {
+        item
+        for item in parsed[:MAX_KNOWN_CERTS]
+        if isinstance(item, str) and _SHA256_HEX.match(item)
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="HA SOC Probe netscan cycle")
     parser.add_argument("--ports", required=True, help="JSON list of TCP ports to sweep")
     parser.add_argument("--max-concurrency", type=int, default=32)
     parser.add_argument("--ingest-url", required=True)
+    parser.add_argument(
+        "--known-certs",
+        default=None,
+        help="JSON list of certificate SHA-256 fingerprints the integration already holds",
+    )
     args = parser.parse_args()
 
     port_list = _parse_port_list(args.ports)
@@ -405,10 +483,15 @@ def main() -> int:
         print("netscan: missing SUPERVISOR_TOKEN or PROBE_SECRET; refusing to run", file=sys.stderr)
         return 1
 
-    hosts = asyncio.run(_run_cycle(port_list, max_concurrency))
-    print(json.dumps({"hosts": hosts, "count": len(hosts)}))
+    known_certs = _parse_known_certs(args.known_certs)
+    hosts = asyncio.run(_run_cycle(port_list, max_concurrency, known_certs))
+    # The count only: the result now carries certificate bytes, and the host
+    # list is a LAN map that does not belong in the app log.
+    print(json.dumps({"count": len(hosts)}))
 
-    status = _post_result(args.ingest_url, supervisor_token, probe_secret, hosts)
+    status = _post_result(
+        args.ingest_url, supervisor_token, probe_secret, hosts, tls_der=known_certs is not None
+    )
     if status not in (200, 201):
         print(f"netscan: ingest POST returned status {status}", file=sys.stderr)
         return 1

@@ -1,8 +1,10 @@
 """Persistent network device inventory built from the Probe's netscan cycles.
 
 Design, identity rules, bounds and the threat model live in
-docs/NETWORK-INVENTORY-DESIGN.md. This module is phase 1 of that design: the
-device record, the observation merge, and the owner's verdict and label.
+docs/NETWORK-INVENTORY-DESIGN.md. This module holds phases 1 and 2 of that
+design: the device record, the observation merge, the owner's verdict and
+label, the certificates seen on the network, and the change events (a port
+opened, a certificate changed, an identity shift) the detection rules read.
 
 The merge (`merge_cycle`) is a pure function of the previous state, one cycle's
 hosts and the clock, so recorded cycle sequences can be replayed in tests. The
@@ -23,6 +25,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN
+from .netscan import NETSCAN_MAX_DER_PER_RESULT, parse_certificates
 from .store import HaSocStore
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,6 +62,35 @@ DEFAULT_RETENTION_DAYS = 30
 # A port not seen open for this long is dropped from the record.
 PORT_RETENTION_DAYS = 7
 
+MAX_CERTS = 1024
+# How many fingerprints the Probe is told about; it resends DER for the rest.
+MAX_KNOWN_CERTS = 512
+MAX_SIMULTANEOUS_ADDRESSES = 8
+# A port counts as newly opened when it was not open in this many of the device's
+# previous cycles. The same number of cycles is the settling time for a new device
+# and for a port newly added to the scan list, during which nothing is reported.
+PORT_QUIET_CYCLES = 3
+# A certificate replaced by one with the same subject and issuer this close to its
+# expiry is a renewal, not a change.
+RENEWAL_WINDOW_DAYS = 30
+
+EVENT_PORT_OPENED = "port_opened"
+EVENT_PORT_CLOSED = "port_closed"
+EVENT_CERT_CHANGED = "cert_changed"
+EVENT_CERT_RENEWED = "cert_renewed"
+EVENT_IDENTITY_SHIFT = "identity_shift"
+CHANGE_EVENT_KINDS = (
+    EVENT_PORT_OPENED,
+    EVENT_PORT_CLOSED,
+    EVENT_CERT_CHANGED,
+    EVENT_CERT_RENEWED,
+    EVENT_IDENTITY_SHIFT,
+)
+SHIFT_TWO_ADDRESSES = "two_addresses"
+SHIFT_PORTS_AND_CERTIFICATE = "ports_and_certificate"
+RECENT_CHANGE_DAYS = 7
+RECENT_CHANGES_PER_DEVICE = 5
+
 
 def mac_kind(mac: str) -> str:
     """"local" for a locally administered (randomized) MAC, otherwise "global"."""
@@ -76,8 +108,12 @@ def empty_state() -> dict[str, Any]:
             "last_cycle_at": None,
             "cycles": 0,
             "cap_reached_at": None,
+            # port -> how many cycles it has been in the scan list, see merge_cycle.
+            "scan_ports": {},
         },
         "devices": {},
+        # fingerprint -> the parsed certificate, see async_absorb_certificates.
+        "certs": {},
         # ip -> first cycle a MAC-less host was seen, see merge_cycle.
         "pending": {},
         "events": [],
@@ -131,10 +167,21 @@ def _make_room(state: dict[str, Any], now_iso: str) -> bool:
     return True
 
 
-def _set_address(state: dict[str, Any], device: dict[str, Any], ip: str, now_iso: str) -> bool:
+def _set_address(
+    state: dict[str, Any], device: dict[str, Any], ip: str, now_iso: str, *, secondary: bool = False
+) -> bool:
+    """Record where the device is. ``secondary`` is a second address in the same
+    cycle: it is kept, but the first one stays the current address, so a device
+    with two addresses does not flip between them on every cycle."""
     addresses = device["addresses"]
     if addresses and addresses[0]["ip"] == ip:
         return False
+    if secondary:
+        if any(a["ip"] == ip for a in addresses):
+            return False
+        addresses.insert(1, {"ip": ip, "since": now_iso})
+        del addresses[MAX_ADDRESSES_PER_DEVICE:]
+        return True
     previous = addresses[0]["ip"] if addresses else None
     addresses[:] = [a for a in addresses if a["ip"] != ip]
     addresses.insert(0, {"ip": ip, "since": now_iso})
@@ -144,27 +191,104 @@ def _set_address(state: dict[str, Any], device: dict[str, Any], ip: str, now_iso
     return True
 
 
-def _set_ports(device: dict[str, Any], open_ports: Any, now: datetime, now_iso: str) -> bool:
+def _is_renewal(certs: dict[str, Any], old: str, new: str, now: datetime) -> bool:
+    """Same subject and issuer, and the old certificate was close to expiry or past it."""
+    before, after = certs.get(old), certs.get(new)
+    if not before or not after or before.get("unreadable") or after.get("unreadable"):
+        return False
+    if not before.get("subject") or not before.get("issuer"):
+        return False
+    if before["subject"] != after.get("subject") or before["issuer"] != after.get("issuer"):
+        return False
+    expiry = _parse(before.get("not_after"))
+    return expiry is not None and expiry - now <= timedelta(days=RENEWAL_WINDOW_DAYS)
+
+
+def _observe_ports(
+    device: dict[str, Any],
+    open_ports: Any,
+    now: datetime,
+    now_iso: str,
+    *,
+    settled: Callable[[int], bool],
+    certs: dict[str, Any],
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Fold one host's open ports into the device. Returns (changed, change events).
+
+    ``settled`` says whether a port has been in the scan list long enough for its
+    first sighting to mean it opened, rather than that the scan started looking.
+    """
     changed = False
+    changes: list[dict[str, Any]] = []
     ports = device["ports"]
+    seen = int(device.get("seen_cycles") or 0)
     for entry in open_ports or []:
         if not isinstance(entry, dict) or "port" not in entry:
             continue
-        key = str(entry["port"])
+        port = int(entry["port"])
+        key = str(port)
         record = ports.get(key)
+        opened = False
         if record is None:
             if len(ports) >= MAX_PORTS_PER_DEVICE:
                 continue
             record = ports[key] = {"first_seen": now_iso}
             changed = True
+            opened = True
+        elif record.get("closed_at") is not None:
+            record["closed_at"] = None
+            changed = True
+            opened = True
+        if opened and seen > PORT_QUIET_CYCLES and settled(port):
+            changes.append({"kind": EVENT_PORT_OPENED, "port": port})
         record["last_seen"] = now_iso
+        record["last_seen_cycle"] = seen
         record["service"] = entry.get("service_guess")
         record["confidence"] = entry.get("service_confidence")
+        tls = entry.get("tls")
+        fingerprint = tls.get("sha256") if isinstance(tls, dict) else None
+        if fingerprint and record.get("cert_sha256") != fingerprint:
+            previous = record.get("cert_sha256")
+            record["cert_sha256"] = fingerprint
+            record["cert_since"] = now_iso
+            changed = True
+            if previous:
+                renewal = _is_renewal(certs, previous, fingerprint, now)
+                changes.append(
+                    {
+                        "kind": EVENT_CERT_RENEWED if renewal else EVENT_CERT_CHANGED,
+                        "port": port,
+                        "previous": previous,
+                        "sha256": fingerprint,
+                    }
+                )
     cutoff = now - timedelta(days=PORT_RETENTION_DAYS)
     for key in [k for k, r in ports.items() if (_parse(r.get("last_seen")) or now) < cutoff]:
         del ports[key]
         changed = True
-    return changed
+    return changed, changes
+
+
+def _close_quiet_ports(
+    device: dict[str, Any], now_iso: str, scanned: set[int] | None
+) -> list[dict[str, Any]]:
+    """Mark ports that stayed shut for PORT_QUIET_CYCLES of the device's cycles.
+
+    A port that left the scan list is not closed, it is just no longer looked at.
+    """
+    seen = int(device.get("seen_cycles") or 0)
+    changes = []
+    for key, record in device["ports"].items():
+        record.setdefault("last_seen_cycle", seen)
+        if record.get("closed_at") is not None:
+            continue
+        if seen - record["last_seen_cycle"] <= PORT_QUIET_CYCLES:
+            continue
+        if scanned is not None and int(key) not in scanned:
+            continue
+        record["closed_at"] = now_iso
+        changes.append({"kind": EVENT_PORT_CLOSED, "port": int(key)})
+    return changes
 
 
 def _set_name(device: dict[str, Any], value: str, source: str, now_iso: str) -> bool:
@@ -194,12 +318,17 @@ def merge_cycle(
     retention_days: int = DEFAULT_RETENTION_DAYS,
     registry: Callable[[str], dict[str, str] | None] | None = None,
     new_id: Callable[[], str] = _new_device_id,
+    port_list: list[int] | None = None,
 ) -> MergeOutcome:
     """Fold one netscan cycle into the inventory state, in place.
 
     ``hosts`` is the list ``probe.py`` already validated against
     NETSCAN_HOST_SCHEMA. ``registry`` maps a MAC to the Home Assistant device
-    that carries it (``{"name", "device_id"}``) or None.
+    that carries it (``{"name", "device_id"}``) or None. ``port_list`` is the
+    scan list the owner configured; without it every port counts as long scanned.
+
+    Change events carry ``alert: True`` only when the device was acknowledged at
+    that moment, so acknowledging a device later does not raise its past changes.
     """
     outcome = MergeOutcome()
     now = dt_util.as_utc(now)
@@ -211,6 +340,21 @@ def merge_cycle(
         meta["learning_started_at"] = now_iso
     started = _parse(meta["learning_started_at"]) or now
     learning = now < started + timedelta(hours=learning_hours)
+
+    certs: dict[str, Any] = state.setdefault("certs", {})
+    scanned: set[int] | None = None
+    scan_ports: dict[str, int] = {}
+    if port_list is not None:
+        scanned = {int(port) for port in port_list}
+        previous_counts = meta.get("scan_ports") or {}
+        scan_ports = {str(port): int(previous_counts.get(str(port), 0)) + 1 for port in scanned}
+        meta["scan_ports"] = scan_ports
+
+    def _settled(port: int) -> bool:
+        return scanned is None or scan_ports.get(str(port), 0) > PORT_QUIET_CYCLES
+
+    # device id -> the addresses and change events this cycle produced for it.
+    observed: dict[str, dict[str, list[Any]]] = {}
 
     by_mac: dict[str, str] = {}
     by_address: dict[str, str] = {}
@@ -246,6 +390,7 @@ def merge_cycle(
             "ports": {},
             "baseline": learning,
             "ha_device_id": None,
+            "seen_cycles": 0,
         }
         devices[device["id"]] = device
         outcome.created.append(device["id"])
@@ -304,7 +449,12 @@ def merge_cycle(
         if device is None:
             continue
         device["last_seen"] = now_iso
-        if _set_address(state, device, ip, now_iso):
+        first_host = device["id"] not in observed
+        if first_host:
+            device["seen_cycles"] = int(device.get("seen_cycles") or 0) + 1
+        seen_now = observed.setdefault(device["id"], {"ips": [], "changes": []})
+        seen_now["ips"].append(ip)
+        if _set_address(state, device, ip, now_iso, secondary=not first_host):
             outcome.changed = True
         for source, present in ((SOURCE_PROBE_ARP, bool(mac)), (SOURCE_PROBE_TCP, bool(open_ports))):
             if present and source not in device["sources"]:
@@ -313,7 +463,11 @@ def merge_cycle(
         if host.get("vendor") and device.get("vendor") is None and device.get("mac_kind") != "local":
             device["vendor"] = {"value": str(host["vendor"])[:64], "source": "probe_oui"}
             outcome.changed = True
-        if _set_ports(device, open_ports, now, now_iso):
+        ports_changed, port_changes = _observe_ports(
+            device, open_ports, now, now_iso, settled=_settled, certs=certs
+        )
+        seen_now["changes"].extend(port_changes)
+        if ports_changed:
             outcome.changed = True
         if mac and registry is not None:
             match = registry(mac)
@@ -325,6 +479,45 @@ def merge_cycle(
                     outcome.changed = True
                 if SOURCE_HA_REGISTRY not in device["sources"]:
                     device["sources"].append(SOURCE_HA_REGISTRY)
+
+    for device_id, seen_now in observed.items():
+        device = devices.get(device_id)
+        if device is None:
+            continue
+        changes: list[dict[str, Any]] = seen_now["changes"]
+        changes.extend(_close_quiet_ports(device, now_iso, scanned))
+        reasons: list[str] = []
+        ips = sorted(set(seen_now["ips"]))
+        if len(ips) > 1:
+            # A device that always answers on two addresses is reported once: only
+            # an address not seen alongside the others before counts.
+            known = device.setdefault("simultaneous_addresses", [])
+            fresh = [ip for ip in ips if ip not in known]
+            if fresh:
+                if int(device.get("seen_cycles") or 0) > PORT_QUIET_CYCLES:
+                    reasons.append(SHIFT_TWO_ADDRESSES)
+                known.extend(fresh)
+                del known[:-MAX_SIMULTANEOUS_ADDRESSES]
+                outcome.changed = True
+        kinds = {change["kind"] for change in changes}
+        if EVENT_CERT_CHANGED in kinds and kinds & {EVENT_PORT_OPENED, EVENT_PORT_CLOSED}:
+            reasons.append(SHIFT_PORTS_AND_CERTIFICATE)
+        acknowledged = device.get("verdict") == VERDICT_ACKNOWLEDGED
+        for change in changes:
+            detail = {k: v for k, v in change.items() if k != "kind"}
+            # One identity shift stands in for the separate changes that make it up.
+            alert = (
+                acknowledged
+                and not reasons
+                and change["kind"] in (EVENT_PORT_OPENED, EVENT_CERT_CHANGED)
+            )
+            _append_event(state, now_iso, device_id, change["kind"], alert=alert, **detail)
+        if reasons:
+            _append_event(
+                state, now_iso, device_id, EVENT_IDENTITY_SHIFT, alert=acknowledged, reasons=reasons
+            )
+        if changes or reasons:
+            outcome.changed = True
 
     # "Consecutive" means exactly that: an address that skipped this cycle starts over.
     for ip in [ip for ip in pending if ip not in seen_without_mac]:
@@ -373,7 +566,7 @@ class NetworkInventory:
         if not isinstance(stored, dict):
             return
         state = empty_state()
-        for key in ("devices", "pending"):
+        for key in ("devices", "pending", "certs"):
             if isinstance(stored.get(key), dict):
                 state[key] = stored[key]
         if isinstance(stored.get("events"), list):
@@ -416,6 +609,7 @@ class NetworkInventory:
         *,
         learning_hours: int = DEFAULT_LEARNING_HOURS,
         now: datetime | None = None,
+        port_list: list[int] | None = None,
     ) -> MergeOutcome:
         outcome = merge_cycle(
             self.state,
@@ -423,6 +617,7 @@ class NetworkInventory:
             now or dt_util.utcnow(),
             learning_hours=learning_hours,
             registry=self._registry_lookup,
+            port_list=port_list,
         )
         # last_seen, the cycle counter and last_cycle_at change every cycle. They are
         # written on stop and with the next real change, not once per cycle, so after
@@ -432,16 +627,110 @@ class NetworkInventory:
             self._schedule_save()
         return outcome
 
+    def known_cert_fingerprints(self) -> list[str]:
+        """The fingerprints the Probe need not send DER for, most recently seen first."""
+        certs = self.state["certs"]
+        ordered = sorted(certs, key=lambda sha: certs[sha].get("last_seen") or "", reverse=True)
+        return ordered[:MAX_KNOWN_CERTS]
+
+    async def async_absorb_certificates(
+        self, hosts: list[dict[str, Any]], *, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """Parse the certificates one cycle delivered and return the hosts without DER.
+
+        Each TLS entry that names a fingerprint comes back with the subject, issuer,
+        expiry and self-signed flag of that certificate when it is held, so the stored
+        netscan result and the inventory read the same parsed fields. A certificate
+        whose bytes do not hash to the fingerprint the Probe named is dropped.
+        """
+        certs: dict[str, Any] = self.state["certs"]
+        now_iso = dt_util.as_utc(now or dt_util.utcnow()).isoformat()
+        wanted: dict[str, str] = {}
+        for host in hosts:
+            for entry in host.get("open_ports") or []:
+                tls = entry.get("tls")
+                if not isinstance(tls, dict) or not tls.get("der") or not tls.get("sha256"):
+                    continue
+                if tls["sha256"] in certs or tls["sha256"] in wanted:
+                    continue
+                if len(wanted) < NETSCAN_MAX_DER_PER_RESULT:
+                    wanted[tls["sha256"]] = tls["der"]
+        if wanted:
+            parsed = await self.hass.async_add_executor_job(parse_certificates, list(wanted.values()))
+            for cert in parsed:
+                if cert["sha256"] in wanted:
+                    certs[cert["sha256"]] = {**cert, "first_seen": now_iso, "last_seen": now_iso}
+            self._schedule_save()
+
+        out: list[dict[str, Any]] = []
+        for host in hosts:
+            copy = dict(host)
+            if host.get("open_ports") is not None:
+                ports = []
+                for entry in host["open_ports"]:
+                    tls = entry.get("tls")
+                    if isinstance(tls, dict) and tls.get("sha256"):
+                        held = certs.get(tls["sha256"]) or {}
+                        if held:
+                            held["last_seen"] = now_iso
+                        entry = {
+                            **entry,
+                            "tls": {
+                                "sha256": tls["sha256"],
+                                "subject": held.get("subject"),
+                                "issuer": held.get("issuer"),
+                                "not_after": held.get("not_after"),
+                                "self_signed": held.get("self_signed"),
+                            },
+                        }
+                    elif isinstance(tls, dict) and "der" in tls:
+                        entry = {**entry, "tls": {k: v for k, v in tls.items() if k != "der"}}
+                    ports.append(entry)
+                copy["open_ports"] = ports
+            out.append(copy)
+
+        if len(certs) > MAX_CERTS:
+            oldest = sorted(certs, key=lambda sha: certs[sha].get("last_seen") or "")
+            for sha in oldest[: len(certs) - MAX_CERTS]:
+                del certs[sha]
+        return out
+
+    def _recent_changes(self) -> dict[str, list[dict[str, Any]]]:
+        """device id -> its newest change events, for the owner's device list."""
+        cutoff = (dt_util.utcnow() - timedelta(days=RECENT_CHANGE_DAYS)).isoformat()
+        recent: dict[str, list[dict[str, Any]]] = {}
+        for event in reversed(self.state["events"]):
+            if event.get("kind") not in CHANGE_EVENT_KINDS or (event.get("ts") or "") < cutoff:
+                continue
+            bucket = recent.setdefault(event["device_id"], [])
+            if len(bucket) < RECENT_CHANGES_PER_DEVICE:
+                bucket.append(event)
+        return recent
+
     def overview(self) -> dict[str, Any]:
         """The owner-facing view: every record with its display name, plus counts."""
         devices = []
         counts = {verdict: 0 for verdict in VERDICTS}
+        recent = self._recent_changes()
+        certs = self.state["certs"]
+        referenced: dict[str, Any] = {}
         for device in self.state["devices"].values():
             counts[device.get("verdict", VERDICT_UNACKNOWLEDGED)] += 1
-            devices.append({**device, "display_name": best_name(device)})
+            for record in device.get("ports", {}).values():
+                fingerprint = record.get("cert_sha256")
+                if fingerprint in certs:
+                    referenced[fingerprint] = certs[fingerprint]
+            devices.append(
+                {
+                    **device,
+                    "display_name": best_name(device),
+                    "recent_changes": recent.get(device["id"], []),
+                }
+            )
         meta = self.state["meta"]
         return {
             "devices": devices,
+            "certs": referenced,
             "counts": counts,
             "learning_started_at": meta.get("learning_started_at"),
             "last_cycle_at": meta.get("last_cycle_at"),

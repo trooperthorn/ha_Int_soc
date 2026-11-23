@@ -103,7 +103,13 @@ already requires. A successful connect gets one best-effort banner read;
 TLS-typical ports (443, 8443, 993, 995, 465, 636, 8883, 9443) get one
 additional TLS handshake to read the peer certificate, verification
 disabled on purpose because a self-signed certificate on a LAN device is
-the expected, common case, not a finding. Both reuse the same TCP
+the expected, common case, not a finding. The Probe reports the certificate
+as a SHA-256 fingerprint and, until the integration holds that fingerprint,
+its DER bytes; the integration parses the DER in the executor with
+`cryptography`, on input bounded to 8,192 bytes, and any parser failure
+becomes "certificate unreadable" (`netscan.py` `parse_certificate`). The
+certificate is chosen by the LAN device, so its subject and issuer are
+length-bounded, shown as text, and used in no access decision. Both reuse the same TCP
 connection's data path, nothing separate is opened for banners versus
 certificates. A small, explicitly non-exhaustive curated regex table
 (`SERVICE_SIGNATURES`) turns a banner into a best-effort service guess, and

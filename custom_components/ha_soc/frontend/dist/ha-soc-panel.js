@@ -4741,6 +4741,15 @@ ${e.exception}</pre
     `}_renderIdentity(e){return"address"===e.identity?V`<span class="pill medium"><span class="dot"></span>address-keyed, weak identity</span>`:V`
       <span style="font-size:12px;">${e.macs[0]??"unknown"}</span>
       ${"local"===e.mac_kind?V`<div class="muted" style="font-size:11.5px;">randomized address</div>`:j}
+    `}_changeText(e){switch(e.kind){case"port_opened":return`Port ${e.port} opened`;case"port_closed":return`Port ${e.port} closed`;case"cert_changed":return`Certificate on port ${e.port} changed`;case"cert_renewed":return`Certificate on port ${e.port} renewed`;case"identity_shift":return(e.reasons??[]).includes("two_addresses")?"Answered at two addresses at once":"Ports and certificate changed together"}}_renderPorts(e){const t=this._overview?.certs??{},s=Object.entries(e.ports).filter(([,e])=>!e.closed_at).sort(([e],[t])=>Number(e)-Number(t));return V`
+      ${0===s.length?V`<span class="muted">none open</span>`:s.map(([e,s])=>{const i=s.cert_sha256?t[s.cert_sha256]:void 0,r=i?[i.unreadable?"certificate could not be read":null,i.subject&&`subject: ${i.subject}`,i.issuer&&`issuer: ${i.issuer}`,i.not_after&&`expires: ${this._when(i.not_after)}`,`sha256: ${i.sha256}`].filter(Boolean).join("\n"):s.cert_sha256?`sha256: ${s.cert_sha256}`:"";return V`<span class="pill info" title=${r} style="margin:0 4px 2px 0;"
+              >${e}${s.service?` ${s.service}`:""}${s.cert_sha256?" (cert)":""}</span
+            >`})}
+      ${e.recent_changes.map(e=>V`
+          <div style="font-size:11.5px;" class=${e.alert?"":"muted"}>
+            ${this._changeText(e)}, ${this._when(e.ts)}${e.alert?" (detection raised)":""}
+          </div>
+        `)}
     `}_renderVerdict(e){const t="acknowledged"===e.verdict?"good":"ignored"===e.verdict?"info":"medium";return V`
       <span class="pill ${t}"><span class="dot"></span>${e.verdict}</span>
       ${e.baseline&&"unacknowledged"===e.verdict?V`<div class="muted" style="font-size:11.5px;">present during learning</div>`:j}
@@ -4764,6 +4773,7 @@ ${e.exception}</pre
             ${et("MAC","mac",t,s)}
             ${et("First seen","first_seen",t,s)}
             ${et("Last seen","last_seen",t,s)}
+            <th>Open ports and recent changes</th>
             <th>Seen by</th>
             ${et("Verdict","verdict",t,s)}
             <th></th>
@@ -4777,12 +4787,13 @@ ${e.exception}</pre
                 <td>
                   ${e.addresses[0]?.ip??"unknown"}
                   ${e.addresses.length>1?V`<div class="muted" style="font-size:11.5px;">
-                        earlier: ${e.addresses.slice(1).map(e=>e.ip).join(", ")}
+                        also seen at: ${e.addresses.slice(1).map(e=>e.ip).join(", ")}
                       </div>`:j}
                 </td>
                 <td>${this._renderIdentity(e)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(e.first_seen)}</td>
                 <td class="muted" style="font-size:12px;">${this._when(e.last_seen)}</td>
+                <td>${this._renderPorts(e)}</td>
                 <td class="muted" style="font-size:12px;">
                   ${e.sources.map(e=>ls[e]??e).join(", ")||"unknown"}
                 </td>

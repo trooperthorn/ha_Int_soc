@@ -273,7 +273,7 @@ export interface NetscanHost {
 }
 
 // Mirrors probe.py's INGEST_SERVICE_SCHEMA netscan_capabilities allowlist (const.py's NETSCAN_CAPABILITIES).
-export type NetscanCapability = "tcp_connect";
+export type NetscanCapability = "tcp_connect" | "tls_der";
 
 export interface NetscanResult {
   hosts: NetscanHost[];
@@ -306,13 +306,48 @@ export interface InventoryDevice {
   last_seen: string;
   verdict: InventoryVerdict;
   sources: string[];
-  ports: Record<string, { first_seen: string; last_seen: string; service: string | null; confidence: string | null }>;
+  ports: Record<string, InventoryPort>;
   baseline: boolean;
   ha_device_id: string | null;
+  recent_changes: InventoryChange[];
+}
+
+export interface InventoryPort {
+  first_seen: string;
+  last_seen: string;
+  service: string | null;
+  confidence: string | null;
+  closed_at?: string | null;
+  cert_sha256?: string;
+  cert_since?: string;
+}
+
+// Mirrors inventory.py's CHANGE_EVENT_KINDS. `alert` is true when the change raised a detection.
+export interface InventoryChange {
+  ts: string;
+  device_id: string;
+  kind: "port_opened" | "port_closed" | "cert_changed" | "cert_renewed" | "identity_shift";
+  alert?: boolean;
+  port?: number;
+  previous?: string;
+  sha256?: string;
+  reasons?: ("two_addresses" | "ports_and_certificate")[];
+}
+
+// Mirrors netscan.py's parse_certificate(). self_signed means subject equals issuer.
+export interface InventoryCert {
+  sha256: string;
+  subject: string | null;
+  issuer: string | null;
+  not_before: string | null;
+  not_after: string | null;
+  self_signed: boolean | null;
+  unreadable: boolean;
 }
 
 export interface InventoryOverview {
   devices: InventoryDevice[];
+  certs: Record<string, InventoryCert>;
   counts: Record<InventoryVerdict, number>;
   learning_started_at: string | null;
   learning_hours: number;

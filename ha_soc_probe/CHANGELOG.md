@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Fixed the netscan never reporting a TLS certificate. The handshake runs
+  with verification off, and in that mode Python's `getpeercert()` returns
+  an empty dict, so subject, issuer and expiry were always empty. The Probe
+  now reads the certificate in DER form and reports its SHA-256 fingerprint,
+  plus the DER until the integration has parsed it (at most 8,192 bytes per
+  certificate and 262,144 bytes per cycle). The integration does the
+  parsing. An integration older than this change does not ask for
+  certificates and gets the previous report shape.
+- The netscan cycle writes the number of hosts found to the app log instead
+  of the full host list.
 - Fixed the AppArmor profile denying snmpd's reads of the per-interface
   sysctls under `/proc/sys/net` (`ipv6/conf/<if>/forwarding`,
   `ipv6/neigh/<if>/base_reachable_time_ms` and `retrans_time_ms`). Every

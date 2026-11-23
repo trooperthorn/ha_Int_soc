@@ -17,6 +17,7 @@ from homeassistant.core import HomeAssistant, ServiceCall, SupportsResponse
 from homeassistant.helpers.hassio import is_hassio
 
 from .const import (
+    CONF_NETSCAN_PORT_LIST,
     DOMAIN,
     FIREWALL_CAPABILITIES,
     FIREWALL_REPORT_REASON_MAX,
@@ -41,7 +42,12 @@ from .firewall import (
     async_report_from_addon,
     async_verify_or_pin_secret,
 )
-from .netscan import NETSCAN_HOST_SCHEMA, NETSCAN_MAX_HOSTS_PER_RESULT
+from .netscan import (
+    NETSCAN_HOST_SCHEMA,
+    NETSCAN_MAX_HOSTS_PER_RESULT,
+    strip_der,
+    validate_port_list,
+)
 from .netscan import async_config_for_probe as async_netscan_config_for_probe
 from .secrets_store import HaSocSecretStore
 from .snmp import async_config_for_probe
@@ -409,9 +415,16 @@ def async_register_probe_service(
             status["reported_at"] = dt_util.utcnow().isoformat()
             store.async_set_snmp_status(status)
         if call.data.get("netscan_result") is not None:
+            # Certificate DER is parsed and dropped before anything is stored.
+            hosts = strip_der(call.data["netscan_result"])
+            if inventory is not None:
+                try:
+                    hosts = await inventory.async_absorb_certificates(call.data["netscan_result"])
+                except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
+                    _LOGGER.exception("HA SOC could not read the netscan cycle's certificates")
             store.async_set_netscan_result(
                 {
-                    "hosts": call.data["netscan_result"],
+                    "hosts": hosts,
                     "capabilities": _known_netscan_capabilities(
                         call.data.get("netscan_capabilities")
                     ),
@@ -424,8 +437,9 @@ def async_register_probe_service(
 
                 try:
                     inventory.async_merge_cycle(
-                        call.data["netscan_result"],
+                        hosts,
                         learning_hours=thresholds(store, RULE_NETWORK_DEVICE_NEW)["learning_hours"],
+                        port_list=validate_port_list(store.settings.get(CONF_NETSCAN_PORT_LIST)),
                     )
                 except Exception:  # noqa: BLE001 - the inventory must never reject a Probe report
                     _LOGGER.exception("HA SOC could not merge the netscan cycle into the inventory")
@@ -468,6 +482,11 @@ def async_register_probe_service(
         # an on-demand rescan request the run script diffs against every poll,
         # independent of whether the port list or concurrency cap changed.
         config["rescan_requested_at"] = store.data.get("netscan_rescan_requested_at")
+        # Also outside the generation. Its presence tells the Probe this build accepts
+        # certificate fingerprints and DER; its content tells it which DER to leave out.
+        config["known_cert_sha256"] = (
+            inventory.known_cert_fingerprints() if inventory is not None else []
+        )
         return config
 
     async def _handle_poll_syslog_receiver(call: ServiceCall) -> dict:

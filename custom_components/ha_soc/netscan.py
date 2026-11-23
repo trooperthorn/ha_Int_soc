@@ -14,6 +14,8 @@ against before they reach the store.
 """
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import re
@@ -43,6 +45,13 @@ _BANNER_MAX = 256
 _SERVICE_GUESS_MAX = 64
 _TLS_FIELD_MAX = 256
 _MAC_PATTERN = re.compile(r"^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$")
+_SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+# The Probe never sends a certificate larger than this; base64 grows it by a third.
+NETSCAN_MAX_DER_BYTES = 8192
+_DER_B64_MAX = 4 * ((NETSCAN_MAX_DER_BYTES + 2) // 3)
+# Certificates parsed from one cycle. More than this wait for a later cycle,
+# because the Probe resends any fingerprint the integration does not hold.
+NETSCAN_MAX_DER_PER_RESULT = 256
 
 
 def validate_port_list(value: Any) -> list[int]:
@@ -89,6 +98,11 @@ _TLS_SCHEMA = vol.Schema(
         vol.Optional("issuer"): vol.Any(None, vol.All(str, vol.Length(max=_TLS_FIELD_MAX))),
         vol.Optional("not_after"): vol.Any(None, vol.All(str, vol.Length(max=64))),
         vol.Optional("self_signed"): vol.Any(None, bool),
+        # SHA-256 of the certificate's DER, and the DER itself (base64) while the
+        # integration does not hold that fingerprint. The DER never reaches the
+        # store: see NetworkInventory.async_absorb_certificates.
+        vol.Optional("sha256"): vol.All(str, vol.Match(_SHA256_PATTERN)),
+        vol.Optional("der"): vol.All(str, vol.Length(max=_DER_B64_MAX)),
     }
 )
 
@@ -126,6 +140,68 @@ NETSCAN_HOST_SCHEMA = vol.Schema(
 # A whole cycle's worth of hosts; bounded so a misbehaving or hostile Probe
 # cannot use one ingest call to write an unbounded amount of scan data.
 NETSCAN_MAX_HOSTS_PER_RESULT = 1024
+
+
+def parse_certificate(der_b64: str) -> dict[str, Any] | None:
+    """Parse one base64 DER certificate into the fields the panel and the rules use.
+
+    Returns None for anything that is not a readable X.509 certificate. The
+    fingerprint is computed here from the bytes received, never taken from the
+    sender. ``self_signed`` means the subject equals the issuer; the signature is
+    not checked. Blocking: call it in the executor.
+    """
+    from cryptography import x509
+
+    try:
+        der = base64.b64decode(der_b64, validate=True)
+    except (binascii.Error, ValueError):
+        return None
+    if not der or len(der) > NETSCAN_MAX_DER_BYTES:
+        return None
+    fingerprint = hashlib.sha256(der).hexdigest()
+    try:
+        cert = x509.load_der_x509_certificate(der)
+        subject = cert.subject.rfc4514_string()
+        issuer = cert.issuer.rfc4514_string()
+        return {
+            "sha256": fingerprint,
+            "subject": subject[:_TLS_FIELD_MAX] or None,
+            "issuer": issuer[:_TLS_FIELD_MAX] or None,
+            "not_before": cert.not_valid_before_utc.isoformat(),
+            "not_after": cert.not_valid_after_utc.isoformat(),
+            "self_signed": cert.subject == cert.issuer,
+            "unreadable": False,
+        }
+    except Exception:  # noqa: BLE001 - any parser failure on hostile input is "unreadable"
+        return {
+            "sha256": fingerprint,
+            "subject": None,
+            "issuer": None,
+            "not_before": None,
+            "not_after": None,
+            "self_signed": None,
+            "unreadable": True,
+        }
+
+
+def parse_certificates(ders: list[str]) -> list[dict[str, Any]]:
+    """parse_certificate over a bounded list, dropping what could not even be decoded."""
+    parsed = (parse_certificate(der) for der in ders[:NETSCAN_MAX_DER_PER_RESULT])
+    return [cert for cert in parsed if cert is not None]
+
+
+def strip_der(hosts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """A copy of the hosts with every certificate's DER removed."""
+    out = []
+    for host in hosts:
+        ports = []
+        for entry in host.get("open_ports") or []:
+            tls = entry.get("tls")
+            if isinstance(tls, dict) and "der" in tls:
+                entry = {**entry, "tls": {k: v for k, v in tls.items() if k != "der"}}
+            ports.append(entry)
+        out.append({**host, "open_ports": ports} if "open_ports" in host else dict(host))
+    return out
 
 
 def candidate_hosts_for_service(

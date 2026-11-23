@@ -324,7 +324,11 @@ SERVICE_INGEST_NETSCAN_RESULT = "netscan_result"
 # What the Probe negotiates about its own netscan capability on ingest, so the panel
 # never shows netscan controls for a Probe build too old to run it.
 NETSCAN_CAPABILITY_TCP_CONNECT = "tcp_connect"
-NETSCAN_CAPABILITIES = [NETSCAN_CAPABILITY_TCP_CONNECT]
+# True when the Probe reports certificates by fingerprint and DER, which only a
+# Probe that was offered a known-fingerprint list does (docs/protocol.md,
+# "Netscan certificate delivery").
+NETSCAN_CAPABILITY_TLS_DER = "tls_der"
+NETSCAN_CAPABILITIES = [NETSCAN_CAPABILITY_TCP_CONNECT, NETSCAN_CAPABILITY_TLS_DER]
 
 FIREWALL_RULE_ACTIONS = ["allow", "deny", "reject"]
 # "icmp" writes icmp into iptables and ipv6-icmp into ip6tables.
